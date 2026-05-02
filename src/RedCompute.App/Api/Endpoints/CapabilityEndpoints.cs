@@ -17,12 +17,19 @@ public static class CapabilityEndpoints
         {
             var entry = registry.Get("tts");
             if (entry?.ActiveProvider == null)
-                return ErrorResult(ctx, 503, "provider_not_running", "TTS provider is not running. Start it via POST /control/start/tts");
+                return ErrorResult(ctx, 503, "provider_not_configured", "TTS provider is not configured. Check config.json");
 
             var body = await ReadJsonBody(ctx);
             var errors = ValidateTtsRequest(body);
             if (errors.Count > 0)
                 return ValidationError(ctx, errors);
+
+            var status = await entry.ActiveProvider.GetStatusAsync();
+            if (status != BackendStatus.Running)
+            {
+                return ErrorResult(ctx, 503, "provider_not_running",
+                    $"TTS backend is {status}. Start it via POST /control/start/tts");
+            }
 
             var text = body.GetValueOrDefault("text")?.ToString() ?? "";
             var voice = body.GetValueOrDefault("voice")?.ToString() ?? "default";
@@ -71,7 +78,7 @@ public static class CapabilityEndpoints
                 return ErrorResult(ctx, 500, "execution_failed", ex.Message);
             }
 
-            return null;
+            return Results.Empty;
         });
 
         app.MapGet("/tts/voices", () =>
@@ -157,23 +164,19 @@ public static class CapabilityEndpoints
         }
     }
 
-    private static IResult? ErrorResult(HttpContext ctx, int statusCode, string error, string message)
+    private static IResult ErrorResult(HttpContext ctx, int statusCode, string error, string message)
     {
-        ctx.Response.StatusCode = statusCode;
-        ctx.Response.WriteAsJsonAsync(new ErrorResponse { Error = error, Message = message });
-        return null;
+        return Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: statusCode);
     }
 
-    private static IResult? ValidationError(HttpContext ctx, Dictionary<string, string> fields)
+    private static IResult ValidationError(HttpContext ctx, Dictionary<string, string> fields)
     {
-        ctx.Response.StatusCode = 422;
-        ctx.Response.WriteAsJsonAsync(new ErrorResponse
+        return Results.Json(new ErrorResponse
         {
             Error = "validation_failed",
             Message = "One or more parameters are invalid",
             Fields = fields
-        });
-        return null;
+        }, statusCode: 422);
     }
 
     private static string Truncate(string s, int maxLen) =>

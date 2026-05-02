@@ -81,7 +81,7 @@ public class LocalWslProvider : IBackendProvider
         }
     }
 
-    public async Task StopAsync(CancellationToken ct = default)
+    public Task StopAsync(CancellationToken ct = default)
     {
         _status = BackendStatus.Draining;
 
@@ -114,6 +114,7 @@ public class LocalWslProvider : IBackendProvider
 
         _status = BackendStatus.Stopped;
         _log("[LocalWsl] Backend stopped");
+        return Task.CompletedTask;
     }
 
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(_status);

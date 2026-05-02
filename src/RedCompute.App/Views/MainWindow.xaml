@@ -136,7 +136,7 @@
                                             <StackPanel Orientation="Horizontal" Margin="4">
                                                 <Ellipse Width="8" Height="8" Margin="0,0,8,0">
                                                     <Ellipse.Fill>
-                                                        <SolidColorBrush Color="{Binding StatusColor}"/>
+                                                        <Binding Path="StatusColor" Converter="{StaticResource StringToBrush}"/>
                                                     </Ellipse.Fill>
                                                 </Ellipse>
                                                 <StackPanel>
@@ -208,7 +208,7 @@
                         <DockPanel>
                             <TextBlock DockPanel.Dock="Top" Text="Logs" FontSize="14" FontWeight="SemiBold"
                                        Foreground="White" Margin="16,16,16,8"/>
-                            <ListBox ItemsSource="{Binding LogEntries}" Background="#1A1A1E" BorderThickness="0"
+                            <ListBox x:Name="LogsList" ItemsSource="{Binding LogEntries}" Background="#1A1A1E" BorderThickness="0"
                                      FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}"
                                      ScrollViewer.CanContentScroll="True"
                                      VirtualizingPanel.IsVirtualizing="True"
