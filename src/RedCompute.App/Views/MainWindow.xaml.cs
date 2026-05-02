@@ -82,18 +82,6 @@ public partial class MainWindow : Window
 
     private void Close_Click(object sender, RoutedEventArgs e)
     {
-        // Minimize to tray instead of closing
         Hide();
-    }
-
-    private void Nav_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement fe && int.TryParse(fe.Tag?.ToString(), out var index))
-        {
-            DashboardTab.Visibility = index == 0 ? Visibility.Visible : Visibility.Collapsed;
-            JobsTab.Visibility = index == 1 ? Visibility.Visible : Visibility.Collapsed;
-            SettingsTab.Visibility = index == 2 ? Visibility.Visible : Visibility.Collapsed;
-            LogsTab.Visibility = index == 3 ? Visibility.Visible : Visibility.Collapsed;
-        }
     }
 }

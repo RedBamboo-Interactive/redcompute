@@ -8,19 +8,67 @@
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <materialDesign:BundledTheme BaseTheme="Dark" PrimaryColor="BlueGrey" SecondaryColor="Teal" />
-                <ResourceDictionary Source="pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign2.Defaults.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign3.Defaults.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <converters:StringToSolidColorBrushConverter x:Key="StringToBrush" />
 
-            <!-- Custom colors matching Roaster palette -->
-            <SolidColorBrush x:Key="PaperBackground" Color="#2C2D32" />
-            <SolidColorBrush x:Key="CardBackground" Color="#323338" />
-            <SolidColorBrush x:Key="AccentGreen" Color="#43A25A" />
-            <SolidColorBrush x:Key="AccentOrange" Color="#FFB74D" />
-            <SolidColorBrush x:Key="AccentRed" Color="#FF5252" />
-            <SolidColorBrush x:Key="AccentTeal" Color="#26A69A" />
-            <SolidColorBrush x:Key="TextMuted" Color="#ADAEB3" />
+            <!-- Override Material Design theme surfaces -->
+            <SolidColorBrush x:Key="MaterialDesignPaper" Color="#2C2D32"/>
+            <SolidColorBrush x:Key="MaterialDesignCardBackground" Color="#323338"/>
+            <SolidColorBrush x:Key="MaterialDesignTextFieldBoxBackground" Color="#2B2C32"/>
+            <SolidColorBrush x:Key="MaterialDesignDivider" Color="#323338"/>
+
+            <!-- Primary accent (Discord green) wired into MD theme -->
+            <SolidColorBrush x:Key="PrimaryHueLightBrush" Color="#43A25A"/>
+            <SolidColorBrush x:Key="PrimaryHueMidBrush" Color="#43A25A"/>
+            <SolidColorBrush x:Key="PrimaryHueDarkBrush" Color="#43A25A"/>
+            <Color x:Key="Primary">#43A25A</Color>
+            <Color x:Key="PrimaryContainer">#43A25A</Color>
+            <Color x:Key="OnPrimary">#FFFFFF</Color>
+
+            <!-- Semantic colors -->
+            <SolidColorBrush x:Key="AccentGreen" Color="#43A25A"/>
+            <SolidColorBrush x:Key="AccentOrange" Color="#FFB74D"/>
+            <SolidColorBrush x:Key="AccentRed" Color="#FF5252"/>
+            <SolidColorBrush x:Key="AccentTeal" Color="#26A69A"/>
+            <SolidColorBrush x:Key="TextMuted" Color="#ADAEB3"/>
+            <SolidColorBrush x:Key="DeepBackground" Color="#1A1A1E"/>
+            <SolidColorBrush x:Key="BorderSubtle" Color="#3A3A40"/>
+
+            <!-- Navigation Rail icon: gray when idle, white when selected -->
+            <Style x:Key="NavRailIcon" TargetType="materialDesign:PackIcon">
+                <Setter Property="Foreground" Value="#ADAEB3"/>
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=TabItem}}" Value="True">
+                        <Setter Property="Foreground" Value="White"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- Navigation Rail icon container: hover glow + selected highlight -->
+            <Style x:Key="NavRailIconContainer" TargetType="Border">
+                <Setter Property="Width" Value="48"/>
+                <Setter Property="Height" Value="48"/>
+                <Setter Property="CornerRadius" Value="12"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Margin" Value="0,4"/>
+                <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="#40ADAEB3"/>
+                    </Trigger>
+                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=TabItem}}" Value="True">
+                        <Setter Property="Background" Value="#36373E"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- Global TextBox: rounded Material Design filled style -->
+            <Style TargetType="TextBox" BasedOn="{StaticResource MaterialDesignFilledTextBox}">
+                <Setter Property="materialDesign:TextFieldAssist.TextFieldCornerRadius" Value="8"/>
+                <Setter Property="BorderBrush" Value="#404040"/>
+                <Setter Property="BorderThickness" Value="1"/>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>
