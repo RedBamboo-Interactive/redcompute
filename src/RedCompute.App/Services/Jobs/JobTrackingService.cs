@@ -142,11 +142,22 @@ public class JobTrackingService
         var cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays);
         var old = db.Jobs.Where(j => j.QueuedAt < cutoff).ToList();
 
+        var outputDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RedCompute", "outputs");
+
         foreach (var job in old)
         {
             if (job.OutputLocation != null && File.Exists(job.OutputLocation))
             {
                 try { File.Delete(job.OutputLocation); } catch { }
+            }
+            // Clean up extra clip files (Suno variations)
+            for (var i = 1; i <= 4; i++)
+            {
+                var clipPath = Path.Combine(outputDir, $"{job.Id}_clip{i}.mp3");
+                if (File.Exists(clipPath))
+                    try { File.Delete(clipPath); } catch { }
             }
         }
 

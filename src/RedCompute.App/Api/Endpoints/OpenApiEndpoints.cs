@@ -307,6 +307,118 @@ public static class OpenApiEndpoints
             };
         }
 
+        if (registry.Capabilities.ContainsKey("music-gen"))
+        {
+            paths["/music-gen/generate"] = new Dictionary<string, object>
+            {
+                ["post"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "MusicGenGenerate",
+                    ["summary"] = "Generate music via Suno AI. Sync by default, async with ?async=true. Returns 2 variations.",
+                    ["parameters"] = new object[]
+                    {
+                        QueryParam("async", "boolean", "Return 202 with job ID instead of waiting for result")
+                    },
+                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["required"] = new[] { "prompt" },
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["prompt"] = Prop("string", "Musical description — mood, instruments, lyrics"),
+                            ["style"] = Prop("string", "Genre/style tags", ""),
+                            ["title"] = Prop("string", "Track title", ""),
+                            ["instrumental"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Instrumental only (no vocals)", ["default"] = true }
+                        }
+                    }),
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["200"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Generated MP3 audio (sync mode)",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["audio/mpeg"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new { type = "string", format = "binary" }
+                                }
+                            }
+                        },
+                        ["202"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Job accepted (async mode)",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["application/json"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new Dictionary<string, object>
+                                        {
+                                            ["jobId"] = new { type = "string", format = "uuid" },
+                                            ["status"] = new { type = "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ["422"] = ErrorResponse("Validation failed"),
+                        ["503"] = ErrorResponse("Provider not running")
+                    }
+                }
+            };
+            paths["/music-gen/jobs/{id}/progress"] = new Dictionary<string, object>
+            {
+                ["get"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "MusicGenJobProgress",
+                    ["summary"] = "Get progress of a music generation job",
+                    ["parameters"] = new object[] { PathParam("id", "string", "Job UUID") },
+                    ["responses"] = Responses("application/json", new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["id"] = new { type = "string", format = "uuid" },
+                            ["status"] = new { type = "string" },
+                            ["progress"] = new { type = "number", minimum = 0, maximum = 1 },
+                            ["errorMessage"] = new { type = "string" }
+                        }
+                    })
+                }
+            };
+            paths["/music-gen/jobs/{id}/output"] = new Dictionary<string, object>
+            {
+                ["get"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "MusicGenJobOutput",
+                    ["summary"] = "Download generated MP3. Use ?clip=1 for second variation.",
+                    ["parameters"] = new object[]
+                    {
+                        PathParam("id", "string", "Job UUID"),
+                        QueryParam("clip", "integer", "Clip index: 0 (default) or 1 for second variation")
+                    },
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["200"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "MP3 audio file",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["audio/mpeg"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new { type = "string", format = "binary" }
+                                }
+                            }
+                        },
+                        ["409"] = ErrorResponse("Job still running"),
+                        ["404"] = ErrorResponse("Job or output not found")
+                    }
+                }
+            };
+        }
+
         return new Dictionary<string, object>
         {
             ["openapi"] = "3.1.0",

@@ -75,6 +75,24 @@ public class ConfigManager
                         }
                     }
                 },
+                ["music-gen"] = new()
+                {
+                    Enabled = false,
+                    ActiveProvider = "suno",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["suno"] = new()
+                        {
+                            Type = "Suno",
+                            ApiKey = "",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["BaseUrl"] = "https://api.sunoapi.org",
+                                ["Model"] = "V4_5"
+                            }
+                        }
+                    }
+                },
                 ["image-gen"] = new()
                 {
                     Enabled = false,

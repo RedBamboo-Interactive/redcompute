@@ -138,6 +138,37 @@ public static class DiscoverEndpoints
                     Returns = new ReturnSchema { ContentType = "image/png", Streaming = false }
                 }
             },
+            "music-gen" => new List<EndpointManifest>
+            {
+                new()
+                {
+                    Method = "POST",
+                    Path = "/music-gen/generate",
+                    Description = "Generate music via Suno AI. Returns MP3 audio (sync) or job ID (async with ?async=true). Suno produces 2 variations per generation.",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["prompt"] = new() { Type = "string", Required = true, Description = "Musical description — what the song should sound like, mood, instruments, lyrics" },
+                        ["style"] = new() { Type = "string", Required = false, Default = "", Description = "Genre/style tags (e.g. 'cinematic orchestral epic')" },
+                        ["title"] = new() { Type = "string", Required = false, Default = "", Description = "Track title" },
+                        ["instrumental"] = new() { Type = "boolean", Required = false, Default = true, Description = "If true, generate instrumental only (no vocals)" }
+                    },
+                    Returns = new ReturnSchema { ContentType = "audio/mpeg", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/music-gen/jobs/{id}/progress",
+                    Description = "Get progress of a music generation job. Stages: submitted (0.1), lyrics (0.33), composing (0.66), done (1.0)",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/music-gen/jobs/{id}/output",
+                    Description = "Download generated MP3. Use ?clip=0 (default) or ?clip=1 for the second variation",
+                    Returns = new ReturnSchema { ContentType = "audio/mpeg", Streaming = false }
+                }
+            },
             _ => new List<EndpointManifest>()
         };
     }
