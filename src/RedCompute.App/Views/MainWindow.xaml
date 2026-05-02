@@ -107,114 +107,58 @@
                                                 <Border Background="{DynamicResource MaterialDesignCardBackground}"
                                                         CornerRadius="12" Padding="20">
                                                     <StackPanel>
-                                                        <!-- Header: icon + title, actions -->
-                                                        <Grid Margin="0,0,0,12">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="Auto"/>
-                                                                <ColumnDefinition Width="*"/>
-                                                                <ColumnDefinition Width="Auto"/>
-                                                                <ColumnDefinition Width="Auto"/>
-                                                            </Grid.ColumnDefinitions>
-                                                            <!-- Icon in status-tinted circle -->
-                                                            <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20"
-                                                                    Margin="0,0,14,0" VerticalAlignment="Center">
-                                                                <Border.Style>
-                                                                    <Style TargetType="Border">
-                                                                        <Setter Property="Background" Value="#2A2A2E"/>
-                                                                        <Style.Triggers>
-                                                                            <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                                                                                <Setter Property="Background" Value="#2A3A2F"/>
-                                                                            </DataTrigger>
-                                                                            <DataTrigger Binding="{Binding Status}" Value="Starting">
-                                                                                <Setter Property="Background" Value="#3A352A"/>
-                                                                            </DataTrigger>
-                                                                            <DataTrigger Binding="{Binding Status}" Value="Error">
-                                                                                <Setter Property="Background" Value="#3A2A2A"/>
-                                                                            </DataTrigger>
-                                                                        </Style.Triggers>
-                                                                    </Style>
-                                                                </Border.Style>
-                                                                <materialDesign:PackIcon Kind="{Binding IconKind}"
-                                                                                         Width="22" Height="22"
-                                                                                         HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                                    <materialDesign:PackIcon.Style>
-                                                                        <Style TargetType="materialDesign:PackIcon">
-                                                                            <Setter Property="Foreground" Value="#72767D"/>
-                                                                            <Style.Triggers>
-                                                                                <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding Status}" Value="Starting">
-                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentOrange}"/>
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding Status}" Value="Error">
-                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentRed}"/>
-                                                                                </DataTrigger>
-                                                                            </Style.Triggers>
-                                                                        </Style>
-                                                                    </materialDesign:PackIcon.Style>
-                                                                </materialDesign:PackIcon>
-                                                            </Border>
-                                                            <!-- Name -->
-                                                            <TextBlock Grid.Column="1" Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"
-                                                                       Foreground="White" VerticalAlignment="Center"/>
-                                                            <!-- Toggle -->
-                                                            <Button Grid.Column="2" Command="{Binding ToggleCommand}"
-                                                                    Style="{StaticResource MaterialDesignFlatButton}"
-                                                                    Padding="4" MinWidth="0" Width="34" Height="34" Margin="4,0"
-                                                                    ToolTip="{Binding Status}">
-                                                                <materialDesign:PackIcon Width="20" Height="20">
-                                                                    <materialDesign:PackIcon.Style>
-                                                                        <Style TargetType="materialDesign:PackIcon">
-                                                                            <Setter Property="Kind" Value="Power"/>
-                                                                            <Setter Property="Foreground" Value="#72767D"/>
-                                                                            <Setter Property="Opacity" Value="0.4"/>
-                                                                            <Style.Triggers>
-                                                                                <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
-                                                                                    <Setter Property="Opacity" Value="1.0"/>
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding Status}" Value="Starting">
-                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentOrange}"/>
-                                                                                    <Setter Property="Opacity" Value="0.8"/>
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding Status}" Value="Error">
-                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentRed}"/>
-                                                                                    <Setter Property="Opacity" Value="1.0"/>
-                                                                                </DataTrigger>
-                                                                            </Style.Triggers>
-                                                                        </Style>
-                                                                    </materialDesign:PackIcon.Style>
-                                                                </materialDesign:PackIcon>
-                                                            </Button>
-                                                            <!-- Cog -->
-                                                            <Button Grid.Column="3" Command="{Binding OpenSettingsCommand}"
-                                                                    Style="{StaticResource MaterialDesignFlatButton}"
-                                                                    Padding="4" MinWidth="0" Width="34" Height="34"
-                                                                    ToolTip="Settings">
-                                                                <materialDesign:PackIcon Kind="CogOutline" Width="18" Height="18"
-                                                                                         Foreground="{DynamicResource TextMuted}"/>
-                                                            </Button>
+                                                        <!-- Action buttons top-right -->
+                                                        <Grid Margin="0,0,0,0">
+                                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                                <Button Command="{Binding ToggleCommand}"
+                                                                        Style="{StaticResource MaterialDesignFlatButton}"
+                                                                        Padding="4" MinWidth="0" Width="30" Height="30"
+                                                                        ToolTip="{Binding Status}">
+                                                                    <materialDesign:PackIcon Width="18" Height="18">
+                                                                        <materialDesign:PackIcon.Style>
+                                                                            <Style TargetType="materialDesign:PackIcon">
+                                                                                <Setter Property="Kind" Value="Power"/>
+                                                                                <Setter Property="Foreground" Value="#72767D"/>
+                                                                                <Setter Property="Opacity" Value="0.4"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
+                                                                                        <Setter Property="Opacity" Value="1.0"/>
+                                                                                    </DataTrigger>
+                                                                                    <DataTrigger Binding="{Binding Status}" Value="Starting">
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource AccentOrange}"/>
+                                                                                        <Setter Property="Opacity" Value="0.8"/>
+                                                                                    </DataTrigger>
+                                                                                    <DataTrigger Binding="{Binding Status}" Value="Error">
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource AccentRed}"/>
+                                                                                        <Setter Property="Opacity" Value="1.0"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </materialDesign:PackIcon.Style>
+                                                                    </materialDesign:PackIcon>
+                                                                </Button>
+                                                                <Button Command="{Binding OpenSettingsCommand}"
+                                                                        Style="{StaticResource MaterialDesignFlatButton}"
+                                                                        Padding="4" MinWidth="0" Width="30" Height="30"
+                                                                        ToolTip="Settings">
+                                                                    <materialDesign:PackIcon Kind="CogOutline" Width="16" Height="16"
+                                                                                             Foreground="{DynamicResource TextMuted}" Opacity="0.6"/>
+                                                                </Button>
+                                                            </StackPanel>
                                                         </Grid>
 
-                                                        <!-- Status fields -->
-                                                        <Grid Margin="0,0,0,14">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="80"/>
-                                                                <ColumnDefinition Width="*"/>
-                                                            </Grid.ColumnDefinitions>
-                                                            <Grid.RowDefinitions>
-                                                                <RowDefinition Height="Auto"/>
-                                                                <RowDefinition Height="6"/>
-                                                                <RowDefinition Height="Auto"/>
-                                                            </Grid.RowDefinitions>
-                                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Status"
-                                                                       Foreground="{DynamicResource TextMuted}" FontSize="11.5" Opacity="0.7"/>
-                                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Status}"
-                                                                       FontSize="11.5" FontWeight="Medium">
-                                                                <TextBlock.Style>
-                                                                    <Style TargetType="TextBlock">
-                                                                        <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
+                                                        <!-- Centered icon header -->
+                                                        <Border Width="56" Height="56" CornerRadius="28"
+                                                                HorizontalAlignment="Center" Margin="0,0,0,12"
+                                                                BorderBrush="#3A3A3F" BorderThickness="1"
+                                                                Background="Transparent">
+                                                            <materialDesign:PackIcon Kind="{Binding IconKind}"
+                                                                                     Width="30" Height="30"
+                                                                                     HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                                <materialDesign:PackIcon.Style>
+                                                                    <Style TargetType="materialDesign:PackIcon">
+                                                                        <Setter Property="Foreground" Value="#9098A0"/>
                                                                         <Style.Triggers>
                                                                             <DataTrigger Binding="{Binding IsRunning}" Value="True">
                                                                                 <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
@@ -227,14 +171,17 @@
                                                                             </DataTrigger>
                                                                         </Style.Triggers>
                                                                     </Style>
-                                                                </TextBlock.Style>
-                                                            </TextBlock>
-                                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Provider"
-                                                                       Foreground="{DynamicResource TextMuted}" FontSize="11.5" Opacity="0.7"/>
-                                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ProviderName}"
-                                                                       Foreground="White" FontSize="11.5" Opacity="0.85"
-                                                                       TextTrimming="CharacterEllipsis"/>
-                                                        </Grid>
+                                                                </materialDesign:PackIcon.Style>
+                                                            </materialDesign:PackIcon>
+                                                        </Border>
+
+                                                        <!-- Title + provider -->
+                                                        <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"
+                                                                   Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,4"/>
+                                                        <TextBlock Text="{Binding ProviderName}" FontSize="11"
+                                                                   Foreground="{DynamicResource TextMuted}" Opacity="0.7"
+                                                                   HorizontalAlignment="Center" Margin="0,0,0,14"
+                                                                   TextTrimming="CharacterEllipsis"/>
 
                                                         <!-- Separator -->
                                                         <Border Height="1" Background="{DynamicResource BorderSubtle}"
