@@ -21,6 +21,7 @@ public class TrayIconManager : IDisposable
             ContextMenu = BuildContextMenu(mainWindow),
             MenuActivation = PopupActivationMode.RightClick
         };
+        _trayIcon.ForceCreate();
 
         _trayIcon.TrayMouseDoubleClick += (_, _) => ShowWindow(mainWindow);
 
