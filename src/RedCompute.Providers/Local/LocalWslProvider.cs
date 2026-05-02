@@ -122,7 +122,7 @@ public class LocalWslProvider : IBackendProvider
     public string? GetProxyTargetUrl()
     {
         if (_status != BackendStatus.Running) return null;
-        return $"http://localhost:{_config.BackendPort}";
+        return $"http://127.0.0.1:{_config.BackendPort}";
     }
 
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
@@ -167,7 +167,7 @@ public class LocalWslProvider : IBackendProvider
         try
         {
             var endpoint = _config.HealthEndpoint ?? "/health";
-            var response = await HealthClient.GetAsync($"http://localhost:{_config.BackendPort}{endpoint}");
+            var response = await HealthClient.GetAsync($"http://127.0.0.1:{_config.BackendPort}{endpoint}");
             return response.IsSuccessStatusCode;
         }
         catch
