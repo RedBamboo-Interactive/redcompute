@@ -236,6 +236,53 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Capabilities -->
+                            <TextBlock Text="CAPABILITIES" FontSize="11" Foreground="{DynamicResource TextMuted}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <ItemsControl ItemsSource="{Binding CapabilitySettings}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource CardBackground}" CornerRadius="8" Padding="16" Margin="0,0,0,12">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="SemiBold" Foreground="White"/>
+                                                    <TextBlock Text="{Binding Slug, StringFormat=  ({0})}" Foreground="{DynamicResource TextMuted}" FontSize="11" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="Provider" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding ActiveProvider}" Foreground="White" FontSize="11"/>
+                                                </Grid>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="Backend Port" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding BackendPort}" Foreground="White" FontSize="11" FontFamily="Consolas"/>
+                                                </Grid>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="WSL Distro" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding WslDistro}" Foreground="White" FontSize="11"/>
+                                                </Grid>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="Server Path" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding ServerPath}" Foreground="White" FontSize="11" FontFamily="Consolas" TextWrapping="Wrap"/>
+                                                </Grid>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="Model" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding Model}" Foreground="White" FontSize="11" FontFamily="Consolas" TextWrapping="Wrap"/>
+                                                </Grid>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="Health Endpoint" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding HealthEndpoint}" Foreground="White" FontSize="11" FontFamily="Consolas"/>
+                                                </Grid>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
                             <!-- API Info -->
                             <TextBlock Text="API ENDPOINTS" FontSize="11" Foreground="{DynamicResource TextMuted}" FontWeight="SemiBold" Margin="0,0,0,8"/>
                             <Border Background="{DynamicResource CardBackground}" CornerRadius="8" Padding="16" Margin="0,0,0,16">
@@ -260,8 +307,24 @@
                     <!-- Logs -->
                     <Border x:Name="LogsTab" Visibility="Collapsed" Margin="0">
                         <DockPanel>
-                            <TextBlock DockPanel.Dock="Top" Text="Logs" FontSize="14" FontWeight="SemiBold"
-                                       Foreground="White" Margin="16,16,16,8"/>
+                            <Grid DockPanel.Dock="Top" Margin="16,16,16,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Logs" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="White" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding LogFilter, UpdateSourceTrigger=PropertyChanged}"
+                                         materialDesign:HintAssist.Hint="Filter logs..."
+                                         Background="#1A1A1E" Foreground="White" FontFamily="Consolas" FontSize="11"
+                                         VerticalAlignment="Center" Padding="8,4"/>
+                                <Button Grid.Column="2" Content="Open File" Command="{Binding OpenLogFileCommand}"
+                                        Style="{StaticResource MaterialDesignFlatButton}" Margin="8,0,0,0" FontSize="11"/>
+                                <Button Grid.Column="3" Content="Clear" Command="{Binding ClearLogsCommand}"
+                                        Style="{StaticResource MaterialDesignFlatButton}" Margin="4,0,0,0" FontSize="11"/>
+                            </Grid>
                             <ListBox x:Name="LogsList" ItemsSource="{Binding LogEntries}" Background="#1A1A1E" BorderThickness="0"
                                      FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}"
                                      ScrollViewer.CanContentScroll="True"

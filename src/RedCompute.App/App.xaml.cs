@@ -17,6 +17,7 @@ public partial class App : Application
     private RelayServer? _relayServer;
     private DispatcherTimer? _cleanupTimer;
 
+    public static FileLoggerService FileLogger { get; } = new();
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
@@ -53,6 +54,7 @@ public partial class App : Application
             await _relayServer.StopAsync();
         await Registry.StopAll();
         SaveWindowState();
+        FileLogger.Dispose();
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();
         base.OnExit(e);
@@ -156,6 +158,7 @@ public partial class App : Application
     {
         var timestamped = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
         Console.WriteLine(timestamped);
+        FileLogger.Write(timestamped);
         MainViewModel.AddLog(timestamped);
     }
 }

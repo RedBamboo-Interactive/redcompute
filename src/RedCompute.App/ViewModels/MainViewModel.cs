@@ -15,6 +15,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string _statusText = "Starting...";
 
+    private readonly List<string> _allLogEntries = new();
     public ObservableCollection<string> LogEntries { get; } = new();
     public ObservableCollection<CapabilityCardViewModel> CapabilityCards { get; } = new();
     public ObservableCollection<JobViewModel> RecentJobs { get; } = new();
@@ -22,12 +23,47 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private JobViewModel? _selectedJob;
 
+    // Logs
+    [ObservableProperty]
+    private string _logFilter = "";
+
+    partial void OnLogFilterChanged(string value) => ApplyLogFilter();
+
+    public string LogFilePath => App.FileLogger.LogFilePath;
+
+    [RelayCommand]
+    private void ClearLogs()
+    {
+        _allLogEntries.Clear();
+        LogEntries.Clear();
+    }
+
+    [RelayCommand]
+    private void OpenLogFile()
+    {
+        try { Process.Start(new ProcessStartInfo(LogFilePath) { UseShellExecute = true }); }
+        catch { }
+    }
+
+    private void ApplyLogFilter()
+    {
+        LogEntries.Clear();
+        var filter = LogFilter;
+        var entries = string.IsNullOrWhiteSpace(filter)
+            ? _allLogEntries
+            : _allLogEntries.Where(e => e.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+        foreach (var e in entries.TakeLast(2000))
+            LogEntries.Add(e);
+    }
+
     // Settings
     [ObservableProperty]
     private int _apiPort;
 
     [ObservableProperty]
     private int _jobRetentionDays;
+
+    public ObservableCollection<CapabilitySettingsViewModel> CapabilitySettings { get; } = new();
 
     public string ConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -39,6 +75,26 @@ public partial class MainViewModel : ObservableObject
     {
         ApiPort = App.ConfigManager.Config.ApiPort;
         JobRetentionDays = App.ConfigManager.Config.JobRetentionDays;
+
+        CapabilitySettings.Clear();
+        foreach (var (slug, capConfig) in App.ConfigManager.Config.Capabilities)
+        {
+            var def = Services.CapabilityDefinitionFactory.Create(slug);
+            var providerKey = capConfig.ActiveProvider ?? "none";
+            capConfig.Providers.TryGetValue(providerKey, out var provConfig);
+
+            CapabilitySettings.Add(new CapabilitySettingsViewModel
+            {
+                Slug = slug,
+                DisplayName = def?.DisplayName ?? slug,
+                ActiveProvider = providerKey,
+                BackendPort = provConfig?.BackendPort,
+                WslDistro = provConfig?.WslDistro,
+                ServerPath = provConfig?.ServerPath,
+                Model = provConfig?.Model,
+                HealthEndpoint = provConfig?.HealthEndpoint ?? "/health"
+            });
+        }
     }
 
     [RelayCommand]
@@ -61,9 +117,17 @@ public partial class MainViewModel : ObservableObject
     {
         Application.Current?.Dispatcher?.BeginInvoke(() =>
         {
-            LogEntries.Add(entry);
-            if (LogEntries.Count > 5000)
-                LogEntries.RemoveAt(0);
+            _allLogEntries.Add(entry);
+            if (_allLogEntries.Count > 10000)
+                _allLogEntries.RemoveAt(0);
+
+            if (string.IsNullOrWhiteSpace(LogFilter) ||
+                entry.Contains(LogFilter, StringComparison.OrdinalIgnoreCase))
+            {
+                LogEntries.Add(entry);
+                if (LogEntries.Count > 5000)
+                    LogEntries.RemoveAt(0);
+            }
         });
     }
 
