@@ -42,6 +42,7 @@ public class RedComputeDbContext : DbContext
             entity.HasIndex(j => j.CapabilitySlug);
             entity.HasIndex(j => j.Status);
             entity.HasIndex(j => j.QueuedAt);
+            entity.HasIndex(j => j.IdempotencyKey).IsUnique(false);
             entity.Ignore(j => j.DurationMs);
         });
     }

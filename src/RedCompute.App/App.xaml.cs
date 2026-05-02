@@ -1,12 +1,12 @@
 using System.Threading;
 using System.Windows;
+using System.Windows.Threading;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
 using RedCompute.App.ViewModels;
 using RedCompute.Core.Providers;
-using Microsoft.EntityFrameworkCore;
 
 namespace RedCompute.App;
 
@@ -15,6 +15,7 @@ public partial class App : Application
     private static Mutex? _mutex;
     private CancellationTokenSource? _relayCts;
     private RelayServer? _relayServer;
+    private DispatcherTimer? _cleanupTimer;
 
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();
@@ -39,14 +40,18 @@ public partial class App : Application
         InitializeDatabase();
         InitializeCapabilities();
         await StartRelayServer();
+        _ = ProbeRunningBackends();
+        StartJobCleanupTimer();
     }
 
     protected override async void OnExit(ExitEventArgs e)
     {
+        _cleanupTimer?.Stop();
         _relayCts?.Cancel();
         if (_relayServer != null)
             await _relayServer.StopAsync();
         await Registry.StopAll();
+        SaveWindowState();
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();
         base.OnExit(e);
@@ -86,6 +91,25 @@ public partial class App : Application
         }
     }
 
+    private async Task ProbeRunningBackends()
+    {
+        foreach (var (slug, entry) in Registry.Capabilities)
+        {
+            if (entry.ActiveProvider == null) continue;
+            try
+            {
+                var started = await entry.ActiveProvider.StartAsync();
+                if (started)
+                    Log($"[App] Auto-detected running backend for: {slug}");
+            }
+            catch (Exception ex)
+            {
+                Log($"[App] Probe failed for {slug}: {ex.Message}");
+            }
+        }
+        MainViewModel.RefreshCapabilities();
+    }
+
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
@@ -98,6 +122,32 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log($"[App] Failed to start relay: {ex.Message}");
+        }
+    }
+
+    private void StartJobCleanupTimer()
+    {
+        _cleanupTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(1) };
+        _cleanupTimer.Tick += (_, _) =>
+        {
+            var deleted = JobTracker.CleanupOldJobs(ConfigManager.Config.JobRetentionDays);
+            if (deleted > 0)
+                Log($"[App] Cleaned up {deleted} old jobs (>{ConfigManager.Config.JobRetentionDays} days)");
+        };
+        _cleanupTimer.Start();
+    }
+
+    private void SaveWindowState()
+    {
+        var mainWindow = MainWindow;
+        if (mainWindow != null)
+        {
+            ConfigManager.Config.Window.Width = mainWindow.Width;
+            ConfigManager.Config.Window.Height = mainWindow.Height;
+            ConfigManager.Config.Window.Left = mainWindow.Left;
+            ConfigManager.Config.Window.Top = mainWindow.Top;
+            ConfigManager.Config.Window.IsMaximized = mainWindow.WindowState == WindowState.Maximized;
+            ConfigManager.Save();
         }
     }
 

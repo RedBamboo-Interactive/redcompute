@@ -17,8 +17,25 @@ public partial class MainWindow : Window
         DataContext = App.MainViewModel;
         Loaded += OnLoaded;
 
+        RestoreWindowState();
+
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _statusTimer.Tick += (_, _) => App.MainViewModel.RefreshCapabilities();
+    }
+
+    private void RestoreWindowState()
+    {
+        var wc = App.ConfigManager.Config.Window;
+        Width = wc.Width;
+        Height = wc.Height;
+        if (wc.Left.HasValue && wc.Top.HasValue)
+        {
+            Left = wc.Left.Value;
+            Top = wc.Top.Value;
+            WindowStartupLocation = WindowStartupLocation.Manual;
+        }
+        if (wc.IsMaximized)
+            WindowState = WindowState.Maximized;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
