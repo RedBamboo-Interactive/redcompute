@@ -1,0 +1,23 @@
+<Application x:Class="RedCompute.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+             StartupUri="Views/MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <materialDesign:BundledTheme BaseTheme="Dark" PrimaryColor="BlueGrey" SecondaryColor="Teal" />
+                <ResourceDictionary Source="pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign2.Defaults.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Custom colors matching Roaster palette -->
+            <SolidColorBrush x:Key="PaperBackground" Color="#2C2D32" />
+            <SolidColorBrush x:Key="CardBackground" Color="#323338" />
+            <SolidColorBrush x:Key="AccentGreen" Color="#43A25A" />
+            <SolidColorBrush x:Key="AccentOrange" Color="#FFB74D" />
+            <SolidColorBrush x:Key="AccentRed" Color="#FF5252" />
+            <SolidColorBrush x:Key="AccentTeal" Color="#26A69A" />
+            <SolidColorBrush x:Key="TextMuted" Color="#ADAEB3" />
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

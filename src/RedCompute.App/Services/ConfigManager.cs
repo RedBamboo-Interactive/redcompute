@@ -1,0 +1,77 @@
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using RedCompute.Core.Configuration;
+
+namespace RedCompute.App.Services;
+
+public class ConfigManager
+{
+    private static readonly string ConfigDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RedCompute");
+
+    private static readonly string ConfigPath = Path.Combine(ConfigDir, "config.json");
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    public RedComputeConfig Config { get; private set; } = new();
+
+    public void Load()
+    {
+        if (!File.Exists(ConfigPath))
+        {
+            Config = CreateDefault();
+            Save();
+            return;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(ConfigPath);
+            Config = JsonSerializer.Deserialize<RedComputeConfig>(json, JsonOptions) ?? CreateDefault();
+        }
+        catch
+        {
+            Config = CreateDefault();
+        }
+    }
+
+    public void Save()
+    {
+        Directory.CreateDirectory(ConfigDir);
+        var json = JsonSerializer.Serialize(Config, JsonOptions);
+        File.WriteAllText(ConfigPath, json);
+    }
+
+    private static RedComputeConfig CreateDefault()
+    {
+        return new RedComputeConfig
+        {
+            ApiPort = 18800,
+            Capabilities = new Dictionary<string, CapabilityConfig>
+            {
+                ["tts"] = new()
+                {
+                    Enabled = true,
+                    ActiveProvider = "local-wsl",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["local-wsl"] = new()
+                        {
+                            Type = "LocalWsl",
+                            BackendPort = 8765,
+                            HealthEndpoint = "/health",
+                            StartupTimeoutSeconds = 180
+                        }
+                    }
+                }
+            }
+        };
+    }
+}

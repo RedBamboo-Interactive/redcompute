@@ -1,0 +1,222 @@
+<Window x:Class="RedCompute.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        Title="RedCompute" Width="1200" Height="800"
+        WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterScreen">
+
+    <Border Background="{DynamicResource PaperBackground}" CornerRadius="12"
+            BorderBrush="#3A3A40" BorderThickness="1">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="20" Opacity="0.4" ShadowDepth="4" Color="Black"/>
+        </Border.Effect>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title Bar -->
+            <Border Grid.Row="0" Background="#25262B" CornerRadius="12,12,0,0"
+                    MouseLeftButtonDown="TitleBar_MouseDown">
+                <Grid>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0">
+                        <materialDesign:PackIcon Kind="ServerNetwork" Width="18" Height="18"
+                                                 Foreground="{DynamicResource AccentGreen}" Margin="0,0,8,0"/>
+                        <TextBlock Text="RedCompute" FontWeight="SemiBold" Foreground="White" FontSize="13"/>
+                        <TextBlock Text=" — " Foreground="{DynamicResource TextMuted}" FontSize="13"/>
+                        <TextBlock Text="{Binding StatusText}" Foreground="{DynamicResource TextMuted}" FontSize="13"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,8,0">
+                        <Button Style="{StaticResource MaterialDesignFlatButton}" Content="—"
+                                Foreground="{DynamicResource TextMuted}" Click="Minimize_Click" Padding="8,0" MinWidth="32"/>
+                        <Button Style="{StaticResource MaterialDesignFlatButton}" Content="□"
+                                Foreground="{DynamicResource TextMuted}" Click="Maximize_Click" Padding="8,0" MinWidth="32"/>
+                        <Button Style="{StaticResource MaterialDesignFlatButton}" Content="✕"
+                                Foreground="{DynamicResource AccentRed}" Click="Close_Click" Padding="8,0" MinWidth="32"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Main Content -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="56"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Navigation Rail -->
+                <Border Grid.Column="0" Background="#25262B">
+                    <StackPanel VerticalAlignment="Top" Margin="0,12,0,0">
+                        <RadioButton x:Name="NavDashboard" IsChecked="True" Click="Nav_Click" Tag="0"
+                                     Style="{StaticResource MaterialDesignFlatButton}" Padding="0" Width="48" Height="48">
+                            <materialDesign:PackIcon Kind="ViewDashboard" Width="24" Height="24"/>
+                        </RadioButton>
+                        <RadioButton x:Name="NavJobs" Click="Nav_Click" Tag="1"
+                                     Style="{StaticResource MaterialDesignFlatButton}" Padding="0" Width="48" Height="48">
+                            <materialDesign:PackIcon Kind="FormatListBulleted" Width="24" Height="24"/>
+                        </RadioButton>
+                        <RadioButton x:Name="NavSettings" Click="Nav_Click" Tag="2"
+                                     Style="{StaticResource MaterialDesignFlatButton}" Padding="0" Width="48" Height="48">
+                            <materialDesign:PackIcon Kind="CogOutline" Width="24" Height="24"/>
+                        </RadioButton>
+                        <RadioButton x:Name="NavLogs" Click="Nav_Click" Tag="3"
+                                     Style="{StaticResource MaterialDesignFlatButton}" Padding="0" Width="48" Height="48">
+                            <materialDesign:PackIcon Kind="Console" Width="24" Height="24"/>
+                        </RadioButton>
+                    </StackPanel>
+                </Border>
+
+                <!-- Tab Content -->
+                <Grid Grid.Column="1">
+                    <!-- Dashboard -->
+                    <ScrollViewer x:Name="DashboardTab" VerticalScrollBarVisibility="Auto" Padding="24">
+                        <StackPanel>
+                            <TextBlock Text="Capabilities" FontSize="20" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,16"/>
+                            <ItemsControl ItemsSource="{Binding CapabilityCards}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource CardBackground}" CornerRadius="8"
+                                                Padding="16" Margin="0,0,16,16" Width="300">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                    <Ellipse Width="10" Height="10" Margin="0,0,8,0">
+                                                        <Ellipse.Fill>
+                                                            <SolidColorBrush Color="{Binding StatusColor}"/>
+                                                        </Ellipse.Fill>
+                                                    </Ellipse>
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                                                </StackPanel>
+                                                <TextBlock Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4">
+                                                    <Run Text="Status: "/><Run Text="{Binding Status}"/>
+                                                </TextBlock>
+                                                <TextBlock Foreground="{DynamicResource TextMuted}" Margin="0,0,0,12">
+                                                    <Run Text="Provider: "/><Run Text="{Binding ProviderName}"/>
+                                                </TextBlock>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Button Content="Start" Command="{Binding StartCommand}" Margin="0,0,8,0"
+                                                            Style="{StaticResource MaterialDesignFlatButton}"/>
+                                                    <Button Content="Stop" Command="{Binding StopCommand}"
+                                                            Style="{StaticResource MaterialDesignFlatButton}"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Jobs (Master-Detail) -->
+                    <Grid x:Name="JobsTab" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="320"/>
+                            <ColumnDefinition Width="1"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Job List -->
+                        <Border Grid.Column="0" Background="{DynamicResource CardBackground}">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Text="Recent Jobs" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="White" Margin="16,16,16,8"/>
+                                <ListView ItemsSource="{Binding RecentJobs}" SelectedItem="{Binding SelectedJob}"
+                                          Background="Transparent" BorderThickness="0">
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" Margin="4">
+                                                <Ellipse Width="8" Height="8" Margin="0,0,8,0">
+                                                    <Ellipse.Fill>
+                                                        <SolidColorBrush Color="{Binding StatusColor}"/>
+                                                    </Ellipse.Fill>
+                                                </Ellipse>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Summary}" Foreground="White" FontSize="12"/>
+                                                    <TextBlock Text="{Binding TimeDisplay}" Foreground="{DynamicResource TextMuted}" FontSize="11"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- Separator -->
+                        <Border Grid.Column="1" Background="#3A3A40"/>
+
+                        <!-- Job Details -->
+                        <ScrollViewer Grid.Column="2" Padding="24" VerticalScrollBarVisibility="Auto">
+                            <StackPanel DataContext="{Binding SelectedJob}">
+                                <TextBlock Text="Job Details" FontSize="18" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,16"/>
+                                <Grid Margin="0,0,0,16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="100"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition/>
+                                        <RowDefinition/>
+                                        <RowDefinition/>
+                                        <RowDefinition/>
+                                        <RowDefinition/>
+                                        <RowDefinition/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="ID:" Foreground="{DynamicResource TextMuted}"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Id}" Foreground="White" FontFamily="Consolas"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Capability:" Foreground="{DynamicResource TextMuted}"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CapabilitySlug}" Foreground="White"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Provider:" Foreground="{DynamicResource TextMuted}"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ProviderName}" Foreground="White"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Status:" Foreground="{DynamicResource TextMuted}"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Status}" Foreground="White"/>
+                                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Duration:" Foreground="{DynamicResource TextMuted}"/>
+                                    <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding DurationMs, StringFormat={}{0}ms}" Foreground="White"/>
+                                    <TextBlock Grid.Row="5" Grid.Column="0" Text="Time:" Foreground="{DynamicResource TextMuted}"/>
+                                    <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding TimeDisplay}" Foreground="White"/>
+                                </Grid>
+                                <TextBlock Text="Input" FontSize="14" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,8"/>
+                                <Border Background="#1A1A1E" CornerRadius="4" Padding="12" Margin="0,0,0,16">
+                                    <TextBlock Text="{Binding InputJson}" Foreground="{DynamicResource TextMuted}"
+                                               FontFamily="Consolas" FontSize="12" TextWrapping="Wrap"/>
+                                </Border>
+                                <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource AccentRed}"
+                                           TextWrapping="Wrap" FontFamily="Consolas"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+
+                    <!-- Settings -->
+                    <ScrollViewer x:Name="SettingsTab" Visibility="Collapsed" Padding="24">
+                        <StackPanel>
+                            <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,16"/>
+                            <TextBlock Text="Configuration is loaded from %LocalAppData%\RedCompute\config.json"
+                                       Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Logs -->
+                    <Border x:Name="LogsTab" Visibility="Collapsed" Margin="0">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="Logs" FontSize="14" FontWeight="SemiBold"
+                                       Foreground="White" Margin="16,16,16,8"/>
+                            <ListBox ItemsSource="{Binding LogEntries}" Background="#1A1A1E" BorderThickness="0"
+                                     FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}"
+                                     ScrollViewer.CanContentScroll="True"
+                                     VirtualizingPanel.IsVirtualizing="True"
+                                     VirtualizingPanel.VirtualizationMode="Recycling"/>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
