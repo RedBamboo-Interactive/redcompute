@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
 using System.Windows;
-using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -20,6 +21,41 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     private JobViewModel? _selectedJob;
+
+    // Settings
+    [ObservableProperty]
+    private int _apiPort;
+
+    [ObservableProperty]
+    private int _jobRetentionDays;
+
+    public string ConfigPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RedCompute", "config.json");
+
+    public string ApiBaseUrl => $"http://localhost:{App.ConfigManager.Config.ApiPort}";
+
+    public void LoadSettingsFromConfig()
+    {
+        ApiPort = App.ConfigManager.Config.ApiPort;
+        JobRetentionDays = App.ConfigManager.Config.JobRetentionDays;
+    }
+
+    [RelayCommand]
+    private void OpenConfig()
+    {
+        try { Process.Start(new ProcessStartInfo(ConfigPath) { UseShellExecute = true }); }
+        catch { }
+    }
+
+    [RelayCommand]
+    private void SaveConfig()
+    {
+        App.ConfigManager.Config.ApiPort = ApiPort;
+        App.ConfigManager.Config.JobRetentionDays = JobRetentionDays;
+        App.ConfigManager.Save();
+        App.Log("[Settings] Configuration saved");
+    }
 
     public void AddLog(string entry)
     {

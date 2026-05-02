@@ -35,6 +35,7 @@ public partial class App : Application
         base.OnStartup(e);
 
         ConfigManager.Load();
+        MainViewModel.LoadSettingsFromConfig();
         Log("[App] Configuration loaded");
 
         InitializeDatabase();

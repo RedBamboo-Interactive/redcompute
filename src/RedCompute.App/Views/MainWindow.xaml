@@ -196,10 +196,64 @@
 
                     <!-- Settings -->
                     <ScrollViewer x:Name="SettingsTab" Visibility="Collapsed" Padding="24">
-                        <StackPanel>
+                        <StackPanel MaxWidth="600">
                             <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,16"/>
-                            <TextBlock Text="Configuration is loaded from %LocalAppData%\RedCompute\config.json"
-                                       Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"/>
+
+                            <!-- General -->
+                            <TextBlock Text="GENERAL" FontSize="11" Foreground="{DynamicResource TextMuted}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <Border Background="{DynamicResource CardBackground}" CornerRadius="8" Padding="16" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="API Port" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding ApiPort, Mode=TwoWay}" Width="100" HorizontalAlignment="Left"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Job Retention (days)" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding JobRetentionDays, Mode=TwoWay}" Width="100" HorizontalAlignment="Left"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Config File -->
+                            <TextBlock Text="CONFIGURATION FILE" FontSize="11" Foreground="{DynamicResource TextMuted}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <Border Background="{DynamicResource CardBackground}" CornerRadius="8" Padding="16" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding ConfigPath}" Foreground="{DynamicResource TextMuted}" FontFamily="Consolas" FontSize="11" Margin="0,0,0,8"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Content="Open Config File" Command="{Binding OpenConfigCommand}" Margin="0,0,8,0"
+                                                Style="{StaticResource MaterialDesignFlatButton}"/>
+                                        <Button Content="Save Changes" Command="{Binding SaveConfigCommand}"
+                                                Style="{StaticResource MaterialDesignFlatButton}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- API Info -->
+                            <TextBlock Text="API ENDPOINTS" FontSize="11" Foreground="{DynamicResource TextMuted}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <Border Background="{DynamicResource CardBackground}" CornerRadius="8" Padding="16" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4">
+                                        <Run Text="GET  " Foreground="{DynamicResource AccentGreen}"/><Run Text="{Binding ApiBaseUrl, StringFormat={}{0}/discover}"/>
+                                    </TextBlock>
+                                    <TextBlock FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4">
+                                        <Run Text="GET  " Foreground="{DynamicResource AccentGreen}"/><Run Text="{Binding ApiBaseUrl, StringFormat={}{0}/openapi.json}"/>
+                                    </TextBlock>
+                                    <TextBlock FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4">
+                                        <Run Text="GET  " Foreground="{DynamicResource AccentGreen}"/><Run Text="{Binding ApiBaseUrl, StringFormat={}{0}/status}"/>
+                                    </TextBlock>
+                                    <TextBlock FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4">
+                                        <Run Text="POST " Foreground="{DynamicResource AccentOrange}"/><Run Text="{Binding ApiBaseUrl, StringFormat={}{0}/tts/generate}"/>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
 

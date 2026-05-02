@@ -88,6 +88,21 @@ public static class CapabilityEndpoints
                     }
                 }
             }
+            catch (HttpRequestException ex)
+            {
+                jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
+                log($"[TTS] Job {job.Id} failed (connection): {ex.Message}");
+                // Backend likely went down — re-check health
+                _ = entry.ActiveProvider.GetStatusAsync();
+                return ErrorResult(ctx, 502, "backend_unavailable",
+                    $"Backend connection failed: {ex.Message}. The backend may have stopped.");
+            }
+            catch (TaskCanceledException)
+            {
+                jobTracker.MarkCancelled(job.Id);
+                log($"[TTS] Job {job.Id} cancelled (client disconnected or timeout)");
+                return Results.Empty;
+            }
             catch (Exception ex)
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
