@@ -19,6 +19,18 @@ public class RedComputeDbContext : DbContext
         _dbPath = Path.Combine(dir, "redcompute.db");
     }
 
+    public void MigrateSchema()
+    {
+        var conn = Database.GetDbConnection();
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        foreach (var col in new[] { ("Progress", "REAL"), ("ResultJson", "TEXT") })
+        {
+            cmd.CommandText = $"ALTER TABLE Jobs ADD COLUMN {col.Item1} {col.Item2}";
+            try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
+        }
+    }
+
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {
         options.UseSqlite($"Data Source={_dbPath}");

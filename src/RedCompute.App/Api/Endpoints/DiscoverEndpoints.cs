@@ -96,14 +96,45 @@ public static class DiscoverEndpoints
                 {
                     Method = "POST",
                     Path = "/image-gen/generate",
-                    Description = "Generate an image from a text prompt",
+                    Description = "Generate image/video from text prompt using ComfyUI workflows. Returns image bytes (sync) or job ID (async with ?async=true).",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
                         ["prompt"] = new() { Type = "string", Required = true, Description = "Text description of the image to generate" },
-                        ["width"] = new() { Type = "integer", Required = false, Default = 1024, Min = 256, Max = 2048, Description = "Image width in pixels" },
-                        ["height"] = new() { Type = "integer", Required = false, Default = 1024, Min = 256, Max = 2048, Description = "Image height in pixels" },
-                        ["steps"] = new() { Type = "integer", Required = false, Default = 20, Min = 1, Max = 100, Description = "Number of diffusion steps" }
+                        ["workflow"] = new() { Type = "string", Required = false, Default = "z_turbo", Description = "Workflow name. GET /image-gen/workflows for available options" },
+                        ["negative"] = new() { Type = "string", Required = false, Default = "", Description = "Negative prompt (things to avoid)" },
+                        ["seed"] = new() { Type = "integer", Required = false, Description = "Random seed for reproducibility. Omit for random." },
+                        ["width"] = new() { Type = "integer", Required = false, Description = "Image width (workflow-dependent, only if workflow supports it)" },
+                        ["height"] = new() { Type = "integer", Required = false, Description = "Image height (workflow-dependent, only if workflow supports it)" },
+                        ["image_url"] = new() { Type = "string", Required = false, Description = "Source image URL for img2img or video workflows" }
                     },
+                    Returns = new ReturnSchema { ContentType = "image/png", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/image-gen/workflows",
+                    Description = "List available ComfyUI workflows with their parameters",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/image-gen/workflows/{name}",
+                    Description = "Get details of a specific workflow including node mapping",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/image-gen/jobs/{id}/progress",
+                    Description = "Get real-time progress of an image generation job (0.0 to 1.0)",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/image-gen/jobs/{id}/output",
+                    Description = "Download the generated image/video for a completed job",
                     Returns = new ReturnSchema { ContentType = "image/png", Streaming = false }
                 }
             },

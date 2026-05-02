@@ -181,6 +181,132 @@ public static class OpenApiEndpoints
             };
         }
 
+        if (registry.Capabilities.ContainsKey("image-gen"))
+        {
+            paths["/image-gen/generate"] = new Dictionary<string, object>
+            {
+                ["post"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "ImageGenGenerate",
+                    ["summary"] = "Generate image/video from text prompt via ComfyUI. Sync by default, async with ?async=true",
+                    ["parameters"] = new object[]
+                    {
+                        QueryParam("async", "boolean", "Return 202 with job ID instead of waiting for result")
+                    },
+                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["required"] = new[] { "prompt" },
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["prompt"] = Prop("string", "Text description of the image to generate"),
+                            ["workflow"] = Prop("string", "Workflow name (GET /image-gen/workflows for options)", "z_turbo"),
+                            ["negative"] = Prop("string", "Negative prompt (things to avoid)", ""),
+                            ["seed"] = Prop("integer", "Random seed for reproducibility"),
+                            ["width"] = Prop("integer", "Image width in pixels (workflow-dependent)"),
+                            ["height"] = Prop("integer", "Image height in pixels (workflow-dependent)"),
+                            ["image_url"] = Prop("string", "Source image URL for img2img or video workflows")
+                        }
+                    }),
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["200"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Generated image (sync mode)",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["image/png"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new { type = "string", format = "binary" }
+                                }
+                            }
+                        },
+                        ["202"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Job accepted (async mode)",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["application/json"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new Dictionary<string, object>
+                                        {
+                                            ["jobId"] = new { type = "string", format = "uuid" },
+                                            ["status"] = new { type = "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ["422"] = ErrorResponse("Validation failed"),
+                        ["503"] = ErrorResponse("Provider not running")
+                    }
+                }
+            };
+            paths["/image-gen/workflows"] = new Dictionary<string, object>
+            {
+                ["get"] = Op("ImageGenListWorkflows", "List available ComfyUI workflows with their parameters", "application/json",
+                    Schema("object", "WorkflowList"))
+            };
+            paths["/image-gen/workflows/{name}"] = new Dictionary<string, object>
+            {
+                ["get"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "ImageGenGetWorkflow",
+                    ["summary"] = "Get details of a specific workflow",
+                    ["parameters"] = new object[] { PathParam("name", "string", "Workflow name") },
+                    ["responses"] = Responses("application/json", Schema("object", "WorkflowDefinition"))
+                }
+            };
+            paths["/image-gen/jobs/{id}/progress"] = new Dictionary<string, object>
+            {
+                ["get"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "ImageGenJobProgress",
+                    ["summary"] = "Get real-time progress of an image generation job",
+                    ["parameters"] = new object[] { PathParam("id", "string", "Job UUID") },
+                    ["responses"] = Responses("application/json", new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["id"] = new { type = "string", format = "uuid" },
+                            ["status"] = new { type = "string" },
+                            ["progress"] = new { type = "number", minimum = 0, maximum = 1 },
+                            ["errorMessage"] = new { type = "string" }
+                        }
+                    })
+                }
+            };
+            paths["/image-gen/jobs/{id}/output"] = new Dictionary<string, object>
+            {
+                ["get"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "ImageGenJobOutput",
+                    ["summary"] = "Download the generated image/video",
+                    ["parameters"] = new object[] { PathParam("id", "string", "Job UUID") },
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["200"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Generated file",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["image/png"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new { type = "string", format = "binary" }
+                                }
+                            }
+                        },
+                        ["409"] = ErrorResponse("Job still running"),
+                        ["404"] = ErrorResponse("Job or output not found")
+                    }
+                }
+            };
+        }
+
         return new Dictionary<string, object>
         {
             ["openapi"] = "3.1.0",

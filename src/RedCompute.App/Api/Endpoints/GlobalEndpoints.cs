@@ -76,10 +76,12 @@ public static class GlobalEndpoints
                 job.StartedAt,
                 job.CompletedAt,
                 durationMs = job.DurationMs,
+                job.Progress,
                 input = job.InputJson,
                 job.OutputLocation,
                 job.OutputSizeBytes,
                 job.OutputContentType,
+                resultMetadata = job.ResultJson,
                 job.ErrorMessage,
                 job.ErrorDetails,
                 job.CallerInfo

@@ -1,3 +1,4 @@
+using System.IO;
 using RedCompute.App.Data;
 using RedCompute.Core.Jobs;
 
@@ -50,7 +51,7 @@ public class JobTrackingService
         JobUpdated?.Invoke(job);
     }
 
-    public void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null, string? contentType = null)
+    public void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null, string? contentType = null, string? resultJson = null)
     {
         using var db = new RedComputeDbContext();
         var job = db.Jobs.Find(jobId);
@@ -58,9 +59,22 @@ public class JobTrackingService
 
         job.Status = JobStatus.Completed;
         job.CompletedAt = DateTimeOffset.UtcNow;
+        job.Progress = 1.0;
         job.OutputLocation = outputLocation;
         job.OutputSizeBytes = outputSizeBytes;
         job.OutputContentType = contentType;
+        job.ResultJson = resultJson;
+        db.SaveChanges();
+        JobUpdated?.Invoke(job);
+    }
+
+    public void UpdateProgress(Guid jobId, double progress)
+    {
+        using var db = new RedComputeDbContext();
+        var job = db.Jobs.Find(jobId);
+        if (job == null) return;
+
+        job.Progress = Math.Clamp(progress, 0.0, 1.0);
         db.SaveChanges();
         JobUpdated?.Invoke(job);
     }
@@ -127,6 +141,15 @@ public class JobTrackingService
         using var db = new RedComputeDbContext();
         var cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays);
         var old = db.Jobs.Where(j => j.QueuedAt < cutoff).ToList();
+
+        foreach (var job in old)
+        {
+            if (job.OutputLocation != null && File.Exists(job.OutputLocation))
+            {
+                try { File.Delete(job.OutputLocation); } catch { }
+            }
+        }
+
         db.Jobs.RemoveRange(old);
         return db.SaveChanges();
     }

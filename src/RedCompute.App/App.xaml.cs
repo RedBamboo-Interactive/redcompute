@@ -66,6 +66,7 @@ public partial class App : Application
         {
             using var db = new RedComputeDbContext();
             db.Database.EnsureCreated();
+            db.MigrateSchema();
             Log("[App] Database initialized");
         }
         catch (Exception ex)

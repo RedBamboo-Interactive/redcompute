@@ -1,6 +1,7 @@
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
+using RedCompute.Providers.ComfyUI;
 using RedCompute.Providers.Local;
 
 namespace RedCompute.App.Services;
@@ -13,6 +14,7 @@ public static class ProviderFactory
         {
             "LocalWsl" => new LocalWslProvider(config, capability, log),
             "LocalNative" => new LocalWslProvider(config, capability, log),
+            "ComfyUI" => new ComfyUIProvider(config, capability, log),
             _ => null
         };
     }

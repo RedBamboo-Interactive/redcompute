@@ -16,6 +16,9 @@ public class JobRecord
     public long? OutputSizeBytes { get; set; }
     public string? OutputContentType { get; set; }
 
+    public double? Progress { get; set; }
+    public string? ResultJson { get; set; }
+
     public string? ErrorMessage { get; set; }
     public string? ErrorDetails { get; set; }
     public string? CallerInfo { get; set; }
