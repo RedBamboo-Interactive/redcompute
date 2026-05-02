@@ -15,13 +15,13 @@ public partial class JobsTabViewModel : ObservableObject
     private const int SquareSize = 10;
     private const int MaxRows = 5;
 
-    private static readonly SolidColorBrush s_queued = Freeze(0xFF, 0xB7, 0x4D);
-    private static readonly SolidColorBrush s_running = Freeze(0x43, 0xA2, 0x5A);
-    private static readonly SolidColorBrush s_completed = Freeze(0x26, 0xA6, 0x9A);
-    private static readonly SolidColorBrush s_failed = Freeze(0xFF, 0x52, 0x52);
-    private static readonly SolidColorBrush s_cancelled = Freeze(0x72, 0x76, 0x7D);
-    private static readonly SolidColorBrush s_idle = Freeze(0x2A, 0x2A, 0x2A);
-    private static readonly SolidColorBrush s_empty = Freeze(0x2A, 0x2A, 0x2A);
+    private static readonly SolidColorBrush s_queued = FriezeColors.Queued;
+    private static readonly SolidColorBrush s_running = FriezeColors.Running;
+    private static readonly SolidColorBrush s_completed = FriezeColors.Completed;
+    private static readonly SolidColorBrush s_failed = FriezeColors.Failed;
+    private static readonly SolidColorBrush s_cancelled = FriezeColors.Cancelled;
+    private static readonly SolidColorBrush s_idle = FriezeColors.Idle;
+    private static readonly SolidColorBrush s_empty = FriezeColors.Empty;
 
     [ObservableProperty]
     private ObservableCollection<FriezeLaneViewModel> _friezeLanes = new();
@@ -312,10 +312,4 @@ public partial class JobsTabViewModel : ObservableObject
             segments.RemoveAt(segments.Count - 1);
     }
 
-    private static SolidColorBrush Freeze(byte r, byte g, byte b)
-    {
-        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
-        brush.Freeze();
-        return brush;
-    }
 }

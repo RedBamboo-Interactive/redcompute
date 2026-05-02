@@ -87,9 +87,10 @@
                                                          ToolTip="Dashboard" Style="{StaticResource NavRailIcon}"/>
                             </Border>
                         </TabItem.Header>
-                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
-                            <StackPanel>
-                                <TextBlock Text="Capabilities" FontSize="20" FontWeight="SemiBold" Foreground="White" Margin="0,0,0,16"/>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="32,28,32,32">
+                                <TextBlock Text="Capabilities" FontSize="22" FontWeight="SemiBold" Foreground="White"
+                                           Margin="4,0,0,24" Opacity="0.95"/>
                                 <ItemsControl ItemsSource="{Binding CapabilityCards}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
@@ -98,30 +99,208 @@
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Border Background="{DynamicResource MaterialDesignCardBackground}" CornerRadius="8"
-                                                    Padding="16" Margin="0,0,16,16" Width="300">
-                                                <StackPanel>
-                                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                        <Ellipse Width="10" Height="10" Margin="0,0,8,0">
-                                                            <Ellipse.Fill>
-                                                                <SolidColorBrush Color="{Binding StatusColor}"/>
-                                                            </Ellipse.Fill>
-                                                        </Ellipse>
-                                                        <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                                            <Border CornerRadius="12" Margin="0,0,20,20" Width="310">
+                                                <Border.Effect>
+                                                    <DropShadowEffect Color="Black" Direction="270" ShadowDepth="2"
+                                                                      BlurRadius="12" Opacity="0.35"/>
+                                                </Border.Effect>
+                                                <Border Background="{DynamicResource MaterialDesignCardBackground}"
+                                                        CornerRadius="12" Padding="20">
+                                                    <StackPanel>
+                                                        <!-- Header: icon + title, actions -->
+                                                        <Grid Margin="0,0,0,12">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <!-- Icon in status-tinted circle -->
+                                                            <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20"
+                                                                    Margin="0,0,14,0" VerticalAlignment="Center">
+                                                                <Border.Style>
+                                                                    <Style TargetType="Border">
+                                                                        <Setter Property="Background" Value="#2A2A2E"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                                                <Setter Property="Background" Value="#2A3A2F"/>
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding Status}" Value="Starting">
+                                                                                <Setter Property="Background" Value="#3A352A"/>
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding Status}" Value="Error">
+                                                                                <Setter Property="Background" Value="#3A2A2A"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </Border.Style>
+                                                                <materialDesign:PackIcon Kind="{Binding IconKind}"
+                                                                                         Width="22" Height="22"
+                                                                                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                                    <materialDesign:PackIcon.Style>
+                                                                        <Style TargetType="materialDesign:PackIcon">
+                                                                            <Setter Property="Foreground" Value="#72767D"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding Status}" Value="Starting">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentOrange}"/>
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding Status}" Value="Error">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentRed}"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </materialDesign:PackIcon.Style>
+                                                                </materialDesign:PackIcon>
+                                                            </Border>
+                                                            <!-- Name -->
+                                                            <TextBlock Grid.Column="1" Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"
+                                                                       Foreground="White" VerticalAlignment="Center"/>
+                                                            <!-- Toggle -->
+                                                            <Button Grid.Column="2" Command="{Binding ToggleCommand}"
+                                                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                                                    Padding="4" MinWidth="0" Width="34" Height="34" Margin="4,0"
+                                                                    ToolTip="{Binding Status}">
+                                                                <materialDesign:PackIcon Width="20" Height="20">
+                                                                    <materialDesign:PackIcon.Style>
+                                                                        <Style TargetType="materialDesign:PackIcon">
+                                                                            <Setter Property="Kind" Value="Power"/>
+                                                                            <Setter Property="Foreground" Value="#72767D"/>
+                                                                            <Setter Property="Opacity" Value="0.4"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
+                                                                                    <Setter Property="Opacity" Value="1.0"/>
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding Status}" Value="Starting">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentOrange}"/>
+                                                                                    <Setter Property="Opacity" Value="0.8"/>
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding Status}" Value="Error">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentRed}"/>
+                                                                                    <Setter Property="Opacity" Value="1.0"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </materialDesign:PackIcon.Style>
+                                                                </materialDesign:PackIcon>
+                                                            </Button>
+                                                            <!-- Cog -->
+                                                            <Button Grid.Column="3" Command="{Binding OpenSettingsCommand}"
+                                                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                                                    Padding="4" MinWidth="0" Width="34" Height="34"
+                                                                    ToolTip="Settings">
+                                                                <materialDesign:PackIcon Kind="CogOutline" Width="18" Height="18"
+                                                                                         Foreground="{DynamicResource TextMuted}"/>
+                                                            </Button>
+                                                        </Grid>
+
+                                                        <!-- Status fields -->
+                                                        <Grid Margin="0,0,0,14">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="80"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto"/>
+                                                                <RowDefinition Height="6"/>
+                                                                <RowDefinition Height="Auto"/>
+                                                            </Grid.RowDefinitions>
+                                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Status"
+                                                                       Foreground="{DynamicResource TextMuted}" FontSize="11.5" Opacity="0.7"/>
+                                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Status}"
+                                                                       FontSize="11.5" FontWeight="Medium">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                                                <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding Status}" Value="Starting">
+                                                                                <Setter Property="Foreground" Value="{DynamicResource AccentOrange}"/>
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding Status}" Value="Error">
+                                                                                <Setter Property="Foreground" Value="{DynamicResource AccentRed}"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Provider"
+                                                                       Foreground="{DynamicResource TextMuted}" FontSize="11.5" Opacity="0.7"/>
+                                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ProviderName}"
+                                                                       Foreground="White" FontSize="11.5" Opacity="0.85"
+                                                                       TextTrimming="CharacterEllipsis"/>
+                                                        </Grid>
+
+                                                        <!-- Separator -->
+                                                        <Border Height="1" Background="{DynamicResource BorderSubtle}"
+                                                                Margin="-20,0" Opacity="0.5"/>
+
+                                                        <!-- Mini Frieze -->
+                                                        <ItemsControl ItemsSource="{Binding MiniSegments}" Margin="0,14,0,14">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <WrapPanel/>
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Border Width="8" Height="8" Padding="1"
+                                                                            ToolTip="{Binding Tooltip}"
+                                                                            ToolTipService.InitialShowDelay="200"
+                                                                            ToolTipService.BetweenShowDelay="100">
+                                                                        <Border.Style>
+                                                                            <Style TargetType="Border">
+                                                                                <Setter Property="ToolTipService.IsEnabled" Value="True"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding Tooltip}" Value="">
+                                                                                        <Setter Property="ToolTipService.IsEnabled" Value="False"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Border.Style>
+                                                                        <Border CornerRadius="1" Background="{Binding Color}"/>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+
+                                                        <!-- Separator -->
+                                                        <Border Height="1" Background="{DynamicResource BorderSubtle}"
+                                                                Margin="-20,0" Opacity="0.5"/>
+
+                                                        <!-- Stats -->
+                                                        <Grid Margin="0,14,0,2">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="0" HorizontalAlignment="Center">
+                                                                <TextBlock Text="{Binding CompletedJobs}" FontSize="18" FontWeight="SemiBold"
+                                                                           Foreground="{DynamicResource AccentTeal}" HorizontalAlignment="Center"/>
+                                                                <TextBlock Text="Done" FontSize="10" Foreground="{DynamicResource TextMuted}"
+                                                                           HorizontalAlignment="Center" Opacity="0.7"/>
+                                                            </StackPanel>
+                                                            <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                                                                <TextBlock Text="{Binding FailedJobs}" FontSize="18" FontWeight="SemiBold"
+                                                                           Foreground="{DynamicResource AccentRed}" HorizontalAlignment="Center"/>
+                                                                <TextBlock Text="Failed" FontSize="10" Foreground="{DynamicResource TextMuted}"
+                                                                           HorizontalAlignment="Center" Opacity="0.7"/>
+                                                            </StackPanel>
+                                                            <StackPanel Grid.Column="2" HorizontalAlignment="Center">
+                                                                <TextBlock Text="{Binding UtilizationDisplay}" FontSize="18" FontWeight="SemiBold"
+                                                                           Foreground="{DynamicResource AccentOrange}" HorizontalAlignment="Center"/>
+                                                                <TextBlock Text="Util" FontSize="10" Foreground="{DynamicResource TextMuted}"
+                                                                           HorizontalAlignment="Center" Opacity="0.7"/>
+                                                            </StackPanel>
+                                                        </Grid>
                                                     </StackPanel>
-                                                    <TextBlock Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4">
-                                                        <Run Text="Status: "/><Run Text="{Binding Status}"/>
-                                                    </TextBlock>
-                                                    <TextBlock Foreground="{DynamicResource TextMuted}" Margin="0,0,0,12">
-                                                        <Run Text="Provider: "/><Run Text="{Binding ProviderName}"/>
-                                                    </TextBlock>
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <Button Content="Start" Command="{Binding StartCommand}" Margin="0,0,8,0"
-                                                                Style="{StaticResource MaterialDesignFlatButton}"/>
-                                                        <Button Content="Stop" Command="{Binding StopCommand}"
-                                                                Style="{StaticResource MaterialDesignFlatButton}"/>
-                                                    </StackPanel>
-                                                </StackPanel>
+                                                </Border>
                                             </Border>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>

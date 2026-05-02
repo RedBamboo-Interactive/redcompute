@@ -16,7 +16,7 @@ public class LocalWslProvider : IBackendProvider
     private BackendStatus _status = BackendStatus.Stopped;
     private static readonly HttpClient HealthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
 
-    public string Name => $"Local WSL ({_config.WslDistro ?? "default"})";
+    public string Name => "Local WSL";
     public CapabilityType Capability => _capability;
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(5);
 

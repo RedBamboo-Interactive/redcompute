@@ -4,6 +4,7 @@ using System.IO;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using RedCompute.Core.Jobs;
 
 namespace RedCompute.App.ViewModels;
 
@@ -18,6 +19,7 @@ public partial class MainViewModel : ObservableObject
     private readonly List<string> _allLogEntries = new();
     public ObservableCollection<string> LogEntries { get; } = new();
     public ObservableCollection<CapabilityCardViewModel> CapabilityCards { get; } = new();
+    private readonly Dictionary<string, CapabilityCardViewModel> _cardBySlug = new();
     public JobsTabViewModel JobsTab { get; } = new();
 
     // Logs
@@ -132,21 +134,50 @@ public partial class MainViewModel : ObservableObject
     {
         Application.Current?.Dispatcher?.BeginInvoke(async () =>
         {
-            CapabilityCards.Clear();
+            var recentJobs = App.JobTracker.GetJobsSince(DateTimeOffset.UtcNow.AddMinutes(-5));
+            var jobsBySlug = recentJobs.GroupBy(j => j.CapabilitySlug)
+                .ToDictionary(g => g.Key, g => g.OrderBy(j => j.QueuedAt).ToList());
+
+            var seenSlugs = new HashSet<string>();
+
             foreach (var (slug, entry) in App.Registry.Capabilities)
             {
+                seenSlugs.Add(slug);
+
                 var status = entry.ActiveProvider != null
                     ? await entry.ActiveProvider.GetStatusAsync()
                     : Core.Providers.BackendStatus.Stopped;
 
-                CapabilityCards.Add(new CapabilityCardViewModel
+                if (!_cardBySlug.TryGetValue(slug, out var card))
                 {
-                    Slug = slug,
-                    DisplayName = entry.Definition.DisplayName,
-                    Status = status,
-                    ProviderName = entry.ActiveProvider?.Name ?? entry.Config.ActiveProvider ?? "none"
-                });
+                    card = new CapabilityCardViewModel
+                    {
+                        Slug = slug,
+                        DisplayName = entry.Definition.DisplayName,
+                        Type = entry.Definition.Type,
+                        ProviderName = entry.ActiveProvider?.Name ?? entry.Config.ActiveProvider ?? "none"
+                    };
+                    _cardBySlug[slug] = card;
+                    CapabilityCards.Add(card);
+                }
+
+                card.Status = status;
+                card.ProviderName = entry.ActiveProvider?.Name ?? entry.Config.ActiveProvider ?? "none";
+
+                jobsBySlug.TryGetValue(slug, out var slugJobs);
+                card.UpdateStats(slugJobs ?? new List<JobRecord>());
+                card.RecomputeMiniFrieze(slugJobs ?? new List<JobRecord>());
             }
+
+            for (int i = CapabilityCards.Count - 1; i >= 0; i--)
+            {
+                if (!seenSlugs.Contains(CapabilityCards[i].Slug))
+                {
+                    _cardBySlug.Remove(CapabilityCards[i].Slug);
+                    CapabilityCards.RemoveAt(i);
+                }
+            }
+
             StatusText = $"Running — {CapabilityCards.Count} capabilities";
         });
     }

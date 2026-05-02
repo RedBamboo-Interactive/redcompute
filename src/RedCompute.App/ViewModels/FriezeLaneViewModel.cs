@@ -24,7 +24,7 @@ public partial class FriezeLaneViewModel : ObservableObject
         IconKind = MapIcon(type);
     }
 
-    private static PackIconKind MapIcon(CapabilityType type) => type switch
+    internal static PackIconKind MapIcon(CapabilityType type) => type switch
     {
         CapabilityType.Tts => PackIconKind.VolumeHigh,
         CapabilityType.Stt => PackIconKind.Microphone,
