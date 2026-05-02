@@ -35,6 +35,38 @@ public static class StreamingProxy
         await stream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
     }
 
+    public static async Task ForwardToPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body, Action<string> log)
+    {
+        var targetUrl = baseUrl.TrimEnd('/') + path;
+        var json = JsonSerializer.Serialize(body);
+        using var request = new HttpRequestMessage(HttpMethod.Post, targetUrl)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+
+        CopyHeaders(ctx.Request, request);
+
+        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            ctx.Response.StatusCode = (int)response.StatusCode;
+            ctx.Response.ContentType = "application/json";
+            var errorBody = await response.Content.ReadAsStringAsync(ctx.RequestAborted);
+            await ctx.Response.WriteAsync(errorBody, ctx.RequestAborted);
+            return;
+        }
+
+        ctx.Response.StatusCode = (int)response.StatusCode;
+        ctx.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "audio/wav";
+
+        if (response.Content.Headers.ContentLength.HasValue)
+            ctx.Response.ContentLength = response.Content.Headers.ContentLength.Value;
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
+        await stream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+    }
+
     public static async Task ForwardRawAsync(HttpContext ctx, string baseUrl, string? path, Action<string> log)
     {
         var targetUrl = baseUrl.TrimEnd('/') + "/" + (path ?? "");

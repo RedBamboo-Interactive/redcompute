@@ -138,7 +138,7 @@ public class LocalWslProvider : IBackendProvider
         {
             var venvActivate = _config.VenvPath != null ? $"source {_config.VenvPath}/bin/activate && " : "";
             var serverPath = ConvertToWslPath(_config.ServerPath ?? ".");
-            var command = $"{venvActivate}cd {serverPath} && python -m uvicorn main:app --host 0.0.0.0 --port {_config.BackendPort}";
+            var command = $"{venvActivate}cd {serverPath} && python server.py";
 
             return new ProcessStartInfo
             {
@@ -154,7 +154,7 @@ public class LocalWslProvider : IBackendProvider
         return new ProcessStartInfo
         {
             FileName = "cmd.exe",
-            Arguments = $"/c cd /d \"{_config.ServerPath}\" && python -m uvicorn main:app --host 0.0.0.0 --port {_config.BackendPort}",
+            Arguments = $"/c cd /d \"{_config.ServerPath}\" && python server.py",
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardOutput = true,

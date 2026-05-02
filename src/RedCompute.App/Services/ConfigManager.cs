@@ -65,8 +65,12 @@ public class ConfigManager
                         ["local-wsl"] = new()
                         {
                             Type = "LocalWsl",
+                            WslDistro = "Ubuntu-24.04",
+                            VenvPath = "~/tts-env",
+                            ServerPath = @"T:\Projects\Qwen3-TTS\qwen3-tts-server",
                             BackendPort = 8765,
                             HealthEndpoint = "/health",
+                            Model = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
                             StartupTimeoutSeconds = 180
                         }
                     }

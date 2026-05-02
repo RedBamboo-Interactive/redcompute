@@ -1,14 +1,15 @@
 using System.Collections.Specialized;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
+using RedCompute.App.TrayIcon;
 
 namespace RedCompute.App.Views;
 
 public partial class MainWindow : Window
 {
     private readonly DispatcherTimer _statusTimer;
+    private readonly TrayIconManager _trayIcon = new();
 
     public MainWindow()
     {
@@ -28,9 +29,9 @@ public partial class MainWindow : Window
         App.JobTracker.JobCreated += _ => App.MainViewModel.RefreshJobs();
         App.JobTracker.JobUpdated += _ => App.MainViewModel.RefreshJobs();
 
-        // Auto-scroll logs
         App.MainViewModel.LogEntries.CollectionChanged += LogEntries_CollectionChanged;
 
+        _trayIcon.Initialize(this);
         _statusTimer.Start();
     }
 
@@ -45,6 +46,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _statusTimer.Stop();
+        _trayIcon.Dispose();
         base.OnClosed(e);
     }
 
@@ -61,7 +63,11 @@ public partial class MainWindow : Window
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     }
 
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+    private void Close_Click(object sender, RoutedEventArgs e)
+    {
+        // Minimize to tray instead of closing
+        Hide();
+    }
 
     private void Nav_Click(object sender, RoutedEventArgs e)
     {

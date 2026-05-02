@@ -55,21 +55,23 @@ public static class DiscoverEndpoints
                 {
                     Method = "POST",
                     Path = "/tts/generate",
-                    Description = "Generate speech audio from text",
+                    Description = "Generate speech audio from text. Returns a WAV file.",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
                         ["text"] = new() { Type = "string", Required = true, Description = "Text to synthesize" },
-                        ["voice"] = new() { Type = "string", Required = false, Default = "default", Description = "Voice identifier to use" },
-                        ["speed"] = new() { Type = "number", Required = false, Default = 1.0, Min = 0.5, Max = 2.0, Description = "Playback speed multiplier" },
-                        ["format"] = new() { Type = "string", Required = false, Default = "wav", Enum = ["wav", "mp3", "opus"], Description = "Output audio format" }
+                        ["voice"] = new() { Type = "string", Required = false, Default = "Serena", Enum = ["Serena", "Aiden", "Ryan", "Vivian"], Description = "Speaker voice name" },
+                        ["language"] = new() { Type = "string", Required = false, Default = "English", Enum = ["English", "Chinese", "French", "Japanese", "Korean"], Description = "Language for synthesis" },
+                        ["emotion"] = new() { Type = "string", Required = false, Default = "neutral", Enum = ["neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"], Description = "Emotional tone" },
+                        ["instruct"] = new() { Type = "string", Required = false, Description = "Natural language instruction for voice style (overrides emotion). E.g. 'Speak with warm enthusiasm'" },
+                        ["speed"] = new() { Type = "number", Required = false, Default = 1.0, Min = 0.5, Max = 2.0, Description = "Playback speed multiplier" }
                     },
-                    Returns = new ReturnSchema { ContentType = "audio/wav", Streaming = true }
+                    Returns = new ReturnSchema { ContentType = "audio/wav", Streaming = false }
                 },
                 new()
                 {
                     Method = "GET",
                     Path = "/tts/voices",
-                    Description = "List available voices for text-to-speech",
+                    Description = "List available speaker voices with their supported languages",
                     Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
                 }
             },
