@@ -41,10 +41,10 @@ public partial class MainWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         App.MainViewModel.RefreshCapabilities();
-        App.MainViewModel.RefreshJobs();
 
-        App.JobTracker.JobCreated += _ => App.MainViewModel.RefreshJobs();
-        App.JobTracker.JobUpdated += _ => App.MainViewModel.RefreshJobs();
+        App.JobTracker.JobCreated += job => App.MainViewModel.JobsTab.OnJobCreated(job);
+        App.JobTracker.JobUpdated += job => App.MainViewModel.JobsTab.OnJobUpdated(job);
+        App.MainViewModel.JobsTab.Initialize();
 
         App.MainViewModel.LogEntries.CollectionChanged += LogEntries_CollectionChanged;
 

@@ -12,6 +12,7 @@
             </ResourceDictionary.MergedDictionaries>
 
             <converters:StringToSolidColorBrushConverter x:Key="StringToBrush" />
+            <converters:NullToVisibilityConverter x:Key="NullableToVisibilityConverter" />
 
             <!-- Override Material Design theme surfaces -->
             <SolidColorBrush x:Key="MaterialDesignPaper" Color="#2C2D32"/>

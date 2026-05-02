@@ -97,6 +97,68 @@ public static class GlobalEndpoints
             return Results.Ok(new { id, status = "Cancelled" });
         });
 
+        app.MapGet("/activity", (int? window) =>
+        {
+            var windowSeconds = window ?? 300;
+            var now = DateTimeOffset.UtcNow;
+            var since = now.AddSeconds(-windowSeconds);
+            var jobs = jobTracker.GetJobsSince(since);
+
+            var grouped = jobs.GroupBy(j => j.CapabilitySlug);
+            var capabilities = new List<object>();
+
+            foreach (var (slug, entry) in registry.Capabilities)
+            {
+                var capJobs = grouped.FirstOrDefault(g => g.Key == slug)?.ToList() ?? new();
+                var active = capJobs.Where(j => j.Status == JobStatus.Running).ToList();
+                var queued = capJobs.Where(j => j.Status == JobStatus.Queued).ToList();
+                var completed = capJobs.Where(j => j.Status == JobStatus.Completed).ToList();
+                var failed = capJobs.Where(j => j.Status == JobStatus.Failed).ToList();
+
+                var totalDurationMs = capJobs
+                    .Where(j => j.DurationMs.HasValue)
+                    .Sum(j => j.DurationMs!.Value);
+
+                var lastActivity = capJobs
+                    .Select(j => j.CompletedAt ?? j.StartedAt ?? j.QueuedAt)
+                    .DefaultIfEmpty(DateTimeOffset.MinValue)
+                    .Max();
+
+                capabilities.Add(new
+                {
+                    slug,
+                    entry.Definition.DisplayName,
+                    type = entry.Definition.Type.ToString(),
+                    activeJobs = active.Count,
+                    queuedJobs = queued.Count,
+                    completedInWindow = completed.Count,
+                    failedInWindow = failed.Count,
+                    totalDurationMs,
+                    utilizationPct = windowSeconds > 0
+                        ? Math.Round(totalDurationMs / (windowSeconds * 1000.0) * 100, 2)
+                        : 0,
+                    lastActivityAt = lastActivity == DateTimeOffset.MinValue ? (DateTimeOffset?)null : lastActivity,
+                    currentJobs = active.Concat(queued).Select(j => new
+                    {
+                        j.Id,
+                        status = j.Status.ToString(),
+                        j.StartedAt,
+                        elapsedMs = j.StartedAt.HasValue
+                            ? (long)(now - j.StartedAt.Value).TotalMilliseconds
+                            : (long?)null
+                    })
+                });
+            }
+
+            return Results.Ok(new
+            {
+                windowSeconds,
+                from = since,
+                to = now,
+                capabilities
+            });
+        });
+
         app.MapPost("/control/start/{slug}", async (string slug) =>
         {
             var entry = registry.Get(slug);

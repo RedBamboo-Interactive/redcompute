@@ -16,7 +16,11 @@ public partial class JobViewModel : ObservableObject
     public string InputJson { get; }
     public string? ErrorMessage { get; }
     public string? OutputLocation { get; }
+    public long? OutputSizeBytes { get; }
+    public string? OutputContentType { get; }
     public string? CallerInfo { get; }
+
+    public bool IsRunning => Status == JobStatus.Running;
 
     public string StatusColor => Status switch
     {
@@ -38,6 +42,20 @@ public partial class JobViewModel : ObservableObject
 
     public string TimeDisplay => QueuedAt.ToLocalTime().ToString("HH:mm:ss");
 
+    public string DurationDisplay => DurationMs.HasValue ? $"{DurationMs}ms" : "—";
+
+    public string QueuedAtDisplay => QueuedAt.ToLocalTime().ToString("HH:mm:ss.fff");
+
+    public string StartedAtDisplay => StartedAt?.ToLocalTime().ToString("HH:mm:ss.fff") ?? "—";
+
+    public string CompletedAtDisplay => CompletedAt?.ToLocalTime().ToString("HH:mm:ss.fff") ?? "—";
+
+    public string OutputSizeDisplay => OutputSizeBytes.HasValue
+        ? OutputSizeBytes.Value < 1024 ? $"{OutputSizeBytes}B"
+        : OutputSizeBytes.Value < 1048576 ? $"{OutputSizeBytes.Value / 1024.0:F1}KB"
+        : $"{OutputSizeBytes.Value / 1048576.0:F1}MB"
+        : "—";
+
     public JobViewModel(JobRecord record)
     {
         Id = record.Id;
@@ -51,6 +69,8 @@ public partial class JobViewModel : ObservableObject
         InputJson = record.InputJson;
         ErrorMessage = record.ErrorMessage;
         OutputLocation = record.OutputLocation;
+        OutputSizeBytes = record.OutputSizeBytes;
+        OutputContentType = record.OutputContentType;
         CallerInfo = record.CallerInfo;
     }
 }

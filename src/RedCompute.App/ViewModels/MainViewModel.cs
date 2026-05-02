@@ -18,10 +18,7 @@ public partial class MainViewModel : ObservableObject
     private readonly List<string> _allLogEntries = new();
     public ObservableCollection<string> LogEntries { get; } = new();
     public ObservableCollection<CapabilityCardViewModel> CapabilityCards { get; } = new();
-    public ObservableCollection<JobViewModel> RecentJobs { get; } = new();
-
-    [ObservableProperty]
-    private JobViewModel? _selectedJob;
+    public JobsTabViewModel JobsTab { get; } = new();
 
     // Logs
     [ObservableProperty]
@@ -154,16 +151,4 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
-    public void RefreshJobs()
-    {
-        Application.Current?.Dispatcher?.BeginInvoke(() =>
-        {
-            var jobs = App.JobTracker.GetJobs(limit: 100);
-            RecentJobs.Clear();
-            foreach (var job in jobs)
-            {
-                RecentJobs.Add(new JobViewModel(job));
-            }
-        });
-    }
 }

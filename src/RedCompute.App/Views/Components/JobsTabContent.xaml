@@ -1,0 +1,459 @@
+<UserControl x:Class="RedCompute.App.Views.Components.JobsTabContent"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+             xmlns:vm="clr-namespace:RedCompute.App.ViewModels"
+             xmlns:jobs="clr-namespace:RedCompute.Core.Jobs;assembly=RedCompute.Core">
+
+    <UserControl.Resources>
+        <SolidColorBrush x:Key="AccentGreen" Color="#43A25A"/>
+        <SolidColorBrush x:Key="AccentOrange" Color="#FFB74D"/>
+        <SolidColorBrush x:Key="AccentRed" Color="#FF5252"/>
+        <SolidColorBrush x:Key="AccentMuted" Color="#72767D"/>
+
+        <Style x:Key="MonospaceTextStyle" TargetType="TextBox">
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Opacity" Value="0.85"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- ================================================================ -->
+        <!-- TIMELINE FRIEZE                                                  -->
+        <!-- ================================================================ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource MaterialDesignCardBackground}"
+                CornerRadius="8" Padding="12">
+            <StackPanel>
+                <StackPanel.Resources>
+                    <DataTemplate x:Key="FriezeSquareTemplate" DataType="{x:Type vm:FriezeSegment}">
+                        <Border x:Name="SquareOuter" Width="10" Height="10" Padding="1"
+                                Background="Transparent"
+                                ToolTip="{Binding Tooltip}"
+                                ToolTipService.InitialShowDelay="200"
+                                ToolTipService.BetweenShowDelay="100">
+                            <Border x:Name="SquareInner" CornerRadius="2"
+                                    Background="{Binding Color}"
+                                    Opacity="1.0">
+                                <Border.RenderTransform>
+                                    <ScaleTransform CenterX="4" CenterY="4"/>
+                                </Border.RenderTransform>
+                            </Border>
+                        </Border>
+                        <DataTemplate.Triggers>
+                            <DataTrigger Binding="{Binding Tooltip}" Value="">
+                                <Setter TargetName="SquareOuter" Property="ToolTipService.IsEnabled" Value="False"/>
+                            </DataTrigger>
+                            <EventTrigger RoutedEvent="Border.MouseEnter">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.7" Duration="0:0:0.12"/>
+                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                         Storyboard.TargetProperty="RenderTransform.ScaleX"
+                                                         To="1.3" Duration="0:0:0.12">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                         Storyboard.TargetProperty="RenderTransform.ScaleY"
+                                                         To="1.3" Duration="0:0:0.12">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                            <EventTrigger RoutedEvent="Border.MouseLeave">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1.0" Duration="0:0:0.2"/>
+                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                         Storyboard.TargetProperty="RenderTransform.ScaleX"
+                                                         To="1.0" Duration="0:0:0.2">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                         Storyboard.TargetProperty="RenderTransform.ScaleY"
+                                                         To="1.0" Duration="0:0:0.2">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </DataTemplate.Triggers>
+                    </DataTemplate>
+                </StackPanel.Resources>
+
+                <ItemsControl ItemsSource="{Binding JobsTab.FriezeLanes}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:FriezeLaneViewModel}">
+                            <StackPanel>
+                                <Grid Margin="0,4,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="{Binding IconKind}" Foreground="White" Opacity="0.5"
+                                                                 Width="14" Height="14" VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding DisplayLabel}" Foreground="White" FontSize="11"
+                                                   FontWeight="SemiBold" Opacity="0.4"
+                                                   VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding DurationText}"
+                                               Foreground="White" FontSize="11" Opacity="0.4"
+                                               FontFamily="Consolas" VerticalAlignment="Center"/>
+                                </Grid>
+                                <ItemsControl ItemsSource="{Binding Segments}"
+                                              ItemTemplate="{StaticResource FriezeSquareTemplate}"
+                                              SizeChanged="FriezeItemsControl_SizeChanged">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </Border>
+
+        <!-- ================================================================ -->
+        <!-- MASTER-DETAIL LAYOUT                                             -->
+        <!-- ================================================================ -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320"/>
+                <ColumnDefinition Width="16"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ================================================================ -->
+            <!-- LEFT PANEL: Job List                                             -->
+            <!-- ================================================================ -->
+            <Border Grid.Column="0"
+                    Background="{DynamicResource MaterialDesignCardBackground}"
+                    CornerRadius="8">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0"
+                            BorderBrush="#20FFFFFF"
+                            BorderThickness="0,0,0,1"
+                            Padding="16,12">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="Job Monitor"
+                                       Foreground="White"
+                                       FontWeight="Medium"
+                                       FontSize="14"
+                                       VerticalAlignment="Center"/>
+                            <Button Grid.Column="1"
+                                    Command="{Binding JobsTab.ClearJobsCommand}"
+                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                    Padding="8,4"
+                                    Height="28"
+                                    ToolTip="Clear all jobs">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="Delete" Width="16" Height="16" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Clear" Margin="4,0,0,0" FontSize="12" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <ListView Grid.Row="1"
+                              ItemsSource="{Binding JobsTab.RecentJobs}"
+                              SelectedItem="{Binding JobsTab.SelectedJob}"
+                              Background="Transparent"
+                              BorderThickness="0"
+                              VirtualizingStackPanel.IsVirtualizing="True"
+                              VirtualizingStackPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem" BasedOn="{StaticResource MaterialDesignListBoxItem}">
+                                <Setter Property="Padding" Value="12,10"/>
+                                <Setter Property="Margin" Value="4,2"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.ItemTemplate>
+                            <DataTemplate DataType="{x:Type vm:JobViewModel}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="24"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Ellipse Grid.Column="0" Width="10" Height="10"
+                                             Fill="{Binding StatusColor, Converter={StaticResource StringToBrush}}"
+                                             VerticalAlignment="Center" HorizontalAlignment="Center">
+                                        <Ellipse.Style>
+                                            <Style TargetType="Ellipse">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                        <DataTrigger.EnterActions>
+                                                            <BeginStoryboard x:Name="PulseStory">
+                                                                <Storyboard RepeatBehavior="Forever">
+                                                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                                     From="1.0" To="0.3" Duration="0:0:1"
+                                                                                     AutoReverse="True">
+                                                                        <DoubleAnimation.EasingFunction>
+                                                                            <SineEase EasingMode="EaseInOut"/>
+                                                                        </DoubleAnimation.EasingFunction>
+                                                                    </DoubleAnimation>
+                                                                </Storyboard>
+                                                            </BeginStoryboard>
+                                                        </DataTrigger.EnterActions>
+                                                        <DataTrigger.ExitActions>
+                                                            <StopStoryboard BeginStoryboardName="PulseStory"/>
+                                                        </DataTrigger.ExitActions>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Ellipse.Style>
+                                    </Ellipse>
+
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
+                                        <TextBlock Text="{Binding Summary}" Foreground="White" FontWeight="Medium" FontSize="13"/>
+                                        <TextBlock Text="{Binding ProviderName}"
+                                                   Foreground="White"
+                                                   FontSize="11" Opacity="0.5"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right">
+                                        <TextBlock Text="{Binding TimeDisplay}"
+                                                   Foreground="White"
+                                                   FontSize="10" Opacity="0.5"
+                                                   HorizontalAlignment="Right"/>
+                                        <Border CornerRadius="3" Padding="4,1" Margin="0,2,0,0"
+                                                HorizontalAlignment="Right"
+                                                Background="#2072767D"
+                                                Visibility="{Binding CallerInfo, Converter={StaticResource NullableToVisibilityConverter}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <materialDesign:PackIcon Kind="Api" Width="10" Height="10"
+                                                                        Foreground="#72767D" VerticalAlignment="Center"/>
+                                                <TextBlock Text="{Binding CallerInfo}"
+                                                           FontSize="9" Margin="2,0,0,0"
+                                                           Foreground="#72767D"
+                                                           MaxWidth="80" TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+
+                    <StackPanel Grid.Row="1"
+                                VerticalAlignment="Center"
+                                HorizontalAlignment="Center">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding JobsTab.RecentJobs.Count}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <materialDesign:PackIcon Kind="MagnifyScan" Width="56" Height="56" Foreground="White" Opacity="0.2" HorizontalAlignment="Center"/>
+                        <TextBlock Text="No jobs recorded" Foreground="White" FontSize="15" Opacity="0.5" Margin="0,8,0,0" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Submit a request to see activity" Foreground="White" FontSize="12" Opacity="0.3" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ================================================================ -->
+            <!-- RIGHT PANEL: Job Detail                                          -->
+            <!-- ================================================================ -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource MaterialDesignCardBackground}"
+                    CornerRadius="8">
+                <Grid>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Visibility="{Binding JobsTab.SelectedJob, Converter={StaticResource NullableToVisibilityConverter}}">
+                        <StackPanel Margin="24">
+
+                            <!-- Metadata Section -->
+                            <Border Background="#15FFFFFF" CornerRadius="8" Padding="12" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <materialDesign:PackIcon Kind="InformationOutline" Width="16" Height="16" VerticalAlignment="Center"
+                                                                 Foreground="#72767D"/>
+                                        <TextBlock Text="Metadata" Foreground="#72767D"
+                                                   FontSize="12" FontWeight="Medium"
+                                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    </StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="100"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Job ID" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.Id}" Foreground="White" FontSize="12" FontFamily="Consolas" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Capability" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.CapabilitySlug}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Provider" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.ProviderName}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Status" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.Status}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Duration" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.DurationDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Queued At" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.QueuedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Started At" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.StartedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Completed" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.CompletedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Input Section -->
+                            <Border Background="#15FFFFFF" CornerRadius="8" Padding="12" Margin="0,0,0,8"
+                                    Visibility="{Binding JobsTab.SelectedJob.InputJson, Converter={StaticResource NullableToVisibilityConverter}}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <materialDesign:PackIcon Kind="CodeBraces" Width="16" Height="16" VerticalAlignment="Center"
+                                                                 Foreground="#FFB74D"/>
+                                        <TextBlock Text="Input" Foreground="#FFB74D"
+                                                   FontSize="12" FontWeight="Medium"
+                                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    </StackPanel>
+                                    <TextBox Text="{Binding JobsTab.SelectedJob.InputJson, Mode=OneWay}"
+                                             Style="{StaticResource MonospaceTextStyle}"
+                                             MaxHeight="400"
+                                             VerticalScrollBarVisibility="Auto"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Error Section -->
+                            <Border CornerRadius="8" Padding="12" Margin="0,0,0,8"
+                                    Background="#20FF5252"
+                                    Visibility="{Binding JobsTab.SelectedJob.ErrorMessage, Converter={StaticResource NullableToVisibilityConverter}}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <materialDesign:PackIcon Kind="AlertCircle" Width="16" Height="16" VerticalAlignment="Center"
+                                                                 Foreground="#FF5252"/>
+                                        <TextBlock Text="Error" Foreground="#FF5252"
+                                                   FontSize="12" FontWeight="Medium"
+                                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding JobsTab.SelectedJob.ErrorMessage}" Foreground="#FF5252"
+                                               FontSize="12" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Output Section -->
+                            <Border Background="#15FFFFFF" CornerRadius="8" Padding="12" Margin="0,0,0,8"
+                                    Visibility="{Binding JobsTab.SelectedJob.OutputLocation, Converter={StaticResource NullableToVisibilityConverter}}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <materialDesign:PackIcon Kind="CheckCircle" Width="16" Height="16" VerticalAlignment="Center"
+                                                                 Foreground="#43A25A"/>
+                                        <TextBlock Text="Output" Foreground="#43A25A"
+                                                   FontSize="12" FontWeight="Medium"
+                                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    </StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="80"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Location" Foreground="White" FontSize="11" Opacity="0.5" Margin="0,2"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.OutputLocation}" Foreground="White" FontSize="11" FontFamily="Consolas" Margin="0,2" TextWrapping="Wrap"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Size" Foreground="White" FontSize="11" Opacity="0.5" Margin="0,2"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.OutputSizeDisplay}" Foreground="White" FontSize="11" Margin="0,2"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Type" Foreground="White" FontSize="11" Opacity="0.5" Margin="0,2"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.OutputContentType}" Foreground="White" FontSize="11" Margin="0,2"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Empty State -->
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding JobsTab.SelectedJob}" Value="{x:Null}">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <materialDesign:PackIcon Kind="MagnifyScan" Width="56" Height="56" Foreground="White" Opacity="0.2" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Select a job to inspect" Foreground="White" FontSize="15" Opacity="0.5" Margin="0,8,0,0" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

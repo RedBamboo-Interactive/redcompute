@@ -110,6 +110,18 @@ public class JobTrackingService
         return db.Jobs.Find(id);
     }
 
+    public List<JobRecord> GetJobsSince(DateTimeOffset since)
+    {
+        using var db = new RedComputeDbContext();
+        return db.Jobs
+            .Where(j => j.QueuedAt >= since
+                || (j.CompletedAt != null && j.CompletedAt >= since)
+                || j.Status == JobStatus.Running
+                || j.Status == JobStatus.Queued)
+            .OrderBy(j => j.QueuedAt)
+            .ToList();
+    }
+
     public int CleanupOldJobs(int retentionDays)
     {
         using var db = new RedComputeDbContext();
