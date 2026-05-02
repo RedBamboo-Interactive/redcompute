@@ -43,6 +43,7 @@ public class RelayServer
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(_app, _registry, _jobTracker);
         DiscoverEndpoints.Map(_app, _config, _registry);
+        OpenApiEndpoints.Map(_app, _config, _registry);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
 
         _log($"[Relay] Starting on port {_config.ApiPort}");
