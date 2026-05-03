@@ -1,6 +1,8 @@
+using System.Drawing;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using RedCompute.App.Helpers;
 using RedCompute.App.TrayIcon;
 
 namespace RedCompute.App.Views;
@@ -39,6 +41,7 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        Icon = IconHelper.CreateWindowIcon(Color.FromArgb(0x43, 0xA2, 0x5A));
         App.MainViewModel.RefreshCapabilities();
 
         App.JobTracker.JobCreated += job => App.MainViewModel.JobsTab.OnJobCreated(job);

@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Threading;
 using H.NotifyIcon;
 using H.NotifyIcon.Core;
+using RedCompute.App.Helpers;
 using RedCompute.Core.Providers;
 
 namespace RedCompute.App.TrayIcon;
@@ -17,7 +18,7 @@ public class TrayIconManager : IDisposable
         _trayIcon = new TaskbarIcon
         {
             ToolTipText = "RedCompute",
-            Icon = CreateIcon(Colors.Gray),
+            Icon = IconHelper.CreateTrayIcon(StatusColors.Gray),
             ContextMenu = BuildContextMenu(mainWindow),
             MenuActivation = PopupActivationMode.RightClick
         };
@@ -93,9 +94,9 @@ public class TrayIconManager : IDisposable
             if (status == BackendStatus.Error) anyError = true;
         }
 
-        var color = anyError ? Colors.Red : anyRunning ? Colors.Green : Colors.Gray;
+        var color = anyError ? StatusColors.Red : anyRunning ? StatusColors.Green : StatusColors.Gray;
         if (_trayIcon != null)
-            _trayIcon.Icon = CreateIcon(color);
+            _trayIcon.Icon = IconHelper.CreateTrayIcon(color);
     }
 
     private static void ShowWindow(Window window)
@@ -105,17 +106,6 @@ public class TrayIconManager : IDisposable
         window.Activate();
     }
 
-    private static Icon CreateIcon(System.Windows.Media.Color wpfColor)
-    {
-        using var bmp = new Bitmap(16, 16);
-        using var g = Graphics.FromImage(bmp);
-        var color = System.Drawing.Color.FromArgb(wpfColor.A, wpfColor.R, wpfColor.G, wpfColor.B);
-        g.Clear(System.Drawing.Color.Transparent);
-        using var brush = new SolidBrush(color);
-        g.FillEllipse(brush, 2, 2, 12, 12);
-        return System.Drawing.Icon.FromHandle(bmp.GetHicon());
-    }
-
     public void Dispose()
     {
         _statusTimer?.Stop();
@@ -123,9 +113,9 @@ public class TrayIconManager : IDisposable
     }
 }
 
-internal static class Colors
+internal static class StatusColors
 {
-    public static System.Windows.Media.Color Gray => System.Windows.Media.Color.FromRgb(0x72, 0x76, 0x7D);
-    public static System.Windows.Media.Color Green => System.Windows.Media.Color.FromRgb(0x43, 0xA2, 0x5A);
-    public static System.Windows.Media.Color Red => System.Windows.Media.Color.FromRgb(0xFF, 0x52, 0x52);
+    public static Color Gray => Color.FromArgb(0x72, 0x76, 0x7D);
+    public static Color Green => Color.FromArgb(0x43, 0xA2, 0x5A);
+    public static Color Red => Color.FromArgb(0xFF, 0x52, 0x52);
 }

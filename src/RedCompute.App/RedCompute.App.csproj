@@ -9,6 +9,7 @@
     <RootNamespace>RedCompute.App</RootNamespace>
     <AssemblyName>RedCompute</AssemblyName>
     <PlatformTarget>x64</PlatformTarget>
+    <ApplicationIcon>Resources\redcompute.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
