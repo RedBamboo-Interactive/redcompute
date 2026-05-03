@@ -196,7 +196,7 @@
                                                                 Margin="-20,0" Opacity="0.5"/>
 
                                                         <!-- Mini Frieze -->
-                                                        <ItemsControl ItemsSource="{Binding MiniSegments}" Margin="0,14,0,14">
+                                                        <ItemsControl ItemsSource="{Binding MiniSegments}" Margin="0,14,0,6">
                                                             <ItemsControl.ItemsPanel>
                                                                 <ItemsPanelTemplate>
                                                                     <WrapPanel/>
@@ -224,12 +224,8 @@
                                                             </ItemsControl.ItemTemplate>
                                                         </ItemsControl>
 
-                                                        <!-- Separator -->
-                                                        <Border Height="1" Background="{DynamicResource BorderSubtle}"
-                                                                Margin="-20,0" Opacity="0.5"/>
-
                                                         <!-- Job Frieze -->
-                                                        <ItemsControl ItemsSource="{Binding JobSegments}" Margin="0,14,0,2">
+                                                        <ItemsControl ItemsSource="{Binding JobSegments}" Margin="0,0,0,2">
                                                             <ItemsControl.ItemsPanel>
                                                                 <ItemsPanelTemplate>
                                                                     <WrapPanel/>

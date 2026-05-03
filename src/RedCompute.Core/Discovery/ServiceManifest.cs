@@ -91,4 +91,12 @@ public class ReturnSchema
 
     [JsonPropertyName("streaming")]
     public bool Streaming { get; init; }
+
+    [JsonPropertyName("mediaCategory")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MediaCategory { get; init; }
+
+    [JsonPropertyName("outputEndpoint")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? OutputEndpoint { get; init; }
 }

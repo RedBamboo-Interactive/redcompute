@@ -165,8 +165,8 @@ public partial class MainViewModel : ObservableObject
                 card.ProviderName = entry.ActiveProvider?.Name ?? entry.Config.ActiveProvider ?? "none";
 
                 jobsBySlug.TryGetValue(slug, out var slugJobs);
-                card.UpdateStats(slugJobs ?? new List<JobRecord>());
                 card.RecomputeMiniFrieze(slugJobs ?? new List<JobRecord>());
+                card.RecomputeJobFrieze();
             }
 
             for (int i = CapabilityCards.Count - 1; i >= 0; i--)

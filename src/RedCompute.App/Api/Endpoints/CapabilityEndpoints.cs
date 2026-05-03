@@ -1,4 +1,6 @@
+using System.IO;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -12,8 +14,14 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class CapabilityEndpoints
 {
+    private static readonly string OutputDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RedCompute", "outputs");
+
     public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string> log)
     {
+        Directory.CreateDirectory(OutputDir);
+
         app.MapPost("/tts/generate", async (HttpContext ctx) =>
         {
             var entry = registry.Get("tts");
@@ -62,9 +70,34 @@ public static class CapabilityEndpoints
                 var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
                 if (proxyUrl != null)
                 {
-                    // Proxy to /synthesize/wav for complete WAV response
-                    await StreamingProxy.ForwardToPathAsync(ctx, proxyUrl, "/synthesize/wav", backendBody, log);
-                    jobTracker.MarkCompleted(job.Id, contentType: "audio/wav");
+                    using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+                    var json = JsonSerializer.Serialize(backendBody);
+                    var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
+                    var response = await client.PostAsync($"{proxyUrl.TrimEnd('/')}/synthesize/wav", httpContent, ctx.RequestAborted);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        var errBody = await response.Content.ReadAsStringAsync(ctx.RequestAborted);
+                        jobTracker.MarkFailed(job.Id, $"Backend returned {response.StatusCode}");
+                        ctx.Response.StatusCode = (int)response.StatusCode;
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync(errBody, ctx.RequestAborted);
+                        return Results.Empty;
+                    }
+
+                    using var ms = new MemoryStream();
+                    await response.Content.CopyToAsync(ms, ctx.RequestAborted);
+
+                    var path = SaveOutput(job.Id, ms, "audio/wav");
+                    var size = new FileInfo(path).Length;
+
+                    ms.Position = 0;
+                    ctx.Response.ContentType = "audio/wav";
+                    ctx.Response.ContentLength = ms.Length;
+                    ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+                    await ms.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+
+                    jobTracker.MarkCompleted(job.Id, path, size, "audio/wav");
                 }
                 else
                 {
@@ -77,9 +110,17 @@ public static class CapabilityEndpoints
                     var result = await entry.ActiveProvider.ExecuteAsync(request, ctx.RequestAborted);
                     if (result is { Success: true, OutputStream: not null })
                     {
-                        ctx.Response.ContentType = result.ContentType ?? "audio/wav";
+                        var contentType = result.ContentType ?? "audio/wav";
+                        var path = SaveOutput(job.Id, result.OutputStream, contentType);
+                        var size = new FileInfo(path).Length;
+
+                        result.OutputStream.Position = 0;
+                        ctx.Response.ContentType = contentType;
+                        ctx.Response.ContentLength = result.OutputStream.Length;
+                        ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
                         await result.OutputStream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
-                        jobTracker.MarkCompleted(job.Id, contentType: result.ContentType);
+
+                        jobTracker.MarkCompleted(job.Id, path, size, contentType);
                     }
                     else
                     {
@@ -92,7 +133,6 @@ public static class CapabilityEndpoints
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
                 log($"[TTS] Job {job.Id} failed (connection): {ex.Message}");
-                // Backend likely went down — re-check health
                 _ = entry.ActiveProvider.GetStatusAsync();
                 return ErrorResult(ctx, 502, "backend_unavailable",
                     $"Backend connection failed: {ex.Message}. The backend may have stopped.");
@@ -113,6 +153,28 @@ public static class CapabilityEndpoints
             return Results.Empty;
         });
 
+        app.MapGet("/tts/jobs/{id:guid}/output", async (HttpContext ctx, Guid id) =>
+        {
+            var job = jobTracker.GetJob(id);
+            if (job == null)
+                return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+
+            if (job.Status == JobStatus.Running || job.Status == JobStatus.Queued)
+                return Results.Json(new { error = "not_ready", message = "Job is still running", progress = job.Progress }, statusCode: 409);
+
+            if (job.Status == JobStatus.Failed)
+                return Results.Json(new ErrorResponse { Error = "job_failed", Message = job.ErrorMessage ?? "Job failed" }, statusCode: 410);
+
+            if (job.OutputLocation == null || !File.Exists(job.OutputLocation))
+                return Results.Json(new ErrorResponse { Error = "output_not_found", Message = "Output file not available" }, statusCode: 404);
+
+            ctx.Response.ContentType = job.OutputContentType ?? "audio/wav";
+            ctx.Response.Headers["X-Result-Json"] = job.ResultJson;
+            await using var stream = File.OpenRead(job.OutputLocation);
+            await stream.CopyToAsync(ctx.Response.Body);
+            return Results.Empty;
+        });
+
         app.MapGet("/tts/voices", async (HttpContext ctx) =>
         {
             var entry = registry.Get("tts");
@@ -123,7 +185,6 @@ public static class CapabilityEndpoints
             if (proxyUrl == null)
                 return Results.Json(new { voices = new[] { new { name = "Serena", language = "en/zh" } } });
 
-            // Proxy to backend /speakers
             try
             {
                 using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -178,6 +239,21 @@ public static class CapabilityEndpoints
 
             await StreamingProxy.ForwardRawAsync(ctx, proxyUrl, path, log);
         });
+    }
+
+    private static string SaveOutput(Guid jobId, Stream data, string contentType)
+    {
+        var ext = contentType switch
+        {
+            "audio/wav" => ".wav",
+            "audio/mpeg" => ".mp3",
+            _ => ".bin"
+        };
+        var path = Path.Combine(OutputDir, $"{jobId}{ext}");
+        using var fs = File.Create(path);
+        data.Position = 0;
+        data.CopyTo(fs);
+        return path;
     }
 
     private static Dictionary<string, string> ValidateTtsRequest(Dictionary<string, object?> body)

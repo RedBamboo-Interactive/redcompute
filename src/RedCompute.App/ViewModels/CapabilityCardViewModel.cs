@@ -88,11 +88,10 @@ public partial class CapabilityCardViewModel : ObservableObject
         App.MainViewModel.SelectedTabIndex = 2;
     }
 
-    public void RecomputeJobFrieze(List<JobRecord> jobs)
+    public void RecomputeJobFrieze()
     {
-        var recent = jobs
-            .OrderByDescending(j => j.QueuedAt)
-            .Take(JobFriezeCount)
+        var recent = App.JobTracker.GetJobs(capabilitySlug: Slug, limit: JobFriezeCount)
+            .AsEnumerable()
             .Reverse()
             .ToList();
 

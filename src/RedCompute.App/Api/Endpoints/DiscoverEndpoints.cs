@@ -65,7 +65,14 @@ public static class DiscoverEndpoints
                         ["instruct"] = new() { Type = "string", Required = false, Description = "Natural language instruction for voice style (overrides emotion). E.g. 'Speak with warm enthusiasm'" },
                         ["speed"] = new() { Type = "number", Required = false, Default = 1.0, Min = 0.5, Max = 2.0, Description = "Playback speed multiplier" }
                     },
-                    Returns = new ReturnSchema { ContentType = "audio/wav", Streaming = false }
+                    Returns = new ReturnSchema { ContentType = "audio/wav", Streaming = false, MediaCategory = "audio", OutputEndpoint = "/tts/jobs/{id}/output" }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/tts/jobs/{id}/output",
+                    Description = "Download the generated audio for a completed TTS job",
+                    Returns = new ReturnSchema { ContentType = "audio/wav", Streaming = false, MediaCategory = "audio" }
                 },
                 new()
                 {
@@ -107,7 +114,7 @@ public static class DiscoverEndpoints
                         ["height"] = new() { Type = "integer", Required = false, Description = "Image height (workflow-dependent, only if workflow supports it)" },
                         ["image_url"] = new() { Type = "string", Required = false, Description = "Source image URL for img2img or video workflows" }
                     },
-                    Returns = new ReturnSchema { ContentType = "image/png", Streaming = false }
+                    Returns = new ReturnSchema { ContentType = "image/png", Streaming = false, MediaCategory = "image", OutputEndpoint = "/image-gen/jobs/{id}/output" }
                 },
                 new()
                 {
@@ -135,7 +142,7 @@ public static class DiscoverEndpoints
                     Method = "GET",
                     Path = "/image-gen/jobs/{id}/output",
                     Description = "Download the generated image/video for a completed job",
-                    Returns = new ReturnSchema { ContentType = "image/png", Streaming = false }
+                    Returns = new ReturnSchema { ContentType = "image/png", Streaming = false, MediaCategory = "image" }
                 }
             },
             "music-gen" => new List<EndpointManifest>
@@ -152,7 +159,7 @@ public static class DiscoverEndpoints
                         ["title"] = new() { Type = "string", Required = false, Default = "", Description = "Track title" },
                         ["instrumental"] = new() { Type = "boolean", Required = false, Default = true, Description = "If true, generate instrumental only (no vocals)" }
                     },
-                    Returns = new ReturnSchema { ContentType = "audio/mpeg", Streaming = false }
+                    Returns = new ReturnSchema { ContentType = "audio/mpeg", Streaming = false, MediaCategory = "audio", OutputEndpoint = "/music-gen/jobs/{id}/output" }
                 },
                 new()
                 {
@@ -166,7 +173,7 @@ public static class DiscoverEndpoints
                     Method = "GET",
                     Path = "/music-gen/jobs/{id}/output",
                     Description = "Download generated MP3. Use ?clip=0 (default) or ?clip=1 for the second variation",
-                    Returns = new ReturnSchema { ContentType = "audio/mpeg", Streaming = false }
+                    Returns = new ReturnSchema { ContentType = "audio/mpeg", Streaming = false, MediaCategory = "audio" }
                 }
             },
             _ => new List<EndpointManifest>()

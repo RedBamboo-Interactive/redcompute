@@ -1,3 +1,5 @@
+using System.IO;
+using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using RedCompute.Core.Jobs;
 
@@ -31,6 +33,19 @@ public partial class JobViewModel : ObservableObject
         _ => "#ADAEB3"
     };
 
+    public string? OutputMediaCategory => OutputContentType switch
+    {
+        string ct when ct.StartsWith("image/") => "image",
+        string ct when ct.StartsWith("audio/") => "audio",
+        string ct when ct.StartsWith("video/") => "video",
+        _ => null
+    };
+
+    public bool IsImageOutput => OutputMediaCategory == "image";
+    public bool IsAudioOutput => OutputMediaCategory == "audio";
+    public bool IsVideoOutput => OutputMediaCategory == "video";
+    public bool HasOutputFile => OutputLocation != null && File.Exists(OutputLocation);
+
     public string Summary
     {
         get
@@ -55,6 +70,35 @@ public partial class JobViewModel : ObservableObject
         : OutputSizeBytes.Value < 1048576 ? $"{OutputSizeBytes.Value / 1024.0:F1}KB"
         : $"{OutputSizeBytes.Value / 1048576.0:F1}MB"
         : "—";
+
+    private BitmapImage? _outputImageSource;
+    private bool _imageLoaded;
+
+    public BitmapImage? OutputImageSource
+    {
+        get
+        {
+            if (!_imageLoaded)
+            {
+                _imageLoaded = true;
+                if (IsImageOutput && HasOutputFile)
+                {
+                    try
+                    {
+                        var bmp = new BitmapImage();
+                        bmp.BeginInit();
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.UriSource = new Uri(OutputLocation!);
+                        bmp.EndInit();
+                        bmp.Freeze();
+                        _outputImageSource = bmp;
+                    }
+                    catch { }
+                }
+            }
+            return _outputImageSource;
+        }
+    }
 
     public JobViewModel(JobRecord record)
     {

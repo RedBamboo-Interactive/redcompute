@@ -405,32 +405,168 @@
 
                             <!-- Output Section -->
                             <Border Background="#15FFFFFF" CornerRadius="8" Padding="12" Margin="0,0,0,8"
-                                    Visibility="{Binding JobsTab.SelectedJob.OutputLocation, Converter={StaticResource NullableToVisibilityConverter}}">
+                                    Visibility="{Binding JobsTab.SelectedJob.OutputContentType, Converter={StaticResource NullableToVisibilityConverter}}">
                                 <StackPanel>
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                                        <materialDesign:PackIcon Kind="CheckCircle" Width="16" Height="16" VerticalAlignment="Center"
-                                                                 Foreground="#43A25A"/>
-                                        <TextBlock Text="Output" Foreground="#43A25A"
-                                                   FontSize="12" FontWeight="Medium"
-                                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                    </StackPanel>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="80"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition/>
-                                            <RowDefinition/>
-                                            <RowDefinition/>
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Location" Foreground="White" FontSize="11" Opacity="0.5" Margin="0,2"/>
-                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.OutputLocation}" Foreground="White" FontSize="11" FontFamily="Consolas" Margin="0,2" TextWrapping="Wrap"/>
-                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Size" Foreground="White" FontSize="11" Opacity="0.5" Margin="0,2"/>
-                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.OutputSizeDisplay}" Foreground="White" FontSize="11" Margin="0,2"/>
-                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Type" Foreground="White" FontSize="11" Opacity="0.5" Margin="0,2"/>
-                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.OutputContentType}" Foreground="White" FontSize="11" Margin="0,2"/>
+                                    <!-- Header with actions -->
+                                    <Grid Margin="0,0,0,8">
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="CheckCircle" Width="16" Height="16" VerticalAlignment="Center"
+                                                                     Foreground="#43A25A"/>
+                                            <TextBlock Text="Output" Foreground="#43A25A"
+                                                       FontSize="12" FontWeight="Medium"
+                                                       VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <StackPanel.Style>
+                                                <Style TargetType="StackPanel">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding JobsTab.SelectedJob.HasOutputFile}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </StackPanel.Style>
+                                            <Button Click="OpenOutputFile_Click"
+                                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                                    Padding="6,2" Height="24" MinWidth="0"
+                                                    ToolTip="Open file">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <materialDesign:PackIcon Kind="OpenInNew" Width="14" Height="14" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Open" FontSize="11" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Button>
+                                            <Button Click="OpenOutputFolder_Click"
+                                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                                    Padding="6,2" Height="24" MinWidth="0"
+                                                    ToolTip="Open containing folder">
+                                                <materialDesign:PackIcon Kind="FolderOpenOutline" Width="14" Height="14"/>
+                                            </Button>
+                                        </StackPanel>
                                     </Grid>
+
+                                    <!-- Image Preview -->
+                                    <Border CornerRadius="6" Margin="0,0,0,8" ClipToBounds="True"
+                                            HorizontalAlignment="Center">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding JobsTab.SelectedJob.IsImageOutput}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Image Source="{Binding JobsTab.SelectedJob.OutputImageSource}"
+                                               MaxHeight="400" Stretch="Uniform"
+                                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                                    </Border>
+
+                                    <!-- Audio Player -->
+                                    <Border CornerRadius="6" Margin="0,0,0,8" Padding="12,10"
+                                            Background="#10FFFFFF">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding JobsTab.SelectedJob.IsAudioOutput}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="36"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <MediaElement x:Name="AudioPlayer"
+                                                          LoadedBehavior="Manual" UnloadedBehavior="Close"
+                                                          Volume="1.0" Visibility="Collapsed"
+                                                          MediaOpened="Media_MediaOpened"
+                                                          MediaEnded="Media_MediaEnded"/>
+                                            <Button x:Name="AudioPlayPauseBtn" Grid.Column="0"
+                                                    Click="PlayPause_Click"
+                                                    Style="{StaticResource MaterialDesignFlatButton}"
+                                                    Padding="0" MinWidth="0" Width="32" Height="32">
+                                                <materialDesign:PackIcon x:Name="AudioPlayPauseIcon"
+                                                                         Kind="Play" Width="20" Height="20"
+                                                                         Foreground="{DynamicResource AccentGreen}"/>
+                                            </Button>
+                                            <Slider x:Name="AudioSeekSlider" Grid.Column="1"
+                                                    Minimum="0" Maximum="100" Value="0"
+                                                    VerticalAlignment="Center" Margin="8,0"
+                                                    PreviewMouseLeftButtonUp="AudioSeek_MouseUp"
+                                                    PreviewMouseLeftButtonDown="AudioSeek_MouseDown"
+                                                    Style="{StaticResource MaterialDesignDiscreteSlider}"
+                                                    Foreground="{DynamicResource AccentGreen}"/>
+                                            <TextBlock x:Name="AudioTimeText" Grid.Column="2"
+                                                       Text="0:00 / 0:00"
+                                                       Foreground="White" Opacity="0.5"
+                                                       FontSize="11" FontFamily="Consolas"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- Video Player -->
+                                    <Border CornerRadius="6" Margin="0,0,0,8" ClipToBounds="True">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding JobsTab.SelectedJob.IsVideoOutput}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <StackPanel>
+                                            <MediaElement x:Name="VideoPlayer"
+                                                          LoadedBehavior="Manual" UnloadedBehavior="Close"
+                                                          MaxHeight="400" Stretch="Uniform"
+                                                          Volume="1.0"
+                                                          MediaOpened="VideoMedia_Opened"
+                                                          MediaEnded="VideoMedia_Ended"/>
+                                            <Grid Margin="0,6,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="36"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Button x:Name="VideoPlayPauseBtn" Grid.Column="0"
+                                                        Click="VideoPlayPause_Click"
+                                                        Style="{StaticResource MaterialDesignFlatButton}"
+                                                        Padding="0" MinWidth="0" Width="32" Height="32">
+                                                    <materialDesign:PackIcon x:Name="VideoPlayPauseIcon"
+                                                                             Kind="Play" Width="20" Height="20"
+                                                                             Foreground="{DynamicResource AccentGreen}"/>
+                                                </Button>
+                                                <Slider x:Name="VideoSeekSlider" Grid.Column="1"
+                                                        Minimum="0" Maximum="100" Value="0"
+                                                        VerticalAlignment="Center" Margin="8,0"
+                                                        PreviewMouseLeftButtonUp="VideoSeek_MouseUp"
+                                                        PreviewMouseLeftButtonDown="VideoSeek_MouseDown"
+                                                        Style="{StaticResource MaterialDesignDiscreteSlider}"
+                                                        Foreground="{DynamicResource AccentGreen}"/>
+                                                <TextBlock x:Name="VideoTimeText" Grid.Column="2"
+                                                           Text="0:00 / 0:00"
+                                                           Foreground="White" Opacity="0.5"
+                                                           FontSize="11" FontFamily="Consolas"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Output metadata -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                        <TextBlock Text="{Binding JobsTab.SelectedJob.OutputSizeDisplay}"
+                                                   Foreground="White" FontSize="11" Opacity="0.4"/>
+                                        <TextBlock Text="  ·  " Foreground="White" FontSize="11" Opacity="0.3"/>
+                                        <TextBlock Text="{Binding JobsTab.SelectedJob.OutputContentType}"
+                                                   Foreground="White" FontSize="11" Opacity="0.4"/>
+                                    </StackPanel>
                                 </StackPanel>
                             </Border>
 
