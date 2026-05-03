@@ -1,6 +1,8 @@
 using System.IO;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
+using MaterialDesignThemes.Wpf;
 using RedCompute.Core.Jobs;
 
 namespace RedCompute.App.ViewModels;
@@ -24,16 +26,32 @@ public partial class JobViewModel : ObservableObject
     public long? OutputSizeBytes { get; }
     public string? OutputContentType { get; }
     public string? CallerInfo { get; }
+    public string? Name { get; }
+    public string? Rationale { get; }
 
     public bool IsRunning => Status == JobStatus.Running;
 
-    public string StatusColor => Status switch
+    public string DisplayName => Name ?? CapabilitySlug.ToUpper();
+
+    public PackIconKind IconKind => CapabilitySlug switch
     {
-        JobStatus.Completed => "#43A25A",
-        JobStatus.Running => "#FFB74D",
-        JobStatus.Failed => "#FF5252",
-        JobStatus.Cancelled => "#72767D",
-        _ => "#ADAEB3"
+        "tts" => PackIconKind.VolumeHigh,
+        "stt" => PackIconKind.Microphone,
+        "image-gen" => PackIconKind.Image,
+        "music-gen" => PackIconKind.MusicNote,
+        "llm" => PackIconKind.Brain,
+        "video-gen" => PackIconKind.Video,
+        _ => PackIconKind.Cog
+    };
+
+    public SolidColorBrush StatusBrush => Status switch
+    {
+        JobStatus.Queued => FriezeColors.Queued,
+        JobStatus.Running => FriezeColors.Running,
+        JobStatus.Completed => FriezeColors.Completed,
+        JobStatus.Failed => FriezeColors.Failed,
+        JobStatus.Cancelled => FriezeColors.Cancelled,
+        _ => FriezeColors.Cancelled
     };
 
     public string? OutputMediaCategory => OutputContentType switch
@@ -60,15 +78,6 @@ public partial class JobViewModel : ObservableObject
         ? ClipPaths[SelectedClipIndex] : null;
 
     partial void OnSelectedClipIndexChanged(int value) => OnPropertyChanged(nameof(SelectedClipPath));
-
-    public string Summary
-    {
-        get
-        {
-            var duration = DurationMs.HasValue ? $" ({DurationMs}ms)" : "";
-            return $"{CapabilitySlug.ToUpper()}{duration}";
-        }
-    }
 
     public string TimeDisplay => QueuedAt.ToLocalTime().ToString("HH:mm:ss");
 
@@ -131,6 +140,8 @@ public partial class JobViewModel : ObservableObject
         OutputSizeBytes = record.OutputSizeBytes;
         OutputContentType = record.OutputContentType;
         CallerInfo = record.CallerInfo;
+        Name = string.IsNullOrWhiteSpace(record.Name) ? null : record.Name;
+        Rationale = string.IsNullOrWhiteSpace(record.Rationale) ? null : record.Rationale;
 
         ClipPaths = BuildClipPaths(record);
     }

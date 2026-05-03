@@ -69,8 +69,14 @@ public static class CapabilityEndpoints
             if (body.TryGetValue("speed", out var speed) && speed != null)
                 backendBody["speed"] = speed;
 
+            var jobName = body.GetValueOrDefault("name")?.ToString()
+                ?? ctx.Request.Headers["X-Job-Name"].FirstOrDefault();
+            var jobRationale = body.GetValueOrDefault("rationale")?.ToString()
+                ?? ctx.Request.Headers["X-Job-Rationale"].FirstOrDefault();
+
             var job = jobTracker.CreateJob("tts", entry.ActiveProvider.Name,
-                JsonSerializer.Serialize(body), ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), idempotencyKey);
+                JsonSerializer.Serialize(body), ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), idempotencyKey,
+                name: jobName, rationale: jobRationale);
 
             jobTracker.MarkRunning(job.Id);
             log($"[TTS] Job {job.Id} started: \"{Truncate(text, 50)}\" voice={voice}");

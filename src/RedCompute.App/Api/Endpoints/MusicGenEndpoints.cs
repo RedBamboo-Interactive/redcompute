@@ -37,8 +37,14 @@ public static class MusicGenEndpoints
                 return Results.Json(new ErrorResponse { Error = "validation_failed", Message = "One or more parameters are invalid", Fields = new() { ["prompt"] = "required" } }, statusCode: 422);
 
             var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
+            var jobName = body.GetValueOrDefault("name")?.ToString()
+                ?? ctx.Request.Headers["X-Job-Name"].FirstOrDefault();
+            var jobRationale = body.GetValueOrDefault("rationale")?.ToString()
+                ?? ctx.Request.Headers["X-Job-Rationale"].FirstOrDefault();
+
             var job = jobTracker.CreateJob("music-gen", entry.ActiveProvider.Name,
-                JsonSerializer.Serialize(body), ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), idempotencyKey);
+                JsonSerializer.Serialize(body), ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), idempotencyKey,
+                name: jobName, rationale: jobRationale);
             jobTracker.MarkRunning(job.Id);
 
             var prompt = body.GetValueOrDefault("prompt")?.ToString() ?? "";

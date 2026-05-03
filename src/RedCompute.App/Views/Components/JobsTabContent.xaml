@@ -215,11 +215,13 @@
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Ellipse Grid.Column="0" Width="10" Height="10"
-                                             Fill="{Binding StatusColor, Converter={StaticResource StringToBrush}}"
-                                             VerticalAlignment="Center" HorizontalAlignment="Center">
-                                        <Ellipse.Style>
-                                            <Style TargetType="Ellipse">
+                                    <materialDesign:PackIcon Grid.Column="0"
+                                                             Kind="{Binding IconKind}"
+                                                             Width="18" Height="18"
+                                                             Foreground="{Binding StatusBrush}"
+                                                             VerticalAlignment="Center" HorizontalAlignment="Center">
+                                        <materialDesign:PackIcon.Style>
+                                            <Style TargetType="materialDesign:PackIcon">
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding IsRunning}" Value="True">
                                                         <DataTrigger.EnterActions>
@@ -241,11 +243,16 @@
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
-                                        </Ellipse.Style>
-                                    </Ellipse>
+                                        </materialDesign:PackIcon.Style>
+                                    </materialDesign:PackIcon>
 
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
-                                        <TextBlock Text="{Binding Summary}" Foreground="White" FontWeight="Medium" FontSize="13"/>
+                                        <TextBlock Text="{Binding DisplayName}" Foreground="White" FontWeight="Medium" FontSize="13"/>
+                                        <TextBlock Text="{Binding Rationale}"
+                                                   Foreground="White"
+                                                   FontSize="11" Opacity="0.4"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding Rationale, Converter={StaticResource NullableToVisibilityConverter}}"/>
                                         <TextBlock Text="{Binding ProviderName}"
                                                    Foreground="White"
                                                    FontSize="11" Opacity="0.5"
@@ -332,31 +339,43 @@
                                             <RowDefinition/>
                                             <RowDefinition/>
                                             <RowDefinition/>
+                                            <RowDefinition/>
+                                            <RowDefinition/>
                                         </Grid.RowDefinitions>
 
                                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Job ID" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
                                         <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.Id}" Foreground="White" FontSize="12" FontFamily="Consolas" Margin="0,3"/>
 
-                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Capability" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
-                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.CapabilitySlug}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Name" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"
+                                                   Visibility="{Binding JobsTab.SelectedJob.Name, Converter={StaticResource NullableToVisibilityConverter}}"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.Name}" Foreground="White" FontSize="12" Margin="0,3"
+                                                   Visibility="{Binding JobsTab.SelectedJob.Name, Converter={StaticResource NullableToVisibilityConverter}}"/>
 
-                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Provider" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
-                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.ProviderName}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Rationale" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"
+                                                   Visibility="{Binding JobsTab.SelectedJob.Rationale, Converter={StaticResource NullableToVisibilityConverter}}"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.Rationale}" Foreground="White" FontSize="12" Margin="0,3" TextWrapping="Wrap"
+                                                   Visibility="{Binding JobsTab.SelectedJob.Rationale, Converter={StaticResource NullableToVisibilityConverter}}"/>
 
-                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Status" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
-                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.Status}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Capability" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.CapabilitySlug}" Foreground="White" FontSize="12" Margin="0,3"/>
 
-                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Duration" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
-                                        <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.DurationDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Provider" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.ProviderName}" Foreground="White" FontSize="12" Margin="0,3"/>
 
-                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Queued At" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
-                                        <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.QueuedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Status" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.Status}" Foreground="White" FontSize="12" Margin="0,3"/>
 
-                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Started At" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
-                                        <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.StartedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Duration" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.DurationDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
 
-                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Completed" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
-                                        <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.CompletedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Queued At" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.QueuedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Started At" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="8" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.StartedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
+
+                                        <TextBlock Grid.Row="9" Grid.Column="0" Text="Completed" Foreground="White" FontSize="12" Opacity="0.5" Margin="0,3"/>
+                                        <TextBlock Grid.Row="9" Grid.Column="1" Text="{Binding JobsTab.SelectedJob.CompletedAtDisplay}" Foreground="White" FontSize="12" Margin="0,3"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>

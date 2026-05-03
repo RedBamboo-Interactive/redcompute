@@ -24,6 +24,9 @@ public class JobRecord
     public string? CallerInfo { get; set; }
     public string? IdempotencyKey { get; set; }
 
+    public string? Name { get; set; }
+    public string? Rationale { get; set; }
+
     public long? DurationMs => CompletedAt.HasValue && StartedAt.HasValue
         ? (long)(CompletedAt.Value - StartedAt.Value).TotalMilliseconds
         : null;

@@ -57,7 +57,9 @@ public static class GlobalEndpoints
                 j.CompletedAt,
                 durationMs = j.DurationMs,
                 j.ErrorMessage,
-                j.CallerInfo
+                j.CallerInfo,
+                j.Name,
+                j.Rationale
             }));
         });
 
@@ -84,7 +86,9 @@ public static class GlobalEndpoints
                 resultMetadata = job.ResultJson,
                 job.ErrorMessage,
                 job.ErrorDetails,
-                job.CallerInfo
+                job.CallerInfo,
+                job.Name,
+                job.Rationale
             });
         });
 

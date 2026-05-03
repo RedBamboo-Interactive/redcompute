@@ -6,4 +6,6 @@ public class JobRequest
     public required Dictionary<string, object?> Parameters { get; init; }
     public string? CallerInfo { get; init; }
     public string? IdempotencyKey { get; init; }
+    public string? Name { get; init; }
+    public string? Rationale { get; init; }
 }

@@ -11,7 +11,7 @@ public class JobTrackingService
     public event Action<JobRecord>? JobCreated;
     public event Action<JobRecord>? JobUpdated;
 
-    public JobRecord CreateJob(string capabilitySlug, string providerName, string inputJson, string? callerInfo = null, string? idempotencyKey = null)
+    public JobRecord CreateJob(string capabilitySlug, string providerName, string inputJson, string? callerInfo = null, string? idempotencyKey = null, string? name = null, string? rationale = null)
     {
         using var db = new RedComputeDbContext();
 
@@ -29,6 +29,8 @@ public class JobTrackingService
             InputJson = inputJson,
             CallerInfo = callerInfo,
             IdempotencyKey = idempotencyKey,
+            Name = name,
+            Rationale = rationale,
             Status = JobStatus.Queued,
             QueuedAt = DateTimeOffset.UtcNow
         };
