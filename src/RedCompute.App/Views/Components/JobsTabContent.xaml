@@ -500,7 +500,6 @@
                                                     VerticalAlignment="Center" Margin="8,0"
                                                     PreviewMouseLeftButtonUp="AudioSeek_MouseUp"
                                                     PreviewMouseLeftButtonDown="AudioSeek_MouseDown"
-                                                    Style="{StaticResource MaterialDesignDiscreteSlider}"
                                                     Foreground="{DynamicResource AccentGreen}"/>
                                             <TextBlock x:Name="AudioTimeText" Grid.Column="2"
                                                        Text="0:00 / 0:00"
@@ -548,7 +547,6 @@
                                                         VerticalAlignment="Center" Margin="8,0"
                                                         PreviewMouseLeftButtonUp="VideoSeek_MouseUp"
                                                         PreviewMouseLeftButtonDown="VideoSeek_MouseDown"
-                                                        Style="{StaticResource MaterialDesignDiscreteSlider}"
                                                         Foreground="{DynamicResource AccentGreen}"/>
                                                 <TextBlock x:Name="VideoTimeText" Grid.Column="2"
                                                            Text="0:00 / 0:00"
