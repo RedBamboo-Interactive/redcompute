@@ -12,7 +12,7 @@ public static class StreamingProxy
         Timeout = TimeSpan.FromMinutes(5)
     };
 
-    public static async Task ForwardAsync(HttpContext ctx, string baseUrl, Dictionary<string, object?> body, Action<string> log)
+    public static async Task ForwardAsync(HttpContext ctx, string baseUrl, Dictionary<string, object?> body, Action<string, Guid?> log)
     {
         var targetUrl = baseUrl.TrimEnd('/') + ctx.Request.Path;
         var json = JsonSerializer.Serialize(body);
@@ -35,7 +35,7 @@ public static class StreamingProxy
         await stream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
     }
 
-    public static async Task ForwardToPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body, Action<string> log)
+    public static async Task ForwardToPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body, Action<string, Guid?> log)
     {
         var targetUrl = baseUrl.TrimEnd('/') + path;
         var json = JsonSerializer.Serialize(body);
@@ -67,7 +67,7 @@ public static class StreamingProxy
         await stream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
     }
 
-    public static async Task ForwardRawAsync(HttpContext ctx, string baseUrl, string? path, Action<string> log)
+    public static async Task ForwardRawAsync(HttpContext ctx, string baseUrl, string? path, Action<string, Guid?> log)
     {
         var targetUrl = baseUrl.TrimEnd('/') + "/" + (path ?? "");
         if (ctx.Request.QueryString.HasValue)

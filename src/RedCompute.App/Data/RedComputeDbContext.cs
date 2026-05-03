@@ -1,6 +1,7 @@
 using System.IO;
 using Microsoft.EntityFrameworkCore;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Logging;
 
 namespace RedCompute.App.Data;
 
@@ -9,6 +10,7 @@ public class RedComputeDbContext : DbContext
     private readonly string _dbPath;
 
     public DbSet<JobRecord> Jobs => Set<JobRecord>();
+    public DbSet<LogEntry> LogEntries => Set<LogEntry>();
 
     public RedComputeDbContext()
     {
@@ -29,6 +31,25 @@ public class RedComputeDbContext : DbContext
             cmd.CommandText = $"ALTER TABLE Jobs ADD COLUMN {col.Item1} {col.Item2}";
             try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
         }
+
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS LogEntries (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                Timestamp TEXT NOT NULL,
+                Tag TEXT NOT NULL DEFAULT '',
+                TagCategory TEXT NOT NULL DEFAULT 'debug',
+                Message TEXT NOT NULL DEFAULT '',
+                FullMessage TEXT NOT NULL DEFAULT '',
+                TagColor TEXT NOT NULL DEFAULT '#72767D',
+                IsMultiline INTEGER NOT NULL DEFAULT 0,
+                IsError INTEGER NOT NULL DEFAULT 0,
+                JobId TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS IX_LogEntries_JobId ON LogEntries(JobId);
+            CREATE INDEX IF NOT EXISTS IX_LogEntries_Timestamp ON LogEntries(Timestamp);
+            CREATE INDEX IF NOT EXISTS IX_LogEntries_Tag ON LogEntries(Tag);
+            """;
+        cmd.ExecuteNonQuery();
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -56,6 +77,17 @@ public class RedComputeDbContext : DbContext
             entity.HasIndex(j => j.QueuedAt);
             entity.HasIndex(j => j.IdempotencyKey).IsUnique(false);
             entity.Ignore(j => j.DurationMs);
+        });
+
+        modelBuilder.Entity<LogEntry>(entity =>
+        {
+            entity.HasKey(l => l.Id);
+            entity.Property(l => l.Id).ValueGeneratedOnAdd();
+            entity.HasIndex(l => l.JobId);
+            entity.HasIndex(l => l.Timestamp);
+            entity.HasIndex(l => l.Tag);
+            entity.Ignore(l => l.TimestampText);
+            entity.Ignore(l => l.PreviewMessage);
         });
     }
 }

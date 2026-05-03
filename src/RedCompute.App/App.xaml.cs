@@ -18,6 +18,7 @@ public partial class App : Application
     private DispatcherTimer? _cleanupTimer;
 
     public static FileLoggerService FileLogger { get; } = new();
+    public static LoggingService Logger { get; private set; } = null!;
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
@@ -35,11 +36,14 @@ public partial class App : Application
 
         base.OnStartup(e);
 
+        InitializeDatabase();
+
+        Logger = new LoggingService(FileLogger);
+        Logger.LogEntryCreated += MainViewModel.ConsoleLog.AddEntry;
+
         ConfigManager.Load();
         MainViewModel.LoadSettingsFromConfig();
         Log("[App] Configuration loaded");
-
-        InitializeDatabase();
         InitializeCapabilities();
         await StartRelayServer();
         _ = ProbeRunningBackends();
@@ -54,6 +58,7 @@ public partial class App : Application
             await _relayServer.StopAsync();
         await Registry.StopAll();
         SaveWindowState();
+        Logger.Dispose();
         FileLogger.Dispose();
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();
@@ -87,7 +92,7 @@ public partial class App : Application
             IBackendProvider? provider = null;
             if (capConfig.ActiveProvider != null && capConfig.Providers.TryGetValue(capConfig.ActiveProvider, out var providerConfig))
             {
-                provider = ProviderFactory.Create(definition.Type, providerConfig, Log);
+                provider = ProviderFactory.Create(definition.Type, providerConfig, s => Log(s));
             }
 
             Registry.Register(slug, definition, capConfig, provider);
@@ -117,7 +122,7 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Log);
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, (msg, jobId) => Log(msg, jobId));
 
         try
         {
@@ -134,9 +139,10 @@ public partial class App : Application
         _cleanupTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(1) };
         _cleanupTimer.Tick += (_, _) =>
         {
-            var deleted = JobTracker.CleanupOldJobs(ConfigManager.Config.JobRetentionDays);
-            if (deleted > 0)
-                Log($"[App] Cleaned up {deleted} old jobs (>{ConfigManager.Config.JobRetentionDays} days)");
+            var deletedJobs = JobTracker.CleanupOldJobs(ConfigManager.Config.JobRetentionDays);
+            var deletedLogs = Logger.CleanupOldLogs(ConfigManager.Config.JobRetentionDays);
+            if (deletedJobs > 0 || deletedLogs > 0)
+                Log($"[App] Cleaned up {deletedJobs} jobs, {deletedLogs} log entries (>{ConfigManager.Config.JobRetentionDays} days)");
         };
         _cleanupTimer.Start();
     }
@@ -166,11 +172,17 @@ public partial class App : Application
         ConfigManager.Save();
     }
 
-    public static void Log(string message)
+    public static void Log(string message, Guid? jobId = null)
     {
-        var timestamped = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
-        Console.WriteLine(timestamped);
-        FileLogger.Write(timestamped);
-        MainViewModel.AddLog(timestamped);
+        if (Logger != null)
+        {
+            Logger.Log(message, jobId);
+        }
+        else
+        {
+            var timestamped = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
+            Console.WriteLine(timestamped);
+            FileLogger.Write(timestamped);
+        }
     }
 }

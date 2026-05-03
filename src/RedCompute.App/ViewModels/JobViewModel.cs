@@ -1,9 +1,11 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using MaterialDesignThemes.Wpf;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Logging;
 
 namespace RedCompute.App.ViewModels;
 
@@ -28,6 +30,11 @@ public partial class JobViewModel : ObservableObject
     public string? CallerInfo { get; }
     public string? Name { get; }
     public string? Rationale { get; }
+
+    public ObservableCollection<LogEntry> LogEntries { get; } = new();
+    public bool HasJobLogs => LogEntries.Count > 0;
+
+    public void NotifyLogsChanged() => OnPropertyChanged(nameof(HasJobLogs));
 
     public bool IsRunning => Status == JobStatus.Running;
 

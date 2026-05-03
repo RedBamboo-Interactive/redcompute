@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedCompute.App.Helpers;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Jobs;
@@ -185,6 +186,107 @@ public static class GlobalEndpoints
 
             await entry.ActiveProvider.StopAsync();
             return Results.Ok(new { slug, status = "Stopped" });
+        });
+
+        // ============================================================
+        // LOG ENDPOINTS (AI-Native)
+        // ============================================================
+
+        app.MapGet("/jobs/{id:guid}/logs", (Guid id, string? tag, int? limit, int? offset) =>
+        {
+            var job = jobTracker.GetJob(id);
+            if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+
+            var logs = App.Logger.GetLogsForJob(id, tag, limit ?? 100, offset ?? 0);
+            var totalCount = App.Logger.GetLogCountForJob(id);
+
+            return Results.Ok(new
+            {
+                jobId = id,
+                jobName = job.Name,
+                jobStatus = job.Status.ToString(),
+                totalLogCount = totalCount,
+                entries = logs.Select(l => new
+                {
+                    l.Id,
+                    timestamp = l.Timestamp.ToString("O"),
+                    l.Tag,
+                    l.TagCategory,
+                    l.Message,
+                    fullMessage = l.FullMessage,
+                    l.IsMultiline,
+                    l.IsError
+                })
+            });
+        });
+
+        app.MapGet("/logs", (string? tag, string? search, string? since, string? until, Guid? jobId, string? level, int? limit, int? offset) =>
+        {
+            DateTime? sinceDate = since != null ? DateTime.Parse(since).ToUniversalTime() : null;
+            DateTime? untilDate = until != null ? DateTime.Parse(until).ToUniversalTime() : null;
+            bool? errorsOnly = level == "error" ? true : null;
+
+            var (entries, totalCount) = App.Logger.QueryLogs(tag, search, sinceDate, untilDate, jobId, errorsOnly, limit ?? 100, offset ?? 0);
+
+            return Results.Ok(new
+            {
+                totalCount,
+                returnedCount = entries.Count,
+                offset = offset ?? 0,
+                entries = entries.Select(l => new
+                {
+                    l.Id,
+                    timestamp = l.Timestamp.ToString("O"),
+                    l.Tag,
+                    l.TagCategory,
+                    l.Message,
+                    fullMessage = l.FullMessage,
+                    l.IsMultiline,
+                    l.IsError,
+                    l.JobId
+                })
+            });
+        });
+
+        app.MapGet("/logs/tags", () =>
+        {
+            var tagDefs = LogEntryParser.GetTagDefinitions();
+            var counts = App.Logger.GetTagCounts(DateTime.Now.AddHours(-24));
+
+            var tags = tagDefs.Select(kvp => new
+            {
+                tag = kvp.Key,
+                category = kvp.Value.Category,
+                color = kvp.Value.Color,
+                recentCount = counts.GetValueOrDefault(kvp.Key, 0)
+            }).OrderByDescending(t => t.recentCount).ToList();
+
+            return Results.Ok(new { tags });
+        });
+
+        app.MapGet("/logs/summary", () =>
+        {
+            var since = DateTime.Now.Date;
+            var (entries, totalCount) = App.Logger.QueryLogs(since: since, limit: 10000);
+            var errorCount = entries.Count(e => e.IsError);
+            var byTag = entries.Where(e => e.Tag != "").GroupBy(e => e.Tag)
+                .ToDictionary(g => g.Key, g => g.Count());
+            var recentErrors = entries.Where(e => e.IsError).Take(10).Select(e => new
+            {
+                timestamp = e.Timestamp.ToString("O"),
+                e.Tag,
+                e.Message,
+                e.JobId
+            });
+
+            return Results.Ok(new
+            {
+                since = since.ToString("O"),
+                totalEntries = totalCount,
+                errorCount,
+                byTag,
+                recentErrors
+            });
         });
     }
 

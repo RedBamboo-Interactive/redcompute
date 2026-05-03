@@ -18,7 +18,7 @@ public static class ImageGenEndpoints
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "RedCompute", "outputs");
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string> log)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log)
     {
         Directory.CreateDirectory(OutputDir);
 
@@ -49,7 +49,7 @@ public static class ImageGenEndpoints
 
             var prompt = body.GetValueOrDefault("prompt")?.ToString() ?? "";
             var workflow = body.GetValueOrDefault("workflow")?.ToString() ?? "default";
-            log($"[ImageGen] Job {job.Id} started: \"{Truncate(prompt, 60)}\" workflow={workflow}");
+            log($"[ImageGen] Job {job.Id} started: \"{Truncate(prompt, 60)}\" workflow={workflow}", job.Id);
 
             if (entry.ActiveProvider is ComfyUIProvider comfyProvider)
                 comfyProvider.ProgressCallback = frac => jobTracker.UpdateProgress(job.Id, frac);
@@ -77,18 +77,18 @@ public static class ImageGenEndpoints
                             var path = SaveOutput(job.Id, result.OutputStream, result.ContentType);
                             var size = new FileInfo(path).Length;
                             jobTracker.MarkCompleted(job.Id, path, size, result.ContentType, result.ResultJson);
-                            log($"[ImageGen] Job {job.Id} completed ({size / 1024}KB)");
+                            log($"[ImageGen] Job {job.Id} completed ({size / 1024}KB)", job.Id);
                         }
                         else
                         {
                             jobTracker.MarkFailed(job.Id, result?.ErrorMessage ?? "Generation failed");
-                            log($"[ImageGen] Job {job.Id} failed: {result?.ErrorMessage}");
+                            log($"[ImageGen] Job {job.Id} failed: {result?.ErrorMessage}", job.Id);
                         }
                     }
                     catch (Exception ex)
                     {
                         jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                        log($"[ImageGen] Job {job.Id} failed: {ex.Message}");
+                        log($"[ImageGen] Job {job.Id} failed: {ex.Message}", job.Id);
                     }
                 });
 
@@ -104,7 +104,7 @@ public static class ImageGenEndpoints
                     var path = SaveOutput(job.Id, result.OutputStream, result.ContentType);
                     var size = new FileInfo(path).Length;
                     jobTracker.MarkCompleted(job.Id, path, size, result.ContentType, result.ResultJson);
-                    log($"[ImageGen] Job {job.Id} completed ({size / 1024}KB)");
+                    log($"[ImageGen] Job {job.Id} completed ({size / 1024}KB)", job.Id);
 
                     result.OutputStream.Position = 0;
                     ctx.Response.ContentType = result.ContentType ?? "image/png";
@@ -122,20 +122,20 @@ public static class ImageGenEndpoints
             catch (HttpRequestException ex)
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                log($"[ImageGen] Job {job.Id} failed (connection): {ex.Message}");
+                log($"[ImageGen] Job {job.Id} failed (connection): {ex.Message}", job.Id);
                 _ = entry.ActiveProvider.GetStatusAsync();
                 return ErrorResult(502, "backend_unavailable", $"Backend connection failed: {ex.Message}");
             }
             catch (TaskCanceledException)
             {
                 jobTracker.MarkCancelled(job.Id);
-                log($"[ImageGen] Job {job.Id} cancelled");
+                log($"[ImageGen] Job {job.Id} cancelled", job.Id);
                 return Results.Empty;
             }
             catch (Exception ex)
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                log($"[ImageGen] Job {job.Id} failed: {ex.Message}");
+                log($"[ImageGen] Job {job.Id} failed: {ex.Message}", job.Id);
                 return ErrorResult(500, "generation_failed", ex.Message);
             }
         });

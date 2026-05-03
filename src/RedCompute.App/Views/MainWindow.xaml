@@ -413,31 +413,7 @@
                                                          ToolTip="Logs" Style="{StaticResource NavRailIcon}"/>
                             </Border>
                         </TabItem.Header>
-                        <DockPanel>
-                            <Grid DockPanel.Dock="Top" Margin="16,16,16,8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="Logs" FontSize="14" FontWeight="SemiBold"
-                                           Foreground="White" VerticalAlignment="Center" Margin="0,0,16,0"/>
-                                <TextBox Grid.Column="1" Text="{Binding LogFilter, UpdateSourceTrigger=PropertyChanged}"
-                                         materialDesign:HintAssist.Hint="Filter logs..."
-                                         Foreground="White" FontFamily="Consolas" FontSize="11"
-                                         VerticalAlignment="Center"/>
-                                <Button Grid.Column="2" Content="Open File" Command="{Binding OpenLogFileCommand}"
-                                        Style="{StaticResource MaterialDesignFlatButton}" Margin="8,0,0,0" FontSize="11"/>
-                                <Button Grid.Column="3" Content="Clear" Command="{Binding ClearLogsCommand}"
-                                        Style="{StaticResource MaterialDesignFlatButton}" Margin="4,0,0,0" FontSize="11"/>
-                            </Grid>
-                            <ListBox x:Name="LogsList" ItemsSource="{Binding LogEntries}" Background="{DynamicResource DeepBackground}" BorderThickness="0"
-                                     FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextMuted}"
-                                     ScrollViewer.CanContentScroll="True"
-                                     VirtualizingPanel.IsVirtualizing="True"
-                                     VirtualizingPanel.VirtualizationMode="Recycling"/>
-                        </DockPanel>
+                        <components:ConsoleTabContent DataContext="{Binding ConsoleLog}"/>
                     </TabItem>
                 </TabControl>
             </Grid>

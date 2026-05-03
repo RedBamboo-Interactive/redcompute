@@ -5,6 +5,7 @@ using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Logging;
 
 namespace RedCompute.App.ViewModels;
 
@@ -36,6 +37,20 @@ public partial class JobsTabViewModel : ObservableObject
 
     [ObservableProperty]
     private JobViewModel? _selectedJob;
+
+    partial void OnSelectedJobChanged(JobViewModel? value)
+    {
+        if (value == null) return;
+        value.LogEntries.Clear();
+        try
+        {
+            var logs = App.Logger.GetLogsForJob(value.Id);
+            foreach (var entry in logs)
+                value.LogEntries.Add(entry);
+        }
+        catch { }
+        value.NotifyLogsChanged();
+    }
 
     private readonly List<JobRecord> _allJobs = new();
 
@@ -82,6 +97,21 @@ public partial class JobsTabViewModel : ObservableObject
         _allJobs.Sort((a, b) => a.QueuedAt.CompareTo(b.QueuedAt));
         RecomputeUnifiedFrieze();
         _elapsedTimer.Start();
+
+        App.Logger.LogEntryCreated += OnLogEntryCreated;
+    }
+
+    private void OnLogEntryCreated(LogEntry entry)
+    {
+        if (entry.JobId == null) return;
+        Application.Current?.Dispatcher?.BeginInvoke(() =>
+        {
+            if (SelectedJob != null && SelectedJob.Id == entry.JobId)
+            {
+                SelectedJob.LogEntries.Add(entry);
+                SelectedJob.NotifyLogsChanged();
+            }
+        });
     }
 
     public void OnJobCreated(JobRecord job)

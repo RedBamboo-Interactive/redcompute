@@ -17,7 +17,7 @@ public static class CapabilityEndpoints
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "RedCompute", "outputs");
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string> log)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log)
     {
         Directory.CreateDirectory(OutputDir);
 
@@ -79,7 +79,7 @@ public static class CapabilityEndpoints
                 name: jobName, rationale: jobRationale);
 
             jobTracker.MarkRunning(job.Id);
-            log($"[TTS] Job {job.Id} started: \"{Truncate(text, 50)}\" voice={voice}");
+            log($"[TTS] Job {job.Id} started: \"{Truncate(text, 50)}\" voice={voice}", job.Id);
 
             try
             {
@@ -148,7 +148,7 @@ public static class CapabilityEndpoints
             catch (HttpRequestException ex)
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                log($"[TTS] Job {job.Id} failed (connection): {ex.Message}");
+                log($"[TTS] Job {job.Id} failed (connection): {ex.Message}", job.Id);
                 _ = entry.ActiveProvider.GetStatusAsync();
                 return ErrorResult(ctx, 502, "backend_unavailable",
                     $"Backend connection failed: {ex.Message}. The backend may have stopped.");
@@ -156,13 +156,13 @@ public static class CapabilityEndpoints
             catch (TaskCanceledException)
             {
                 jobTracker.MarkCancelled(job.Id);
-                log($"[TTS] Job {job.Id} cancelled (client disconnected or timeout)");
+                log($"[TTS] Job {job.Id} cancelled (client disconnected or timeout)", job.Id);
                 return Results.Empty;
             }
             catch (Exception ex)
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                log($"[TTS] Job {job.Id} failed: {ex.Message}");
+                log($"[TTS] Job {job.Id} failed: {ex.Message}", job.Id);
                 return ErrorResult(ctx, 500, "execution_failed", ex.Message);
             }
 
@@ -343,7 +343,7 @@ public static class CapabilityEndpoints
         s.Length <= maxLen ? s : s[..maxLen] + "...";
 
     private static async Task<(bool Ready, string? Error)> EnsureModelReady(
-        string proxyUrl, string voice, string? voicesBasePath, string? baseModel, Action<string> log)
+        string proxyUrl, string voice, string? voicesBasePath, string? baseModel, Action<string, Guid?> log)
     {
         // Check if the backend already has this speaker loaded
         try
@@ -362,7 +362,7 @@ public static class CapabilityEndpoints
         }
         catch (Exception ex)
         {
-            log($"[TTS] Could not check model info: {ex.Message}");
+            log($"[TTS] Could not check model info: {ex.Message}", null);
         }
 
         // Speaker not loaded — determine which checkpoint to reload
@@ -373,7 +373,7 @@ public static class CapabilityEndpoints
             if (string.IsNullOrEmpty(baseModel))
                 return (false, $"Voice '{voice}' not in current model and no base model configured");
             reloadPath = baseModel;
-            log($"[TTS] Reloading base model for built-in voice '{voice}': {reloadPath}");
+            log($"[TTS] Reloading base model for built-in voice '{voice}': {reloadPath}", null);
         }
         else
         {
@@ -384,7 +384,7 @@ public static class CapabilityEndpoints
             if (!Directory.Exists(checkpointPath))
                 return (false, $"Voice '{voice}' not found. No checkpoint at: {checkpointPath}");
             reloadPath = TtsVoiceDiscovery.ConvertToWslPath(checkpointPath);
-            log($"[TTS] Reloading checkpoint for custom voice '{voice}': {reloadPath}");
+            log($"[TTS] Reloading checkpoint for custom voice '{voice}': {reloadPath}", null);
         }
 
         try
@@ -396,12 +396,12 @@ public static class CapabilityEndpoints
 
             if (response.IsSuccessStatusCode)
             {
-                log($"[TTS] Model reloaded for voice '{voice}'");
+                log($"[TTS] Model reloaded for voice '{voice}'", null);
                 return (true, null);
             }
 
             var errorBody = await response.Content.ReadAsStringAsync();
-            log($"[TTS] Model reload failed: {response.StatusCode} - {errorBody}");
+            log($"[TTS] Model reload failed: {response.StatusCode} - {errorBody}", null);
             return (false, $"Model reload failed ({response.StatusCode}): {errorBody}");
         }
         catch (TaskCanceledException)

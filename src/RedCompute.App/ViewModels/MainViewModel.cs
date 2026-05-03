@@ -16,43 +16,18 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string _statusText = "Starting...";
 
-    private readonly List<string> _allLogEntries = new();
-    public ObservableCollection<string> LogEntries { get; } = new();
     public ObservableCollection<CapabilityCardViewModel> CapabilityCards { get; } = new();
     private readonly Dictionary<string, CapabilityCardViewModel> _cardBySlug = new();
     public JobsTabViewModel JobsTab { get; } = new();
-
-    // Logs
-    [ObservableProperty]
-    private string _logFilter = "";
-
-    partial void OnLogFilterChanged(string value) => ApplyLogFilter();
+    public ConsoleLogViewModel ConsoleLog { get; } = new();
 
     public string LogFilePath => App.FileLogger.LogFilePath;
-
-    [RelayCommand]
-    private void ClearLogs()
-    {
-        _allLogEntries.Clear();
-        LogEntries.Clear();
-    }
 
     [RelayCommand]
     private void OpenLogFile()
     {
         try { Process.Start(new ProcessStartInfo(LogFilePath) { UseShellExecute = true }); }
         catch { }
-    }
-
-    private void ApplyLogFilter()
-    {
-        LogEntries.Clear();
-        var filter = LogFilter;
-        var entries = string.IsNullOrWhiteSpace(filter)
-            ? _allLogEntries
-            : _allLogEntries.Where(e => e.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
-        foreach (var e in entries.TakeLast(2000))
-            LogEntries.Add(e);
     }
 
     // Settings
@@ -110,24 +85,6 @@ public partial class MainViewModel : ObservableObject
         App.ConfigManager.Config.JobRetentionDays = JobRetentionDays;
         App.ConfigManager.Save();
         App.Log("[Settings] Configuration saved");
-    }
-
-    public void AddLog(string entry)
-    {
-        Application.Current?.Dispatcher?.BeginInvoke(() =>
-        {
-            _allLogEntries.Add(entry);
-            if (_allLogEntries.Count > 10000)
-                _allLogEntries.RemoveAt(0);
-
-            if (string.IsNullOrWhiteSpace(LogFilter) ||
-                entry.Contains(LogFilter, StringComparison.OrdinalIgnoreCase))
-            {
-                LogEntries.Add(entry);
-                if (LogEntries.Count > 5000)
-                    LogEntries.RemoveAt(0);
-            }
-        });
     }
 
     public void RefreshCapabilities()

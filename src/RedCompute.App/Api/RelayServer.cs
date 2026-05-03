@@ -18,9 +18,9 @@ public class RelayServer
     private readonly RedComputeConfig _config;
     private readonly CapabilityRegistry _registry;
     private readonly JobTrackingService _jobTracker;
-    private readonly Action<string> _log;
+    private readonly Action<string, Guid?> _log;
 
-    public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string> log)
+    public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log)
     {
         _config = config;
         _registry = registry;
@@ -48,16 +48,16 @@ public class RelayServer
         MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
 
-        _log($"[Relay] Starting on port {_config.ApiPort}");
+        _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);
-        _log($"[Relay] Listening at http://localhost:{_config.ApiPort}");
+        _log($"[Relay] Listening at http://localhost:{_config.ApiPort}", null);
     }
 
     public async Task StopAsync()
     {
         if (_app != null)
         {
-            _log("[Relay] Shutting down");
+            _log("[Relay] Shutting down", null);
             await _app.StopAsync();
             await _app.DisposeAsync();
             _app = null;

@@ -18,7 +18,7 @@ public static class MusicGenEndpoints
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "RedCompute", "outputs");
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string> log)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log)
     {
         Directory.CreateDirectory(OutputDir);
 
@@ -48,7 +48,7 @@ public static class MusicGenEndpoints
             jobTracker.MarkRunning(job.Id);
 
             var prompt = body.GetValueOrDefault("prompt")?.ToString() ?? "";
-            log($"[MusicGen] Job {job.Id} started: \"{Truncate(prompt, 60)}\"");
+            log($"[MusicGen] Job {job.Id} started: \"{Truncate(prompt, 60)}\"", job.Id);
 
             if (entry.ActiveProvider is SunoProvider sunoProvider)
                 sunoProvider.ProgressCallback = frac => jobTracker.UpdateProgress(job.Id, frac);
@@ -77,18 +77,18 @@ public static class MusicGenEndpoints
                             var size = new FileInfo(path).Length;
                             SaveExtraClips(job.Id, entry.ActiveProvider as SunoProvider);
                             jobTracker.MarkCompleted(job.Id, path, size, "audio/mpeg", result.ResultJson);
-                            log($"[MusicGen] Job {job.Id} completed ({size / 1024}KB)");
+                            log($"[MusicGen] Job {job.Id} completed ({size / 1024}KB)", job.Id);
                         }
                         else
                         {
                             jobTracker.MarkFailed(job.Id, result?.ErrorMessage ?? "Generation failed");
-                            log($"[MusicGen] Job {job.Id} failed: {result?.ErrorMessage}");
+                            log($"[MusicGen] Job {job.Id} failed: {result?.ErrorMessage}", job.Id);
                         }
                     }
                     catch (Exception ex)
                     {
                         jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                        log($"[MusicGen] Job {job.Id} failed: {ex.Message}");
+                        log($"[MusicGen] Job {job.Id} failed: {ex.Message}", job.Id);
                     }
                 });
 
@@ -105,7 +105,7 @@ public static class MusicGenEndpoints
                     var size = new FileInfo(path).Length;
                     SaveExtraClips(job.Id, entry.ActiveProvider as SunoProvider);
                     jobTracker.MarkCompleted(job.Id, path, size, "audio/mpeg", result.ResultJson);
-                    log($"[MusicGen] Job {job.Id} completed ({size / 1024}KB)");
+                    log($"[MusicGen] Job {job.Id} completed ({size / 1024}KB)", job.Id);
 
                     result.OutputStream.Position = 0;
                     ctx.Response.ContentType = "audio/mpeg";
@@ -123,19 +123,19 @@ public static class MusicGenEndpoints
             catch (HttpRequestException ex)
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                log($"[MusicGen] Job {job.Id} failed (connection): {ex.Message}");
+                log($"[MusicGen] Job {job.Id} failed (connection): {ex.Message}", job.Id);
                 return ErrorResult(502, "backend_unavailable", $"Suno API connection failed: {ex.Message}");
             }
             catch (TaskCanceledException)
             {
                 jobTracker.MarkCancelled(job.Id);
-                log($"[MusicGen] Job {job.Id} cancelled");
+                log($"[MusicGen] Job {job.Id} cancelled", job.Id);
                 return Results.Empty;
             }
             catch (Exception ex)
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
-                log($"[MusicGen] Job {job.Id} failed: {ex.Message}");
+                log($"[MusicGen] Job {job.Id} failed: {ex.Message}", job.Id);
                 return ErrorResult(500, "generation_failed", ex.Message);
             }
         });

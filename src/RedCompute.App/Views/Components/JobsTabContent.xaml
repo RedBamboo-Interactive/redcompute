@@ -537,6 +537,61 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Logs Section -->
+                            <Border Background="#15FFFFFF" CornerRadius="8" Padding="12" Margin="0,0,0,8">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding JobsTab.SelectedJob.HasJobLogs}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <materialDesign:PackIcon Kind="Console" Width="16" Height="16" VerticalAlignment="Center"
+                                                                 Foreground="#AB47BC"/>
+                                        <TextBlock Text="Logs" Foreground="#AB47BC"
+                                                   FontSize="12" FontWeight="Medium"
+                                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                        <TextBlock Foreground="#72767D" FontSize="11" VerticalAlignment="Center" Margin="4,0,0,0"
+                                                   Text="{Binding JobsTab.SelectedJob.LogEntries.Count, StringFormat='({0})'}"/>
+                                    </StackPanel>
+                                    <ItemsControl ItemsSource="{Binding JobsTab.SelectedJob.LogEntries}" MaxHeight="300">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <DockPanel Margin="0,2">
+                                                    <TextBlock DockPanel.Dock="Left" Text="{Binding TimestampText}"
+                                                               FontFamily="Consolas" FontSize="10" Foreground="#66FFFFFF"
+                                                               VerticalAlignment="Center" Width="72" Margin="0,0,6,0"/>
+                                                    <Border DockPanel.Dock="Left" CornerRadius="3" Padding="4,1" Margin="0,0,6,0"
+                                                            VerticalAlignment="Center"
+                                                            Background="{Binding TagColor, Converter={StaticResource SemiTransparentBrush}}">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Tag}" Value="">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <TextBlock Text="{Binding Tag}" FontSize="9" FontWeight="Medium"
+                                                                   Foreground="{Binding TagColor, Converter={StaticResource StringToBrush}}"/>
+                                                    </Border>
+                                                    <TextBlock Text="{Binding PreviewMessage}" FontFamily="Consolas" FontSize="11"
+                                                               Foreground="#DCDDDE" VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"/>
+                                                </DockPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+
                         </StackPanel>
                     </ScrollViewer>
 

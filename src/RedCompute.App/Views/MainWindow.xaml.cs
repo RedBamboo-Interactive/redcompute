@@ -1,4 +1,3 @@
-using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -46,18 +45,8 @@ public partial class MainWindow : Window
         App.JobTracker.JobUpdated += job => App.MainViewModel.JobsTab.OnJobUpdated(job);
         App.MainViewModel.JobsTab.Initialize();
 
-        App.MainViewModel.LogEntries.CollectionChanged += LogEntries_CollectionChanged;
-
         _trayIcon.Initialize(this);
         _statusTimer.Start();
-    }
-
-    private void LogEntries_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action == NotifyCollectionChangedAction.Add && LogsList != null)
-        {
-            LogsList.ScrollIntoView(LogsList.Items[^1]);
-        }
     }
 
     protected override void OnClosed(EventArgs e)
