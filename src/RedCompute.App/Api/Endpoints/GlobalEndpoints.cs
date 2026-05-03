@@ -28,7 +28,8 @@ public static class GlobalEndpoints
                     entry.Definition.Type,
                     status = status.ToString(),
                     provider = entry.ActiveProvider?.Name,
-                    enabled = entry.Definition.Enabled
+                    enabled = entry.Definition.Enabled,
+                    sleeping = entry.IsSleeping
                 });
             }
 
@@ -186,6 +187,24 @@ public static class GlobalEndpoints
 
             await entry.ActiveProvider.StopAsync();
             return Results.Ok(new { slug, status = "Stopped" });
+        });
+
+        app.MapPost("/control/sleep/{slug}", (string slug) =>
+        {
+            var entry = registry.Get(slug);
+            if (entry == null)
+                return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+            entry.IsSleeping = true;
+            return Results.Ok(new { slug, sleeping = true });
+        });
+
+        app.MapPost("/control/wake/{slug}", (string slug) =>
+        {
+            var entry = registry.Get(slug);
+            if (entry == null)
+                return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+            entry.IsSleeping = false;
+            return Results.Ok(new { slug, sleeping = false });
         });
 
         // ============================================================

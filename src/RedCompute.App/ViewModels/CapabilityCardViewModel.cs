@@ -28,6 +28,9 @@ public partial class CapabilityCardViewModel : ObservableObject
     [ObservableProperty]
     private string _providerName = "";
 
+    [ObservableProperty]
+    private bool _isSleeping;
+
     public CapabilityType Type { get; init; }
 
     public PackIconKind IconKind => MapIcon(Type);
@@ -45,7 +48,9 @@ public partial class CapabilityCardViewModel : ObservableObject
 
     public bool IsRunning => Status == BackendStatus.Running;
 
-    public string StatusColor => Status switch
+    public bool CanQueueJob => IsRunning && !IsSleeping;
+
+    public string StatusColor => IsSleeping ? "#7C4DFF" : Status switch
     {
         BackendStatus.Running => "#43A25A",
         BackendStatus.Starting => "#FFB74D",
@@ -60,8 +65,16 @@ public partial class CapabilityCardViewModel : ObservableObject
     partial void OnStatusChanged(BackendStatus value)
     {
         OnPropertyChanged(nameof(IsRunning));
+        OnPropertyChanged(nameof(CanQueueJob));
         OnPropertyChanged(nameof(StatusColor));
         ToggleCommand.NotifyCanExecuteChanged();
+        QueueJobCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsSleepingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanQueueJob));
+        OnPropertyChanged(nameof(StatusColor));
         QueueJobCommand.NotifyCanExecuteChanged();
     }
 
@@ -84,13 +97,22 @@ public partial class CapabilityCardViewModel : ObservableObject
         }
     }
 
-    [RelayCommand(CanExecute = nameof(IsRunning))]
+    [RelayCommand(CanExecute = nameof(CanQueueJob))]
     private async Task QueueJob()
     {
         var vm = new QueueJobDialogViewModel(Slug, DisplayName);
         var view = new QueueJobDialog { DataContext = vm };
         _ = vm.LoadManifestAsync();
         await DialogHost.Show(view, "RootDialog");
+    }
+
+    [RelayCommand]
+    private void ToggleSleep()
+    {
+        var entry = App.Registry.Get(Slug);
+        if (entry == null) return;
+        entry.IsSleeping = !entry.IsSleeping;
+        IsSleeping = entry.IsSleeping;
     }
 
     [RelayCommand]

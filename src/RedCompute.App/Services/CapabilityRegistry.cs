@@ -9,6 +9,7 @@ public class CapabilityEntry
     public required CapabilityDefinition Definition { get; init; }
     public required CapabilityConfig Config { get; init; }
     public IBackendProvider? ActiveProvider { get; set; }
+    public bool IsSleeping { get; set; }
 }
 
 public class CapabilityRegistry

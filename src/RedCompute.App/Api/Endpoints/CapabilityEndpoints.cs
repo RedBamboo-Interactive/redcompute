@@ -27,6 +27,9 @@ public static class CapabilityEndpoints
             if (entry?.ActiveProvider == null)
                 return ErrorResult(ctx, 503, "provider_not_configured", "TTS provider is not configured. Check config.json");
 
+            if (entry.IsSleeping)
+                return ErrorResult(ctx, 503, "capability_sleeping", "TTS is sleeping. Wake it via POST /control/wake/tts");
+
             var body = await ReadJsonBody(ctx);
             var errors = ValidateTtsRequest(body);
             if (errors.Count > 0)
@@ -319,6 +322,17 @@ public static class CapabilityEndpoints
                 {
                     Error = "provider_not_running",
                     Message = $"Provider for '{slug}' is not running"
+                });
+                return;
+            }
+
+            if (entry.IsSleeping)
+            {
+                ctx.Response.StatusCode = 503;
+                await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                {
+                    Error = "capability_sleeping",
+                    Message = $"Capability '{slug}' is sleeping. Wake it via POST /control/wake/{slug}"
                 });
                 return;
             }

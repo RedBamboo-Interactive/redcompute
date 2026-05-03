@@ -15,6 +15,13 @@
         TextOptions.TextRenderingMode="Auto"
         FontFamily="{DynamicResource MaterialDesignFont}">
 
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0"
+                      ResizeBorderThickness="6"
+                      GlassFrameThickness="0"
+                      CornerRadius="0"/>
+    </WindowChrome.WindowChrome>
+
     <Border CornerRadius="12"
             Background="{DynamicResource MaterialDesignPaper}"
             BorderBrush="{DynamicResource BorderSubtle}"
@@ -139,6 +146,26 @@
                                                                         </materialDesign:PackIcon.Style>
                                                                     </materialDesign:PackIcon>
                                                                 </Button>
+                                                                <Button Command="{Binding ToggleSleepCommand}"
+                                                                        Style="{StaticResource MaterialDesignFlatButton}"
+                                                                        Padding="4" MinWidth="0" Width="30" Height="30"
+                                                                        ToolTip="Sleep/Wake (freeze requests)">
+                                                                    <materialDesign:PackIcon Width="16" Height="16">
+                                                                        <materialDesign:PackIcon.Style>
+                                                                            <Style TargetType="materialDesign:PackIcon">
+                                                                                <Setter Property="Kind" Value="WeatherNight"/>
+                                                                                <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
+                                                                                <Setter Property="Opacity" Value="0.4"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsSleeping}" Value="True">
+                                                                                        <Setter Property="Foreground" Value="#7C4DFF"/>
+                                                                                        <Setter Property="Opacity" Value="1.0"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </materialDesign:PackIcon.Style>
+                                                                    </materialDesign:PackIcon>
+                                                                </Button>
                                                                 <Button Command="{Binding QueueJobCommand}"
                                                                         Style="{StaticResource MaterialDesignFlatButton}"
                                                                         Padding="4" MinWidth="0" Width="30" Height="30"
@@ -176,6 +203,9 @@
                                                                             </DataTrigger>
                                                                             <DataTrigger Binding="{Binding Status}" Value="Error">
                                                                                 <Setter Property="Foreground" Value="{DynamicResource AccentRed}"/>
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding IsSleeping}" Value="True">
+                                                                                <Setter Property="Foreground" Value="#7C4DFF"/>
                                                                             </DataTrigger>
                                                                         </Style.Triggers>
                                                                     </Style>

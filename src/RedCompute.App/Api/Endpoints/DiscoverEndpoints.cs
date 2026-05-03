@@ -30,6 +30,7 @@ public static class DiscoverEndpoints
                     DisplayName = entry.Definition.DisplayName,
                     Status = status.ToString(),
                     Provider = entry.ActiveProvider?.Name,
+                    Sleeping = entry.IsSleeping,
                     Endpoints = endpoints
                 });
             }

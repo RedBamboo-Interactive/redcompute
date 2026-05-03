@@ -28,6 +28,9 @@ public static class MusicGenEndpoints
             if (entry?.ActiveProvider == null)
                 return ErrorResult(503, "provider_not_configured", "Music generation provider is not configured. Check config.json");
 
+            if (entry.IsSleeping)
+                return ErrorResult(503, "capability_sleeping", "Music generation is sleeping. Wake it via POST /control/wake/music-gen");
+
             var status = await entry.ActiveProvider.GetStatusAsync();
             if (status != BackendStatus.Running)
                 return ErrorResult(503, "provider_not_running", $"Music generation backend is {status}. Start it via POST /control/start/music-gen");

@@ -119,6 +119,7 @@ public partial class MainViewModel : ObservableObject
                 }
 
                 card.Status = status;
+                card.IsSleeping = entry.IsSleeping;
                 card.ProviderName = entry.ActiveProvider?.Name ?? entry.Config.ActiveProvider ?? "none";
 
                 jobsBySlug.TryGetValue(slug, out var slugJobs);
