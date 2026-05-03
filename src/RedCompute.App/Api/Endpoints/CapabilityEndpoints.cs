@@ -43,6 +43,9 @@ public static class CapabilityEndpoints
             var voice = body.GetValueOrDefault("voice")?.ToString() ?? "Serena";
             var language = body.GetValueOrDefault("language")?.ToString() ?? "English";
             var emotion = body.GetValueOrDefault("emotion")?.ToString() ?? "neutral";
+            var stream = body.TryGetValue("stream", out var streamVal) && streamVal is JsonElement se
+                ? se.ValueKind == JsonValueKind.True
+                : false;
             var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
 
             // Ensure the right model/checkpoint is loaded for this voice
@@ -89,31 +92,93 @@ public static class CapabilityEndpoints
                     using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
                     var json = JsonSerializer.Serialize(backendBody);
                     var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
-                    var response = await client.PostAsync($"{proxyUrl.TrimEnd('/')}/synthesize/wav", httpContent, ctx.RequestAborted);
 
-                    if (!response.IsSuccessStatusCode)
+                    if (stream)
                     {
-                        var errBody = await response.Content.ReadAsStringAsync(ctx.RequestAborted);
-                        jobTracker.MarkFailed(job.Id, $"Backend returned {response.StatusCode}");
-                        ctx.Response.StatusCode = (int)response.StatusCode;
-                        ctx.Response.ContentType = "application/json";
-                        await ctx.Response.WriteAsync(errBody, ctx.RequestAborted);
-                        return Results.Empty;
+                        var backendEndpoint = $"{proxyUrl.TrimEnd('/')}/synthesize/stream";
+                        using var request = new HttpRequestMessage(HttpMethod.Post, backendEndpoint)
+                        {
+                            Content = httpContent
+                        };
+                        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            var errBody = await response.Content.ReadAsStringAsync(ctx.RequestAborted);
+                            jobTracker.MarkFailed(job.Id, $"Backend returned {response.StatusCode}");
+                            ctx.Response.StatusCode = (int)response.StatusCode;
+                            ctx.Response.ContentType = "application/json";
+                            await ctx.Response.WriteAsync(errBody, ctx.RequestAborted);
+                            return Results.Empty;
+                        }
+
+                        ctx.Response.ContentType = "audio/pcm";
+                        ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+                        ctx.Response.Headers["X-Audio-Sample-Rate"] = "24000";
+                        ctx.Response.Headers["X-Audio-Channels"] = "1";
+                        ctx.Response.Headers["X-Audio-Format"] = "s16le";
+
+                        var outputPath = Path.Combine(OutputDir, $"{job.Id}.wav");
+                        var streamOk = false;
+                        try
+                        {
+                            await using var fileStream = File.Create(outputPath);
+                            fileStream.Write(new byte[44]);
+
+                            await using var backendStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
+                            var buffer = new byte[4096];
+                            long totalBytes = 0;
+                            int bytesRead;
+                            while ((bytesRead = await backendStream.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+                            {
+                                await ctx.Response.Body.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
+                                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
+                                totalBytes += bytesRead;
+                            }
+                            await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+
+                            fileStream.Position = 0;
+                            fileStream.Write(BuildWavHeader(totalBytes, sampleRate: 24000, channels: 1, bitsPerSample: 16));
+                            streamOk = true;
+
+                            jobTracker.MarkCompleted(job.Id, outputPath, totalBytes + 44, "audio/wav");
+                        }
+                        finally
+                        {
+                            if (!streamOk)
+                            {
+                                try { File.Delete(outputPath); } catch { }
+                            }
+                        }
                     }
+                    else
+                    {
+                        using var response = await client.PostAsync($"{proxyUrl.TrimEnd('/')}/synthesize/wav", httpContent, ctx.RequestAborted);
 
-                    using var ms = new MemoryStream();
-                    await response.Content.CopyToAsync(ms, ctx.RequestAborted);
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            var errBody = await response.Content.ReadAsStringAsync(ctx.RequestAborted);
+                            jobTracker.MarkFailed(job.Id, $"Backend returned {response.StatusCode}");
+                            ctx.Response.StatusCode = (int)response.StatusCode;
+                            ctx.Response.ContentType = "application/json";
+                            await ctx.Response.WriteAsync(errBody, ctx.RequestAborted);
+                            return Results.Empty;
+                        }
 
-                    var path = SaveOutput(job.Id, ms, "audio/wav");
-                    var size = new FileInfo(path).Length;
+                        using var ms = new MemoryStream();
+                        await response.Content.CopyToAsync(ms, ctx.RequestAborted);
 
-                    ms.Position = 0;
-                    ctx.Response.ContentType = "audio/wav";
-                    ctx.Response.ContentLength = ms.Length;
-                    ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
-                    await ms.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+                        var path = SaveOutput(job.Id, ms, "audio/wav");
+                        var size = new FileInfo(path).Length;
 
-                    jobTracker.MarkCompleted(job.Id, path, size, "audio/wav");
+                        ms.Position = 0;
+                        ctx.Response.ContentType = "audio/wav";
+                        ctx.Response.ContentLength = ms.Length;
+                        ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+                        await ms.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+
+                        jobTracker.MarkCompleted(job.Id, path, size, "audio/wav");
+                    }
                 }
                 else
                 {
@@ -337,6 +402,29 @@ public static class CapabilityEndpoints
             Message = "One or more parameters are invalid",
             Fields = fields
         }, statusCode: 422);
+    }
+
+    private static byte[] BuildWavHeader(long dataSize, int sampleRate, short channels, short bitsPerSample)
+    {
+        var blockAlign = (short)(channels * bitsPerSample / 8);
+        var byteRate = sampleRate * blockAlign;
+        var header = new byte[44];
+        using var ms = new MemoryStream(header);
+        using var w = new BinaryWriter(ms);
+        w.Write("RIFF"u8);
+        w.Write((int)(dataSize + 36));
+        w.Write("WAVE"u8);
+        w.Write("fmt "u8);
+        w.Write(16);
+        w.Write((short)1);
+        w.Write(channels);
+        w.Write(sampleRate);
+        w.Write(byteRate);
+        w.Write(blockAlign);
+        w.Write(bitsPerSample);
+        w.Write("data"u8);
+        w.Write((int)dataSize);
+        return header;
     }
 
     private static string Truncate(string s, int maxLen) =>

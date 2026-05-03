@@ -55,7 +55,7 @@ public static class DiscoverEndpoints
                 {
                     Method = "POST",
                     Path = "/tts/generate",
-                    Description = "Generate speech audio from text. Returns a WAV file.",
+                    Description = "Generate speech audio from text. Returns audio/wav (default) or streams audio/pcm chunks when stream=true.",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
                         ["text"] = new() { Type = "string", Required = true, Description = "Text to synthesize" },
@@ -63,7 +63,8 @@ public static class DiscoverEndpoints
                         ["language"] = new() { Type = "string", Required = false, Default = "English", Enum = ["English", "Chinese", "French", "Japanese", "Korean"], Description = "Language for synthesis" },
                         ["emotion"] = new() { Type = "string", Required = false, Default = "neutral", Enum = ["neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"], Description = "Emotional tone" },
                         ["instruct"] = new() { Type = "string", Required = false, Description = "Natural language instruction for voice style (overrides emotion). E.g. 'Speak with warm enthusiasm'" },
-                        ["speed"] = new() { Type = "number", Required = false, Default = 1.0, Min = 0.5, Max = 2.0, Description = "Playback speed multiplier" }
+                        ["speed"] = new() { Type = "number", Required = false, Default = 1.0, Min = 0.5, Max = 2.0, Description = "Playback speed multiplier" },
+                        ["stream"] = new() { Type = "boolean", Required = false, Default = false, Description = "If true, streams raw PCM audio (s16le, 24kHz, mono) as chunks arrive. Response headers include X-Audio-Sample-Rate, X-Audio-Channels, X-Audio-Format." }
                     },
                     Returns = new ReturnSchema { ContentType = "audio/wav", Streaming = false, MediaCategory = "audio", OutputEndpoint = "/tts/jobs/{id}/output" }
                 },

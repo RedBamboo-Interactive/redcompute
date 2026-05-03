@@ -113,17 +113,22 @@ public static class OpenApiEndpoints
                             ["language"] = PropEnum("Language for synthesis", "English", "English", "Chinese", "French", "Japanese", "Korean"),
                             ["emotion"] = PropEnum("Emotional tone", "neutral", "neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"),
                             ["instruct"] = Prop("string", "Natural language instruction for voice style (overrides emotion)"),
-                            ["speed"] = PropNum("Playback speed multiplier", 1.0, 0.5, 2.0)
+                            ["speed"] = PropNum("Playback speed multiplier", 1.0, 0.5, 2.0),
+                            ["stream"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "If true, streams raw PCM audio (s16le, 24kHz, mono) instead of buffered WAV", ["default"] = false }
                         }
                     }),
                     ["responses"] = new Dictionary<string, object>
                     {
                         ["200"] = new Dictionary<string, object>
                         {
-                            ["description"] = "Audio stream",
+                            ["description"] = "Audio data. Content-Type is audio/wav (default) or audio/pcm (when stream=true, with X-Audio-Sample-Rate/X-Audio-Channels/X-Audio-Format headers)",
                             ["content"] = new Dictionary<string, object>
                             {
                                 ["audio/wav"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new { type = "string", format = "binary" }
+                                },
+                                ["audio/pcm"] = new Dictionary<string, object>
                                 {
                                     ["schema"] = new { type = "string", format = "binary" }
                                 }
