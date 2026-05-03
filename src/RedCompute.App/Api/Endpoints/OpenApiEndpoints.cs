@@ -109,9 +109,11 @@ public static class OpenApiEndpoints
                         ["properties"] = new Dictionary<string, object>
                         {
                             ["text"] = Prop("string", "Text to synthesize"),
-                            ["voice"] = Prop("string", "Voice identifier", "default"),
-                            ["speed"] = PropNum("Playback speed multiplier", 1.0, 0.5, 2.0),
-                            ["format"] = PropEnum("Output audio format", "wav", "wav", "mp3", "opus")
+                            ["voice"] = PropEnum("Speaker voice name", "Serena", TtsVoiceDiscovery.AllVoices(registry).ToArray()),
+                            ["language"] = PropEnum("Language for synthesis", "English", "English", "Chinese", "French", "Japanese", "Korean"),
+                            ["emotion"] = PropEnum("Emotional tone", "neutral", "neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"),
+                            ["instruct"] = Prop("string", "Natural language instruction for voice style (overrides emotion)"),
+                            ["speed"] = PropNum("Playback speed multiplier", 1.0, 0.5, 2.0)
                         }
                     }),
                     ["responses"] = new Dictionary<string, object>

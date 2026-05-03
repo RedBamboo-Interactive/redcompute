@@ -21,7 +21,7 @@ public static class DiscoverEndpoints
                     ? await entry.ActiveProvider.GetStatusAsync()
                     : BackendStatus.Stopped;
 
-                var endpoints = GetEndpointsForCapability(slug);
+                var endpoints = GetEndpointsForCapability(slug, registry);
 
                 capabilities.Add(new CapabilityManifest
                 {
@@ -45,7 +45,7 @@ public static class DiscoverEndpoints
         });
     }
 
-    private static List<EndpointManifest> GetEndpointsForCapability(string slug)
+    private static List<EndpointManifest> GetEndpointsForCapability(string slug, CapabilityRegistry registry)
     {
         return slug switch
         {
@@ -59,7 +59,7 @@ public static class DiscoverEndpoints
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
                         ["text"] = new() { Type = "string", Required = true, Description = "Text to synthesize" },
-                        ["voice"] = new() { Type = "string", Required = false, Default = "Serena", Enum = ["Serena", "Aiden", "Ryan", "Vivian"], Description = "Speaker voice name" },
+                        ["voice"] = new() { Type = "string", Required = false, Default = "Serena", Enum = TtsVoiceDiscovery.AllVoices(registry), Description = "Speaker voice name" },
                         ["language"] = new() { Type = "string", Required = false, Default = "English", Enum = ["English", "Chinese", "French", "Japanese", "Korean"], Description = "Language for synthesis" },
                         ["emotion"] = new() { Type = "string", Required = false, Default = "neutral", Enum = ["neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"], Description = "Emotional tone" },
                         ["instruct"] = new() { Type = "string", Required = false, Description = "Natural language instruction for voice style (overrides emotion). E.g. 'Speak with warm enthusiasm'" },

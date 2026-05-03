@@ -30,7 +30,18 @@ public partial class CapabilityCardViewModel : ObservableObject
 
     public CapabilityType Type { get; init; }
 
-    public PackIconKind IconKind => FriezeLaneViewModel.MapIcon(Type);
+    public PackIconKind IconKind => MapIcon(Type);
+
+    private static PackIconKind MapIcon(CapabilityType type) => type switch
+    {
+        CapabilityType.Tts => PackIconKind.VolumeHigh,
+        CapabilityType.Stt => PackIconKind.Microphone,
+        CapabilityType.ImageGen => PackIconKind.Image,
+        CapabilityType.MusicGen => PackIconKind.MusicNote,
+        CapabilityType.Llm => PackIconKind.Brain,
+        CapabilityType.VideoGen => PackIconKind.Video,
+        _ => PackIconKind.Cog
+    };
 
     public bool IsRunning => Status == BackendStatus.Running;
 

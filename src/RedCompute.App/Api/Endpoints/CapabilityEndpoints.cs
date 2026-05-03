@@ -9,7 +9,6 @@ using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
-
 namespace RedCompute.App.Api.Endpoints;
 
 public static class CapabilityEndpoints
@@ -45,6 +44,17 @@ public static class CapabilityEndpoints
             var language = body.GetValueOrDefault("language")?.ToString() ?? "English";
             var emotion = body.GetValueOrDefault("emotion")?.ToString() ?? "neutral";
             var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
+
+            // Ensure the right model/checkpoint is loaded for this voice
+            var proxyUrlForModel = entry.ActiveProvider.GetProxyTargetUrl();
+            if (proxyUrlForModel != null)
+            {
+                var voicesBasePath = TtsVoiceDiscovery.GetVoicesBasePath(registry);
+                var baseModel = TtsVoiceDiscovery.GetBaseModel(registry);
+                var (ready, modelError) = await EnsureModelReady(proxyUrlForModel, voice, voicesBasePath, baseModel, log);
+                if (!ready)
+                    return ErrorResult(ctx, 422, "voice_not_available", modelError ?? $"Voice '{voice}' is not available");
+            }
 
             // Map RedCompute simplified params → Qwen3-TTS backend format
             var backendBody = new Dictionary<string, object?>
@@ -181,22 +191,39 @@ public static class CapabilityEndpoints
             if (entry?.ActiveProvider == null)
                 return Results.Json(new { voices = Array.Empty<object>(), message = "Provider not configured" });
 
-            var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
-            if (proxyUrl == null)
-                return Results.Json(new { voices = new[] { new { name = "Serena", language = "en/zh" } } });
+            // Discover custom voices from disk
+            var voicesBasePath = TtsVoiceDiscovery.GetVoicesBasePath(registry);
+            var customNames = TtsVoiceDiscovery.DiscoverCustomVoices(voicesBasePath);
 
-            try
+            // Built-in speakers are always available (via model reload if needed)
+            var builtinNames = new HashSet<string>(TtsVoiceDiscovery.BuiltInSpeakers, StringComparer.OrdinalIgnoreCase);
+            var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
+            if (proxyUrl != null)
             {
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                var response = await client.GetStringAsync($"{proxyUrl}/speakers");
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync(response);
-                return Results.Empty;
+                try
+                {
+                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                    var json = await client.GetStringAsync($"{proxyUrl}/speakers");
+                    var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("speakers", out var speakers))
+                    {
+                        foreach (var s in speakers.EnumerateArray())
+                        {
+                            var name = s.TryGetProperty("name", out var n) ? n.GetString() : s.GetString();
+                            if (name != null && !customNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+                                builtinNames.Add(name);
+                        }
+                    }
+                }
+                catch { /* keep default built-in list */ }
             }
-            catch
-            {
-                return Results.Json(new { voices = new[] { new { name = "Serena", language = "en/zh" } } });
-            }
+
+            var sortedBuiltin = builtinNames.Order(StringComparer.OrdinalIgnoreCase).ToList();
+
+            var voices = customNames.Select(n => new { name = n, type = "custom" })
+                .Concat(sortedBuiltin.Select(n => new { name = n, type = "builtin" }));
+
+            return Results.Json(new { voices });
         });
 
         // Catch-all proxy for capabilities that pass through directly
@@ -308,4 +335,76 @@ public static class CapabilityEndpoints
 
     private static string Truncate(string s, int maxLen) =>
         s.Length <= maxLen ? s : s[..maxLen] + "...";
+
+    private static async Task<(bool Ready, string? Error)> EnsureModelReady(
+        string proxyUrl, string voice, string? voicesBasePath, string? baseModel, Action<string> log)
+    {
+        // Check if the backend already has this speaker loaded
+        try
+        {
+            using var infoClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var infoJson = await infoClient.GetStringAsync($"{proxyUrl}/model/info");
+            var info = JsonDocument.Parse(infoJson).RootElement;
+            if (info.TryGetProperty("speakers", out var speakers))
+            {
+                foreach (var s in speakers.EnumerateArray())
+                {
+                    if (string.Equals(s.GetString(), voice, StringComparison.OrdinalIgnoreCase))
+                        return (true, null);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"[TTS] Could not check model info: {ex.Message}");
+        }
+
+        // Speaker not loaded — determine which checkpoint to reload
+        string reloadPath;
+        if (TtsVoiceDiscovery.IsBuiltIn(voice))
+        {
+            // Built-in speaker: reload the base model
+            if (string.IsNullOrEmpty(baseModel))
+                return (false, $"Voice '{voice}' not in current model and no base model configured");
+            reloadPath = baseModel;
+            log($"[TTS] Reloading base model for built-in voice '{voice}': {reloadPath}");
+        }
+        else
+        {
+            // Custom voice: reload its checkpoint from disk
+            if (string.IsNullOrEmpty(voicesBasePath))
+                return (false, $"Voice '{voice}' not in current model and no VoicesBasePath configured");
+            var checkpointPath = Path.Combine(voicesBasePath, voice, "model", "checkpoint");
+            if (!Directory.Exists(checkpointPath))
+                return (false, $"Voice '{voice}' not found. No checkpoint at: {checkpointPath}");
+            reloadPath = TtsVoiceDiscovery.ConvertToWslPath(checkpointPath);
+            log($"[TTS] Reloading checkpoint for custom voice '{voice}': {reloadPath}");
+        }
+
+        try
+        {
+            using var reloadClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+            var reloadBody = JsonSerializer.Serialize(new { checkpoint_path = reloadPath });
+            var content = new StringContent(reloadBody, Encoding.UTF8, "application/json");
+            var response = await reloadClient.PostAsync($"{proxyUrl}/model/reload", content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                log($"[TTS] Model reloaded for voice '{voice}'");
+                return (true, null);
+            }
+
+            var errorBody = await response.Content.ReadAsStringAsync();
+            log($"[TTS] Model reload failed: {response.StatusCode} - {errorBody}");
+            return (false, $"Model reload failed ({response.StatusCode}): {errorBody}");
+        }
+        catch (TaskCanceledException)
+        {
+            return (false, "Model reload timed out (120s)");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"Model reload error: {ex.Message}");
+        }
+    }
 }

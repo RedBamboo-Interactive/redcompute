@@ -71,6 +71,7 @@ public class ConfigManager
                             BackendPort = 8765,
                             HealthEndpoint = "/health",
                             Model = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+                            VoicesBasePath = @"T:\Projects\Qwen3-TTS",
                             StartupTimeoutSeconds = 180
                         }
                     }

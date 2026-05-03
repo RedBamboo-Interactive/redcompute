@@ -29,6 +29,7 @@ public class ProviderConfig
     public string? ServerPath { get; set; }
     public int? BackendPort { get; set; }
     public string? Model { get; set; }
+    public string? VoicesBasePath { get; set; }
     public string? HealthEndpoint { get; set; }
     public int StartupTimeoutSeconds { get; set; } = 180;
 

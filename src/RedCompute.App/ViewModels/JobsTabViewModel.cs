@@ -4,7 +4,6 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using RedCompute.Core.Capabilities;
 using RedCompute.Core.Jobs;
 
 namespace RedCompute.App.ViewModels;
@@ -23,8 +22,14 @@ public partial class JobsTabViewModel : ObservableObject
     private static readonly SolidColorBrush s_idle = FriezeColors.Idle;
     private static readonly SolidColorBrush s_empty = FriezeColors.Empty;
 
+    private static readonly List<ColorSlice> s_idleSlices = [new(s_idle, 1.0)];
+    private static readonly List<ColorSlice> s_emptySlices = [new(s_empty, 1.0)];
+
     [ObservableProperty]
-    private ObservableCollection<FriezeLaneViewModel> _friezeLanes = new();
+    private ObservableCollection<UnifiedFriezeSegment> _friezeSegments = new();
+
+    [ObservableProperty]
+    private string _friezeDurationText = "";
 
     [ObservableProperty]
     private ObservableCollection<JobViewModel> _recentJobs = new();
@@ -32,8 +37,7 @@ public partial class JobsTabViewModel : ObservableObject
     [ObservableProperty]
     private JobViewModel? _selectedJob;
 
-    private readonly Dictionary<string, List<JobRecord>> _jobsByCapability = new();
-    private readonly Dictionary<string, FriezeLaneViewModel> _laneBySlug = new();
+    private readonly List<JobRecord> _allJobs = new();
 
     private double _friezeAvailableWidth;
     public double FriezeAvailableWidth
@@ -44,7 +48,7 @@ public partial class JobsTabViewModel : ObservableObject
             if (Math.Abs(_friezeAvailableWidth - value) < 1) return;
             _friezeAvailableWidth = value;
             OnPropertyChanged();
-            RecomputeAllFriezes();
+            RecomputeUnifiedFrieze();
         }
     }
 
@@ -63,33 +67,20 @@ public partial class JobsTabViewModel : ObservableObject
     public JobsTabViewModel()
     {
         _elapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _elapsedTimer.Tick += (_, _) =>
-        {
-            RecomputeAllFriezes();
-        };
+        _elapsedTimer.Tick += (_, _) => RecomputeUnifiedFrieze();
     }
 
     public void Initialize()
     {
-        foreach (var (slug, entry) in App.Registry.Capabilities)
-        {
-            EnsureLaneExists(slug, entry.Definition);
-        }
-
         var jobs = App.JobTracker.GetJobs(limit: 100);
         foreach (var job in jobs)
         {
-            EnsureLaneExists(job.CapabilitySlug);
-            if (!_jobsByCapability.ContainsKey(job.CapabilitySlug))
-                _jobsByCapability[job.CapabilitySlug] = new();
-            _jobsByCapability[job.CapabilitySlug].Add(job);
+            _allJobs.Add(job);
             RecentJobs.Add(new JobViewModel(job));
         }
 
-        foreach (var slug in _jobsByCapability.Keys)
-            _jobsByCapability[slug] = _jobsByCapability[slug].OrderBy(j => j.QueuedAt).ToList();
-
-        RecomputeAllFriezes();
+        _allJobs.Sort((a, b) => a.QueuedAt.CompareTo(b.QueuedAt));
+        RecomputeUnifiedFrieze();
         _elapsedTimer.Start();
     }
 
@@ -97,11 +88,7 @@ public partial class JobsTabViewModel : ObservableObject
     {
         Application.Current?.Dispatcher.BeginInvoke(() =>
         {
-            EnsureLaneExists(job.CapabilitySlug);
-
-            if (!_jobsByCapability.ContainsKey(job.CapabilitySlug))
-                _jobsByCapability[job.CapabilitySlug] = new();
-            _jobsByCapability[job.CapabilitySlug].Add(job);
+            _allJobs.Add(job);
 
             var vm = new JobViewModel(job);
             RecentJobs.Insert(0, vm);
@@ -110,7 +97,7 @@ public partial class JobsTabViewModel : ObservableObject
                 RecentJobs.RemoveAt(RecentJobs.Count - 1);
 
             SelectedJob = vm;
-            RecomputeFriezeForLane(job.CapabilitySlug);
+            RecomputeUnifiedFrieze();
         });
     }
 
@@ -118,11 +105,8 @@ public partial class JobsTabViewModel : ObservableObject
     {
         Application.Current?.Dispatcher.BeginInvoke(() =>
         {
-            if (_jobsByCapability.TryGetValue(job.CapabilitySlug, out var list))
-            {
-                var idx = list.FindIndex(j => j.Id == job.Id);
-                if (idx >= 0) list[idx] = job;
-            }
+            var idx = _allJobs.FindIndex(j => j.Id == job.Id);
+            if (idx >= 0) _allJobs[idx] = job;
 
             for (int i = 0; i < RecentJobs.Count; i++)
             {
@@ -136,22 +120,8 @@ public partial class JobsTabViewModel : ObservableObject
                 }
             }
 
-            RecomputeFriezeForLane(job.CapabilitySlug);
+            RecomputeUnifiedFrieze();
         });
-    }
-
-    private void EnsureLaneExists(string slug, CapabilityDefinition? definition = null)
-    {
-        if (_laneBySlug.ContainsKey(slug)) return;
-
-        definition ??= Services.CapabilityDefinitionFactory.Create(slug);
-        var type = definition?.Type ?? CapabilityType.Tts;
-        var displayName = definition?.DisplayName ?? slug;
-
-        var lane = new FriezeLaneViewModel(slug, displayName, type);
-        _laneBySlug[slug] = lane;
-        FriezeLanes.Add(lane);
-        FillEmptyFrieze(lane.Segments);
     }
 
     [RelayCommand]
@@ -159,55 +129,38 @@ public partial class JobsTabViewModel : ObservableObject
     {
         RecentJobs.Clear();
         SelectedJob = null;
-        _jobsByCapability.Clear();
-        foreach (var lane in FriezeLanes)
-        {
-            lane.DurationText = "";
-            FillEmptyFrieze(lane.Segments);
-        }
+        _allJobs.Clear();
+        FriezeDurationText = "";
+        FillEmptyFrieze();
     }
 
-    private void RecomputeAllFriezes()
+    private void RecomputeUnifiedFrieze()
     {
-        foreach (var lane in FriezeLanes)
-            RecomputeFriezeForLane(lane.Slug);
-    }
-
-    private void RecomputeFriezeForLane(string slug)
-    {
-        if (!_laneBySlug.TryGetValue(slug, out var lane)) return;
-        if (!_jobsByCapability.TryGetValue(slug, out var jobs) || jobs.Count == 0)
+        if (_allJobs.Count == 0)
         {
-            lane.DurationText = "";
-            FillEmptyFrieze(lane.Segments);
+            FriezeDurationText = "";
+            FillEmptyFrieze();
             return;
         }
 
-        var timelineStart = jobs[0].QueuedAt;
+        var timelineStart = _allJobs[0].QueuedAt;
         var now = DateTimeOffset.Now;
         var totalSpan = now - timelineStart;
 
-        lane.DurationText = totalSpan.TotalSeconds < 60
+        FriezeDurationText = totalSpan.TotalSeconds < 60
             ? $"{totalSpan.TotalSeconds:F0}s"
             : $"{(int)totalSpan.TotalMinutes}m {totalSpan.Seconds}s";
 
         if (totalSpan <= TimeSpan.Zero)
         {
-            FillEmptyFrieze(lane.Segments);
+            FillEmptyFrieze();
             return;
         }
 
         var intervals = new List<(DateTimeOffset Start, DateTimeOffset End, SolidColorBrush Brush, string Tooltip)>();
 
-        for (int i = 0; i < jobs.Count; i++)
+        foreach (var job in _allJobs)
         {
-            var job = jobs[i];
-            var jobStart = job.QueuedAt;
-
-            var gapStart = i == 0 ? timelineStart : (jobs[i - 1].CompletedAt ?? jobs[i - 1].QueuedAt);
-            if (gapStart < jobStart)
-                intervals.Add((gapStart, jobStart, s_idle, "Idle"));
-
             if (job.Status == JobStatus.Queued)
             {
                 intervals.Add((job.QueuedAt, now, s_queued, $"Queued: {job.CapabilitySlug}"));
@@ -223,19 +176,14 @@ public partial class JobsTabViewModel : ObservableObject
             var (brush, tooltip) = job.Status switch
             {
                 JobStatus.Running => (s_running, $"Running: {job.CapabilitySlug}"),
-                JobStatus.Completed => (s_completed, $"Completed ({job.DurationMs}ms)"),
-                JobStatus.Failed => (s_failed, $"Failed: {job.ErrorMessage ?? "unknown"}"),
-                JobStatus.Cancelled => (s_cancelled, "Cancelled"),
+                JobStatus.Completed => (s_completed, $"Completed: {job.CapabilitySlug} ({job.DurationMs}ms)"),
+                JobStatus.Failed => (s_failed, $"Failed: {job.CapabilitySlug} — {job.ErrorMessage ?? "unknown"}"),
+                JobStatus.Cancelled => (s_cancelled, $"Cancelled: {job.CapabilitySlug}"),
                 _ => (s_running, $"Running: {job.CapabilitySlug}")
             };
 
             intervals.Add((execStart, execEnd, brush, tooltip));
         }
-
-        var lastJob = jobs[^1];
-        var lastEnd = lastJob.CompletedAt;
-        if (lastEnd.HasValue && lastEnd.Value < now)
-            intervals.Add((lastEnd.Value, now, s_idle, "Idle"));
 
         var totalQuanta = (int)Math.Ceiling(totalSpan / QuantumSize);
         var perRow = Math.Max((int)(_friezeAvailableWidth / SquareSize), 1);
@@ -244,7 +192,7 @@ public partial class JobsTabViewModel : ObservableObject
         var skipQuanta = (int)Math.Ceiling((double)excess / perRow) * perRow;
         var quantumCount = totalQuanta - skipQuanta;
 
-        var desired = new List<(SolidColorBrush Brush, string Tooltip)>(quantumCount);
+        var desired = new List<UnifiedFriezeSegment>(quantumCount);
 
         for (int q = 0; q < quantumCount; q++)
         {
@@ -252,31 +200,49 @@ public partial class JobsTabViewModel : ObservableObject
             var quantumStart = timelineStart + TimeSpan.FromMilliseconds(actualIndex * QuantumSize.TotalMilliseconds);
             var quantumEnd = quantumStart + QuantumSize;
 
-            SolidColorBrush bestBrush = s_idle;
-            string bestTooltip = "Idle";
-            int bestPriority = -1;
+            var overlapping = new List<(SolidColorBrush Brush, string Tooltip)>();
 
             foreach (var interval in intervals)
             {
                 if (interval.Start < quantumEnd && interval.End > quantumStart)
-                {
-                    int p = GetIntervalPriority(interval.Brush);
-                    if (p > bestPriority)
-                    {
-                        bestPriority = p;
-                        bestBrush = interval.Brush;
-                        bestTooltip = interval.Tooltip;
-                    }
-                }
+                    overlapping.Add((interval.Brush, interval.Tooltip));
             }
 
-            desired.Add((bestBrush, bestTooltip));
+            if (overlapping.Count == 0)
+            {
+                desired.Add(new UnifiedFriezeSegment(s_idleSlices, "Idle"));
+                continue;
+            }
+
+            var distinct = overlapping
+                .GroupBy(o => o.Brush, ReferenceEqualityComparer.Instance)
+                .Select(g => (
+                    Brush: (SolidColorBrush)g.Key!,
+                    Tooltip: string.Join("\n", g.Select(x => x.Tooltip).Distinct())))
+                .OrderByDescending(x => GetIntervalPriority(x.Brush))
+                .ToList();
+
+            if (distinct.Count == 1)
+            {
+                desired.Add(new UnifiedFriezeSegment(
+                    [new ColorSlice(distinct[0].Brush, 1.0)],
+                    distinct[0].Tooltip));
+            }
+            else
+            {
+                var proportion = 1.0 / distinct.Count;
+                var slices = distinct.Select((d, i) =>
+                    new ColorSlice(d.Brush, i == distinct.Count - 1 ? 1.0 - proportion * (distinct.Count - 1) : proportion))
+                    .ToList();
+                var combinedTooltip = string.Join("\n", distinct.Select(d => d.Tooltip));
+                desired.Add(new UnifiedFriezeSegment(slices, combinedTooltip));
+            }
         }
 
         while (desired.Count < maxQ)
-            desired.Add((s_empty, ""));
+            desired.Add(new UnifiedFriezeSegment(s_emptySlices, ""));
 
-        ApplySegments(lane.Segments, desired);
+        ApplySegments(FriezeSegments, desired);
     }
 
     private static int GetIntervalPriority(SolidColorBrush brush)
@@ -290,26 +256,38 @@ public partial class JobsTabViewModel : ObservableObject
         return 0;
     }
 
-    private void FillEmptyFrieze(ObservableCollection<FriezeSegment> segments)
+    private void FillEmptyFrieze()
     {
         var maxQ = MaxQuanta;
         if (maxQ <= 0) return;
-        ApplySegments(segments, Enumerable.Repeat((s_empty, ""), maxQ).ToList());
+        ApplySegments(FriezeSegments,
+            Enumerable.Range(0, maxQ).Select(_ => new UnifiedFriezeSegment(s_emptySlices, "")).ToList());
     }
 
-    private static void ApplySegments(ObservableCollection<FriezeSegment> segments, List<(SolidColorBrush Brush, string Tooltip)> desired)
+    private static void ApplySegments(ObservableCollection<UnifiedFriezeSegment> segments, List<UnifiedFriezeSegment> desired)
     {
         for (int i = 0; i < Math.Min(segments.Count, desired.Count); i++)
         {
-            segments[i].Color = desired[i].Brush;
-            segments[i].Tooltip = desired[i].Tooltip;
+            if (!SlicesEqual(segments[i].Slices, desired[i].Slices))
+                segments[i].Slices = desired[i].Slices;
+            if (segments[i].Tooltip != desired[i].Tooltip)
+                segments[i].Tooltip = desired[i].Tooltip;
         }
 
         for (int i = segments.Count; i < desired.Count; i++)
-            segments.Add(new FriezeSegment(desired[i].Brush, desired[i].Tooltip));
+            segments.Add(desired[i]);
 
         while (segments.Count > desired.Count)
             segments.RemoveAt(segments.Count - 1);
     }
 
+    private static bool SlicesEqual(List<ColorSlice> a, List<ColorSlice> b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (!ReferenceEquals(a[i].Brush, b[i].Brush) || Math.Abs(a[i].Proportion - b[i].Proportion) > 0.001)
+                return false;
+        return true;
+    }
 }

@@ -3,9 +3,11 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:vm="clr-namespace:RedCompute.App.ViewModels"
+             xmlns:conv="clr-namespace:RedCompute.App.Converters"
              xmlns:jobs="clr-namespace:RedCompute.Core.Jobs;assembly=RedCompute.Core">
 
     <UserControl.Resources>
+        <conv:SlicesToBrushConverter x:Key="SlicesToBrushConverter"/>
         <SolidColorBrush x:Key="AccentGreen" Color="#43A25A"/>
         <SolidColorBrush x:Key="AccentOrange" Color="#FFB74D"/>
         <SolidColorBrush x:Key="AccentRed" Color="#FF5252"/>
@@ -40,107 +42,98 @@
                 Background="{DynamicResource MaterialDesignCardBackground}"
                 CornerRadius="8" Padding="12">
             <StackPanel>
-                <StackPanel.Resources>
-                    <DataTemplate x:Key="FriezeSquareTemplate" DataType="{x:Type vm:FriezeSegment}">
-                        <Border x:Name="SquareOuter" Width="10" Height="10" Padding="1"
-                                Background="Transparent"
-                                ToolTip="{Binding Tooltip}"
-                                ToolTipService.InitialShowDelay="200"
-                                ToolTipService.BetweenShowDelay="100">
-                            <Border x:Name="SquareInner" CornerRadius="2"
-                                    Background="{Binding Color}"
-                                    Opacity="1.0">
-                                <Border.RenderTransform>
-                                    <ScaleTransform CenterX="4" CenterY="4"/>
-                                </Border.RenderTransform>
-                            </Border>
-                        </Border>
-                        <DataTemplate.Triggers>
-                            <DataTrigger Binding="{Binding Tooltip}" Value="">
-                                <Setter TargetName="SquareOuter" Property="ToolTipService.IsEnabled" Value="False"/>
-                            </DataTrigger>
-                            <EventTrigger RoutedEvent="Border.MouseEnter">
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
-                                                         Storyboard.TargetProperty="Opacity"
-                                                         To="0.7" Duration="0:0:0.12"/>
-                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
-                                                         Storyboard.TargetProperty="RenderTransform.ScaleX"
-                                                         To="1.3" Duration="0:0:0.12">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut"/>
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
-                                                         Storyboard.TargetProperty="RenderTransform.ScaleY"
-                                                         To="1.3" Duration="0:0:0.12">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut"/>
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </EventTrigger>
-                            <EventTrigger RoutedEvent="Border.MouseLeave">
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
-                                                         Storyboard.TargetProperty="Opacity"
-                                                         To="1.0" Duration="0:0:0.2"/>
-                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
-                                                         Storyboard.TargetProperty="RenderTransform.ScaleX"
-                                                         To="1.0" Duration="0:0:0.2">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut"/>
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                        <DoubleAnimation Storyboard.TargetName="SquareInner"
-                                                         Storyboard.TargetProperty="RenderTransform.ScaleY"
-                                                         To="1.0" Duration="0:0:0.2">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut"/>
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </EventTrigger>
-                        </DataTemplate.Triggers>
-                    </DataTemplate>
-                </StackPanel.Resources>
+                <Grid Margin="0,4,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="Pulse" Foreground="White" Opacity="0.5"
+                                                 Width="14" Height="14" VerticalAlignment="Center"/>
+                        <TextBlock Text="ACTIVITY" Foreground="White" FontSize="11"
+                                   FontWeight="SemiBold" Opacity="0.4"
+                                   VerticalAlignment="Center" Margin="6,0,0,0"/>
+                    </StackPanel>
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding JobsTab.FriezeDurationText}"
+                               Foreground="White" FontSize="11" Opacity="0.4"
+                               FontFamily="Consolas" VerticalAlignment="Center"/>
+                </Grid>
 
-                <ItemsControl ItemsSource="{Binding JobsTab.FriezeLanes}">
+                <ItemsControl ItemsSource="{Binding JobsTab.FriezeSegments}"
+                              SizeChanged="FriezeItemsControl_SizeChanged">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
-                        <DataTemplate DataType="{x:Type vm:FriezeLaneViewModel}">
-                            <StackPanel>
-                                <Grid Margin="0,4,0,4">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                        <materialDesign:PackIcon Kind="{Binding IconKind}" Foreground="White" Opacity="0.5"
-                                                                 Width="14" Height="14" VerticalAlignment="Center"/>
-                                        <TextBlock Text="{Binding DisplayLabel}" Foreground="White" FontSize="11"
-                                                   FontWeight="SemiBold" Opacity="0.4"
-                                                   VerticalAlignment="Center" Margin="6,0,0,0"/>
-                                    </StackPanel>
-                                    <TextBlock Grid.Column="2"
-                                               Text="{Binding DurationText}"
-                                               Foreground="White" FontSize="11" Opacity="0.4"
-                                               FontFamily="Consolas" VerticalAlignment="Center"/>
-                                </Grid>
-                                <ItemsControl ItemsSource="{Binding Segments}"
-                                              ItemTemplate="{StaticResource FriezeSquareTemplate}"
-                                              SizeChanged="FriezeItemsControl_SizeChanged">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel/>
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                </ItemsControl>
-                            </StackPanel>
+                        <DataTemplate DataType="{x:Type vm:UnifiedFriezeSegment}">
+                            <Border x:Name="SquareOuter" Width="10" Height="10" Padding="1"
+                                    Background="Transparent"
+                                    ToolTip="{Binding Tooltip}"
+                                    ToolTipService.InitialShowDelay="200"
+                                    ToolTipService.BetweenShowDelay="100">
+                                <Border x:Name="SquareInner" CornerRadius="2"
+                                        Background="{Binding Slices, Converter={StaticResource SlicesToBrushConverter}}"
+                                        Opacity="1.0">
+                                    <Border.RenderTransform>
+                                        <ScaleTransform CenterX="4" CenterY="4"/>
+                                    </Border.RenderTransform>
+                                </Border>
+                            </Border>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding Tooltip}" Value="">
+                                    <Setter TargetName="SquareOuter" Property="ToolTipService.IsEnabled" Value="False"/>
+                                </DataTrigger>
+                                <EventTrigger RoutedEvent="Border.MouseEnter">
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0.7" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                             Storyboard.TargetProperty="RenderTransform.ScaleX"
+                                                             To="1.3" Duration="0:0:0.12">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <CubicEase EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                            <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                             Storyboard.TargetProperty="RenderTransform.ScaleY"
+                                                             To="1.3" Duration="0:0:0.12">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <CubicEase EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </EventTrigger>
+                                <EventTrigger RoutedEvent="Border.MouseLeave">
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1.0" Duration="0:0:0.2"/>
+                                            <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                             Storyboard.TargetProperty="RenderTransform.ScaleX"
+                                                             To="1.0" Duration="0:0:0.2">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <CubicEase EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                            <DoubleAnimation Storyboard.TargetName="SquareInner"
+                                                             Storyboard.TargetProperty="RenderTransform.ScaleY"
+                                                             To="1.0" Duration="0:0:0.2">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <CubicEase EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </EventTrigger>
+                            </DataTemplate.Triggers>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>

@@ -144,15 +144,26 @@ public partial class App : Application
     private void SaveWindowState()
     {
         var mainWindow = MainWindow;
-        if (mainWindow != null)
+        if (mainWindow == null) return;
+
+        var wc = ConfigManager.Config.Window;
+        wc.IsMaximized = mainWindow.WindowState == WindowState.Maximized;
+        if (mainWindow.WindowState == WindowState.Normal)
         {
-            ConfigManager.Config.Window.Width = mainWindow.Width;
-            ConfigManager.Config.Window.Height = mainWindow.Height;
-            ConfigManager.Config.Window.Left = mainWindow.Left;
-            ConfigManager.Config.Window.Top = mainWindow.Top;
-            ConfigManager.Config.Window.IsMaximized = mainWindow.WindowState == WindowState.Maximized;
-            ConfigManager.Save();
+            wc.Width = mainWindow.Width;
+            wc.Height = mainWindow.Height;
+            wc.Left = mainWindow.Left;
+            wc.Top = mainWindow.Top;
         }
+        else if (mainWindow.WindowState == WindowState.Maximized)
+        {
+            var bounds = mainWindow.RestoreBounds;
+            wc.Width = bounds.Width;
+            wc.Height = bounds.Height;
+            wc.Left = bounds.Left;
+            wc.Top = bounds.Top;
+        }
+        ConfigManager.Save();
     }
 
     public static void Log(string message)
