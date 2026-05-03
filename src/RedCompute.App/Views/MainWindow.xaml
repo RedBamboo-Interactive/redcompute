@@ -24,6 +24,7 @@
             <DropShadowEffect Color="Black" Direction="270" ShadowDepth="0" BlurRadius="20" Opacity="0.4"/>
         </Border.Effect>
         <Border CornerRadius="12" ClipToBounds="True">
+            <materialDesign:DialogHost Identifier="RootDialog" DialogTheme="Inherit" CloseOnClickAway="False">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="40"/>
@@ -31,7 +32,7 @@
                 </Grid.RowDefinitions>
 
                 <!-- Title Bar -->
-                <Grid Grid.Row="0" MouseLeftButtonDown="TitleBar_MouseDown">
+                <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="TitleBar_MouseDown">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0">
                         <materialDesign:PackIcon Kind="ServerNetwork" Width="18" Height="18"
                                                  Foreground="{DynamicResource AccentGreen}" Margin="0,0,8,0"/>
@@ -138,6 +139,13 @@
                                                                         </materialDesign:PackIcon.Style>
                                                                     </materialDesign:PackIcon>
                                                                 </Button>
+                                                                <Button Command="{Binding QueueJobCommand}"
+                                                                        Style="{StaticResource MaterialDesignFlatButton}"
+                                                                        Padding="4" MinWidth="0" Width="30" Height="30"
+                                                                        ToolTip="Queue Job">
+                                                                    <materialDesign:PackIcon Kind="Plus" Width="16" Height="16"
+                                                                                             Foreground="{DynamicResource TextMuted}" Opacity="0.6"/>
+                                                                </Button>
                                                                 <Button Command="{Binding OpenSettingsCommand}"
                                                                         Style="{StaticResource MaterialDesignFlatButton}"
                                                                         Padding="4" MinWidth="0" Width="30" Height="30"
@@ -220,32 +228,34 @@
                                                         <Border Height="1" Background="{DynamicResource BorderSubtle}"
                                                                 Margin="-20,0" Opacity="0.5"/>
 
-                                                        <!-- Stats -->
-                                                        <Grid Margin="0,14,0,2">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="*"/>
-                                                                <ColumnDefinition Width="*"/>
-                                                                <ColumnDefinition Width="*"/>
-                                                            </Grid.ColumnDefinitions>
-                                                            <StackPanel Grid.Column="0" HorizontalAlignment="Center">
-                                                                <TextBlock Text="{Binding CompletedJobs}" FontSize="18" FontWeight="SemiBold"
-                                                                           Foreground="{DynamicResource AccentTeal}" HorizontalAlignment="Center"/>
-                                                                <TextBlock Text="Done" FontSize="10" Foreground="{DynamicResource TextMuted}"
-                                                                           HorizontalAlignment="Center" Opacity="0.7"/>
-                                                            </StackPanel>
-                                                            <StackPanel Grid.Column="1" HorizontalAlignment="Center">
-                                                                <TextBlock Text="{Binding FailedJobs}" FontSize="18" FontWeight="SemiBold"
-                                                                           Foreground="{DynamicResource AccentRed}" HorizontalAlignment="Center"/>
-                                                                <TextBlock Text="Failed" FontSize="10" Foreground="{DynamicResource TextMuted}"
-                                                                           HorizontalAlignment="Center" Opacity="0.7"/>
-                                                            </StackPanel>
-                                                            <StackPanel Grid.Column="2" HorizontalAlignment="Center">
-                                                                <TextBlock Text="{Binding UtilizationDisplay}" FontSize="18" FontWeight="SemiBold"
-                                                                           Foreground="{DynamicResource AccentOrange}" HorizontalAlignment="Center"/>
-                                                                <TextBlock Text="Util" FontSize="10" Foreground="{DynamicResource TextMuted}"
-                                                                           HorizontalAlignment="Center" Opacity="0.7"/>
-                                                            </StackPanel>
-                                                        </Grid>
+                                                        <!-- Job Frieze -->
+                                                        <ItemsControl ItemsSource="{Binding JobSegments}" Margin="0,14,0,2">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <WrapPanel/>
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Border Width="8" Height="8" Padding="1"
+                                                                            ToolTip="{Binding Tooltip}"
+                                                                            ToolTipService.InitialShowDelay="200"
+                                                                            ToolTipService.BetweenShowDelay="100">
+                                                                        <Border.Style>
+                                                                            <Style TargetType="Border">
+                                                                                <Setter Property="ToolTipService.IsEnabled" Value="True"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding Tooltip}" Value="">
+                                                                                        <Setter Property="ToolTipService.IsEnabled" Value="False"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Border.Style>
+                                                                        <Border CornerRadius="1" Background="{Binding Color}"/>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
                                                     </StackPanel>
                                                 </Border>
                                             </Border>
@@ -435,6 +445,7 @@
                     </TabItem>
                 </TabControl>
             </Grid>
+            </materialDesign:DialogHost>
         </Border>
     </Border>
 </Window>

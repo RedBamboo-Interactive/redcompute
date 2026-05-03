@@ -1,0 +1,298 @@
+<UserControl x:Class="RedCompute.App.Views.Dialogs.QueueJobDialog"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+             MinWidth="440" MaxWidth="520">
+
+    <Border Background="{DynamicResource MaterialDesignCardBackground}"
+            CornerRadius="12" Padding="24">
+        <Grid>
+            <!-- Form State -->
+            <StackPanel>
+                <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                        <Setter Property="Visibility" Value="Visible"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsSuccess}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </StackPanel.Style>
+
+                <!-- Header -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
+                    <materialDesign:PackIcon Kind="Plus" Width="22" Height="22"
+                                             Foreground="{DynamicResource AccentGreen}"
+                                             VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="White"
+                               VerticalAlignment="Center">
+                        <Run Text="Queue Job"/>
+                        <Run Text=" — " Foreground="{DynamicResource TextMuted}"/>
+                        <Run Text="{Binding CapabilityDisplayName, Mode=OneWay}"/>
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Loading -->
+                <StackPanel HorizontalAlignment="Center" Margin="0,20">
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsLoading}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+                    <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                 IsIndeterminate="True" Width="28" Height="28"/>
+                </StackPanel>
+
+                <!-- Endpoint selector (only when multiple) -->
+                <StackPanel Margin="0,0,0,16">
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasMultipleEndpoints}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+                    <TextBlock Text="Endpoint" FontSize="11" Foreground="{DynamicResource TextMuted}"
+                               FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <ComboBox ItemsSource="{Binding PostEndpoints}"
+                              SelectedItem="{Binding SelectedEndpoint}"
+                              DisplayMemberPath="Path"/>
+                </StackPanel>
+
+                <!-- Endpoint description -->
+                <TextBlock Text="{Binding SelectedEndpoint.Description}"
+                           FontSize="12" Foreground="{DynamicResource TextMuted}"
+                           TextWrapping="Wrap" Margin="0,0,0,16" Opacity="0.8">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding SelectedEndpoint}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+
+                <!-- Dynamic fields -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="380" Margin="0,0,0,8">
+                    <ItemsControl ItemsSource="{Binding Fields}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,0,0,14">
+                                    <!-- Label -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <TextBlock Text="{Binding DisplayName}" FontSize="12"
+                                                   Foreground="{DynamicResource TextMuted}" FontWeight="Medium"/>
+                                        <TextBlock Text=" *" FontSize="12" Foreground="{DynamicResource AccentRed}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsRequired}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+
+                                    <!-- string field -->
+                                    <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                                             materialDesign:HintAssist.Hint="{Binding Description}"
+                                             AcceptsReturn="False">
+                                        <TextBox.Style>
+                                            <Style TargetType="TextBox" BasedOn="{StaticResource MaterialDesignFilledTextBox}">
+                                                <Setter Property="materialDesign:TextFieldAssist.TextFieldCornerRadius" Value="8"/>
+                                                <Setter Property="BorderBrush" Value="#404040"/>
+                                                <Setter Property="BorderThickness" Value="1"/>
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding FieldType}" Value="string">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding FieldType}" Value="file">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBox.Style>
+                                    </TextBox>
+
+                                    <!-- enum field -->
+                                    <ComboBox ItemsSource="{Binding EnumOptions}"
+                                              SelectedItem="{Binding Value}">
+                                        <ComboBox.Style>
+                                            <Style TargetType="ComboBox" BasedOn="{StaticResource MaterialDesignFilledComboBox}">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding FieldType}" Value="enum">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ComboBox.Style>
+                                    </ComboBox>
+
+                                    <!-- number / integer field -->
+                                    <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                                             AcceptsReturn="False">
+                                        <TextBox.Style>
+                                            <Style TargetType="TextBox" BasedOn="{StaticResource MaterialDesignFilledTextBox}">
+                                                <Setter Property="materialDesign:TextFieldAssist.TextFieldCornerRadius" Value="8"/>
+                                                <Setter Property="BorderBrush" Value="#404040"/>
+                                                <Setter Property="BorderThickness" Value="1"/>
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding FieldType}" Value="number">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding FieldType}" Value="integer">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBox.Style>
+                                        <materialDesign:HintAssist.Hint>
+                                            <MultiBinding StringFormat="{}{0} ({1}–{2})">
+                                                <Binding Path="Description"/>
+                                                <Binding Path="Min"/>
+                                                <Binding Path="Max"/>
+                                            </MultiBinding>
+                                        </materialDesign:HintAssist.Hint>
+                                    </TextBox>
+
+                                    <!-- boolean field -->
+                                    <ToggleButton IsChecked="{Binding Value}"
+                                                  HorizontalAlignment="Left">
+                                        <ToggleButton.Style>
+                                            <Style TargetType="ToggleButton" BasedOn="{StaticResource MaterialDesignSwitchToggleButton}">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding FieldType}" Value="boolean">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ToggleButton.Style>
+                                    </ToggleButton>
+
+                                    <!-- Validation error -->
+                                    <TextBlock Text="{Binding ErrorMessage}" FontSize="11"
+                                               Foreground="{DynamicResource AccentRed}" Margin="0,4,0,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasError}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- Submission error -->
+                <Border Margin="0,0,0,12" Padding="10" CornerRadius="6"
+                        Background="#40FF5252">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ErrorMessage, Converter={StaticResource NullableToVisibilityConverter}}" Value="Visible">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource AccentRed}"
+                               FontSize="12" TextWrapping="Wrap"/>
+                </Border>
+
+                <!-- Footer buttons -->
+                <Grid Margin="0,4,0,0">
+                    <Button Content="Cancel" Command="{Binding CancelCommand}"
+                            HorizontalAlignment="Left"
+                            Style="{StaticResource MaterialDesignFlatButton}"
+                            Foreground="{DynamicResource TextMuted}"/>
+                    <Button Content="Submit Job" Command="{Binding SubmitCommand}"
+                            HorizontalAlignment="Right">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignFlatMidBgButton}">
+                                <Setter Property="Background" Value="{DynamicResource AccentGreen}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Setter Property="IsEnabled" Value="True"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSubmitting}" Value="True">
+                                        <Setter Property="IsEnabled" Value="False"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsLoading}" Value="True">
+                                        <Setter Property="IsEnabled" Value="False"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </Grid>
+            </StackPanel>
+
+            <!-- Success State -->
+            <StackPanel>
+                <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsSuccess}" Value="True">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </StackPanel.Style>
+
+                <materialDesign:PackIcon Kind="CheckCircle" Width="40" Height="40"
+                                         Foreground="{DynamicResource AccentGreen}"
+                                         HorizontalAlignment="Center" Margin="0,8,0,16"/>
+
+                <TextBlock Text="Job Queued" FontSize="18" FontWeight="SemiBold"
+                           Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,16"/>
+
+                <Border Background="{DynamicResource DeepBackground}" CornerRadius="6"
+                        Padding="12" Margin="0,0,0,24" HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding ResultJobId}" FontFamily="Consolas" FontSize="12"
+                               Foreground="{DynamicResource AccentTeal}" TextWrapping="Wrap"/>
+                </Border>
+
+                <Grid>
+                    <Button Content="Close" Command="{Binding CancelCommand}"
+                            HorizontalAlignment="Left"
+                            Style="{StaticResource MaterialDesignFlatButton}"
+                            Foreground="{DynamicResource TextMuted}"/>
+                    <Button Content="View in Jobs" Command="{Binding GoToJobsCommand}"
+                            HorizontalAlignment="Right">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignFlatMidBgButton}">
+                                <Setter Property="Background" Value="{DynamicResource AccentGreen}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </Grid>
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>

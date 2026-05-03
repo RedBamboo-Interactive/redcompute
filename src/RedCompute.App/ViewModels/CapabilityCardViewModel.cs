@@ -3,6 +3,7 @@ using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using MaterialDesignThemes.Wpf;
+using RedCompute.App.Views.Dialogs;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
@@ -12,6 +13,7 @@ namespace RedCompute.App.ViewModels;
 public partial class CapabilityCardViewModel : ObservableObject
 {
     private const int MiniQuantaCount = 32;
+    private const int JobFriezeCount = 32;
     private static readonly TimeSpan MiniQuantumSize = TimeSpan.FromSeconds(5);
 
     [ObservableProperty]
@@ -25,18 +27,6 @@ public partial class CapabilityCardViewModel : ObservableObject
 
     [ObservableProperty]
     private string _providerName = "";
-
-    [ObservableProperty]
-    private int _completedJobs;
-
-    [ObservableProperty]
-    private int _failedJobs;
-
-    [ObservableProperty]
-    private int _activeJobs;
-
-    [ObservableProperty]
-    private string _utilizationDisplay = "0%";
 
     public CapabilityType Type { get; init; }
 
@@ -54,12 +44,14 @@ public partial class CapabilityCardViewModel : ObservableObject
     };
 
     public ObservableCollection<FriezeSegment> MiniSegments { get; } = new();
+    public ObservableCollection<FriezeSegment> JobSegments { get; } = new();
 
     partial void OnStatusChanged(BackendStatus value)
     {
         OnPropertyChanged(nameof(IsRunning));
         OnPropertyChanged(nameof(StatusColor));
         ToggleCommand.NotifyCanExecuteChanged();
+        QueueJobCommand.NotifyCanExecuteChanged();
     }
 
     [RelayCommand]
@@ -81,25 +73,49 @@ public partial class CapabilityCardViewModel : ObservableObject
         }
     }
 
+    [RelayCommand(CanExecute = nameof(IsRunning))]
+    private async Task QueueJob()
+    {
+        var vm = new QueueJobDialogViewModel(Slug, DisplayName);
+        var view = new QueueJobDialog { DataContext = vm };
+        _ = vm.LoadManifestAsync();
+        await DialogHost.Show(view, "RootDialog");
+    }
+
     [RelayCommand]
     private void OpenSettings()
     {
         App.MainViewModel.SelectedTabIndex = 2;
     }
 
-    public void UpdateStats(List<JobRecord> jobs, int windowSeconds = 300)
+    public void RecomputeJobFrieze(List<JobRecord> jobs)
     {
-        ActiveJobs = jobs.Count(j => j.Status == JobStatus.Running);
-        CompletedJobs = jobs.Count(j => j.Status == JobStatus.Completed);
-        FailedJobs = jobs.Count(j => j.Status == JobStatus.Failed);
+        var recent = jobs
+            .OrderByDescending(j => j.QueuedAt)
+            .Take(JobFriezeCount)
+            .Reverse()
+            .ToList();
 
-        var totalDurationMs = jobs
-            .Where(j => j.CompletedAt.HasValue && j.StartedAt.HasValue)
-            .Sum(j => (j.CompletedAt!.Value - j.StartedAt!.Value).TotalMilliseconds);
+        var desired = new List<(SolidColorBrush Brush, string Tooltip)>(JobFriezeCount);
 
-        var pct = windowSeconds > 0 ? totalDurationMs / (windowSeconds * 1000.0) * 100 : 0;
-        pct = Math.Min(pct, 100);
-        UtilizationDisplay = $"{pct:F0}%";
+        for (int i = 0; i < JobFriezeCount - recent.Count; i++)
+            desired.Add((FriezeColors.Empty, ""));
+
+        foreach (var job in recent)
+        {
+            var (brush, tooltip) = job.Status switch
+            {
+                JobStatus.Completed => (FriezeColors.Completed, $"Completed ({job.DurationMs}ms)"),
+                JobStatus.Failed => (FriezeColors.Failed, $"Failed: {job.ErrorMessage ?? "unknown"}"),
+                JobStatus.Cancelled => (FriezeColors.Cancelled, "Cancelled"),
+                JobStatus.Running => (FriezeColors.Running, "Running…"),
+                JobStatus.Queued => (FriezeColors.Queued, "Queued"),
+                _ => (FriezeColors.Idle, "")
+            };
+            desired.Add((brush, tooltip));
+        }
+
+        ApplySegments(JobSegments, desired);
     }
 
     public void RecomputeMiniFrieze(List<JobRecord> jobs)
@@ -170,7 +186,7 @@ public partial class CapabilityCardViewModel : ObservableObject
             desired.Add((bestBrush, bestTooltip));
         }
 
-        ApplySegments(desired);
+        ApplySegments(MiniSegments, desired);
     }
 
     private static int GetPriority(SolidColorBrush brush)
@@ -185,21 +201,21 @@ public partial class CapabilityCardViewModel : ObservableObject
 
     private void FillEmpty()
     {
-        ApplySegments(Enumerable.Repeat((FriezeColors.Empty, ""), MiniQuantaCount).ToList());
+        ApplySegments(MiniSegments, Enumerable.Repeat((FriezeColors.Empty, ""), MiniQuantaCount).ToList());
     }
 
-    private void ApplySegments(List<(SolidColorBrush Brush, string Tooltip)> desired)
+    private static void ApplySegments(ObservableCollection<FriezeSegment> segments, List<(SolidColorBrush Brush, string Tooltip)> desired)
     {
-        for (int i = 0; i < Math.Min(MiniSegments.Count, desired.Count); i++)
+        for (int i = 0; i < Math.Min(segments.Count, desired.Count); i++)
         {
-            MiniSegments[i].Color = desired[i].Brush;
-            MiniSegments[i].Tooltip = desired[i].Tooltip;
+            segments[i].Color = desired[i].Brush;
+            segments[i].Tooltip = desired[i].Tooltip;
         }
 
-        for (int i = MiniSegments.Count; i < desired.Count; i++)
-            MiniSegments.Add(new FriezeSegment(desired[i].Brush, desired[i].Tooltip));
+        for (int i = segments.Count; i < desired.Count; i++)
+            segments.Add(new FriezeSegment(desired[i].Brush, desired[i].Tooltip));
 
-        while (MiniSegments.Count > desired.Count)
-            MiniSegments.RemoveAt(MiniSegments.Count - 1);
+        while (segments.Count > desired.Count)
+            segments.RemoveAt(segments.Count - 1);
     }
 }
