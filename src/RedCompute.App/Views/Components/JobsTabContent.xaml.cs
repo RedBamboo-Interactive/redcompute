@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System.Windows.Threading;
 using MaterialDesignThemes.Wpf;
 using RedCompute.App.ViewModels;
@@ -12,9 +14,8 @@ namespace RedCompute.App.Views.Components;
 public partial class JobsTabContent : UserControl
 {
     private readonly DispatcherTimer _positionTimer;
-    private bool _audioSeeking;
+    private readonly List<AudioWidgetState> _audioWidgets = [];
     private bool _videoSeeking;
-    private bool _audioPlaying;
     private bool _videoPlaying;
 
     public JobsTabContent()
@@ -43,94 +44,199 @@ public partial class JobsTabContent : UserControl
 
     private void OnSelectedJobChanged()
     {
-        StopAudio();
+        StopAllAudio();
         StopVideo();
 
         var job = (DataContext as MainViewModel)?.JobsTab.SelectedJob;
         if (job == null || !job.HasOutputFile) return;
 
-        var uri = new Uri(job.OutputLocation!);
-
         if (job.IsAudioOutput)
-        {
-            AudioPlayer.Source = uri;
-            AudioPlayer.Stop();
-        }
+            BuildAudioPlayers(job);
         else if (job.IsVideoOutput)
         {
-            VideoPlayer.Source = uri;
+            VideoPlayer.Source = new Uri(job.OutputLocation!);
             VideoPlayer.Stop();
         }
     }
 
-    // ── Audio ──
+    // ── Audio widgets ──
 
-    private void PlayPause_Click(object sender, RoutedEventArgs e)
+    private sealed class AudioWidgetState
     {
-        var job = (DataContext as MainViewModel)?.JobsTab.SelectedJob;
-        if (job == null || !job.IsAudioOutput || !job.HasOutputFile) return;
+        public required MediaElement Player;
+        public required PackIcon PlayPauseIcon;
+        public required Slider SeekSlider;
+        public required TextBlock TimeText;
+        public bool IsPlaying;
+        public bool IsSeeking;
+    }
 
-        if (AudioPlayer.Source == null)
-            AudioPlayer.Source = new Uri(job.OutputLocation!);
+    private void BuildAudioPlayers(JobViewModel job)
+    {
+        AudioPlayersPanel.Children.Clear();
+        _audioWidgets.Clear();
 
-        if (_audioPlaying)
+        for (int i = 0; i < job.ClipPaths.Count; i++)
         {
-            AudioPlayer.Pause();
-            _audioPlaying = false;
-            AudioPlayPauseIcon.Kind = PackIconKind.Play;
+            var clipPath = job.ClipPaths[i];
+            var widget = CreateAudioWidget(clipPath, job.ClipCount > 1 ? $"Variation {i + 1}" : null);
+            AudioPlayersPanel.Children.Add(widget.Container);
+            _audioWidgets.Add(widget.State);
+        }
+    }
+
+    private (Border Container, AudioWidgetState State) CreateAudioWidget(string filePath, string? label)
+    {
+        var player = new MediaElement
+        {
+            LoadedBehavior = MediaState.Manual,
+            UnloadedBehavior = MediaState.Close,
+            Volume = 1.0,
+            Visibility = Visibility.Collapsed,
+            Source = new Uri(filePath)
+        };
+
+        var playIcon = new PackIcon
+        {
+            Kind = PackIconKind.Play,
+            Width = 20, Height = 20,
+            Foreground = (Brush)FindResource("AccentGreen")
+        };
+
+        var playBtn = new Button
+        {
+            Content = playIcon,
+            Style = (Style)FindResource("MaterialDesignFlatButton"),
+            Padding = new Thickness(0),
+            MinWidth = 0, Width = 32, Height = 32
+        };
+
+        var slider = new Slider
+        {
+            Minimum = 0, Maximum = 100, Value = 0,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 8, 0),
+            Foreground = (Brush)FindResource("AccentGreen")
+        };
+
+        var timeText = new TextBlock
+        {
+            Text = "0:00 / 0:00",
+            Foreground = Brushes.White, Opacity = 0.5,
+            FontSize = 11, FontFamily = new FontFamily("Consolas"),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var state = new AudioWidgetState
+        {
+            Player = player,
+            PlayPauseIcon = playIcon,
+            SeekSlider = slider,
+            TimeText = timeText
+        };
+
+        player.MediaOpened += (_, _) =>
+        {
+            if (player.NaturalDuration.HasTimeSpan)
+                timeText.Text = $"0:00 / {FormatTime(player.NaturalDuration.TimeSpan)}";
+        };
+
+        player.MediaEnded += (_, _) =>
+        {
+            state.IsPlaying = false;
+            playIcon.Kind = PackIconKind.Play;
+            slider.Value = 0;
+            player.Stop();
+            StopTimerIfIdle();
+        };
+
+        playBtn.Click += (_, _) =>
+        {
+            if (state.IsPlaying)
+            {
+                player.Pause();
+                state.IsPlaying = false;
+                playIcon.Kind = PackIconKind.Play;
+                StopTimerIfIdle();
+            }
+            else
+            {
+                player.Play();
+                state.IsPlaying = true;
+                playIcon.Kind = PackIconKind.Pause;
+                _positionTimer.Start();
+            }
+        };
+
+        slider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler((_, _) => state.IsSeeking = true));
+        slider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((_, _) =>
+        {
+            state.IsSeeking = false;
+            if (player.NaturalDuration.HasTimeSpan)
+            {
+                var total = player.NaturalDuration.TimeSpan.TotalSeconds;
+                player.Position = TimeSpan.FromSeconds(total * slider.Value / 100.0);
+            }
+        }));
+
+        player.Stop();
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        grid.Children.Add(player);
+        Grid.SetColumn(playBtn, 0); grid.Children.Add(playBtn);
+        Grid.SetColumn(slider, 1); grid.Children.Add(slider);
+        Grid.SetColumn(timeText, 2); grid.Children.Add(timeText);
+
+        var content = new StackPanel();
+
+        if (label != null)
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = label,
+                Foreground = Brushes.White, Opacity = 0.5,
+                FontSize = 11, Margin = new Thickness(0, 0, 0, 6)
+            });
+        }
+
+        content.Children.Add(grid);
+
+        var border = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            Margin = new Thickness(0, 0, 0, 8),
+            Padding = new Thickness(12, 10, 12, 10),
+            Background = new SolidColorBrush(Color.FromArgb(0x10, 0xFF, 0xFF, 0xFF)),
+            Child = content
+        };
+
+        return (border, state);
+    }
+
+    private void StopAllAudio()
+    {
+        foreach (var w in _audioWidgets)
+        {
+            w.IsPlaying = false;
+            w.PlayPauseIcon.Kind = PackIconKind.Play;
+            w.SeekSlider.Value = 0;
+            w.TimeText.Text = "0:00 / 0:00";
+            w.Player.Stop();
+            w.Player.Source = null;
+        }
+        _audioWidgets.Clear();
+        AudioPlayersPanel.Children.Clear();
+        StopTimerIfIdle();
+    }
+
+    private void StopTimerIfIdle()
+    {
+        if (!_audioWidgets.Any(w => w.IsPlaying) && !_videoPlaying)
             _positionTimer.Stop();
-        }
-        else
-        {
-            AudioPlayer.Play();
-            _audioPlaying = true;
-            AudioPlayPauseIcon.Kind = PackIconKind.Pause;
-            _positionTimer.Start();
-        }
-    }
-
-    private void AudioSeek_MouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        _audioSeeking = true;
-    }
-
-    private void AudioSeek_MouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        _audioSeeking = false;
-        if (AudioPlayer.NaturalDuration.HasTimeSpan)
-        {
-            var total = AudioPlayer.NaturalDuration.TimeSpan.TotalSeconds;
-            AudioPlayer.Position = TimeSpan.FromSeconds(total * AudioSeekSlider.Value / 100.0);
-        }
-    }
-
-    private void Media_MediaOpened(object sender, RoutedEventArgs e)
-    {
-        if (AudioPlayer.NaturalDuration.HasTimeSpan)
-        {
-            var total = AudioPlayer.NaturalDuration.TimeSpan;
-            AudioTimeText.Text = $"0:00 / {FormatTime(total)}";
-        }
-    }
-
-    private void Media_MediaEnded(object sender, RoutedEventArgs e)
-    {
-        _audioPlaying = false;
-        AudioPlayPauseIcon.Kind = PackIconKind.Play;
-        _positionTimer.Stop();
-        AudioSeekSlider.Value = 0;
-        AudioPlayer.Stop();
-    }
-
-    private void StopAudio()
-    {
-        _audioPlaying = false;
-        AudioPlayPauseIcon.Kind = PackIconKind.Play;
-        _positionTimer.Stop();
-        AudioSeekSlider.Value = 0;
-        AudioTimeText.Text = "0:00 / 0:00";
-        AudioPlayer.Stop();
-        AudioPlayer.Source = null;
     }
 
     // ── Video ──
@@ -148,7 +254,7 @@ public partial class JobsTabContent : UserControl
             VideoPlayer.Pause();
             _videoPlaying = false;
             VideoPlayPauseIcon.Kind = PackIconKind.Play;
-            _positionTimer.Stop();
+            StopTimerIfIdle();
         }
         else
         {
@@ -206,12 +312,15 @@ public partial class JobsTabContent : UserControl
 
     private void PositionTimer_Tick(object? sender, EventArgs e)
     {
-        if (_audioPlaying && !_audioSeeking && AudioPlayer.NaturalDuration.HasTimeSpan)
+        foreach (var w in _audioWidgets)
         {
-            var total = AudioPlayer.NaturalDuration.TimeSpan;
-            var pos = AudioPlayer.Position;
-            AudioSeekSlider.Value = total.TotalSeconds > 0 ? pos.TotalSeconds / total.TotalSeconds * 100 : 0;
-            AudioTimeText.Text = $"{FormatTime(pos)} / {FormatTime(total)}";
+            if (w.IsPlaying && !w.IsSeeking && w.Player.NaturalDuration.HasTimeSpan)
+            {
+                var total = w.Player.NaturalDuration.TimeSpan;
+                var pos = w.Player.Position;
+                w.SeekSlider.Value = total.TotalSeconds > 0 ? pos.TotalSeconds / total.TotalSeconds * 100 : 0;
+                w.TimeText.Text = $"{FormatTime(pos)} / {FormatTime(total)}";
+            }
         }
 
         if (_videoPlaying && !_videoSeeking && VideoPlayer.NaturalDuration.HasTimeSpan)

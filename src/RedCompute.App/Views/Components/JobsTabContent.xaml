@@ -456,51 +456,8 @@
                                                RenderOptions.BitmapScalingMode="HighQuality"/>
                                     </Border>
 
-                                    <!-- Audio Player -->
-                                    <Border CornerRadius="6" Margin="0,0,0,8" Padding="12,10"
-                                            Background="#10FFFFFF">
-                                        <Border.Style>
-                                            <Style TargetType="Border">
-                                                <Setter Property="Visibility" Value="Collapsed"/>
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding JobsTab.SelectedJob.IsAudioOutput}" Value="True">
-                                                        <Setter Property="Visibility" Value="Visible"/>
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Border.Style>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="36"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <MediaElement x:Name="AudioPlayer"
-                                                          LoadedBehavior="Manual" UnloadedBehavior="Close"
-                                                          Volume="1.0" Visibility="Collapsed"
-                                                          MediaOpened="Media_MediaOpened"
-                                                          MediaEnded="Media_MediaEnded"/>
-                                            <Button x:Name="AudioPlayPauseBtn" Grid.Column="0"
-                                                    Click="PlayPause_Click"
-                                                    Style="{StaticResource MaterialDesignFlatButton}"
-                                                    Padding="0" MinWidth="0" Width="32" Height="32">
-                                                <materialDesign:PackIcon x:Name="AudioPlayPauseIcon"
-                                                                         Kind="Play" Width="20" Height="20"
-                                                                         Foreground="{DynamicResource AccentGreen}"/>
-                                            </Button>
-                                            <Slider x:Name="AudioSeekSlider" Grid.Column="1"
-                                                    Minimum="0" Maximum="100" Value="0"
-                                                    VerticalAlignment="Center" Margin="8,0"
-                                                    PreviewMouseLeftButtonUp="AudioSeek_MouseUp"
-                                                    PreviewMouseLeftButtonDown="AudioSeek_MouseDown"
-                                                    Foreground="{DynamicResource AccentGreen}"/>
-                                            <TextBlock x:Name="AudioTimeText" Grid.Column="2"
-                                                       Text="0:00 / 0:00"
-                                                       Foreground="White" Opacity="0.5"
-                                                       FontSize="11" FontFamily="Consolas"
-                                                       VerticalAlignment="Center"/>
-                                        </Grid>
-                                    </Border>
+                                    <!-- Audio Player(s) — populated by code-behind for multi-clip support -->
+                                    <StackPanel x:Name="AudioPlayersPanel"/>
 
                                     <!-- Video Player -->
                                     <Border CornerRadius="6" Margin="0,0,0,8" ClipToBounds="True">

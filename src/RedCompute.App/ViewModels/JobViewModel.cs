@@ -7,6 +7,9 @@ namespace RedCompute.App.ViewModels;
 
 public partial class JobViewModel : ObservableObject
 {
+    private static readonly string OutputDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RedCompute", "outputs");
     public Guid Id { get; }
     public string CapabilitySlug { get; }
     public string ProviderName { get; }
@@ -45,6 +48,18 @@ public partial class JobViewModel : ObservableObject
     public bool IsAudioOutput => OutputMediaCategory == "audio";
     public bool IsVideoOutput => OutputMediaCategory == "video";
     public bool HasOutputFile => OutputLocation != null && File.Exists(OutputLocation);
+
+    public List<string> ClipPaths { get; }
+    public int ClipCount => ClipPaths.Count;
+    public bool HasMultipleClips => ClipCount > 1;
+
+    [ObservableProperty]
+    private int _selectedClipIndex;
+
+    public string? SelectedClipPath => SelectedClipIndex >= 0 && SelectedClipIndex < ClipPaths.Count
+        ? ClipPaths[SelectedClipIndex] : null;
+
+    partial void OnSelectedClipIndexChanged(int value) => OnPropertyChanged(nameof(SelectedClipPath));
 
     public string Summary
     {
@@ -116,5 +131,24 @@ public partial class JobViewModel : ObservableObject
         OutputSizeBytes = record.OutputSizeBytes;
         OutputContentType = record.OutputContentType;
         CallerInfo = record.CallerInfo;
+
+        ClipPaths = BuildClipPaths(record);
+    }
+
+    private static List<string> BuildClipPaths(JobRecord record)
+    {
+        var paths = new List<string>();
+        if (record.OutputLocation != null && File.Exists(record.OutputLocation))
+            paths.Add(record.OutputLocation);
+
+        for (int i = 1; i <= 4; i++)
+        {
+            var clipPath = Path.Combine(OutputDir, $"{record.Id}_clip{i}.mp3");
+            if (File.Exists(clipPath))
+                paths.Add(clipPath);
+            else
+                break;
+        }
+        return paths;
     }
 }
