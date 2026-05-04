@@ -7,6 +7,15 @@ import { Switch } from "@/components/ui/switch"
 import { api } from "@/api/client"
 import type { CapabilityStatus, ParameterSchema } from "@/api/types"
 
+const capabilityIcons: Record<string, string> = {
+  tts: "fa-solid fa-volume-high",
+  stt: "fa-solid fa-microphone",
+  "image-gen": "fa-solid fa-image",
+  "music-gen": "fa-solid fa-music",
+  llm: "fa-solid fa-brain",
+  "video-gen": "fa-solid fa-video",
+}
+
 interface DiscoverResponse {
   capabilities: {
     slug: string
@@ -59,9 +68,9 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
     setSubmitting(true)
     setError(null)
     try {
-      await api.post(`/${selectedSlug}/generate?async=true`, values)
+      const result = await api.post<{ jobId?: string }>(`/${selectedSlug}/generate?async=true`, values)
       onOpenChange(false)
-      navigate("/jobs")
+      navigate("/jobs", result?.jobId ? { state: { focusJobId: result.jobId } } : undefined)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
@@ -69,38 +78,36 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
     }
   }
 
+  const selectedCap = capabilities.find(c => c.slug === selectedSlug)
+  const title = selectedCap?.displayName ?? selectedSlug
+
+  function formatLabel(key: string): string {
+    return key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-surface-elevated border-border-subtle max-w-md">
+      <DialogContent className="bg-surface-elevated border-border-subtle max-w-lg w-[calc(100vw-2rem)]">
         <DialogHeader>
-          <DialogTitle>Queue Job</DialogTitle>
-          <DialogDescription>Submit a new job to a capability</DialogDescription>
+          <DialogTitle className="text-lg flex items-center gap-2.5">
+            <i className={`${capabilityIcons[selectedSlug] || "fa-solid fa-cube"} text-base text-text-muted`} />
+            {title}
+          </DialogTitle>
+          <DialogDescription className="sr-only">Configure and submit a job</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 mt-2">
-          <div>
-            <label className="text-xs text-text-muted block mb-1">Capability</label>
-            {runningCaps.length > 1 ? (
-              <select
-                value={selectedSlug}
-                onChange={e => { setSelectedSlug(e.target.value); setParams({}); setValues({}); setError(null) }}
-                className="w-full bg-surface-base border border-border-subtle rounded-lg px-3 py-2 text-sm"
-              >
-                {runningCaps.map(c => (
-                  <option key={c.slug} value={c.slug}>{c.displayName}</option>
-                ))}
-              </select>
-            ) : (
-              <p className="text-sm text-white">{runningCaps.find(c => c.slug === selectedSlug)?.displayName ?? selectedSlug}</p>
-            )}
-          </div>
-
+        <div className="space-y-5 mt-1">
           {Object.entries(params).map(([key, schema]) => (
             <div key={key}>
-              <label className="text-xs text-text-muted block mb-1">
-                {key}{schema.required && <span className="text-accent-red"> *</span>}
-                {schema.description && <span className="opacity-60 ml-1">— {schema.description}</span>}
-              </label>
+              <div className="mb-1.5">
+                <span className="text-[13px] font-medium text-white">
+                  {formatLabel(key)}
+                  {schema.required && <span className="text-accent-red ml-0.5">*</span>}
+                </span>
+                {schema.description && (
+                  <p className="text-[11px] text-text-muted mt-0.5 leading-relaxed">{schema.description}</p>
+                )}
+              </div>
               {schema.type === "boolean" ? (
                 <Switch
                   checked={!!values[key]}
@@ -110,7 +117,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
                 <select
                   value={String(values[key] ?? "")}
                   onChange={e => setValues(prev => ({ ...prev, [key]: e.target.value }))}
-                  className="w-full bg-surface-base border border-border-subtle rounded-lg px-3 py-2 text-sm"
+                  className="w-full bg-surface-base border border-border-subtle rounded-lg px-3 py-2.5 text-sm"
                 >
                   {schema.enum.map(v => <option key={v} value={v}>{v}</option>)}
                 </select>
@@ -124,7 +131,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
                     setValues(prev => ({ ...prev, [key]: val }))
                   }}
                   placeholder={schema.default !== undefined ? String(schema.default) : undefined}
-                  className="bg-surface-base border-border-subtle"
+                  className="bg-surface-base border-border-subtle py-2.5"
                 />
               )}
             </div>
@@ -136,7 +143,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
             </div>
           )}
 
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-2 pt-2">
             <DialogClose render={<Button variant="ghost">Cancel</Button>} />
             <Button onClick={submit} disabled={!selectedSlug || submitting}>
               {submitting ? (
@@ -144,7 +151,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
                   <i className="fa-solid fa-spinner fa-spin text-xs" />
                   Submitting...
                 </span>
-              ) : "Queue"}
+              ) : "Generate"}
             </Button>
           </div>
         </div>

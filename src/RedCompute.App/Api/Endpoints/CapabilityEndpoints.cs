@@ -87,6 +87,73 @@ public static class CapabilityEndpoints
             jobTracker.MarkRunning(job.Id);
             log($"[TTS] Job {job.Id} started: \"{Truncate(text, 50)}\" voice={voice}", job.Id);
 
+            var isAsync = ctx.Request.Query.ContainsKey("async")
+                || string.Equals(ctx.Request.Headers["X-Async"].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase);
+
+            if (isAsync)
+            {
+                var capturedProvider = entry.ActiveProvider;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var proxyUrl = capturedProvider.GetProxyTargetUrl();
+                        if (proxyUrl != null)
+                        {
+                            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+                            var json = JsonSerializer.Serialize(backendBody);
+                            var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
+                            using var response = await client.PostAsync($"{proxyUrl.TrimEnd('/')}/synthesize/wav", httpContent);
+
+                            if (!response.IsSuccessStatusCode)
+                            {
+                                jobTracker.MarkFailed(job.Id, $"Backend returned {response.StatusCode}");
+                                log($"[TTS] Job {job.Id} failed: backend {response.StatusCode}", job.Id);
+                                return;
+                            }
+
+                            using var ms = new MemoryStream();
+                            await response.Content.CopyToAsync(ms);
+                            var path = SaveOutput(job.Id, ms, "audio/wav");
+                            var size = new FileInfo(path).Length;
+                            jobTracker.MarkCompleted(job.Id, path, size, "audio/wav");
+                            log($"[TTS] Job {job.Id} completed ({size / 1024}KB)", job.Id);
+                        }
+                        else
+                        {
+                            var request = new JobRequest
+                            {
+                                CapabilitySlug = "tts",
+                                Parameters = body,
+                                CallerInfo = ctx.Request.Headers["X-Caller-Info"].FirstOrDefault()
+                            };
+                            var result = await capturedProvider.ExecuteAsync(request);
+                            if (result is { Success: true, OutputStream: not null })
+                            {
+                                var contentType = result.ContentType ?? "audio/wav";
+                                var path = SaveOutput(job.Id, result.OutputStream, contentType);
+                                var size = new FileInfo(path).Length;
+                                jobTracker.MarkCompleted(job.Id, path, size, contentType);
+                                log($"[TTS] Job {job.Id} completed ({size / 1024}KB)", job.Id);
+                            }
+                            else
+                            {
+                                jobTracker.MarkFailed(job.Id, result?.ErrorMessage ?? "Provider returned no output");
+                                log($"[TTS] Job {job.Id} failed: {result?.ErrorMessage}", job.Id);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
+                        log($"[TTS] Job {job.Id} failed: {ex.Message}", job.Id);
+                    }
+                });
+
+                return Results.Json(new { jobId = job.Id, status = "running" }, statusCode: 202);
+            }
+
+            // Synchronous: hold connection until done
             try
             {
                 var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();

@@ -10,9 +10,9 @@ const statusColor: Record<string, string> = {
 }
 
 const IDLE = "#2A2A2A"
-const QUANTUM_MS = 500
+const QUANTUM_MS = 5000
 
-export function ActivityFrieze({ jobs, widthQuanta = 600 }: { jobs: JobRecord[]; widthQuanta?: number }) {
+export function ActivityFrieze({ jobs, widthQuanta = 60 }: { jobs: JobRecord[]; widthQuanta?: number }) {
   const [tick, setTick] = useState(0)
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 5000)
@@ -54,7 +54,8 @@ export function ActivityFrieze({ jobs, widthQuanta = 600 }: { jobs: JobRecord[];
     return result
   }, [jobs, widthQuanta, tick])
 
-  const durationText = `${Math.round((widthQuanta * QUANTUM_MS) / 1000)}s`
+  const totalSec = Math.round((widthQuanta * QUANTUM_MS) / 1000)
+  const durationText = totalSec >= 60 ? `${Math.round(totalSec / 60)}m` : `${totalSec}s`
 
   return (
     <div className="bg-surface-elevated rounded-lg p-3">

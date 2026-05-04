@@ -18,7 +18,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const body = await res.json().catch(() => ({ error: "unknown", message: res.statusText }))
     throw new Error(body.message || res.statusText)
   }
-  return res.json()
+  const ct = res.headers.get("content-type") || ""
+  if (ct.includes("application/json")) {
+    return res.json()
+  }
+  return null as T
 }
 
 export const api = {
