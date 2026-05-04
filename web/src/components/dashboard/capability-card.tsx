@@ -1,5 +1,4 @@
 import { useState } from "react"
-import { useNavigate } from "react-router-dom"
 import { api } from "@/api/client"
 import { MiniFrieze } from "./mini-frieze"
 import { QueueJobDialog } from "@/components/jobs/queue-job-dialog"
@@ -30,7 +29,6 @@ export function CapabilityCard({ cap, jobs, onRefresh }: {
   onRefresh: () => void
 }) {
   const [queueOpen, setQueueOpen] = useState(false)
-  const navigate = useNavigate()
   const isRunning = cap.status === "Running"
   const iconColor = statusIconColor(cap.status, cap.sleeping)
   const capJobs = jobs.filter(j => j.capabilitySlug === cap.slug)
@@ -55,14 +53,6 @@ export function CapabilityCard({ cap, jobs, onRefresh }: {
         <div className="bg-surface-elevated rounded-xl p-5">
           {/* Action buttons — top right */}
           <div className="flex justify-end gap-0 -mt-1 -mr-1 mb-0">
-            <button onClick={togglePower} title={cap.status}
-              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
-              <i className="fa-solid fa-power-off text-sm"
-                style={{
-                  color: isRunning ? "#26A69A" : "#72767D",
-                  opacity: isRunning ? 1 : 0.4,
-                }} />
-            </button>
             <button onClick={toggleSleep} title="Sleep/Wake (freeze requests)"
               className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
               <i className="fa-solid fa-moon text-xs"
@@ -71,22 +61,27 @@ export function CapabilityCard({ cap, jobs, onRefresh }: {
                   opacity: cap.sleeping ? 1 : 0.4,
                 }} />
             </button>
-            <button onClick={() => setQueueOpen(true)} title="Queue Job"
+            <button onClick={togglePower} title={cap.status}
               className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
-              <i className="fa-solid fa-plus text-xs text-text-muted opacity-60" />
-            </button>
-            <button title="Settings" onClick={() => navigate("/settings")}
-              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
-              <i className="fa-solid fa-gear text-xs text-text-muted opacity-60" />
+              <i className="fa-solid fa-power-off text-sm"
+                style={{
+                  color: isRunning ? "#26A69A" : "#72767D",
+                  opacity: isRunning ? 1 : 0.4,
+                }} />
             </button>
           </div>
 
-          {/* Centered icon header */}
+          {/* Centered icon — shows + overlay on hover to queue a job */}
           <div className="flex justify-center mb-3">
-            <div className="w-14 h-14 rounded-full border border-[#3A3A3F] flex items-center justify-center">
-              <i className={`${capabilityIcons[cap.slug] || "fa-solid fa-cog"} text-[22px]`}
+            <button
+              onClick={() => setQueueOpen(true)}
+              title="Queue a new job"
+              className="group relative w-14 h-14 rounded-full border border-[#3A3A3F] flex items-center justify-center hover:border-white/20 hover:bg-white/[0.04] hover:scale-110 active:scale-95 transition-all duration-300 ease-out cursor-pointer"
+            >
+              <i className={`${capabilityIcons[cap.slug] || "fa-solid fa-cube"} text-[22px] group-hover:opacity-0 group-hover:scale-75 transition-all duration-300`}
                 style={{ color: iconColor }} />
-            </div>
+              <i className="fa-solid fa-plus text-white/80 text-lg absolute opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300" />
+            </button>
           </div>
 
           {/* Title + provider */}

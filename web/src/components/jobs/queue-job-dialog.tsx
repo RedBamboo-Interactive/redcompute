@@ -21,11 +21,22 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
   defaultSlug?: string
 }) {
   const navigate = useNavigate()
-  const [selectedSlug, setSelectedSlug] = useState(defaultSlug || "")
+  const runningCaps = capabilities.filter(c => c.status === "Running")
+  const [selectedSlug, setSelectedSlug] = useState("")
   const [params, setParams] = useState<Record<string, ParameterSchema>>({})
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setError(null)
+    setSubmitting(false)
+    setParams({})
+    setValues({})
+    const initial = defaultSlug || runningCaps[0]?.slug || ""
+    setSelectedSlug(initial)
+  }, [open, defaultSlug, runningCaps.length])
 
   useEffect(() => {
     if (!open || !selectedSlug) return
@@ -42,19 +53,6 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
       }
     }).catch(() => {})
   }, [open, selectedSlug])
-
-  useEffect(() => {
-    if (open) {
-      setError(null)
-      setSubmitting(false)
-      if (defaultSlug) {
-        setSelectedSlug(defaultSlug)
-      } else if (!selectedSlug && capabilities.length > 0) {
-        const running = capabilities.find(c => c.status === "Running")
-        if (running) setSelectedSlug(running.slug)
-      }
-    }
-  }, [open, capabilities, selectedSlug, defaultSlug])
 
   async function submit() {
     if (!selectedSlug) return
@@ -82,16 +80,19 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
         <div className="space-y-4 mt-2">
           <div>
             <label className="text-xs text-text-muted block mb-1">Capability</label>
-            <select
-              value={selectedSlug}
-              onChange={e => { setSelectedSlug(e.target.value); setParams({}); setValues({}); setError(null) }}
-              className="w-full bg-surface-base border border-border-subtle rounded-lg px-3 py-2 text-sm"
-            >
-              <option value="">Select...</option>
-              {capabilities.filter(c => c.status === "Running").map(c => (
-                <option key={c.slug} value={c.slug}>{c.displayName}</option>
-              ))}
-            </select>
+            {runningCaps.length > 1 ? (
+              <select
+                value={selectedSlug}
+                onChange={e => { setSelectedSlug(e.target.value); setParams({}); setValues({}); setError(null) }}
+                className="w-full bg-surface-base border border-border-subtle rounded-lg px-3 py-2 text-sm"
+              >
+                {runningCaps.map(c => (
+                  <option key={c.slug} value={c.slug}>{c.displayName}</option>
+                ))}
+              </select>
+            ) : (
+              <p className="text-sm text-white">{runningCaps.find(c => c.slug === selectedSlug)?.displayName ?? selectedSlug}</p>
+            )}
           </div>
 
           {Object.entries(params).map(([key, schema]) => (
