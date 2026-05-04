@@ -46,8 +46,11 @@ public static class DiscoverEndpoints
                     endpoints = new object[]
                     {
                         new { method = "GET", path = "/settings", description = "Current service configuration (API keys masked)" },
-                        new { method = "PUT", path = "/settings/general", description = "Update general settings: apiPort, jobRetentionDays, logLevel, autoStartWithWindows" },
+                        new { method = "PUT", path = "/settings/general", description = "Update general settings: apiPort, jobRetentionDays, logLevel, autoStartWithWindows, tunnel*" },
                         new { method = "PUT", path = "/settings/capability/{slug}", description = "Update capability config: enabled, activeProvider" },
+                        new { method = "GET", path = "/tunnel/status", description = "Cloudflare tunnel status, hostname, and error" },
+                        new { method = "POST", path = "/tunnel/start", description = "Start the Cloudflare tunnel" },
+                        new { method = "POST", path = "/tunnel/stop", description = "Stop the Cloudflare tunnel" },
                         new { method = "GET", path = "/ws/schema", description = "WebSocket event schema — discover event types and data shapes" }
                     },
                     websocket = new

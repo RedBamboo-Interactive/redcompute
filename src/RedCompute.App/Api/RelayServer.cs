@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using RedCompute.App.Api.Endpoints;
+using RedCompute.App.Api.Middleware;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Configuration;
@@ -22,16 +23,19 @@ public class RelayServer
     private readonly JobTrackingService _jobTracker;
     private readonly LoggingService _logger;
     private readonly ConfigManager _configManager;
+    private readonly CloudflareTunnelService _tunnelService;
     private readonly Action<string, Guid?> _log;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
-        LoggingService logger, ConfigManager configManager, Action<string, Guid?> log)
+        LoggingService logger, ConfigManager configManager, CloudflareTunnelService tunnelService,
+        Action<string, Guid?> log)
     {
         _config = config;
         _registry = registry;
         _jobTracker = jobTracker;
         _logger = logger;
         _configManager = configManager;
+        _tunnelService = tunnelService;
         _log = log;
     }
 
@@ -48,6 +52,7 @@ public class RelayServer
         _app = builder.Build();
 
         _app.UseWebSockets();
+        _app.UseMiddleware<BearerAuthMiddleware>((Func<string?>)(() => _config.Tunnel.AccessToken));
 
         var webRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
         if (Directory.Exists(webRoot))
@@ -65,8 +70,9 @@ public class RelayServer
         ImageGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
-        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger);
-        SettingsEndpoints.Map(_app, _configManager);
+        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService);
+        TunnelEndpoints.Map(_app, _tunnelService);
+        SettingsEndpoints.Map(_app, _configManager, _tunnelService);
 
         if (Directory.Exists(webRoot))
         {

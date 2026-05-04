@@ -24,11 +24,17 @@ public static class WebSocketEndpoints
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, CloudflareTunnelService tunnelService)
     {
         jobTracker.JobCreated += job => Broadcast("job.created", job);
         jobTracker.JobUpdated += job => Broadcast("job.updated", job);
         logger.LogEntryCreated += entry => Broadcast("log.entry", entry);
+        tunnelService.StatusChanged += (status, error) => Broadcast("tunnel.status", new
+        {
+            status = status.ToString(),
+            hostname = App.ConfigManager.Config.Tunnel.Hostname,
+            error
+        });
 
         _ = PollCapabilityStatus(registry);
 
@@ -94,6 +100,12 @@ public static class WebSocketEndpoints
                     type = "capability.status",
                     description = "Fired when a capability's backend status changes (polled every 5s)",
                     fields = new[] { "slug", "displayName", "status", "sleeping", "provider" }
+                },
+                new
+                {
+                    type = "tunnel.status",
+                    description = "Fired when the Cloudflare tunnel status changes",
+                    fields = new[] { "status", "hostname", "error" }
                 }
             }
         }));

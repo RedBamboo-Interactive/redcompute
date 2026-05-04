@@ -71,12 +71,23 @@ export interface StatusResponse {
   capabilities: CapabilityStatus[]
 }
 
+export interface TunnelSettings {
+  enabled: boolean
+  accessToken: string | null
+  tunnelToken: string | null
+  hostname: string | null
+  cloudflaredPath: string | null
+  status: "Stopped" | "Starting" | "Running" | "Error"
+  error: string | null
+}
+
 export interface Settings {
   apiPort: number
   logLevel: string
   jobRetentionDays: number
   autoStartWithWindows: boolean
   configPath: string
+  tunnel: TunnelSettings
   capabilities: Record<string, {
     enabled: boolean
     activeProvider?: string
@@ -96,6 +107,6 @@ export interface TagCount {
 }
 
 export interface WsEvent {
-  type: "job.created" | "job.updated" | "log.entry" | "capability.status"
+  type: "job.created" | "job.updated" | "log.entry" | "capability.status" | "tunnel.status"
   data: unknown
 }

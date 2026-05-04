@@ -1,10 +1,13 @@
+import { getToken } from "./auth"
 import type { WsEvent } from "./types"
 
 type EventHandler = (event: WsEvent) => void
 
 export function createWebSocket(onEvent: EventHandler) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-  const url = `${protocol}//${window.location.host}/ws`
+  const token = getToken()
+  const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ""
+  const url = `${protocol}//${window.location.host}/ws${tokenParam}`
   let ws: WebSocket | null = null
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
   let closed = false

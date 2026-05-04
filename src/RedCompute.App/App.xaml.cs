@@ -21,6 +21,7 @@ public partial class App : Application
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
+    public static CloudflareTunnelService TunnelService { get; } = new();
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -43,6 +44,7 @@ public partial class App : Application
         InitializeCapabilities();
         await StartRelayServer();
         _ = ProbeRunningBackends();
+        _ = StartTunnelIfEnabled();
         StartJobCleanupTimer();
 
         _trayIcon = new TrayIconManager();
@@ -52,6 +54,7 @@ public partial class App : Application
     protected override async void OnExit(ExitEventArgs e)
     {
         _cleanupTimer?.Dispose();
+        await TunnelService.DisposeAsync();
         _relayCts?.Cancel();
         if (_relayServer != null)
             await _relayServer.StopAsync();
@@ -120,7 +123,7 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, (msg, jobId) => Log(msg, jobId));
 
         try
         {
@@ -129,6 +132,22 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log($"[App] Failed to start relay: {ex.Message}");
+        }
+    }
+
+    private async Task StartTunnelIfEnabled()
+    {
+        var tunnel = ConfigManager.Config.Tunnel;
+        if (!tunnel.Enabled) return;
+
+        try
+        {
+            await TunnelService.StartAsync(ConfigManager.Config.ApiPort, tunnel);
+            Log($"[Tunnel] Started (hostname: {tunnel.Hostname ?? "unknown"})");
+        }
+        catch (Exception ex)
+        {
+            Log($"[Tunnel] Failed to start: {ex.Message}");
         }
     }
 

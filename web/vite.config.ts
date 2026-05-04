@@ -20,6 +20,7 @@ export default defineConfig({
       "/discover": "http://localhost:18800",
       "/openapi.json": "http://localhost:18800",
       "/settings": "http://localhost:18800",
+      "/tunnel": "http://localhost:18800",
       "/tts": "http://localhost:18800",
       "/image-gen": "http://localhost:18800",
       "/music-gen": "http://localhost:18800",

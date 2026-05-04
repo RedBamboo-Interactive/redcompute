@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { api } from "@/api/client"
-import type { Settings } from "@/api/types"
+import type { Settings, WsEvent, TunnelSettings } from "@/api/types"
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -15,7 +15,7 @@ export function useSettings() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  const updateGeneral = useCallback(async (updates: Partial<Pick<Settings, "apiPort" | "jobRetentionDays" | "logLevel" | "autoStartWithWindows">>) => {
+  const updateGeneral = useCallback(async (updates: Record<string, unknown>) => {
     setSaving(true)
     try {
       await api.put("/settings/general", updates)
@@ -35,5 +35,15 @@ export function useSettings() {
     }
   }, [refresh])
 
-  return { settings, saving, refresh, updateGeneral, updateCapability }
+  const handleWsEvent = useCallback((event: WsEvent) => {
+    if (event.type === "tunnel.status") {
+      const update = event.data as { status: TunnelSettings["status"]; hostname: string | null; error: string | null }
+      setSettings(prev => prev ? {
+        ...prev,
+        tunnel: { ...prev.tunnel, status: update.status, error: update.error, hostname: update.hostname ?? prev.tunnel.hostname }
+      } : prev)
+    }
+  }, [])
+
+  return { settings, saving, refresh, updateGeneral, updateCapability, handleWsEvent }
 }

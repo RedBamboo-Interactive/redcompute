@@ -8,7 +8,17 @@ public class RedComputeConfig
     public string LogLevel { get; set; } = "Info";
     public int JobRetentionDays { get; set; } = 7;
     public bool AutoStartWithWindows { get; set; }
+    public TunnelConfig Tunnel { get; set; } = new();
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
+}
+
+public class TunnelConfig
+{
+    public bool Enabled { get; set; }
+    public string? AccessToken { get; set; }
+    public string? CloudflaredPath { get; set; }
+    public string? TunnelToken { get; set; }
+    public string? Hostname { get; set; }
 }
 
 public class CapabilityConfig
