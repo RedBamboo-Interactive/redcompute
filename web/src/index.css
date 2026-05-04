@@ -1,0 +1,152 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-surface-deep: #1A1A1E;
+  --color-surface-base: #2C2D32;
+  --color-surface-elevated: #323338;
+  --color-border-subtle: #3A3A40;
+
+  --color-accent-teal: #26A69A;
+  --color-accent-gold: #D4AA4F;
+  --color-accent-red: #E55B5B;
+  --color-accent-purple: #7C4DFF;
+
+  --color-text-primary: #FFFFFF;
+  --color-text-muted: #ADAEB3;
+  --color-text-disabled: #72767D;
+
+  --color-status-idle: #2A2A2A;
+}
+
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+}
+
+/* Dark audio/video player controls */
+audio,
+video {
+  color-scheme: dark;
+  border-radius: 6px;
+}
+
+/* Thin dark scrollbars matching WPF */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3A3A40 transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #3A3A40;
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #50505A;
+}
+
+@theme inline {
+  --font-heading: "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Segoe UI", Roboto, sans-serif;
+  --font-mono: Consolas, ui-monospace, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: #1A1A1E;
+  --foreground: #FFFFFF;
+  --card: #323338;
+  --card-foreground: #FFFFFF;
+  --popover: #2C2D32;
+  --popover-foreground: #FFFFFF;
+  --primary: #26A69A;
+  --primary-foreground: #FFFFFF;
+  --secondary: #3A3A40;
+  --secondary-foreground: #FFFFFF;
+  --muted: #2C2D32;
+  --muted-foreground: #ADAEB3;
+  --accent: #3A3A40;
+  --accent-foreground: #FFFFFF;
+  --destructive: #E55B5B;
+  --border: #3A3A40;
+  --input: #3A3A40;
+  --ring: #26A69A;
+  --chart-1: #26A69A;
+  --chart-2: #D4AA4F;
+  --chart-3: #7C4DFF;
+  --chart-4: #E55B5B;
+  --chart-5: #72767D;
+  --radius: 0.75rem;
+  --sidebar: #1A1A1E;
+  --sidebar-foreground: #FFFFFF;
+  --sidebar-primary: #26A69A;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #2C2D32;
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #3A3A40;
+  --sidebar-ring: #26A69A;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

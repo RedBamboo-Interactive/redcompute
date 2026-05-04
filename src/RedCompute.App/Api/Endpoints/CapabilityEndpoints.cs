@@ -300,57 +300,50 @@ public static class CapabilityEndpoints
             return Results.Json(new { voices });
         });
 
-        // Catch-all proxy for capabilities that pass through directly
-        app.MapFallback("/{slug}/{**path}", async (HttpContext ctx, string slug, string? path) =>
+        // Proxy for capabilities that pass through directly — only matches registered capability slugs
+        foreach (var (capSlug, _) in registry.Capabilities)
         {
-            var entry = registry.Get(slug);
-            if (entry == null)
+            var slug = capSlug;
+            app.Map($"/{slug}/{{**path}}", async (HttpContext ctx, string? path) =>
             {
-                ctx.Response.StatusCode = 404;
-                await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                var entry = registry.Get(slug);
+                if (entry?.ActiveProvider == null)
                 {
-                    Error = "not_found",
-                    Message = $"No capability registered at '/{slug}'"
-                });
-                return;
-            }
+                    ctx.Response.StatusCode = 503;
+                    await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                    {
+                        Error = "provider_not_running",
+                        Message = $"Provider for '{slug}' is not running"
+                    });
+                    return;
+                }
 
-            if (entry.ActiveProvider == null)
-            {
-                ctx.Response.StatusCode = 503;
-                await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                if (entry.IsSleeping)
                 {
-                    Error = "provider_not_running",
-                    Message = $"Provider for '{slug}' is not running"
-                });
-                return;
-            }
+                    ctx.Response.StatusCode = 503;
+                    await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                    {
+                        Error = "capability_sleeping",
+                        Message = $"Capability '{slug}' is sleeping. Wake it via POST /control/wake/{slug}"
+                    });
+                    return;
+                }
 
-            if (entry.IsSleeping)
-            {
-                ctx.Response.StatusCode = 503;
-                await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
+                if (proxyUrl == null)
                 {
-                    Error = "capability_sleeping",
-                    Message = $"Capability '{slug}' is sleeping. Wake it via POST /control/wake/{slug}"
-                });
-                return;
-            }
+                    ctx.Response.StatusCode = 501;
+                    await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                    {
+                        Error = "not_proxyable",
+                        Message = $"Provider for '{slug}' does not support direct proxy"
+                    });
+                    return;
+                }
 
-            var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
-            if (proxyUrl == null)
-            {
-                ctx.Response.StatusCode = 501;
-                await ctx.Response.WriteAsJsonAsync(new ErrorResponse
-                {
-                    Error = "not_proxyable",
-                    Message = $"Provider for '{slug}' does not support direct proxy"
-                });
-                return;
-            }
-
-            await StreamingProxy.ForwardRawAsync(ctx, proxyUrl, path, log);
-        });
+                await StreamingProxy.ForwardRawAsync(ctx, proxyUrl, path, log);
+            });
+        }
     }
 
     private static string SaveOutput(Guid jobId, Stream data, string contentType)

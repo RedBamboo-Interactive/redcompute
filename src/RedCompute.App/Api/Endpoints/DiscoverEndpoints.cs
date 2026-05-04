@@ -35,14 +35,34 @@ public static class DiscoverEndpoints
                 });
             }
 
-            var manifest = new ServiceManifest
+            return Results.Ok(new
             {
-                Version = "0.1.0",
-                ApiBase = $"http://localhost:{config.ApiPort}",
-                Capabilities = capabilities
-            };
-
-            return Results.Ok(manifest);
+                service = "RedCompute",
+                version = "0.2.0",
+                apiBase = $"http://localhost:{config.ApiPort}",
+                capabilities,
+                management = new
+                {
+                    endpoints = new object[]
+                    {
+                        new { method = "GET", path = "/settings", description = "Current service configuration (API keys masked)" },
+                        new { method = "PUT", path = "/settings/general", description = "Update general settings: apiPort, jobRetentionDays, logLevel, autoStartWithWindows" },
+                        new { method = "PUT", path = "/settings/capability/{slug}", description = "Update capability config: enabled, activeProvider" },
+                        new { method = "GET", path = "/ws/schema", description = "WebSocket event schema — discover event types and data shapes" }
+                    },
+                    websocket = new
+                    {
+                        url = $"ws://localhost:{config.ApiPort}/ws",
+                        description = "Real-time event stream. Events: job.created, job.updated, log.entry, capability.status",
+                        schemaEndpoint = "/ws/schema"
+                    },
+                    dashboard = new
+                    {
+                        url = $"http://localhost:{config.ApiPort}/",
+                        description = "Web dashboard UI (served from the same port as the API)"
+                    }
+                }
+            });
         });
     }
 

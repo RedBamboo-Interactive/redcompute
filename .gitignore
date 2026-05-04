@@ -4,3 +4,10 @@ obj/
 *.user
 *.suo
 *.DotSettings.user
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# Temp
+Projectsredcomputetemp_build/

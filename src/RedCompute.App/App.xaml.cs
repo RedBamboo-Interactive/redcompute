@@ -1,11 +1,9 @@
-using System.Threading;
 using System.Windows;
-using System.Windows.Threading;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
-using RedCompute.App.ViewModels;
+using RedCompute.App.TrayIcon;
 using RedCompute.Core.Providers;
 
 namespace RedCompute.App;
@@ -15,14 +13,14 @@ public partial class App : Application
     private static Mutex? _mutex;
     private CancellationTokenSource? _relayCts;
     private RelayServer? _relayServer;
-    private DispatcherTimer? _cleanupTimer;
+    private Timer? _cleanupTimer;
+    private TrayIconManager? _trayIcon;
 
     public static FileLoggerService FileLogger { get; } = new();
     public static LoggingService Logger { get; private set; } = null!;
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
-    public static MainViewModel MainViewModel { get; } = new();
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -39,27 +37,28 @@ public partial class App : Application
         InitializeDatabase();
 
         Logger = new LoggingService(FileLogger);
-        Logger.LogEntryCreated += MainViewModel.ConsoleLog.AddEntry;
 
         ConfigManager.Load();
-        MainViewModel.LoadSettingsFromConfig();
         Log("[App] Configuration loaded");
         InitializeCapabilities();
         await StartRelayServer();
         _ = ProbeRunningBackends();
         StartJobCleanupTimer();
+
+        _trayIcon = new TrayIconManager();
+        _trayIcon.Initialize();
     }
 
     protected override async void OnExit(ExitEventArgs e)
     {
-        _cleanupTimer?.Stop();
+        _cleanupTimer?.Dispose();
         _relayCts?.Cancel();
         if (_relayServer != null)
             await _relayServer.StopAsync();
         await Registry.StopAll();
-        SaveWindowState();
         Logger.Dispose();
         FileLogger.Dispose();
+        _trayIcon?.Dispose();
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();
         base.OnExit(e);
@@ -116,13 +115,12 @@ public partial class App : Application
                 Log($"[App] Probe failed for {slug}: {ex.Message}");
             }
         }
-        MainViewModel.RefreshCapabilities();
     }
 
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, (msg, jobId) => Log(msg, jobId));
 
         try
         {
@@ -136,40 +134,13 @@ public partial class App : Application
 
     private void StartJobCleanupTimer()
     {
-        _cleanupTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(1) };
-        _cleanupTimer.Tick += (_, _) =>
+        _cleanupTimer = new Timer(_ =>
         {
             var deletedJobs = JobTracker.CleanupOldJobs(ConfigManager.Config.JobRetentionDays);
             var deletedLogs = Logger.CleanupOldLogs(ConfigManager.Config.JobRetentionDays);
             if (deletedJobs > 0 || deletedLogs > 0)
                 Log($"[App] Cleaned up {deletedJobs} jobs, {deletedLogs} log entries (>{ConfigManager.Config.JobRetentionDays} days)");
-        };
-        _cleanupTimer.Start();
-    }
-
-    private void SaveWindowState()
-    {
-        var mainWindow = MainWindow;
-        if (mainWindow == null) return;
-
-        var wc = ConfigManager.Config.Window;
-        wc.IsMaximized = mainWindow.WindowState == WindowState.Maximized;
-        if (mainWindow.WindowState == WindowState.Normal)
-        {
-            wc.Width = mainWindow.Width;
-            wc.Height = mainWindow.Height;
-            wc.Left = mainWindow.Left;
-            wc.Top = mainWindow.Top;
-        }
-        else if (mainWindow.WindowState == WindowState.Maximized)
-        {
-            var bounds = mainWindow.RestoreBounds;
-            wc.Width = bounds.Width;
-            wc.Height = bounds.Height;
-            wc.Left = bounds.Left;
-            wc.Top = bounds.Top;
-        }
-        ConfigManager.Save();
+        }, null, TimeSpan.FromHours(1), TimeSpan.FromHours(1));
     }
 
     public static void Log(string message, Guid? jobId = null)

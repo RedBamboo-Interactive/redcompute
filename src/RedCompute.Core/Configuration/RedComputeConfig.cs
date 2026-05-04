@@ -9,7 +9,6 @@ public class RedComputeConfig
     public int JobRetentionDays { get; set; } = 7;
     public bool AutoStartWithWindows { get; set; }
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
-    public WindowConfig Window { get; set; } = new();
 }
 
 public class CapabilityConfig
@@ -42,13 +41,4 @@ public class ProviderConfig
     // Additional per-capability settings stored as key-value
     [JsonExtensionData]
     public Dictionary<string, object?>? Extra { get; set; }
-}
-
-public class WindowConfig
-{
-    public double Width { get; set; } = 1200;
-    public double Height { get; set; } = 800;
-    public double? Left { get; set; }
-    public double? Top { get; set; }
-    public bool IsMaximized { get; set; }
 }

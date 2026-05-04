@@ -12,30 +12,30 @@ public static partial class LogEntryParser
 
     private static readonly Dictionary<string, TagInfo> TagMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["App"] = new("#FFB74D", "system"),
-        ["Settings"] = new("#FFB74D", "system"),
-        ["SYSTEM"] = new("#FFB74D", "system"),
+        ["App"] = new("#D4AA4F", "system"),
+        ["Settings"] = new("#D4AA4F", "system"),
+        ["SYSTEM"] = new("#D4AA4F", "system"),
 
-        ["JOB"] = new("#AB47BC", "compute"),
-        ["COMPUTE"] = new("#AB47BC", "compute"),
+        ["JOB"] = new("#72767D", "compute"),
+        ["COMPUTE"] = new("#72767D", "compute"),
 
         ["PROVIDER"] = new("#26A69A", "provider"),
         ["HEALTH"] = new("#26A69A", "provider"),
         ["Relay"] = new("#26A69A", "provider"),
 
-        ["TTS"] = new("#43A25A", "audio"),
+        ["TTS"] = new("#26A69A", "audio"),
 
-        ["ImageGen"] = new("#29B6F6", "image"),
-        ["COMFYUI"] = new("#29B6F6", "image"),
+        ["ImageGen"] = new("#72767D", "image"),
+        ["COMFYUI"] = new("#72767D", "image"),
 
-        ["MusicGen"] = new("#5865F2", "music"),
+        ["MusicGen"] = new("#72767D", "music"),
 
-        ["API"] = new("#78909C", "api"),
+        ["API"] = new("#72767D", "api"),
 
-        ["CONFIG"] = new("#29B6F6", "config"),
+        ["CONFIG"] = new("#72767D", "config"),
 
-        ["ERROR"] = new("#FF5252", "error"),
-        ["EXCEPTION"] = new("#FF5252", "error"),
+        ["ERROR"] = new("#E55B5B", "error"),
+        ["EXCEPTION"] = new("#E55B5B", "error"),
 
         ["DEBUG"] = new("#72767D", "debug"),
     };

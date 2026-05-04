@@ -1,9 +1,11 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
@@ -18,13 +20,18 @@ public class RelayServer
     private readonly RedComputeConfig _config;
     private readonly CapabilityRegistry _registry;
     private readonly JobTrackingService _jobTracker;
+    private readonly LoggingService _logger;
+    private readonly ConfigManager _configManager;
     private readonly Action<string, Guid?> _log;
 
-    public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log)
+    public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
+        LoggingService logger, ConfigManager configManager, Action<string, Guid?> log)
     {
         _config = config;
         _registry = registry;
         _jobTracker = jobTracker;
+        _logger = logger;
+        _configManager = configManager;
         _log = log;
     }
 
@@ -40,6 +47,17 @@ public class RelayServer
 
         _app = builder.Build();
 
+        _app.UseWebSockets();
+
+        var webRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+        if (Directory.Exists(webRoot))
+        {
+            _app.UseStaticFiles(new StaticFileOptions
+            {
+                FileProvider = new PhysicalFileProvider(webRoot)
+            });
+        }
+
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(_app, _registry, _jobTracker);
         DiscoverEndpoints.Map(_app, _config, _registry);
@@ -47,6 +65,27 @@ public class RelayServer
         ImageGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
+        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger);
+        SettingsEndpoints.Map(_app, _configManager);
+
+        if (Directory.Exists(webRoot))
+        {
+            _app.MapFallback(async ctx =>
+            {
+                // Don't serve index.html for API-like paths or known capability slugs
+                var path = ctx.Request.Path.Value ?? "";
+                var firstSegment = path.TrimStart('/').Split('/').FirstOrDefault() ?? "";
+                if (_registry.Get(firstSegment) != null)
+                {
+                    ctx.Response.StatusCode = 404;
+                    await ctx.Response.WriteAsJsonAsync(new { error = "not_found", message = $"No endpoint at '{path}'" });
+                    return;
+                }
+
+                ctx.Response.ContentType = "text/html";
+                await ctx.Response.SendFileAsync(Path.Combine(webRoot, "index.html"));
+            });
+        }
 
         _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);

@@ -90,6 +90,55 @@ public static class OpenApiEndpoints
                     ["parameters"] = new object[] { PathParam("slug", "string", "Capability slug") },
                     ["responses"] = Responses("application/json", Schema("object", "ControlResult"))
                 }
+            },
+            ["/settings"] = new Dictionary<string, object>
+            {
+                ["get"] = Op("GetSettings", "Current service configuration (API keys masked)", "application/json",
+                    Schema("object", "SettingsResponse"))
+            },
+            ["/settings/general"] = new Dictionary<string, object>
+            {
+                ["put"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "UpdateGeneralSettings",
+                    ["summary"] = "Update general settings (apiPort, jobRetentionDays, logLevel, autoStartWithWindows)",
+                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["apiPort"] = Prop("integer", "API listen port"),
+                            ["jobRetentionDays"] = Prop("integer", "Days to keep job history"),
+                            ["logLevel"] = PropEnum("Log verbosity", "Info", "Debug", "Info", "Warning", "Error"),
+                            ["autoStartWithWindows"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Start RedCompute on Windows login" }
+                        }
+                    }),
+                    ["responses"] = Responses("application/json", Schema("object", "SettingsUpdateResult"))
+                }
+            },
+            ["/settings/capability/{slug}"] = new Dictionary<string, object>
+            {
+                ["put"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "UpdateCapabilitySettings",
+                    ["summary"] = "Update capability config (enabled, activeProvider)",
+                    ["parameters"] = new object[] { PathParam("slug", "string", "Capability slug") },
+                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["enabled"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Enable or disable this capability" },
+                            ["activeProvider"] = Prop("string", "Provider key to activate (must exist in providers dict)")
+                        }
+                    }),
+                    ["responses"] = Responses("application/json", Schema("object", "CapabilitySettingsUpdateResult"))
+                }
+            },
+            ["/ws/schema"] = new Dictionary<string, object>
+            {
+                ["get"] = Op("GetWebSocketSchema", "WebSocket event schema — lists all event types, their data shapes, and field names. Connect at ws://host:port/ws", "application/json",
+                    Schema("object", "WebSocketSchema"))
             }
         };
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Windows;
 using System.Windows.Threading;
@@ -13,30 +14,36 @@ public class TrayIconManager : IDisposable
     private TaskbarIcon? _trayIcon;
     private DispatcherTimer? _statusTimer;
 
-    public void Initialize(Window mainWindow)
+    public void Initialize()
     {
         _trayIcon = new TaskbarIcon
         {
             ToolTipText = "RedCompute",
             Icon = IconHelper.CreateTrayIcon(StatusColors.Gray),
-            ContextMenu = BuildContextMenu(mainWindow),
+            ContextMenu = BuildContextMenu(),
             MenuActivation = PopupActivationMode.RightClick
         };
         _trayIcon.ForceCreate();
 
-        _trayIcon.TrayMouseDoubleClick += (_, _) => ShowWindow(mainWindow);
+        _trayIcon.TrayMouseDoubleClick += (_, _) => OpenDashboard();
 
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _statusTimer.Tick += async (_, _) => await UpdateIconStatus();
         _statusTimer.Start();
     }
 
-    private System.Windows.Controls.ContextMenu BuildContextMenu(Window mainWindow)
+    private static void OpenDashboard()
+    {
+        var port = App.ConfigManager.Config.ApiPort;
+        Process.Start(new ProcessStartInfo($"http://localhost:{port}") { UseShellExecute = true });
+    }
+
+    private System.Windows.Controls.ContextMenu BuildContextMenu()
     {
         var menu = new System.Windows.Controls.ContextMenu();
 
         var showItem = new System.Windows.Controls.MenuItem { Header = "Show RedCompute" };
-        showItem.Click += (_, _) => ShowWindow(mainWindow);
+        showItem.Click += (_, _) => OpenDashboard();
         menu.Items.Add(showItem);
 
         menu.Items.Add(new System.Windows.Controls.Separator());
@@ -109,13 +116,6 @@ public class TrayIconManager : IDisposable
         catch (System.Runtime.InteropServices.ExternalException)
         {
         }
-    }
-
-    private static void ShowWindow(Window window)
-    {
-        window.Show();
-        window.WindowState = WindowState.Normal;
-        window.Activate();
     }
 
     public void Dispose()
