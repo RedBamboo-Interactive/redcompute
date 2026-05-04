@@ -1,16 +1,28 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Media.Imaging;
 
 namespace RedCompute.App.Helpers;
 
 public static class IconHelper
 {
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
     public static Icon CreateTrayIcon(Color mainColor, int size = 32)
     {
         using var bmp = DrawServerIcon(mainColor, size);
-        return Icon.FromHandle(bmp.GetHicon());
+        var hIcon = bmp.GetHicon();
+        try
+        {
+            return (Icon)Icon.FromHandle(hIcon).Clone();
+        }
+        finally
+        {
+            DestroyIcon(hIcon);
+        }
     }
 
     public static BitmapSource CreateWindowIcon(Color mainColor, int size = 256)

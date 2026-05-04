@@ -81,6 +81,8 @@ public class TrayIconManager : IDisposable
         }
     }
 
+    private Color _lastIconColor;
+
     private async Task UpdateIconStatus()
     {
         var anyRunning = false;
@@ -95,8 +97,18 @@ public class TrayIconManager : IDisposable
         }
 
         var color = anyError ? StatusColors.Red : anyRunning ? StatusColors.Green : StatusColors.Gray;
-        if (_trayIcon != null)
+        if (_trayIcon == null || color == _lastIconColor) return;
+
+        try
+        {
+            var oldIcon = _trayIcon.Icon;
             _trayIcon.Icon = IconHelper.CreateTrayIcon(color);
+            _lastIconColor = color;
+            oldIcon?.Dispose();
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+        }
     }
 
     private static void ShowWindow(Window window)
