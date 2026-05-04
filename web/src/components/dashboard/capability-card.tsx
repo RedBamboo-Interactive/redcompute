@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { api } from "@/api/client"
 import { MiniFrieze } from "./mini-frieze"
 import { QueueJobDialog } from "@/components/jobs/queue-job-dialog"
@@ -29,6 +30,7 @@ export function CapabilityCard({ cap, jobs, onRefresh }: {
   onRefresh: () => void
 }) {
   const [queueOpen, setQueueOpen] = useState(false)
+  const navigate = useNavigate()
   const isRunning = cap.status === "Running"
   const iconColor = statusIconColor(cap.status, cap.sleeping)
   const capJobs = jobs.filter(j => j.capabilitySlug === cap.slug)
@@ -102,7 +104,7 @@ export function CapabilityCard({ cap, jobs, onRefresh }: {
 
           {/* Job frieze (recent job results) */}
           <div className="mb-0.5">
-            <JobFrieze jobs={capJobs} count={32} />
+            <JobFrieze jobs={capJobs} count={32} onSelectJob={id => navigate(`/jobs?select=${id}`)} />
           </div>
         </div>
       </div>
@@ -125,9 +127,9 @@ const jobStatusColor: Record<string, string> = {
   Cancelled: "#727C7D",
 }
 
-function JobFrieze({ jobs, count }: { jobs: JobRecord[]; count: number }) {
+function JobFrieze({ jobs, count, onSelectJob }: { jobs: JobRecord[]; count: number; onSelectJob: (id: string) => void }) {
   const recent = jobs.slice(0, count).reverse()
-  const segments: { color: string; tooltip: string }[] = []
+  const segments: { color: string; tooltip: string; jobId?: string }[] = []
 
   for (let i = 0; i < count - recent.length; i++) {
     segments.push({ color: "#2A2A2A", tooltip: "" })
@@ -139,14 +141,22 @@ function JobFrieze({ jobs, count }: { jobs: JobRecord[]; count: number }) {
       : job.status === "Failed"
         ? `Failed: ${job.errorMessage || "unknown"}`
         : job.status
-    segments.push({ color, tooltip })
+    segments.push({ color, tooltip, jobId: job.id })
   }
 
   return (
     <div className="flex flex-wrap justify-center">
       {segments.map((seg, i) => (
-        <div key={i} className="w-2 h-2 p-px" title={seg.tooltip || undefined}>
-          <div className="w-full h-full rounded-[1px]" style={{ backgroundColor: seg.color }} />
+        <div
+          key={i}
+          className={`w-2 h-2 p-px ${seg.jobId ? "cursor-pointer" : ""}`}
+          title={seg.tooltip || undefined}
+          onClick={seg.jobId ? () => onSelectJob(seg.jobId!) : undefined}
+        >
+          <div
+            className={`w-full h-full rounded-[1px] transition-transform duration-200 ${seg.jobId ? "hover:scale-150" : ""}`}
+            style={{ backgroundColor: seg.color, transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1)" }}
+          />
         </div>
       ))}
     </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { useSearchParams } from "react-router-dom"
 import { JobList } from "@/components/jobs/job-list"
 import { JobDetail } from "@/components/jobs/job-detail"
 import { ActivityFrieze } from "@/components/jobs/activity-frieze"
@@ -36,6 +37,7 @@ export function JobsPage({ jobs, selectedJob, onSelectJob }: {
   selectedJob: JobRecord | null
   onSelectJob: (job: JobRecord) => void
 }) {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [activityJobs, setActivityJobs] = useState<JobRecord[]>([])
   const [mobileTab, setMobileTab] = useState(0)
 
@@ -44,6 +46,15 @@ export function JobsPage({ jobs, selectedJob, onSelectJob }: {
       setActivityJobs(data.map(mapApiJob))
     }).catch(() => {})
   }, [jobs.length])
+
+  useEffect(() => {
+    const selectId = searchParams.get("select")
+    if (selectId) {
+      const job = jobs.find(j => j.id === selectId)
+      if (job) { onSelectJob(job); setMobileTab(1) }
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, jobs, onSelectJob, setSearchParams])
 
   function handleSelectJob(job: JobRecord) {
     onSelectJob(job)
