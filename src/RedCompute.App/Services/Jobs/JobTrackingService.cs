@@ -107,6 +107,19 @@ public class JobTrackingService
         JobUpdated?.Invoke(job);
     }
 
+    public int RecoverOrphanedJobs()
+    {
+        using var db = new RedComputeDbContext();
+        var orphaned = db.Jobs.Where(j => j.Status == JobStatus.Running || j.Status == JobStatus.Queued).ToList();
+        foreach (var job in orphaned)
+        {
+            job.Status = JobStatus.Failed;
+            job.CompletedAt = DateTimeOffset.UtcNow;
+            job.ErrorMessage = "Interrupted by application restart";
+        }
+        return db.SaveChanges();
+    }
+
     public List<JobRecord> GetJobs(string? capabilitySlug = null, JobStatus? status = null, int limit = 50, int offset = 0)
     {
         using var db = new RedComputeDbContext();

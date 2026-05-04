@@ -41,6 +41,11 @@ public partial class App : Application
 
         ConfigManager.Load();
         Log("[App] Configuration loaded");
+
+        var recovered = JobTracker.RecoverOrphanedJobs();
+        if (recovered > 0)
+            Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");
+
         InitializeCapabilities();
         await StartRelayServer();
         _ = ProbeRunningBackends();
