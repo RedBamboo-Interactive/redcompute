@@ -51,7 +51,7 @@ export function CapabilityCard({ cap, jobs, onRefresh }: {
 
   return (
     <>
-      <div className="w-[310px] rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
+      <div className="w-full md:w-[310px] rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
         <div className="bg-surface-elevated rounded-xl p-5">
           {/* Action buttons — top right */}
           <div className="flex justify-end gap-0 -mt-1 -mr-1 mb-0">

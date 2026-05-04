@@ -27,7 +27,7 @@ export function SettingsPage({ settings, saving, onUpdateGeneral }: {
   }[tunnel.status] ?? "#727680"
 
   return (
-    <div className="p-6 max-w-[600px]">
+    <div className="p-4 md:p-6 max-w-[600px]">
       <h1 className="text-[20px] font-semibold text-white opacity-95 mb-5">Settings</h1>
 
       {/* GENERAL */}
@@ -202,8 +202,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex mb-1">
-      <span className="text-[11px] text-text-muted w-[120px] shrink-0">{label}</span>
+    <div className="flex flex-col gap-0.5 mb-2 md:flex-row md:gap-0 md:mb-1">
+      <span className="text-[11px] text-text-muted md:w-[120px] md:shrink-0">{label}</span>
       <div className="flex-1">{children}</div>
     </div>
   )
@@ -220,7 +220,7 @@ function Val({ children, mono, wrap }: { children: unknown; mono?: boolean; wrap
 function EndpointLine({ method, path }: { method: string; path: string }) {
   const color = method === "GET" ? "#26A69A" : "#FFB74D"
   return (
-    <p className="font-mono text-[11px] text-text-muted">
+    <p className="font-mono text-[11px] text-text-muted break-all">
       <span style={{ color }}>{method.padEnd(5)}</span>
       <span>{path}</span>
     </p>

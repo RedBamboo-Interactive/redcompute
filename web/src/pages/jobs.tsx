@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { JobList } from "@/components/jobs/job-list"
 import { JobDetail } from "@/components/jobs/job-detail"
 import { ActivityFrieze } from "@/components/jobs/activity-frieze"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { api } from "@/api/client"
 import type { JobRecord } from "@/api/types"
 
@@ -36,6 +37,7 @@ export function JobsPage({ jobs, selectedJob, onSelectJob }: {
   onSelectJob: (job: JobRecord) => void
 }) {
   const [activityJobs, setActivityJobs] = useState<JobRecord[]>([])
+  const [mobileTab, setMobileTab] = useState(0)
 
   useEffect(() => {
     api.get<ApiJob[]>("/jobs?limit=200").then(data => {
@@ -43,41 +45,67 @@ export function JobsPage({ jobs, selectedJob, onSelectJob }: {
     }).catch(() => {})
   }, [jobs.length])
 
+  function handleSelectJob(job: JobRecord) {
+    onSelectJob(job)
+    setMobileTab(1)
+  }
+
+  const listHeader = (
+    <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
+      <span className="text-[14px] font-medium text-white">Recent Jobs</span>
+      <button className="flex items-center gap-1 text-text-muted text-[12px] hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/10"
+        title="Clear all jobs">
+        <i className="fa-solid fa-trash-can text-xs" />
+        <span>Clear</span>
+      </button>
+    </div>
+  )
+
+  const detailContent = selectedJob ? (
+    <JobDetail job={selectedJob} />
+  ) : (
+    <div className="flex items-center justify-center h-full text-text-muted text-sm">
+      Select a job to view details
+    </div>
+  )
+
   return (
-    <div className="flex flex-col gap-2 h-[calc(100vh-3rem)] p-6">
+    <div className="flex flex-col gap-2 h-[calc(100vh-3rem)] p-4 pb-20 md:p-6 md:pb-6">
       <h1 className="text-[20px] font-semibold text-white opacity-95">Job Monitor</h1>
 
-      {/* Activity timeline frieze */}
       <ActivityFrieze jobs={activityJobs} />
 
-      {/* Master-detail layout */}
-      <div className="flex gap-4 flex-1 min-h-0">
-        {/* Left panel: Job list */}
+      {/* Desktop: side-by-side master-detail */}
+      <div className="hidden md:flex gap-4 flex-1 min-h-0">
         <div className="w-80 shrink-0 bg-surface-elevated rounded-lg overflow-hidden flex flex-col">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
-            <span className="text-[14px] font-medium text-white">Recent Jobs</span>
-            <button className="flex items-center gap-1 text-text-muted text-[12px] hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/10"
-              title="Clear all jobs">
-              <i className="fa-solid fa-trash-can text-xs" />
-              <span>Clear</span>
-            </button>
-          </div>
+          {listHeader}
           <div className="flex-1 overflow-hidden">
-            <JobList jobs={jobs} selectedId={selectedJob?.id || null} onSelect={onSelectJob} />
+            <JobList jobs={jobs} selectedId={selectedJob?.id || null} onSelect={handleSelectJob} />
           </div>
         </div>
-
-        {/* Right panel: Job detail */}
         <div className="flex-1 overflow-auto">
-          {selectedJob ? (
-            <JobDetail job={selectedJob} />
-          ) : (
-            <div className="flex items-center justify-center h-full text-text-muted text-sm">
-              Select a job to view details
-            </div>
-          )}
+          {detailContent}
         </div>
       </div>
+
+      {/* Mobile: tabbed layout */}
+      <Tabs value={mobileTab} onValueChange={v => setMobileTab(v as number)} className="flex-1 min-h-0 md:hidden">
+        <TabsList className="w-full">
+          <TabsTrigger value={0}>Jobs</TabsTrigger>
+          <TabsTrigger value={1}>Detail</TabsTrigger>
+        </TabsList>
+        <TabsContent value={0} className="min-h-0 overflow-hidden">
+          <div className="bg-surface-elevated rounded-lg overflow-hidden flex flex-col h-full">
+            {listHeader}
+            <div className="flex-1 overflow-hidden">
+              <JobList jobs={jobs} selectedId={selectedJob?.id || null} onSelect={handleSelectJob} />
+            </div>
+          </div>
+        </TabsContent>
+        <TabsContent value={1} className="min-h-0 overflow-auto">
+          {detailContent}
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
