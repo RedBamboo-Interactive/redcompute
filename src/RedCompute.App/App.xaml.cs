@@ -13,7 +13,6 @@ public partial class App : Application
     private static Mutex? _mutex;
     private CancellationTokenSource? _relayCts;
     private RelayServer? _relayServer;
-    private Timer? _cleanupTimer;
     private TrayIconManager? _trayIcon;
 
     public static FileLoggerService FileLogger { get; } = new();
@@ -50,7 +49,6 @@ public partial class App : Application
         await StartRelayServer();
         _ = ProbeRunningBackends();
         _ = StartTunnelIfEnabled();
-        StartJobCleanupTimer();
 
         _trayIcon = new TrayIconManager();
         _trayIcon.Initialize();
@@ -58,7 +56,6 @@ public partial class App : Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
-        _cleanupTimer?.Dispose();
         await TunnelService.DisposeAsync();
         _relayCts?.Cancel();
         if (_relayServer != null)
@@ -156,16 +153,6 @@ public partial class App : Application
         }
     }
 
-    private void StartJobCleanupTimer()
-    {
-        _cleanupTimer = new Timer(_ =>
-        {
-            var deletedJobs = JobTracker.CleanupOldJobs(ConfigManager.Config.JobRetentionDays);
-            var deletedLogs = Logger.CleanupOldLogs(ConfigManager.Config.JobRetentionDays);
-            if (deletedJobs > 0 || deletedLogs > 0)
-                Log($"[App] Cleaned up {deletedJobs} jobs, {deletedLogs} log entries (>{ConfigManager.Config.JobRetentionDays} days)");
-        }, null, TimeSpan.FromHours(1), TimeSpan.FromHours(1));
-    }
 
     public static void Log(string message, Guid? jobId = null)
     {

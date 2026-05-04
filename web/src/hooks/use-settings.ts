@@ -35,6 +35,16 @@ export function useSettings() {
     }
   }, [refresh])
 
+  const updateProvider = useCallback(async (slug: string, providerName: string, updates: Record<string, unknown>) => {
+    setSaving(true)
+    try {
+      await api.put(`/settings/capability/${slug}/provider/${providerName}`, updates)
+      await refresh()
+    } finally {
+      setSaving(false)
+    }
+  }, [refresh])
+
   const handleWsEvent = useCallback((event: WsEvent) => {
     if (event.type === "tunnel.status") {
       const update = event.data as { status: TunnelSettings["status"]; hostname: string | null; error: string | null }
@@ -45,5 +55,5 @@ export function useSettings() {
     }
   }, [])
 
-  return { settings, saving, refresh, updateGeneral, updateCapability, handleWsEvent }
+  return { settings, saving, refresh, updateGeneral, updateCapability, updateProvider, handleWsEvent }
 }

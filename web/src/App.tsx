@@ -89,6 +89,8 @@ export default function App() {
                 settings={settings.settings}
                 saving={settings.saving}
                 onUpdateGeneral={settings.updateGeneral}
+                onUpdateCapability={settings.updateCapability}
+                onUpdateProvider={settings.updateProvider}
               />
             } />
           </Route>

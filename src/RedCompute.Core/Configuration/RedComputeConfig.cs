@@ -6,7 +6,6 @@ public class RedComputeConfig
 {
     public int ApiPort { get; set; } = 18800;
     public string LogLevel { get; set; } = "Info";
-    public int JobRetentionDays { get; set; } = 7;
     public bool AutoStartWithWindows { get; set; }
     public TunnelConfig Tunnel { get; set; } = new();
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();

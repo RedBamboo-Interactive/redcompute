@@ -64,7 +64,7 @@ public class RelayServer
         }
 
         GlobalEndpoints.Initialize();
-        GlobalEndpoints.Map(_app, _registry, _jobTracker);
+        GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger);
         DiscoverEndpoints.Map(_app, _config, _registry);
         OpenApiEndpoints.Map(_app, _config, _registry);
         ImageGenEndpoints.Map(_app, _registry, _jobTracker, _log);

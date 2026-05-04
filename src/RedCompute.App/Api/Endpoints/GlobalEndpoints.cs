@@ -10,7 +10,7 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class GlobalEndpoints
 {
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
     {
         app.MapGet("/status", async () =>
         {
@@ -103,6 +103,15 @@ public static class GlobalEndpoints
 
             jobTracker.MarkCancelled(id);
             return Results.Ok(new { id, status = "Cancelled" });
+        });
+
+        app.MapDelete("/jobs/cleanup", (int? olderThanDays) =>
+        {
+            var days = olderThanDays ?? 30;
+            if (days < 1) return Results.BadRequest(new { error = "invalid_param", message = "olderThanDays must be >= 1" });
+            var deletedJobs = jobTracker.CleanupOldJobs(days);
+            var deletedLogs = logger.CleanupOldLogs(days);
+            return Results.Ok(new { message = $"Cleaned up jobs and logs older than {days} days", deletedJobs, deletedLogs });
         });
 
         app.MapGet("/activity", (int? window) =>

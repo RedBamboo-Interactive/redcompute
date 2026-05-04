@@ -101,14 +101,13 @@ public static class OpenApiEndpoints
                 ["put"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "UpdateGeneralSettings",
-                    ["summary"] = "Update general settings (apiPort, jobRetentionDays, logLevel, autoStartWithWindows)",
+                    ["summary"] = "Update general settings (apiPort, logLevel, autoStartWithWindows)",
                     ["requestBody"] = RequestBody(new Dictionary<string, object>
                     {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object>
                         {
                             ["apiPort"] = Prop("integer", "API listen port"),
-                            ["jobRetentionDays"] = Prop("integer", "Days to keep job history"),
                             ["logLevel"] = PropEnum("Log verbosity", "Info", "Debug", "Info", "Warning", "Error"),
                             ["autoStartWithWindows"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Start RedCompute on Windows login" }
                         }

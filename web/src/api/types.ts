@@ -84,7 +84,6 @@ export interface TunnelSettings {
 export interface Settings {
   apiPort: number
   logLevel: string
-  jobRetentionDays: number
   autoStartWithWindows: boolean
   configPath: string
   tunnel: TunnelSettings

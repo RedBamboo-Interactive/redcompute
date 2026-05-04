@@ -23,7 +23,6 @@ public static class SettingsEndpoints
             {
                 config.ApiPort,
                 config.LogLevel,
-                config.JobRetentionDays,
                 config.AutoStartWithWindows,
                 configPath = GetConfigPath(),
                 tunnel = new
@@ -60,7 +59,6 @@ public static class SettingsEndpoints
 
             var config = configManager.Config;
             if (body.ApiPort.HasValue) config.ApiPort = body.ApiPort.Value;
-            if (body.JobRetentionDays.HasValue) config.JobRetentionDays = body.JobRetentionDays.Value;
             if (body.LogLevel != null) config.LogLevel = body.LogLevel;
             if (body.AutoStartWithWindows.HasValue) config.AutoStartWithWindows = body.AutoStartWithWindows.Value;
 
@@ -73,7 +71,7 @@ public static class SettingsEndpoints
                 await ApplyTunnelToggle(config, body.TunnelEnabled.Value, tunnelService);
 
             configManager.Save();
-            return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel, config.JobRetentionDays, config.AutoStartWithWindows });
+            return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel, config.AutoStartWithWindows });
         });
 
         app.MapPut("/settings/capability/{slug}", async (HttpContext ctx, string slug) =>
@@ -92,6 +90,43 @@ public static class SettingsEndpoints
 
             configManager.Save();
             return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.Enabled, cap.ActiveProvider });
+        });
+
+        app.MapPut("/settings/capability/{slug}/provider/{providerName}", async (HttpContext ctx, string slug, string providerName) =>
+        {
+            var config = configManager.Config;
+            if (!config.Capabilities.TryGetValue(slug, out var cap))
+                return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+
+            if (!cap.Providers.TryGetValue(providerName, out var provider))
+                return Results.NotFound(new { error = "not_found", message = $"Provider '{providerName}' not found in capability '{slug}'" });
+
+            var body = await ctx.Request.ReadFromJsonAsync<ProviderSettingsUpdate>();
+            if (body == null)
+                return Results.BadRequest(new { error = "invalid_body", message = "Expected JSON body" });
+
+            if (body.WslDistro != null) provider.WslDistro = body.WslDistro;
+            if (body.VenvPath != null) provider.VenvPath = body.VenvPath;
+            if (body.ServerPath != null) provider.ServerPath = body.ServerPath;
+            if (body.BackendPort.HasValue) provider.BackendPort = body.BackendPort.Value;
+            if (body.Model != null) provider.Model = body.Model;
+            if (body.VoicesBasePath != null) provider.VoicesBasePath = body.VoicesBasePath;
+            if (body.HealthEndpoint != null) provider.HealthEndpoint = body.HealthEndpoint;
+            if (body.StartupTimeoutSeconds.HasValue) provider.StartupTimeoutSeconds = body.StartupTimeoutSeconds.Value;
+            if (body.ApiKey != null) provider.ApiKey = body.ApiKey;
+            if (body.PodId != null) provider.PodId = body.PodId;
+            if (body.GpuCount.HasValue) provider.GpuCount = body.GpuCount.Value;
+            if (body.AutoStopOnExit.HasValue) provider.AutoStopOnExit = body.AutoStopOnExit.Value;
+
+            if (body.Extra != null)
+            {
+                provider.Extra ??= new Dictionary<string, object?>();
+                foreach (var kvp in body.Extra)
+                    provider.Extra[kvp.Key] = kvp.Value;
+            }
+
+            configManager.Save();
+            return Results.Ok(new { message = $"Provider '{providerName}' settings updated", slug, providerName, provider = SanitizeProvider(provider) });
         });
     }
 
@@ -143,7 +178,6 @@ public static class SettingsEndpoints
     private class GeneralSettingsUpdate
     {
         public int? ApiPort { get; set; }
-        public int? JobRetentionDays { get; set; }
         public string? LogLevel { get; set; }
         public bool? AutoStartWithWindows { get; set; }
         public bool? TunnelEnabled { get; set; }
@@ -157,5 +191,22 @@ public static class SettingsEndpoints
     {
         public bool? Enabled { get; set; }
         public string? ActiveProvider { get; set; }
+    }
+
+    private class ProviderSettingsUpdate
+    {
+        public string? WslDistro { get; set; }
+        public string? VenvPath { get; set; }
+        public string? ServerPath { get; set; }
+        public int? BackendPort { get; set; }
+        public string? Model { get; set; }
+        public string? VoicesBasePath { get; set; }
+        public string? HealthEndpoint { get; set; }
+        public int? StartupTimeoutSeconds { get; set; }
+        public string? ApiKey { get; set; }
+        public string? PodId { get; set; }
+        public int? GpuCount { get; set; }
+        public bool? AutoStopOnExit { get; set; }
+        public Dictionary<string, object?>? Extra { get; set; }
     }
 }

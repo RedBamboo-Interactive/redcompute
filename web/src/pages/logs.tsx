@@ -21,7 +21,7 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
   }, [entries.length, autoScrollRef])
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3rem)] p-4 pb-20 md:p-6 md:pb-6">
+    <div className="flex flex-col h-[calc(100vh-3rem)] p-4 pb-16 md:p-6 md:pb-6">
       <h1 className="text-[20px] font-semibold text-white opacity-95 mb-2">Logs</h1>
       <div className="bg-surface-elevated rounded-lg flex-1 flex flex-col overflow-hidden">
         {/* Toolbar — matches WPF ConsoleTabContent toolbar */}
