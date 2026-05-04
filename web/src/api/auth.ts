@@ -6,10 +6,12 @@ export function getToken(): string | null {
 
 export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token)
+  document.cookie = `redcompute_token=${encodeURIComponent(token)}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Strict; Secure`
 }
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
+  document.cookie = "redcompute_token=; path=/; max-age=0"
 }
 
 export function isRemoteAccess(): boolean {
