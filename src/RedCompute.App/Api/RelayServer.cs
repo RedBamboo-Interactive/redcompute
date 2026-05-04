@@ -54,7 +54,10 @@ public class RelayServer
         _app.UseWebSockets();
         _app.UseMiddleware<BearerAuthMiddleware>((Func<string?>)(() => _config.Tunnel.AccessToken));
 
-        var webRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+        // Prefer web/dist in the repo root for dev (live Vite rebuilds), fall back to wwwroot for production
+        var repoWebDist = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "web", "dist");
+        var webRoot = Directory.Exists(repoWebDist) ? Path.GetFullPath(repoWebDist)
+            : Path.Combine(AppContext.BaseDirectory, "wwwroot");
         if (Directory.Exists(webRoot))
         {
             _app.UseStaticFiles(new StaticFileOptions
