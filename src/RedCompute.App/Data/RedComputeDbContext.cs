@@ -38,6 +38,12 @@ public class RedComputeDbContext : DbContext
         cmd.CommandText = "ALTER TABLE ClaudeSessions ADD COLUMN Dismissed INTEGER NOT NULL DEFAULT 0";
         try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
 
+        foreach (var col in new[] { "InputTokens", "OutputTokens", "CacheReadInputTokens", "CacheCreationInputTokens" })
+        {
+            cmd.CommandText = $"ALTER TABLE ClaudeSessions ADD COLUMN {col} INTEGER NULL";
+            try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
+        }
+
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS LogEntries (
                 Id INTEGER PRIMARY KEY AUTOINCREMENT,

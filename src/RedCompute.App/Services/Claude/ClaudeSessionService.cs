@@ -215,6 +215,10 @@ public class ClaudeSessionService
             Title = record.Title,
             MessageCount = record.MessageCount,
             CostUsd = record.CostUsd,
+            InputTokens = record.InputTokens,
+            OutputTokens = record.OutputTokens,
+            CacheReadInputTokens = record.CacheReadInputTokens,
+            CacheCreationInputTokens = record.CacheCreationInputTokens,
         };
 
         var args = BuildArgs(record.ClaudeSessionId);
@@ -471,6 +475,10 @@ public class ClaudeSessionService
         Title = r.Title,
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
+        InputTokens = r.InputTokens,
+        OutputTokens = r.OutputTokens,
+        CacheReadInputTokens = r.CacheReadInputTokens,
+        CacheCreationInputTokens = r.CacheCreationInputTokens,
         JobId = r.JobId
     };
 
@@ -534,6 +542,7 @@ public class ClaudeSessionService
     {
         var reader = session.Process.StandardOutput;
         var ct = session.Cts.Token;
+        var lastTitleCheck = DateTimeOffset.MinValue;
 
         try
         {
@@ -551,6 +560,17 @@ public class ClaudeSessionService
                         TrimHistory(session);
                         PersistMessage(session.Info.Id, "assistant", evt.Type, evt.Content,
                             evt.ToolName, evt.ToolInput?.ToString(), evt.ToolResult, evt.MessageId);
+                    }
+
+                    if (session.Info.Title == null && DateTimeOffset.UtcNow - lastTitleCheck > TimeSpan.FromSeconds(3))
+                    {
+                        lastTitleCheck = DateTimeOffset.UtcNow;
+                        SyncTitleFromClaudeSession(session);
+                        if (session.Info.Title != null)
+                        {
+                            PersistSessionRecord(session.Info);
+                            SessionUpdated?.Invoke(session.Info);
+                        }
                     }
                 }
                 catch (JsonException)
@@ -715,6 +735,7 @@ public class ClaudeSessionService
 
             if (root.TryGetProperty("total_cost_usd", out var cost))
                 session.Info.CostUsd = (session.Info.CostUsd ?? 0) + cost.GetDouble();
+            ParseTokenUsage(root, session);
 
             SyncTitleFromClaudeSession(session);
             PersistSessionRecord(session.Info);
@@ -735,6 +756,7 @@ public class ClaudeSessionService
 
                 if (root.TryGetProperty("total_cost_usd", out var intCost))
                     session.Info.CostUsd = (session.Info.CostUsd ?? 0) + intCost.GetDouble();
+                ParseTokenUsage(root, session);
 
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
@@ -753,6 +775,18 @@ public class ClaudeSessionService
             ToolResult = content,
             MessageId = toolUseId
         };
+    }
+
+    private static void ParseTokenUsage(JsonElement root, ManagedSession session)
+    {
+        if (root.TryGetProperty("input_tokens", out var inTok))
+            session.Info.InputTokens = inTok.GetInt32();
+        if (root.TryGetProperty("output_tokens", out var outTok))
+            session.Info.OutputTokens = outTok.GetInt32();
+        if (root.TryGetProperty("cache_read_input_tokens", out var cacheR))
+            session.Info.CacheReadInputTokens = cacheR.GetInt32();
+        if (root.TryGetProperty("cache_creation_input_tokens", out var cacheC))
+            session.Info.CacheCreationInputTokens = cacheC.GetInt32();
     }
 
     private void OnProcessExited(string sessionId)
@@ -841,6 +875,10 @@ public class ClaudeSessionService
                 existing.Title = info.Title;
                 existing.MessageCount = info.MessageCount;
                 existing.CostUsd = info.CostUsd;
+                existing.InputTokens = info.InputTokens;
+                existing.OutputTokens = info.OutputTokens;
+                existing.CacheReadInputTokens = info.CacheReadInputTokens;
+                existing.CacheCreationInputTokens = info.CacheCreationInputTokens;
                 existing.JobId = info.JobId;
             }
             else
@@ -857,6 +895,10 @@ public class ClaudeSessionService
                     Title = info.Title,
                     MessageCount = info.MessageCount,
                     CostUsd = info.CostUsd,
+                    InputTokens = info.InputTokens,
+                    OutputTokens = info.OutputTokens,
+                    CacheReadInputTokens = info.CacheReadInputTokens,
+                    CacheCreationInputTokens = info.CacheCreationInputTokens,
                     JobId = info.JobId
                 });
             }

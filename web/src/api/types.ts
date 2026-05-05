@@ -128,6 +128,10 @@ export interface ClaudeSessionInfo {
   title?: string
   messageCount: number
   costUsd?: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadInputTokens?: number
+  cacheCreationInputTokens?: number
   permissionMode?: PermissionMode
 }
 

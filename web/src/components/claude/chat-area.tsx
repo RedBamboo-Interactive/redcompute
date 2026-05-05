@@ -3,6 +3,7 @@ import type { MessageBlock as MessageBlockType } from "@/hooks/use-claude"
 import { MessageBlock } from "./message-block"
 import { MessageInput } from "./message-input"
 import type { ClaudeSessionInfo } from "@/api/types"
+import { ContextIndicator } from "./context-indicator"
 
 interface Props {
   session: ClaudeSessionInfo | null
@@ -88,6 +89,7 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
             </span>
           )}
           <span className="flex-1" />
+          <ContextIndicator session={session} messages={messages} />
         </div>
       </div>
 
