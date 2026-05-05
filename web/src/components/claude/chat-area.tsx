@@ -80,24 +80,6 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
           <span className="font-medium text-sm">{session.title || session.projectName}</span>
           {session.title && <span className="text-xs text-text-muted">{session.projectName}</span>}
           <span className="flex-1" />
-          {canSend && isStreaming && (
-            <button
-              onClick={handleInterrupt}
-              className="text-text-muted hover:text-amber-400 transition-colors"
-              title="Interrupt current turn (Escape)"
-            >
-              <i className="fa-solid fa-hand text-sm" />
-            </button>
-          )}
-          {canSend && (
-            <button
-              onClick={onStop}
-              className="text-text-muted hover:text-red-400 transition-colors"
-              title="End session"
-            >
-              <i className="fa-solid fa-stop text-sm" />
-            </button>
-          )}
         </div>
       </div>
 
