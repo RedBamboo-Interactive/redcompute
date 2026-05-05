@@ -47,7 +47,7 @@ export function MessageInput({ onSend, onInterrupt, disabled, isStreaming }: Pro
   const inputDisabled = disabled && !isStreaming
 
   return (
-    <div className="px-3 pt-3 pb-5">
+    <div className="px-3 pt-3 pb-5 shrink-0">
       <div className="max-w-3xl mx-auto flex gap-2 items-center">
         <textarea
           ref={textareaRef}

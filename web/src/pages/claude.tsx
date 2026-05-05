@@ -101,8 +101,8 @@ export function ClaudePage({
           <TabsTrigger value={0}>Sessions</TabsTrigger>
           <TabsTrigger value={1}>Chat</TabsTrigger>
         </TabsList>
-        <TabsContent value={0} className="min-h-0 overflow-hidden">
-          <div className="bg-surface-elevated rounded-lg overflow-hidden flex flex-col h-full">
+        <TabsContent value={0} className="min-h-0 overflow-hidden flex flex-col">
+          <div className="bg-surface-elevated rounded-lg overflow-hidden flex flex-col flex-1 min-h-0">
             {sidebarHeader}
             <div className="flex-1 overflow-hidden">
               <SessionSidebar
@@ -115,7 +115,7 @@ export function ClaudePage({
             </div>
           </div>
         </TabsContent>
-        <TabsContent value={1} className="min-h-0 overflow-hidden">
+        <TabsContent value={1} className="min-h-0 overflow-hidden flex flex-col">
           <ChatArea
             session={activeSession}
             messages={activeMessages}
