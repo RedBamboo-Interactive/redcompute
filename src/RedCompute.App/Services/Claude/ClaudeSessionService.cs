@@ -63,7 +63,8 @@ public class ClaudeSessionService
             {
                 Name = Path.GetFileName(d),
                 Path = d,
-                HasClaudeMd = File.Exists(Path.Combine(d, "CLAUDE.md"))
+                HasClaudeMd = File.Exists(Path.Combine(d, "CLAUDE.md")),
+                HasIcon = FindProjectIcon(d) != null
             })
             .OrderBy(p => p.Name)
             .ToList();
@@ -724,6 +725,36 @@ public class ClaudeSessionService
         {
             _log($"[Claude] Failed to persist message: {ex.Message}", null);
         }
+    }
+
+    private static readonly string[] IconCandidates =
+    [
+        "public/favicon.ico", "public/favicon.png", "public/favicon.svg",
+        "public/logo.png", "public/logo.svg",
+        "favicon.ico", "favicon.png", "favicon.svg",
+        "logo.png", "logo.svg",
+        "icon.png", "icon.ico", "icon.svg",
+        "wwwroot/favicon.ico",
+    ];
+
+    internal static string? FindProjectIcon(string projectPath)
+    {
+        foreach (var candidate in IconCandidates)
+        {
+            var full = Path.Combine(projectPath, candidate.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(full))
+                return full;
+        }
+        return null;
+    }
+
+    public string? GetProjectIconPath(string projectName)
+    {
+        var root = _config.ProjectsRoot;
+        if (!Directory.Exists(root)) return null;
+        var projectDir = Path.Combine(root, projectName);
+        if (!Directory.Exists(projectDir)) return null;
+        return FindProjectIcon(projectDir);
     }
 
     private class ManagedSession

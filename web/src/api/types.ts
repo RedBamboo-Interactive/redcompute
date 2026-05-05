@@ -142,4 +142,5 @@ export interface ProjectInfo {
   name: string
   path: string
   hasClaudeMd: boolean
+  hasIcon: boolean
 }

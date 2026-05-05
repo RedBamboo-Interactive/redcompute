@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { ClaudeSessionInfo } from "@/api/types"
 
@@ -31,10 +32,10 @@ export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, on
                 session.id === activeSessionId ? "bg-white/[0.08]" : "hover:bg-white/[0.04]"
               }`}
             >
-              <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0">
-                <i className="fa-regular fa-square-terminal text-xs"
-                  style={{ color: statusColor[session.status] || "#6B6F77" }} />
-              </div>
+              <ProjectIcon
+                projectName={session.projectName}
+                statusColor={statusColor[session.status] || "#6B6F77"}
+              />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className={`text-[13px] font-medium truncate text-white ${!alive ? "opacity-50" : ""}`}>
@@ -75,5 +76,25 @@ export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, on
         )}
       </div>
     </ScrollArea>
+  )
+}
+
+function ProjectIcon({ projectName, statusColor }: { projectName: string; statusColor: string }) {
+  const [imgFailed, setImgFailed] = useState(false)
+  const iconUrl = `/claude/projects/${encodeURIComponent(projectName)}/icon`
+
+  return (
+    <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0 overflow-hidden">
+      {!imgFailed ? (
+        <img
+          src={iconUrl}
+          alt=""
+          className="w-5 h-5 object-contain"
+          onError={() => setImgFailed(true)}
+        />
+      ) : (
+        <i className="fa-regular fa-square-terminal text-xs" style={{ color: statusColor }} />
+      )}
+    </div>
   )
 }

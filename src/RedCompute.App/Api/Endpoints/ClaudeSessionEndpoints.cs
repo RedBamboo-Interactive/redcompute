@@ -14,6 +14,14 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(projects);
         });
 
+        app.MapGet("/claude/projects/{name}/icon", (string name) =>
+        {
+            var iconPath = claude.GetProjectIconPath(name);
+            if (iconPath == null)
+                return Results.NotFound();
+            return Results.File(iconPath);
+        });
+
         // Standard capability generate endpoint
         app.MapPost("/ai-session/generate", async (AiSessionGenerateRequest req) =>
         {

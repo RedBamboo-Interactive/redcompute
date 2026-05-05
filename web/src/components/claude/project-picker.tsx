@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import type { ProjectInfo } from "@/api/types"
 
 interface Props {
@@ -57,7 +57,7 @@ export function ProjectPicker({ open, onClose, onSelect, loadProjects }: Props) 
               className="w-full text-left px-4 py-3 hover:bg-white/5 transition-colors border-b border-border-subtle last:border-b-0"
             >
               <div className="flex items-center gap-2">
-                <i className="fa-solid fa-folder text-text-muted text-sm" />
+                <ProjectPickerIcon project={project} />
                 <span className="text-sm font-medium">{project.name}</span>
                 {project.hasClaudeMd && (
                   <span className="ml-auto text-xs text-green-400 bg-green-400/10 px-1.5 py-0.5 rounded">
@@ -79,4 +79,22 @@ export function ProjectPicker({ open, onClose, onSelect, loadProjects }: Props) 
       </div>
     </div>
   )
+}
+
+function ProjectPickerIcon({ project }: { project: ProjectInfo }) {
+  const [imgFailed, setImgFailed] = useState(false)
+  const onError = useCallback(() => setImgFailed(true), [])
+
+  if (project.hasIcon && !imgFailed) {
+    return (
+      <img
+        src={`/claude/projects/${encodeURIComponent(project.name)}/icon`}
+        alt=""
+        className="w-4 h-4 object-contain"
+        onError={onError}
+      />
+    )
+  }
+
+  return <i className="fa-solid fa-folder text-text-muted text-sm" />
 }

@@ -22,4 +22,5 @@ public class ProjectInfo
     public required string Name { get; init; }
     public required string Path { get; init; }
     public bool HasClaudeMd { get; init; }
+    public bool HasIcon { get; init; }
 }
