@@ -1,10 +1,9 @@
-import { useState } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { ClaudeSessionInfo } from "@/api/types"
 
 const statusColor: Record<string, string> = {
   Starting: "#D4AA4F",
-  Active: "#26A69A",
+  Active: "#D4AA4F",
   Idle: "#26A69A",
   Stopped: "#727C7D",
   Error: "#E55B5B",
@@ -33,17 +32,14 @@ export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, on
               }`}
             >
               <ProjectIcon
-                projectName={session.projectName}
                 statusColor={statusColor[session.status] || "#6B6F77"}
+                pulse={session.status === "Active" || session.status === "Starting"}
               />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className={`text-[13px] font-medium truncate text-white ${!alive ? "opacity-50" : ""}`}>
                     {session.title || session.projectName}
                   </span>
-                  {(session.status === "Active" || session.status === "Starting") && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-accent-gold animate-pulse shrink-0" />
-                  )}
                 </div>
                 <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
                   <span>{session.projectName}</span>
@@ -79,22 +75,10 @@ export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, on
   )
 }
 
-function ProjectIcon({ projectName, statusColor }: { projectName: string; statusColor: string }) {
-  const [imgFailed, setImgFailed] = useState(false)
-  const iconUrl = `/claude/projects/${encodeURIComponent(projectName)}/icon`
-
+function ProjectIcon({ statusColor, pulse }: { statusColor: string; pulse?: boolean }) {
   return (
-    <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0 overflow-hidden">
-      {!imgFailed ? (
-        <img
-          src={iconUrl}
-          alt=""
-          className="w-5 h-5 object-contain"
-          onError={() => setImgFailed(true)}
-        />
-      ) : (
-        <i className="fa-regular fa-square-terminal text-xs" style={{ color: statusColor }} />
-      )}
+    <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0">
+      <i className={`fa-regular fa-square-terminal text-xs ${pulse ? "animate-pulse" : ""}`} style={{ color: statusColor }} />
     </div>
   )
 }
