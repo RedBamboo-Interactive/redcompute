@@ -8,7 +8,7 @@ export function DashboardPage({ capabilities, jobs, onRefresh }: {
 }) {
   return (
     <div className="p-4 md:p-6">
-      <span className="group font-bold text-xl tracking-wider inline-flex items-center gap-2 relative select-none mb-5">
+      <span className="group font-bold text-xl tracking-wider flex w-fit items-center gap-2 relative select-none mb-5">
         <span className="absolute -inset-2 bg-primary/15 blur-lg rounded-full transition-all duration-300 group-hover:bg-primary/30 group-hover:blur-xl group-hover:-inset-3" aria-hidden="true" />
         <i className="fa-solid fa-microchip text-lg text-primary relative" aria-hidden="true" />
         <span className="relative"><span className="text-primary">Red</span><span className="text-muted-foreground">Compute</span></span>
