@@ -32,7 +32,7 @@ export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, on
               }`}
             >
               <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0">
-                <i className="fa-solid fa-terminal text-xs"
+                <i className="fa-regular fa-square-terminal text-xs"
                   style={{ color: statusColor[session.status] || "#6B6F77" }} />
               </div>
               <div className="flex-1 min-w-0">

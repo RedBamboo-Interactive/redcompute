@@ -105,6 +105,12 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(new { stopped = true });
         });
 
+        app.MapPost("/claude/sessions/{id}/dismiss", (string id) =>
+        {
+            claude.DismissSession(id);
+            return Results.Ok(new { dismissed = true });
+        });
+
         app.MapDelete("/claude/sessions/{id}", async (string id) =>
         {
             await claude.ForceKill(id);

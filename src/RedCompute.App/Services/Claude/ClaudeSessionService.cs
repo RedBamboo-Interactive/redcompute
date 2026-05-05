@@ -272,6 +272,24 @@ public class ClaudeSessionService
         await Task.CompletedTask;
     }
 
+    public void DismissSession(string sessionId)
+    {
+        try
+        {
+            using var db = new RedComputeDbContext();
+            var record = db.ClaudeSessions.Find(sessionId);
+            if (record != null)
+            {
+                record.Dismissed = true;
+                db.SaveChanges();
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to dismiss session {sessionId}: {ex.Message}", null);
+        }
+    }
+
     public List<ClaudeSessionInfo> GetSessions()
     {
         var live = _sessions.Values.Select(s => s.Info).ToList();
@@ -279,7 +297,7 @@ public class ClaudeSessionService
 
         using var db = new RedComputeDbContext();
         var dbSessions = db.ClaudeSessions
-            .Where(s => !liveIds.Contains(s.Id))
+            .Where(s => !liveIds.Contains(s.Id) && !s.Dismissed)
             .OrderByDescending(s => s.StartedAt)
             .Take(20)
             .ToList()
@@ -594,20 +612,30 @@ public class ClaudeSessionService
     {
         try
         {
-            var pid = session.Process.Id;
-            var claudeDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "sessions");
-            var sessionFile = Path.Combine(claudeDir, $"{pid}.json");
+            var claudeSessionId = session.Info.ClaudeSessionId;
+            if (string.IsNullOrEmpty(claudeSessionId) || string.IsNullOrEmpty(session.Info.ProjectPath))
+                return;
 
-            if (!File.Exists(sessionFile)) return;
+            var slug = session.Info.ProjectPath.Replace(":", "-").Replace("\\", "-").Replace("/", "-");
+            var jsonlPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".claude", "projects", slug, $"{claudeSessionId}.jsonl");
 
-            using var doc = JsonDocument.Parse(File.ReadAllText(sessionFile));
-            if (doc.RootElement.TryGetProperty("name", out var name))
+            if (!File.Exists(jsonlPath)) return;
+
+            string? aiTitle = null;
+            foreach (var line in File.ReadLines(jsonlPath))
             {
-                var title = name.GetString();
-                if (!string.IsNullOrEmpty(title))
-                    session.Info.Title = title;
+                if (line.Contains("\"ai-title\""))
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    if (doc.RootElement.TryGetProperty("aiTitle", out var t))
+                        aiTitle = t.GetString();
+                }
             }
+
+            if (!string.IsNullOrEmpty(aiTitle))
+                session.Info.Title = aiTitle;
         }
         catch (Exception ex)
         {

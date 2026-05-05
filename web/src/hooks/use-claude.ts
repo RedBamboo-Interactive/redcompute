@@ -157,9 +157,10 @@ export function useClaude() {
     await api.post(`/claude/sessions/${sessionId}/stop`)
   }, [])
 
-  const dismissSession = useCallback((sessionId: string) => {
+  const dismissSession = useCallback(async (sessionId: string) => {
     setSessions(prev => prev.filter(s => s.id !== sessionId))
     setActiveSessionId(prev => prev === sessionId ? null : prev)
+    try { await api.post(`/claude/sessions/${sessionId}/dismiss`) } catch {}
   }, [])
 
   const handleWsEvent = useCallback((event: WsEvent) => {

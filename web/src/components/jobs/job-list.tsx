@@ -16,6 +16,7 @@ const capIcons: Record<string, string> = {
   "music-gen": "fa-solid fa-music",
   llm: "fa-solid fa-brain",
   "video-gen": "fa-solid fa-video",
+  "ai-session": "fa-regular fa-square-terminal",
 }
 
 function timeAgo(dateStr: string): string {

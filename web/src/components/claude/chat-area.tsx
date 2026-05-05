@@ -63,7 +63,7 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
     return (
       <div className="flex-1 flex items-center justify-center text-text-muted">
         <div className="text-center">
-          <i className="fa-solid fa-terminal text-3xl mb-3 opacity-30" />
+          <i className="fa-regular fa-square-terminal text-3xl mb-3 opacity-30" />
           <p className="text-sm">Select or start a session</p>
         </div>
       </div>

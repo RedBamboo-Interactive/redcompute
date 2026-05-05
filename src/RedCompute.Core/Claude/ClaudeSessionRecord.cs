@@ -13,4 +13,5 @@ public class ClaudeSessionRecord
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
     public Guid? JobId { get; set; }
+    public bool Dismissed { get; set; }
 }
