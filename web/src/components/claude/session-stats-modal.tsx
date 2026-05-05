@@ -123,7 +123,7 @@ function ConfigSelect({ label, value, options, onChange, disabled }: {
         className="bg-white/[0.06] border border-white/[0.1] rounded px-2 py-0.5 text-xs text-white outline-none focus:border-white/[0.2] disabled:opacity-50"
       >
         {options.map(o => (
-          <option key={o.value} value={o.value}>{o.label}</option>
+          <option key={o.value} value={o.value} className="bg-neutral-900 text-white">{o.label}</option>
         ))}
       </select>
     </div>
