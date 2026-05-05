@@ -79,10 +79,10 @@ export function MessageInput({ onSend, onInterrupt, disabled, isStreaming, permi
             <button
               onClick={onTogglePlanMode}
               disabled={inputDisabled}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
                 isPlan
-                  ? "bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 border border-violet-500/30"
-                  : "bg-white/[0.06] text-text-muted hover:bg-white/10"
+                  ? "bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 border-violet-500/30"
+                  : "bg-white/[0.06] text-text-muted hover:bg-white/10 border-transparent"
               } disabled:opacity-30 disabled:cursor-not-allowed`}
               title="Toggle plan mode (Shift+Tab)"
             >
