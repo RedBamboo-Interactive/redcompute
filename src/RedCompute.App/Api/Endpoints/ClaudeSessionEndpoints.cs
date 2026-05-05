@@ -119,6 +119,17 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(new { mode = req.Mode });
         });
 
+        app.MapPost("/claude/sessions/{id}/resume", (string id) =>
+        {
+            var session = claude.ResumeSession(id);
+            if (session == null)
+                return Results.Json(
+                    new { error = "resume_failed", message = claude.LastStartError ?? "Unknown error" },
+                    statusCode: 503);
+
+            return Results.Ok(session);
+        });
+
         app.MapPost("/claude/sessions/{id}/stop", async (string id) =>
         {
             await claude.StopSession(id);

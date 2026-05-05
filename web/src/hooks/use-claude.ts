@@ -162,6 +162,13 @@ export function useClaude() {
     await api.post(`/claude/sessions/${sessionId}/stop`)
   }, [])
 
+  const resumeSession = useCallback(async (sessionId: string) => {
+    const session = await api.post<ClaudeSessionInfo>(`/claude/sessions/${sessionId}/resume`)
+    setSessions(prev => prev.map(s => s.id === sessionId ? session : s))
+    setActiveSessionId(sessionId)
+    return session
+  }, [])
+
   const dismissSession = useCallback(async (sessionId: string) => {
     setSessions(prev => prev.filter(s => s.id !== sessionId))
     setActiveSessionId(prev => prev === sessionId ? null : prev)
@@ -199,7 +206,8 @@ export function useClaude() {
     if (event.type === "claude.session.created") {
       const session = event.data as ClaudeSessionInfo
       setSessions(prev => {
-        if (prev.some(s => s.id === session.id)) return prev
+        const existing = prev.some(s => s.id === session.id)
+        if (existing) return prev.map(s => s.id === session.id ? session : s)
         return [...prev, session]
       })
       setActiveSessionId(session.id)
@@ -276,6 +284,7 @@ export function useClaude() {
     refresh,
     loadProjects,
     startSession,
+    resumeSession,
     sendMessage,
     interruptSession,
     stopSession,

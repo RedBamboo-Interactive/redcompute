@@ -15,10 +15,11 @@ interface Props {
   activeSessionId: string | null
   onSelect: (id: string) => void
   onStop: (id: string) => void
+  onResume: (id: string) => void
   onDismiss: (id: string) => void
 }
 
-export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, onDismiss }: Props) {
+export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, onResume, onDismiss }: Props) {
   return (
     <ScrollArea className="h-full">
       <div className="flex flex-col">
@@ -60,13 +61,24 @@ export function SessionSidebar({ sessions, activeSessionId, onSelect, onStop, on
                   <i className="fa-solid fa-stop text-xs" />
                 </button>
               ) : (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onDismiss(session.id) }}
-                  className="text-text-muted hover:text-white transition-colors"
-                  title="Remove from list"
-                >
-                  <i className="fa-solid fa-xmark text-xs" />
-                </button>
+                <div className="flex items-center gap-1">
+                  {session.claudeSessionId && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onResume(session.id) }}
+                      className="text-text-muted hover:text-accent-gold transition-colors"
+                      title="Resume session"
+                    >
+                      <i className="fa-solid fa-rotate-right text-xs" />
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDismiss(session.id) }}
+                    className="text-text-muted hover:text-white transition-colors"
+                    title="Remove from list"
+                  >
+                    <i className="fa-solid fa-xmark text-xs" />
+                  </button>
+                </div>
               )}
             </button>
           )

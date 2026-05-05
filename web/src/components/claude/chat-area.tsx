@@ -11,11 +11,12 @@ interface Props {
   onSend: (content: string) => void
   onStop: () => void
   onInterrupt: () => void
+  onResume?: () => void
   onTogglePlanMode?: () => void
   onExecutePlan?: () => void
 }
 
-export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInterrupt, onTogglePlanMode, onExecutePlan }: Props) {
+export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInterrupt, onResume, onTogglePlanMode, onExecutePlan }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScroll = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -133,6 +134,22 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
         >
           <i className="fa-solid fa-arrow-down text-xs" />
         </button>
+      )}
+
+      {/* Stopped banner with resume */}
+      {(session.status === "Stopped" || session.status === "Error") && session.claudeSessionId && onResume && (
+        <div className="shrink-0 border-t border-white/[0.06]">
+          <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-center gap-3">
+            <span className="text-text-muted text-sm">Session {session.status === "Error" ? "ended with error" : "stopped"}</span>
+            <button
+              onClick={onResume}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent-gold/20 text-accent-gold text-sm font-medium hover:bg-accent-gold/30 transition-colors"
+            >
+              <i className="fa-solid fa-rotate-right text-xs" />
+              Resume
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Input */}

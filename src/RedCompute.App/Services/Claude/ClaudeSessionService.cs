@@ -159,6 +159,116 @@ public class ClaudeSessionService
         return info;
     }
 
+    public ClaudeSessionInfo? ResumeSession(string sessionId)
+    {
+        if (_sessions.ContainsKey(sessionId))
+        {
+            LastStartError = "Session is already running";
+            return null;
+        }
+
+        if (_sessions.Count >= _config.MaxSessions)
+        {
+            LastStartError = $"Max sessions reached ({_config.MaxSessions})";
+            return null;
+        }
+
+        using var db = new RedComputeDbContext();
+        var record = db.ClaudeSessions.Find(sessionId);
+        if (record == null)
+        {
+            LastStartError = "Session not found";
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(record.ClaudeSessionId))
+        {
+            LastStartError = "Session has no Claude session ID to resume";
+            return null;
+        }
+
+        if (!Directory.Exists(record.ProjectPath))
+        {
+            LastStartError = $"Project path not found: {record.ProjectPath}";
+            return null;
+        }
+
+        record.Dismissed = false;
+        db.SaveChanges();
+
+        var claudePath = ResolveClaudePath();
+        if (claudePath == null)
+        {
+            LastStartError = "Could not find 'claude' CLI. Install it or set ClaudePath in config.";
+            return null;
+        }
+
+        var info = new ClaudeSessionInfo
+        {
+            Id = record.Id,
+            ProjectName = record.ProjectName,
+            ProjectPath = record.ProjectPath,
+            Status = SessionStatus.Starting,
+            StartedAt = record.StartedAt,
+            Model = record.Model,
+            ClaudeSessionId = record.ClaudeSessionId,
+            Title = record.Title,
+            MessageCount = record.MessageCount,
+            CostUsd = record.CostUsd,
+        };
+
+        var args = BuildArgs(record.ClaudeSessionId);
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = claudePath,
+            Arguments = args,
+            WorkingDirectory = record.ProjectPath,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        Process process;
+        try
+        {
+            process = Process.Start(startInfo)!;
+        }
+        catch (Exception ex)
+        {
+            LastStartError = $"Failed to start process: {ex.Message}";
+            return null;
+        }
+
+        var cts = new CancellationTokenSource();
+        var session = new ManagedSession(info, process, cts);
+        _sessions[sessionId] = session;
+
+        process.EnableRaisingEvents = true;
+        process.Exited += (_, _) => OnProcessExited(sessionId);
+
+        _ = ReadStdout(session);
+        _ = ReadStderr(session);
+
+        info.Status = SessionStatus.Idle;
+
+        var job = _jobTracker.CreateJob("ai-session", "Claude Code",
+            System.Text.Json.JsonSerializer.Serialize(new { projectPath = record.ProjectPath, projectName = record.ProjectName, resumed = true }),
+            name: record.ProjectName);
+        _jobTracker.MarkRunning(job.Id);
+        info.JobId = job.Id;
+
+        PersistSessionRecord(info);
+
+        _log($"[Claude] Session {sessionId} resumed for {info.ProjectName} (PID {process.Id}, Job {job.Id})", null);
+        SessionCreated?.Invoke(info);
+
+        return info;
+    }
+
     public bool SendMessage(string sessionId, string content)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
@@ -410,11 +520,13 @@ public class ClaudeSessionService
         return null;
     }
 
-    private string BuildArgs()
+    private string BuildArgs(string? resumeClaudeSessionId = null)
     {
         var sb = new StringBuilder("--output-format stream-json --verbose --input-format stream-json --permission-mode bypassPermissions");
         if (_config.Model != null)
             sb.Append($" --model {_config.Model}");
+        if (resumeClaudeSessionId != null)
+            sb.Append($" --resume {resumeClaudeSessionId}");
         return sb.ToString();
     }
 

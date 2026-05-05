@@ -17,6 +17,7 @@ interface Props {
   onSendMessage: (sessionId: string, content: string) => Promise<void>
   onInterruptSession: (sessionId: string) => Promise<void>
   onStopSession: (sessionId: string) => Promise<void>
+  onResumeSession: (sessionId: string) => Promise<unknown>
   onDismissSession: (sessionId: string) => void
   onSetPermissionMode: (sessionId: string, mode: PermissionMode) => Promise<void>
   onExecutePlan: (sessionId: string) => Promise<void>
@@ -33,6 +34,7 @@ export function ClaudePage({
   onSendMessage,
   onInterruptSession,
   onStopSession,
+  onResumeSession,
   onDismissSession,
   onSetPermissionMode,
   onExecutePlan,
@@ -66,6 +68,11 @@ export function ClaudePage({
     onExecutePlan(activeSessionId)
   }, [activeSessionId, onExecutePlan])
 
+  const handleResume = useCallback(() => {
+    if (!activeSessionId) return
+    onResumeSession(activeSessionId)
+  }, [activeSessionId, onResumeSession])
+
   const sidebarHeader = (
     <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
       <span className="text-[14px] font-medium text-white">Sessions</span>
@@ -94,6 +101,7 @@ export function ClaudePage({
               activeSessionId={activeSessionId}
               onSelect={(id) => { onSelectSession(id); setMobileTab(1) }}
               onStop={onStopSession}
+              onResume={onResumeSession}
               onDismiss={onDismissSession}
             />
           </div>
@@ -106,6 +114,7 @@ export function ClaudePage({
             onSend={handleSend}
             onStop={handleStop}
             onInterrupt={handleInterrupt}
+            onResume={handleResume}
             onTogglePlanMode={handleTogglePlanMode}
             onExecutePlan={handleExecutePlan}
           />
@@ -127,6 +136,7 @@ export function ClaudePage({
                 activeSessionId={activeSessionId}
                 onSelect={(id) => { onSelectSession(id); setMobileTab(1) }}
                 onStop={onStopSession}
+                onResume={onResumeSession}
                 onDismiss={onDismissSession}
               />
             </div>
@@ -140,6 +150,7 @@ export function ClaudePage({
             onSend={handleSend}
             onStop={handleStop}
             onInterrupt={handleInterrupt}
+            onResume={handleResume}
             onTogglePlanMode={handleTogglePlanMode}
             onExecutePlan={handleExecutePlan}
           />

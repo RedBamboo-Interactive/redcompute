@@ -88,6 +88,7 @@ export default function App() {
                 onSendMessage={claude.sendMessage}
                 onInterruptSession={claude.interruptSession}
                 onStopSession={claude.stopSession}
+                onResumeSession={claude.resumeSession}
                 onDismissSession={claude.dismissSession}
                 onSetPermissionMode={claude.setPermissionMode}
                 onExecutePlan={claude.executePlan}
