@@ -219,6 +219,7 @@ public class ClaudeSessionService
             OutputTokens = record.OutputTokens,
             CacheReadInputTokens = record.CacheReadInputTokens,
             CacheCreationInputTokens = record.CacheCreationInputTokens,
+            ContextWindow = record.ContextWindow,
             Effort = record.Effort,
         };
 
@@ -501,6 +502,7 @@ public class ClaudeSessionService
         OutputTokens = r.OutputTokens,
         CacheReadInputTokens = r.CacheReadInputTokens,
         CacheCreationInputTokens = r.CacheCreationInputTokens,
+        ContextWindow = r.ContextWindow,
         Effort = r.Effort,
         JobId = r.JobId
     };
@@ -803,20 +805,35 @@ public class ClaudeSessionService
         };
     }
 
-    private static void ParseTokenUsage(JsonElement root, ManagedSession session)
+    private void ParseTokenUsage(JsonElement root, ManagedSession session)
     {
-        var source = root;
-        if (root.TryGetProperty("usage", out var usage))
-            source = usage;
+        var numTurns = root.TryGetProperty("num_turns", out var nt) ? nt.GetInt32() : 1;
+        if (numTurns < 1) numTurns = 1;
 
-        if (source.TryGetProperty("input_tokens", out var inTok))
-            session.Info.InputTokens = inTok.GetInt32();
-        if (source.TryGetProperty("output_tokens", out var outTok))
-            session.Info.OutputTokens = outTok.GetInt32();
-        if (source.TryGetProperty("cache_read_input_tokens", out var cacheR))
-            session.Info.CacheReadInputTokens = cacheR.GetInt32();
-        if (source.TryGetProperty("cache_creation_input_tokens", out var cacheC))
-            session.Info.CacheCreationInputTokens = cacheC.GetInt32();
+        // usage contains cumulative tokens across all API sub-calls in the turn
+        // Divide by num_turns to get per-call context size
+        if (root.TryGetProperty("usage", out var usage))
+        {
+            if (usage.TryGetProperty("input_tokens", out var inTok))
+                session.Info.InputTokens = inTok.GetInt32() / numTurns;
+            if (usage.TryGetProperty("output_tokens", out var outTok))
+                session.Info.OutputTokens = outTok.GetInt32() / numTurns;
+            if (usage.TryGetProperty("cache_read_input_tokens", out var cacheR))
+                session.Info.CacheReadInputTokens = cacheR.GetInt32() / numTurns;
+            if (usage.TryGetProperty("cache_creation_input_tokens", out var cacheC))
+                session.Info.CacheCreationInputTokens = cacheC.GetInt32() / numTurns;
+        }
+
+        // modelUsage contains contextWindow (the actual max for this model)
+        if (root.TryGetProperty("modelUsage", out var modelUsage))
+        {
+            foreach (var model in modelUsage.EnumerateObject())
+            {
+                if (model.Value.TryGetProperty("contextWindow", out var cw))
+                    session.Info.ContextWindow = cw.GetInt32();
+                break;
+            }
+        }
     }
 
     private void OnProcessExited(string sessionId)
@@ -909,6 +926,7 @@ public class ClaudeSessionService
                 existing.OutputTokens = info.OutputTokens;
                 existing.CacheReadInputTokens = info.CacheReadInputTokens;
                 existing.CacheCreationInputTokens = info.CacheCreationInputTokens;
+                existing.ContextWindow = info.ContextWindow;
                 existing.Effort = info.Effort;
                 existing.JobId = info.JobId;
             }
@@ -930,6 +948,7 @@ public class ClaudeSessionService
                     OutputTokens = info.OutputTokens,
                     CacheReadInputTokens = info.CacheReadInputTokens,
                     CacheCreationInputTokens = info.CacheCreationInputTokens,
+                    ContextWindow = info.ContextWindow,
                     Effort = info.Effort,
                     JobId = info.JobId
                 });

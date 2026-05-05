@@ -18,6 +18,7 @@ public class ClaudeSessionInfo
     public int? OutputTokens { get; set; }
     public int? CacheReadInputTokens { get; set; }
     public int? CacheCreationInputTokens { get; set; }
+    public int? ContextWindow { get; set; }
     public string? Effort { get; set; }
     public Guid? JobId { get; set; }
     public string PermissionMode { get; set; } = "bypassPermissions";

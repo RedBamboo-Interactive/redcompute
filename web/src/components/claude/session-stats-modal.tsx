@@ -32,9 +32,9 @@ const EFFORT_OPTIONS = [
 
 const DEFAULT_MAX_CONTEXT = 200_000
 
-export function getMaxContext(model?: string): number {
-  if (!model) return DEFAULT_MAX_CONTEXT
-  if (model.includes("[1m]") || model.includes("1m")) return 1_000_000
+export function getMaxContext(session: ClaudeSessionInfo): number {
+  if (session.contextWindow) return session.contextWindow
+  if (session.model?.includes("[1m]") || session.model?.includes("1m")) return 1_000_000
   return DEFAULT_MAX_CONTEXT
 }
 
@@ -45,7 +45,7 @@ function getTotalInputTokens(session: ClaudeSessionInfo): number {
 export function getContextPercent(session: ClaudeSessionInfo): number | null {
   const total = getTotalInputTokens(session)
   if (total === 0) return null
-  const max = getMaxContext(session.model)
+  const max = getMaxContext(session)
   return Math.min(100, Math.round((total / max) * 100))
 }
 
@@ -131,7 +131,7 @@ function ConfigSelect({ label, value, options, onChange, disabled }: {
 }
 
 export function SessionStatsModal({ open, onOpenChange, session, messages }: Props) {
-  const maxContext = getMaxContext(session.model)
+  const maxContext = getMaxContext(session)
   const pct = getContextPercent(session)
   const toolCalls = countToolCalls(messages)
   const userMessages = messages.filter(m => m.role === "user").length
