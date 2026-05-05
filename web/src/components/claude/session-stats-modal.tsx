@@ -1,5 +1,7 @@
+import { useState } from "react"
 import type { ClaudeSessionInfo } from "@/api/types"
 import type { MessageBlock } from "@/hooks/use-claude"
+import { api } from "@/api/client"
 import {
   Dialog,
   DialogContent,
@@ -14,32 +16,37 @@ interface Props {
   messages: MessageBlock[]
 }
 
-const MODEL_MAX_CONTEXT: Record<string, number> = {
-  "claude-sonnet-4-5-20250514": 200_000,
-  "claude-sonnet-4-6-20250514": 200_000,
-  "claude-opus-4-20250514": 200_000,
-  "claude-opus-4-6-20250514": 200_000,
-  "claude-opus-4-7-20250514": 200_000,
-  "claude-haiku-4-5-20251001": 200_000,
-  "claude-3-5-sonnet-20241022": 200_000,
-  "claude-3-5-haiku-20241022": 200_000,
-  "claude-3-opus-20240229": 200_000,
-}
+const MODEL_OPTIONS = [
+  { value: "sonnet", label: "Sonnet" },
+  { value: "opus", label: "Opus" },
+  { value: "haiku", label: "Haiku" },
+]
+
+const EFFORT_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+  { value: "max", label: "Max" },
+]
+
 const DEFAULT_MAX_CONTEXT = 200_000
 
 export function getMaxContext(model?: string): number {
   if (!model) return DEFAULT_MAX_CONTEXT
-  if (MODEL_MAX_CONTEXT[model]) return MODEL_MAX_CONTEXT[model]
-  for (const [key, val] of Object.entries(MODEL_MAX_CONTEXT)) {
-    if (model.startsWith(key.replace(/-\d{8}$/, ""))) return val
-  }
+  if (model.includes("[1m]") || model.includes("1m")) return 1_000_000
   return DEFAULT_MAX_CONTEXT
 }
 
+function getTotalInputTokens(session: ClaudeSessionInfo): number {
+  return (session.inputTokens || 0) + (session.cacheReadInputTokens || 0) + (session.cacheCreationInputTokens || 0)
+}
+
 export function getContextPercent(session: ClaudeSessionInfo): number | null {
-  if (!session.inputTokens) return null
+  const total = getTotalInputTokens(session)
+  if (total === 0) return null
   const max = getMaxContext(session.model)
-  return Math.min(100, Math.round((session.inputTokens / max) * 100))
+  return Math.min(100, Math.round((total / max) * 100))
 }
 
 function formatDuration(startedAt: string): string {
@@ -68,6 +75,15 @@ function shortModel(model?: string | null): string {
   return model.replace(/-\d{8}$/, "")
 }
 
+function currentModelAlias(model?: string | null): string {
+  if (!model) return ""
+  const lower = model.toLowerCase()
+  if (lower.includes("opus")) return "opus"
+  if (lower.includes("haiku")) return "haiku"
+  if (lower.includes("sonnet")) return "sonnet"
+  return model
+}
+
 function countToolCalls(messages: MessageBlock[]): number {
   let count = 0
   for (const msg of messages) {
@@ -90,11 +106,45 @@ function StatRow({ label, value, sub }: { label: string; value: string; sub?: st
   )
 }
 
+function ConfigSelect({ label, value, options, onChange, disabled }: {
+  label: string
+  value: string
+  options: { value: string; label: string }[]
+  onChange: (value: string) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between py-1.5">
+      <span className="text-xs text-text-muted">{label}</span>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+        className="bg-white/[0.06] border border-white/[0.1] rounded px-2 py-0.5 text-xs text-white outline-none focus:border-white/[0.2] disabled:opacity-50"
+      >
+        {options.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 export function SessionStatsModal({ open, onOpenChange, session, messages }: Props) {
   const maxContext = getMaxContext(session.model)
   const pct = getContextPercent(session)
   const toolCalls = countToolCalls(messages)
   const userMessages = messages.filter(m => m.role === "user").length
+  const [updating, setUpdating] = useState(false)
+
+  const handleConfigChange = async (config: { model?: string; effort?: string }) => {
+    setUpdating(true)
+    try {
+      await api.post(`/claude/sessions/${session.id}/config`, config)
+    } finally {
+      setUpdating(false)
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -104,8 +154,32 @@ export function SessionStatsModal({ open, onOpenChange, session, messages }: Pro
         </DialogHeader>
 
         <div className="divide-y divide-white/[0.06]">
-          {/* General */}
+          {/* Config */}
           <div className="pb-2">
+            <ConfigSelect
+              label="Model"
+              value={currentModelAlias(session.model)}
+              options={MODEL_OPTIONS}
+              onChange={v => handleConfigChange({ model: v })}
+              disabled={updating}
+            />
+            <ConfigSelect
+              label="Effort"
+              value={session.effort || "high"}
+              options={EFFORT_OPTIONS}
+              onChange={v => handleConfigChange({ effort: v })}
+              disabled={updating}
+            />
+            {updating && (
+              <div className="flex items-center gap-1.5 text-[10px] text-text-muted mt-1">
+                <i className="fa-solid fa-circle-notch fa-spin" />
+                <span>Restarting session...</span>
+              </div>
+            )}
+          </div>
+
+          {/* General */}
+          <div className="py-2">
             <StatRow label="Model" value={shortModel(session.model)} />
             <StatRow label="Cost" value={formatCost(session.costUsd)} />
             <StatRow label="Duration" value={formatDuration(session.startedAt)} />
@@ -122,9 +196,9 @@ export function SessionStatsModal({ open, onOpenChange, session, messages }: Pro
           {/* Context */}
           <div className="pt-2">
             <StatRow
-              label="Input tokens"
-              value={formatTokens(session.inputTokens)}
-              sub={session.inputTokens ? `/ ${formatTokens(maxContext)}` : undefined}
+              label="Context tokens"
+              value={formatTokens(getTotalInputTokens(session) || null)}
+              sub={getTotalInputTokens(session) ? `/ ${formatTokens(maxContext)}` : undefined}
             />
             <StatRow label="Output tokens" value={formatTokens(session.outputTokens)} />
             {session.cacheReadInputTokens != null && (

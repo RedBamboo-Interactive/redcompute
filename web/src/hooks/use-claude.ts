@@ -200,6 +200,12 @@ export function useClaude() {
     ))
   }, [])
 
+  const updateConfig = useCallback(async (sessionId: string, config: { model?: string; effort?: string }) => {
+    const session = await api.post<ClaudeSessionInfo>(`/claude/sessions/${sessionId}/config`, config)
+    setSessions(prev => prev.map(s => s.id === sessionId ? session : s))
+    return session
+  }, [])
+
   const executePlan = useCallback(async (sessionId: string) => {
     await api.post(`/claude/sessions/${sessionId}/permission-mode`, { mode: "bypassPermissions" })
     setSessions(prev => prev.map(s =>
@@ -308,6 +314,7 @@ export function useClaude() {
     stopSession,
     dismissSession,
     setPermissionMode,
+    updateConfig,
     executePlan,
     handleWsEvent,
   }

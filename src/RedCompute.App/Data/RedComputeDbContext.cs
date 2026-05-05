@@ -44,6 +44,9 @@ public class RedComputeDbContext : DbContext
             try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
         }
 
+        cmd.CommandText = "ALTER TABLE ClaudeSessions ADD COLUMN Effort TEXT NULL";
+        try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
+
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS LogEntries (
                 Id INTEGER PRIMARY KEY AUTOINCREMENT,

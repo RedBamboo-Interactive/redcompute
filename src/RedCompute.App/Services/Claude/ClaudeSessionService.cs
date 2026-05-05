@@ -219,9 +219,10 @@ public class ClaudeSessionService
             OutputTokens = record.OutputTokens,
             CacheReadInputTokens = record.CacheReadInputTokens,
             CacheCreationInputTokens = record.CacheCreationInputTokens,
+            Effort = record.Effort,
         };
 
-        var args = BuildArgs(record.ClaudeSessionId);
+        var args = BuildArgs(record.ClaudeSessionId, record.Model, record.Effort);
         var startInfo = new ProcessStartInfo
         {
             FileName = claudePath,
@@ -417,6 +418,27 @@ public class ClaudeSessionService
         await Task.CompletedTask;
     }
 
+    public async Task<ClaudeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort)
+    {
+        using var db = new RedComputeDbContext();
+        var record = db.ClaudeSessions.Find(sessionId);
+        if (record == null) return null;
+
+        if (model != null) record.Model = model;
+        if (effort != null) record.Effort = effort;
+        db.SaveChanges();
+
+        if (_sessions.ContainsKey(sessionId))
+        {
+            await StopSession(sessionId);
+            return ResumeSession(sessionId);
+        }
+
+        var info = ToSessionInfo(record);
+        SessionUpdated?.Invoke(info);
+        return info;
+    }
+
     public void DismissSession(string sessionId)
     {
         try
@@ -479,6 +501,7 @@ public class ClaudeSessionService
         OutputTokens = r.OutputTokens,
         CacheReadInputTokens = r.CacheReadInputTokens,
         CacheCreationInputTokens = r.CacheCreationInputTokens,
+        Effort = r.Effort,
         JobId = r.JobId
     };
 
@@ -528,11 +551,14 @@ public class ClaudeSessionService
         return null;
     }
 
-    private string BuildArgs(string? resumeClaudeSessionId = null)
+    private string BuildArgs(string? resumeClaudeSessionId = null, string? model = null, string? effort = null)
     {
         var sb = new StringBuilder("--output-format stream-json --verbose --input-format stream-json --permission-mode bypassPermissions");
-        if (_config.Model != null)
-            sb.Append($" --model {_config.Model}");
+        var m = model ?? _config.Model;
+        if (m != null)
+            sb.Append($" --model {m}");
+        if (effort != null)
+            sb.Append($" --effort {effort}");
         if (resumeClaudeSessionId != null)
             sb.Append($" --resume {resumeClaudeSessionId}");
         return sb.ToString();
@@ -779,13 +805,17 @@ public class ClaudeSessionService
 
     private static void ParseTokenUsage(JsonElement root, ManagedSession session)
     {
-        if (root.TryGetProperty("input_tokens", out var inTok))
+        var source = root;
+        if (root.TryGetProperty("usage", out var usage))
+            source = usage;
+
+        if (source.TryGetProperty("input_tokens", out var inTok))
             session.Info.InputTokens = inTok.GetInt32();
-        if (root.TryGetProperty("output_tokens", out var outTok))
+        if (source.TryGetProperty("output_tokens", out var outTok))
             session.Info.OutputTokens = outTok.GetInt32();
-        if (root.TryGetProperty("cache_read_input_tokens", out var cacheR))
+        if (source.TryGetProperty("cache_read_input_tokens", out var cacheR))
             session.Info.CacheReadInputTokens = cacheR.GetInt32();
-        if (root.TryGetProperty("cache_creation_input_tokens", out var cacheC))
+        if (source.TryGetProperty("cache_creation_input_tokens", out var cacheC))
             session.Info.CacheCreationInputTokens = cacheC.GetInt32();
     }
 
@@ -879,6 +909,7 @@ public class ClaudeSessionService
                 existing.OutputTokens = info.OutputTokens;
                 existing.CacheReadInputTokens = info.CacheReadInputTokens;
                 existing.CacheCreationInputTokens = info.CacheCreationInputTokens;
+                existing.Effort = info.Effort;
                 existing.JobId = info.JobId;
             }
             else
@@ -899,6 +930,7 @@ public class ClaudeSessionService
                     OutputTokens = info.OutputTokens,
                     CacheReadInputTokens = info.CacheReadInputTokens,
                     CacheCreationInputTokens = info.CacheCreationInputTokens,
+                    Effort = info.Effort,
                     JobId = info.JobId
                 });
             }

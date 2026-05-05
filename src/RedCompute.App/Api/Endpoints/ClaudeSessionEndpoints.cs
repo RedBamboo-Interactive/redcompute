@@ -142,6 +142,12 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(new { dismissed = true });
         });
 
+        app.MapPost("/claude/sessions/{id}/config", async (string id, UpdateConfigRequest req) =>
+        {
+            var result = await claude.UpdateSessionConfig(id, req.Model, req.Effort);
+            return result != null ? Results.Json(result) : Results.NotFound();
+        });
+
         app.MapDelete("/claude/sessions/{id}", async (string id) =>
         {
             await claude.ForceKill(id);
@@ -153,4 +159,5 @@ public static class ClaudeSessionEndpoints
     private record StartSessionRequest(string? ProjectPath);
     private record SendMessageRequest(string? Content);
     private record SetPermissionModeRequest(string? Mode);
+    private record UpdateConfigRequest(string? Model, string? Effort);
 }

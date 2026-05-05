@@ -132,6 +132,7 @@ export interface ClaudeSessionInfo {
   outputTokens?: number
   cacheReadInputTokens?: number
   cacheCreationInputTokens?: number
+  effort?: string
   permissionMode?: PermissionMode
 }
 
