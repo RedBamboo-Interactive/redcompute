@@ -1,5 +1,6 @@
 using System.IO;
 using Microsoft.EntityFrameworkCore;
+using RedCompute.Core.Claude;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Logging;
 
@@ -11,6 +12,7 @@ public class RedComputeDbContext : DbContext
 
     public DbSet<JobRecord> Jobs => Set<JobRecord>();
     public DbSet<LogEntry> LogEntries => Set<LogEntry>();
+    public DbSet<ClaudeMessageRecord> ClaudeMessages => Set<ClaudeMessageRecord>();
 
     public RedComputeDbContext()
     {
@@ -48,6 +50,24 @@ public class RedComputeDbContext : DbContext
             CREATE INDEX IF NOT EXISTS IX_LogEntries_JobId ON LogEntries(JobId);
             CREATE INDEX IF NOT EXISTS IX_LogEntries_Timestamp ON LogEntries(Timestamp);
             CREATE INDEX IF NOT EXISTS IX_LogEntries_Tag ON LogEntries(Tag);
+            """;
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS ClaudeMessages (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                SessionId TEXT NOT NULL,
+                Role TEXT NOT NULL,
+                EventType TEXT NOT NULL,
+                Content TEXT NULL,
+                ToolName TEXT NULL,
+                ToolInput TEXT NULL,
+                ToolResult TEXT NULL,
+                MessageId TEXT NULL,
+                Timestamp TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS IX_ClaudeMessages_SessionId ON ClaudeMessages(SessionId);
+            CREATE INDEX IF NOT EXISTS IX_ClaudeMessages_Timestamp ON ClaudeMessages(Timestamp);
             """;
         cmd.ExecuteNonQuery();
     }
@@ -88,6 +108,17 @@ public class RedComputeDbContext : DbContext
             entity.HasIndex(l => l.Tag);
             entity.Ignore(l => l.TimestampText);
             entity.Ignore(l => l.PreviewMessage);
+        });
+
+        modelBuilder.Entity<ClaudeMessageRecord>(entity =>
+        {
+            entity.HasKey(m => m.Id);
+            entity.Property(m => m.Id).ValueGeneratedOnAdd();
+            entity.HasIndex(m => m.SessionId);
+            entity.HasIndex(m => m.Timestamp);
+            entity.Property(m => m.Timestamp).HasConversion(
+                v => v.ToString("O"),
+                v => DateTimeOffset.Parse(v));
         });
     }
 }

@@ -7,5 +7,6 @@ public enum CapabilityType
     ImageGen,
     MusicGen,
     Llm,
-    VideoGen
+    VideoGen,
+    AiSession
 }

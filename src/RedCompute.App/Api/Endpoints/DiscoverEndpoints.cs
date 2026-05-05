@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Claude;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Providers;
@@ -9,7 +10,15 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class DiscoverEndpoints
 {
-    public static void Map(WebApplication app, RedComputeConfig config, CapabilityRegistry registry)
+    private static ClaudeSessionService? _claudeService;
+
+    public static void Map(WebApplication app, RedComputeConfig config, CapabilityRegistry registry, ClaudeSessionService? claudeService = null)
+    {
+        _claudeService = claudeService;
+        MapRoutes(app, config, registry);
+    }
+
+    private static void MapRoutes(WebApplication app, RedComputeConfig config, CapabilityRegistry registry)
     {
         app.MapGet("/discover", async () =>
         {
@@ -216,6 +225,54 @@ public static class DiscoverEndpoints
                     Path = "/music-gen/jobs/{id}/output",
                     Description = "Download generated MP3. Use ?clip=0 (default) or ?clip=1 for the second variation",
                     Returns = new ReturnSchema { ContentType = "audio/mpeg", Streaming = false, MediaCategory = "audio" }
+                }
+            },
+            "ai-session" => new List<EndpointManifest>
+            {
+                new()
+                {
+                    Method = "POST",
+                    Path = "/ai-session/generate",
+                    Description = "Start a new AI coding session in a project directory. Returns a long-running job that stays active until the session is stopped.",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["project"] = new()
+                        {
+                            Type = "string",
+                            Required = true,
+                            Description = "Project directory to start the session in",
+                            Enum = _claudeService?.ListProjects().Select(p => p.Name).ToList()
+                        },
+                        ["prompt"] = new()
+                        {
+                            Type = "string",
+                            Required = false,
+                            Description = "Initial message to send after session starts"
+                        }
+                    },
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = true }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/claude/sessions",
+                    Description = "List all active AI sessions"
+                },
+                new()
+                {
+                    Method = "POST",
+                    Path = "/claude/sessions/{id}/message",
+                    Description = "Send a message to an active session",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["content"] = new() { Type = "string", Required = true, Description = "Message content" }
+                    }
+                },
+                new()
+                {
+                    Method = "POST",
+                    Path = "/claude/sessions/{id}/stop",
+                    Description = "Stop an active session gracefully"
                 }
             },
             _ => new List<EndpointManifest>()

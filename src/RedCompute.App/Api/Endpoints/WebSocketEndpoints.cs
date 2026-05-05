@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Logging;
@@ -24,7 +25,7 @@ public static class WebSocketEndpoints
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, CloudflareTunnelService tunnelService)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, CloudflareTunnelService tunnelService, ClaudeSessionService claudeService)
     {
         jobTracker.JobCreated += job => Broadcast("job.created", job);
         jobTracker.JobUpdated += job => Broadcast("job.updated", job);
@@ -35,6 +36,11 @@ public static class WebSocketEndpoints
             hostname = App.ConfigManager.Config.Tunnel.Hostname,
             error
         });
+
+        claudeService.SessionCreated += session => Broadcast("claude.session.created", session);
+        claudeService.SessionUpdated += session => Broadcast("claude.session.updated", session);
+        claudeService.SessionEnded += (id, reason) => Broadcast("claude.session.ended", new { id, reason });
+        claudeService.StreamEvent += (sessionId, evt) => Broadcast("claude.stream", new { sessionId, @event = evt });
 
         _ = PollCapabilityStatus(registry);
 

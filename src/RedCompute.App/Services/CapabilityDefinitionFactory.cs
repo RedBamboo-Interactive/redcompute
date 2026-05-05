@@ -38,6 +38,12 @@ public static class CapabilityDefinitionFactory
                 Type = CapabilityType.Llm,
                 DisplayName = "Language Model"
             },
+            "ai-session" => new CapabilityDefinition
+            {
+                Slug = "ai-session",
+                Type = CapabilityType.AiSession,
+                DisplayName = "AI Session"
+            },
             _ => null
         };
     }

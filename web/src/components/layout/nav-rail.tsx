@@ -3,6 +3,7 @@ import { useInstallPrompt } from "@/hooks/use-install-prompt"
 
 const navItems = [
   { to: "/", icon: "fa-solid fa-table-cells-large", label: "Dashboard" },
+  { to: "/claude", icon: "fa-regular fa-square-terminal", label: "Claude" },
   { to: "/jobs", icon: "fa-solid fa-list", label: "Jobs" },
   { to: "/settings", icon: "fa-solid fa-gear", label: "Settings" },
   { to: "/logs", icon: "fa-solid fa-terminal", label: "Logs" },

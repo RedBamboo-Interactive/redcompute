@@ -12,6 +12,7 @@ const capabilityIcons: Record<string, string> = {
   "music-gen": "fa-solid fa-music",
   llm: "fa-solid fa-brain",
   "video-gen": "fa-solid fa-video",
+  "ai-session": "fa-regular fa-square-terminal",
 }
 
 function statusIconColor(status: string, sleeping: boolean): string {

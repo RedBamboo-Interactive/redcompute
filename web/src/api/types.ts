@@ -107,5 +107,38 @@ export interface TagCount {
 
 export interface WsEvent {
   type: "job.created" | "job.updated" | "log.entry" | "capability.status" | "tunnel.status"
+    | "claude.session.created" | "claude.session.updated" | "claude.session.ended" | "claude.stream"
   data: unknown
+}
+
+// Claude Code Sessions
+
+export type SessionStatus = "Starting" | "Active" | "Idle" | "Stopped" | "Error"
+
+export interface ClaudeSessionInfo {
+  id: string
+  projectName: string
+  projectPath: string
+  status: SessionStatus
+  startedAt: string
+  model?: string
+  claudeSessionId?: string
+  messageCount: number
+  costUsd?: number
+}
+
+export interface ClaudeStreamEvent {
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "status"
+  content?: string
+  toolName?: string
+  toolInput?: unknown
+  toolResult?: string
+  isPartial?: boolean
+  messageId?: string
+}
+
+export interface ProjectInfo {
+  name: string
+  path: string
+  hasClaudeMd: boolean
 }

@@ -3,11 +3,13 @@ import { HashRouter, Routes, Route } from "react-router-dom"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { AppShell } from "@/components/layout/app-shell"
 import { DashboardPage } from "@/pages/dashboard"
+import { ClaudePage } from "@/pages/claude"
 import { JobsPage } from "@/pages/jobs"
 import { LogsPage } from "@/pages/logs"
 import { SettingsPage } from "@/pages/settings"
 import { TokenPrompt } from "@/components/auth/token-prompt"
 import { useCapabilities } from "@/hooks/use-capabilities"
+import { useClaude } from "@/hooks/use-claude"
 import { useJobs } from "@/hooks/use-jobs"
 import { useLogs } from "@/hooks/use-logs"
 import { useSettings } from "@/hooks/use-settings"
@@ -30,15 +32,18 @@ export default function App() {
     return !isRemoteAccess() || !!getToken()
   })
   const caps = useCapabilities()
+  const claude = useClaude()
   const jobs = useJobs()
   const logs = useLogs()
   const settings = useSettings()
 
   const capsRef = useRef(caps)
+  const claudeRef = useRef(claude)
   const jobsRef = useRef(jobs)
   const logsRef = useRef(logs)
   const settingsRef = useRef(settings)
   capsRef.current = caps
+  claudeRef.current = claude
   jobsRef.current = jobs
   logsRef.current = logs
   settingsRef.current = settings
@@ -47,6 +52,7 @@ export default function App() {
     if (!authed) return
     const ws = createWebSocket((event: WsEvent) => {
       capsRef.current.handleWsEvent(event)
+      claudeRef.current.handleWsEvent(event)
       jobsRef.current.handleWsEvent(event)
       logsRef.current.handleWsEvent(event)
       settingsRef.current.handleWsEvent(event)
@@ -70,6 +76,19 @@ export default function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<DashboardPage capabilities={caps.capabilities} jobs={jobs.jobs} onRefresh={caps.refresh} />} />
+            <Route path="claude" element={
+              <ClaudePage
+                sessions={claude.sessions}
+                activeSession={claude.activeSession}
+                activeSessionId={claude.activeSessionId}
+                activeMessages={claude.activeMessages}
+                isStreaming={claude.isStreaming}
+                capabilities={caps.capabilities}
+                onSelectSession={claude.setActiveSessionId}
+                onSendMessage={claude.sendMessage}
+                onStopSession={claude.stopSession}
+              />
+            } />
             <Route path="jobs" element={<JobsPage jobs={jobs.jobs} selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} />} />
             <Route path="logs" element={
               <LogsPage

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Hosting;
 using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Api.Middleware;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Configuration;
 
@@ -24,11 +25,12 @@ public class RelayServer
     private readonly LoggingService _logger;
     private readonly ConfigManager _configManager;
     private readonly CloudflareTunnelService _tunnelService;
+    private readonly ClaudeSessionService _claudeService;
     private readonly Action<string, Guid?> _log;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager, CloudflareTunnelService tunnelService,
-        Action<string, Guid?> log)
+        ClaudeSessionService claudeService, Action<string, Guid?> log)
     {
         _config = config;
         _registry = registry;
@@ -36,6 +38,7 @@ public class RelayServer
         _logger = logger;
         _configManager = configManager;
         _tunnelService = tunnelService;
+        _claudeService = claudeService;
         _log = log;
     }
 
@@ -68,12 +71,13 @@ public class RelayServer
 
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger);
-        DiscoverEndpoints.Map(_app, _config, _registry);
+        DiscoverEndpoints.Map(_app, _config, _registry, _claudeService);
         OpenApiEndpoints.Map(_app, _config, _registry);
         ImageGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
-        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService);
+        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService);
+        ClaudeSessionEndpoints.Map(_app, _claudeService);
         TunnelEndpoints.Map(_app, _tunnelService);
         SettingsEndpoints.Map(_app, _configManager, _tunnelService);
 

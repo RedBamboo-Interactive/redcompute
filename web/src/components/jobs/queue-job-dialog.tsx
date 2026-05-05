@@ -14,6 +14,7 @@ const capabilityIcons: Record<string, string> = {
   "music-gen": "fa-solid fa-music",
   llm: "fa-solid fa-brain",
   "video-gen": "fa-solid fa-video",
+  "ai-session": "fa-regular fa-square-terminal",
 }
 
 interface DiscoverResponse {
@@ -68,9 +69,13 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
     setSubmitting(true)
     setError(null)
     try {
-      const result = await api.post<{ jobId?: string }>(`/${selectedSlug}/generate?async=true`, values)
+      const result = await api.post<{ jobId?: string; sessionId?: string }>(`/${selectedSlug}/generate?async=true`, values)
       onOpenChange(false)
-      navigate("/jobs", result?.jobId ? { state: { focusJobId: result.jobId } } : undefined)
+      if (selectedSlug === "ai-session") {
+        navigate("/claude")
+      } else {
+        navigate("/jobs", result?.jobId ? { state: { focusJobId: result.jobId } } : undefined)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {

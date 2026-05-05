@@ -1,6 +1,7 @@
 using System.Windows;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
 using RedCompute.App.TrayIcon;
@@ -21,6 +22,7 @@ public partial class App : Application
     public static CapabilityRegistry Registry { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
     public static CloudflareTunnelService TunnelService { get; } = new();
+    public static ClaudeSessionService ClaudeService { get; private set; } = null!;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -45,7 +47,10 @@ public partial class App : Application
         if (recovered > 0)
             Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");
 
+        ClaudeService = new ClaudeSessionService(ConfigManager.Config.Claude, JobTracker, (msg, jobId) => Log(msg, jobId));
+
         InitializeCapabilities();
+        RegisterClaudeCodeCapability();
         await StartRelayServer();
         _ = ProbeRunningBackends();
         _ = StartTunnelIfEnabled();
@@ -56,6 +61,7 @@ public partial class App : Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
+        await ClaudeService.StopAllAsync();
         await TunnelService.DisposeAsync();
         _relayCts?.Cancel();
         if (_relayServer != null)
@@ -104,6 +110,39 @@ public partial class App : Application
         }
     }
 
+    private void RegisterClaudeCodeCapability()
+    {
+        // Ensure ai-session exists in persisted config
+        if (!ConfigManager.Config.Capabilities.ContainsKey("ai-session"))
+        {
+            ConfigManager.Config.Capabilities["ai-session"] = new RedCompute.Core.Configuration.CapabilityConfig
+            {
+                Enabled = true,
+                ActiveProvider = "claude-code",
+                Providers = new Dictionary<string, RedCompute.Core.Configuration.ProviderConfig>
+                {
+                    ["claude-code"] = new()
+                    {
+                        Type = "ClaudeCode",
+                        Extra = new Dictionary<string, object?>
+                        {
+                            ["ProjectsRoot"] = ConfigManager.Config.Claude.ProjectsRoot,
+                            ["MaxSessions"] = ConfigManager.Config.Claude.MaxSessions,
+                        }
+                    }
+                }
+            };
+            ConfigManager.Save();
+        }
+
+        var capConfig = ConfigManager.Config.Capabilities["ai-session"];
+        var definition = CapabilityDefinitionFactory.Create("ai-session")!;
+        definition.Enabled = capConfig.Enabled;
+        var provider = new Services.Claude.ClaudeCodeProvider(ClaudeService);
+        Registry.Register("ai-session", definition, capConfig, provider);
+        Log("[App] Registered capability: ai-session (provider: Claude Code)");
+    }
+
     private async Task ProbeRunningBackends()
     {
         foreach (var (slug, entry) in Registry.Capabilities)
@@ -125,7 +164,7 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, ClaudeService, (msg, jobId) => Log(msg, jobId));
 
         try
         {
