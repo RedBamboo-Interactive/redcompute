@@ -343,11 +343,7 @@ public class ClaudeSessionService
         {
             case "system":
                 HandleSystemEvent(root, session);
-                return new ClaudeStreamEvent
-                {
-                    Type = "status",
-                    Content = root.TryGetProperty("subtype", out var sub) ? sub.GetString() : "system"
-                };
+                return null;
 
             case "assistant":
                 return ParseAssistantEvent(root);
@@ -355,13 +351,11 @@ public class ClaudeSessionService
             case "result":
                 return ParseResultEvent(root, session);
 
+            case "rate_limit_event":
+                return null;
+
             default:
-                return new ClaudeStreamEvent
-                {
-                    Type = "text",
-                    Content = line,
-                    IsPartial = false
-                };
+                return null;
         }
     }
 
