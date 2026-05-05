@@ -1,11 +1,42 @@
 import { useState } from "react"
+import Markdown from "react-markdown"
+import remarkGfm from "remark-gfm"
+import rehypeHighlight from "rehype-highlight"
+import "highlight.js/styles/github-dark-dimmed.min.css"
 import type { MessageBlock as MessageBlockType, MessagePart } from "@/hooks/use-claude"
 
-const partColor: Record<string, string> = {
+const readOnlyTools = new Set([
+  "Read", "Glob", "Grep", "Agent", "WebSearch", "WebFetch",
+  "ToolSearch", "CronList", "TodoRead", "Monitor",
+])
+
+const mutatingTools = new Set([
+  "Edit", "Write", "NotebookEdit", "TodoWrite",
+  "CronCreate", "CronDelete", "PushNotification",
+])
+
+const shellTools = new Set(["Bash", "PowerShell"])
+
+const COLOR = {
   thinking: "#7C4DFF",
-  tool_use: "#D4AA4F",
-  tool_result: "#26A69A",
+  readOnly: "#26A69A",
+  mutating: "#D4AA4F",
+  shell: "#D4AA4F",
+  result: "#3D7A73",
   error: "#E55B5B",
+  fallback: "#555",
+}
+
+function getPartColor(part: MessagePart): string {
+  if (part.type === "thinking") return COLOR.thinking
+  if (part.type === "error") return COLOR.error
+  if (part.type === "tool_result") return COLOR.result
+  if (part.type === "tool_use" && part.toolName) {
+    if (readOnlyTools.has(part.toolName)) return COLOR.readOnly
+    if (mutatingTools.has(part.toolName)) return COLOR.mutating
+    if (shellTools.has(part.toolName)) return COLOR.shell
+  }
+  return COLOR.fallback
 }
 
 interface Props {
@@ -17,7 +48,7 @@ export function MessageBlock({ block }: Props) {
     return (
       <div className="flex justify-end mb-3">
         <div className="max-w-[80%] bg-white/10 rounded-xl rounded-br-sm px-4 py-2.5">
-          <p className="text-sm whitespace-pre-wrap">{block.parts[0]?.content}</p>
+          <p className="text-sm whitespace-pre-wrap font-serif">{block.parts[0]?.content}</p>
         </div>
       </div>
     )
@@ -30,8 +61,10 @@ export function MessageBlock({ block }: Props) {
       <div className="max-w-full">
         {groups.map((group, i) =>
           group.kind === "text" ? (
-            <div key={i} className="text-sm whitespace-pre-wrap leading-relaxed">
-              {group.parts[0].content}
+            <div key={i} className="text-sm leading-relaxed font-serif markdown-body">
+              <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                {group.parts[0].content}
+              </Markdown>
             </div>
           ) : (
             <PartFrieze key={i} parts={group.parts} />
@@ -90,7 +123,7 @@ function PartFrieze({ parts }: { parts: MessagePart[] }) {
             key={i}
             onClick={() => setSelected(part)}
             className="w-2.5 h-2.5 rounded-[2px] transition-all duration-100 hover:brightness-125 hover:scale-[1.5] cursor-pointer"
-            style={{ backgroundColor: partColor[part.type] || "#555" }}
+            style={{ backgroundColor: getPartColor(part) }}
             title={partLabel(part)}
           />
         ))}
@@ -114,7 +147,7 @@ function PartModal({ part, onClose }: { part: MessagePart; onClose: () => void }
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border-subtle shrink-0">
           <div
             className="w-3 h-3 rounded-[2px]"
-            style={{ backgroundColor: partColor[part.type] || "#555" }}
+            style={{ backgroundColor: getPartColor(part) }}
           />
           <span className="font-medium text-sm">{partLabel(part)}</span>
           <span className="text-xs text-text-muted">{part.type}</span>

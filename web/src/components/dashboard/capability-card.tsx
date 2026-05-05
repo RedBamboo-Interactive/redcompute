@@ -68,7 +68,7 @@ export function CapabilityCard({ cap, jobs, onRefresh }: {
               className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
               <i className="fa-solid fa-power-off text-sm"
                 style={{
-                  color: isRunning ? "#26A69A" : "#72767D",
+                  color: isRunning ? "#26A69A" : "#6B6F77",
                   opacity: isRunning ? 1 : 0.4,
                 }} />
             </button>

@@ -45,7 +45,7 @@ export function JobList({ jobs, selectedId, onSelect }: {
             {/* Capability icon — color = status */}
             <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0">
               <i className={`${capIcons[job.capabilitySlug] || "fa-solid fa-cog"} text-xs`}
-                style={{ color: statusColor[job.status] || "#72767D" }} />
+                style={{ color: statusColor[job.status] || "#6B6F77" }} />
             </div>
 
             {/* Name + meta stacked */}

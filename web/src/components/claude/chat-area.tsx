@@ -75,14 +75,11 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
   return (
     <div className="flex-1 flex flex-col min-h-0 relative">
       {/* Session header */}
-      <div className="border-b border-border-subtle shrink-0">
+      <div className="shrink-0">
         <div className="max-w-3xl mx-auto flex items-center gap-3 px-4 py-2.5">
           <span className="font-medium text-sm">{session.title || session.projectName}</span>
           {session.title && <span className="text-xs text-text-muted">{session.projectName}</span>}
-          <span className="text-xs text-text-muted ml-auto">
-            {session.messageCount} msg{session.messageCount !== 1 ? "s" : ""}
-            {session.costUsd != null && ` · $${session.costUsd.toFixed(3)}`}
-          </span>
+          <span className="flex-1" />
           {canSend && isStreaming && (
             <button
               onClick={handleInterrupt}

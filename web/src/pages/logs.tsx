@@ -113,7 +113,7 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
         {/* Detail panel — shown when entry is selected */}
         {selectedEntry && (
           <>
-            <div className="h-px bg-[#3F4147]" />
+            <div className="h-px bg-border-subtle" />
             <div className="bg-white/[0.08] px-3 py-2 min-h-[120px] max-h-[400px] overflow-auto">
               <div className="flex items-center gap-2 mb-2">
                 <span className="font-mono text-[11px] text-white/40">
@@ -162,5 +162,5 @@ function formatTimestamp(ts: string): string {
 }
 
 function getTagColor(tag: string, tags: TagInfo[]): string {
-  return tags.find(t => t.tag === tag)?.color || "#72767D"
+  return tags.find(t => t.tag === tag)?.color || "#6B6F77"
 }

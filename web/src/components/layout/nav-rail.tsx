@@ -23,7 +23,7 @@ export function NavRail() {
           className={({ isActive }) =>
             `flex items-center justify-center w-12 h-12 rounded-xl transition-colors ${
               isActive
-                ? "bg-[#36373E] text-white"
+                ? "bg-surface-elevated text-white"
                 : "text-text-muted hover:bg-white/[0.15] hover:text-white"
             }`
           }

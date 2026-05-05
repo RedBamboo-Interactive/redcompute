@@ -47,8 +47,8 @@ export function MessageInput({ onSend, onInterrupt, disabled, isStreaming }: Pro
   const inputDisabled = disabled && !isStreaming
 
   return (
-    <div className="border-t border-border-subtle p-3">
-      <div className="max-w-3xl mx-auto flex gap-2 items-end">
+    <div className="px-3 pt-3 pb-5">
+      <div className="max-w-3xl mx-auto flex gap-2 items-center">
         <textarea
           ref={textareaRef}
           value={value}
@@ -62,8 +62,8 @@ export function MessageInput({ onSend, onInterrupt, disabled, isStreaming }: Pro
                 ? "Press Escape to interrupt, or type a follow-up..."
                 : "Send a message... (Enter to send, Shift+Enter for newline)"
           }
-          rows={1}
-          className="flex-1 resize-none bg-white/5 border border-border-subtle rounded-lg px-3 py-2 text-sm placeholder:text-text-muted focus:outline-none focus:border-white/30 disabled:opacity-50"
+          rows={3}
+          className="flex-1 resize-none bg-white/[0.06] rounded-lg px-3 py-2 text-sm font-serif placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-white/20 disabled:opacity-50 shadow-lg"
         />
         {isStreaming ? (
           <button

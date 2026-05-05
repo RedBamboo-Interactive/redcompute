@@ -9,8 +9,8 @@ interface DiscoverResponse {
   management: { endpoints: DiscoverEndpoint[] }
 }
 
-const inputClass = "bg-[#1a1a1f] border border-white/10 rounded px-2 py-1 outline-none text-white text-[13px] font-mono focus:border-white/30"
-const inputSmClass = "bg-[#1a1a1f] border border-white/10 rounded px-2 py-1 outline-none text-white text-[11px] font-mono min-w-0 focus:border-white/30"
+const inputClass = "bg-surface-deep border border-white/10 rounded px-2 py-1 outline-none text-white text-[13px] font-mono focus:border-white/30"
+const inputSmClass = "bg-surface-deep border border-white/10 rounded px-2 py-1 outline-none text-white text-[11px] font-mono min-w-0 focus:border-white/30"
 
 export function SettingsPage({ settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider }: {
   settings: Settings | null
