@@ -89,6 +89,8 @@ export default function App() {
                 onInterruptSession={claude.interruptSession}
                 onStopSession={claude.stopSession}
                 onDismissSession={claude.dismissSession}
+                onSetPermissionMode={claude.setPermissionMode}
+                onExecutePlan={claude.executePlan}
               />
             } />
             <Route path="jobs" element={<JobsPage jobs={jobs.jobs} selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} />} />

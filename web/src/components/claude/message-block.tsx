@@ -4,10 +4,12 @@ import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
 import "highlight.js/styles/github-dark-dimmed.min.css"
 import type { MessageBlock as MessageBlockType, MessagePart } from "@/hooks/use-claude"
+import type { PermissionMode } from "@/api/types"
 
 const readOnlyTools = new Set([
   "Read", "Glob", "Grep", "Agent", "WebSearch", "WebFetch",
   "ToolSearch", "CronList", "TodoRead", "Monitor",
+  "ExitPlanMode", "EnterPlanMode",
 ])
 
 const mutatingTools = new Set([
@@ -41,9 +43,11 @@ function getPartColor(part: MessagePart): string {
 
 interface Props {
   block: MessageBlockType
+  permissionMode?: PermissionMode
+  onExecutePlan?: () => void
 }
 
-export function MessageBlock({ block }: Props) {
+export function MessageBlock({ block, permissionMode, onExecutePlan }: Props) {
   if (block.role === "user") {
     return (
       <div className="flex justify-end mb-3">
@@ -55,6 +59,7 @@ export function MessageBlock({ block }: Props) {
   }
 
   const groups = groupParts(block.parts)
+  const hasExitPlanMode = block.parts.some(p => p.type === "tool_use" && p.toolName === "ExitPlanMode")
 
   return (
     <div className="mb-4">
@@ -69,6 +74,9 @@ export function MessageBlock({ block }: Props) {
           ) : (
             <PartFrieze key={i} parts={group.parts} />
           )
+        )}
+        {hasExitPlanMode && (
+          <PlanCard onExecute={onExecutePlan} permissionMode={permissionMode} />
         )}
       </div>
     </div>
@@ -183,6 +191,37 @@ function PartModal({ part, onClose }: { part: MessagePart; onClose: () => void }
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function PlanCard({ onExecute, permissionMode }: { onExecute?: () => void; permissionMode?: PermissionMode }) {
+  const alreadyExecuting = permissionMode === "bypassPermissions"
+
+  return (
+    <div className="my-3 rounded-lg border border-violet-500/30 bg-violet-500/[0.08] p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <i className="fa-solid fa-compass-drafting text-violet-400 text-sm" />
+        <span className="text-sm font-medium text-violet-300">Plan ready for review</span>
+      </div>
+      <p className="text-xs text-text-muted mb-3">
+        Review the plan above. Execute it, or send a message to revise while staying in plan mode.
+      </p>
+      {onExecute && !alreadyExecuting && (
+        <button
+          onClick={onExecute}
+          className="px-3 py-1.5 rounded-md bg-violet-500/25 hover:bg-violet-500/40 text-violet-200 text-xs font-medium transition-colors"
+        >
+          <i className="fa-solid fa-play mr-1.5" />
+          Execute Plan
+        </button>
+      )}
+      {alreadyExecuting && (
+        <span className="text-xs text-text-muted italic">
+          <i className="fa-solid fa-check mr-1.5 text-green-400" />
+          Plan accepted — executing
+        </span>
+      )}
     </div>
   )
 }

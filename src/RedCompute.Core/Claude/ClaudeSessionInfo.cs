@@ -15,6 +15,7 @@ public class ClaudeSessionInfo
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
     public Guid? JobId { get; set; }
+    public string PermissionMode { get; set; } = "bypassPermissions";
 }
 
 public class ProjectInfo

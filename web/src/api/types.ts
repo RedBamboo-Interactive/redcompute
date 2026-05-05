@@ -115,6 +115,8 @@ export interface WsEvent {
 
 export type SessionStatus = "Starting" | "Active" | "Idle" | "Stopped" | "Error"
 
+export type PermissionMode = "plan" | "bypassPermissions" | "default" | "acceptEdits" | "dontAsk" | "auto"
+
 export interface ClaudeSessionInfo {
   id: string
   projectName: string
@@ -126,6 +128,7 @@ export interface ClaudeSessionInfo {
   title?: string
   messageCount: number
   costUsd?: number
+  permissionMode?: PermissionMode
 }
 
 export interface ClaudeStreamEvent {

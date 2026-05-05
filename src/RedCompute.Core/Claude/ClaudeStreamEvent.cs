@@ -9,4 +9,5 @@ public class ClaudeStreamEvent
     public string? ToolResult { get; init; }
     public bool IsPartial { get; init; }
     public string? MessageId { get; init; }
+    public string? PermissionMode { get; init; }
 }

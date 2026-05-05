@@ -107,6 +107,18 @@ public static class ClaudeSessionEndpoints
             };
         });
 
+        app.MapPost("/claude/sessions/{id}/permission-mode", (string id, SetPermissionModeRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Mode))
+                return Results.UnprocessableEntity(new { error = "validation", message = "mode is required" });
+
+            var ok = claude.SetPermissionMode(id, req.Mode);
+            if (!ok)
+                return Results.NotFound(new { error = "not_found", message = "Session not found or not active" });
+
+            return Results.Ok(new { mode = req.Mode });
+        });
+
         app.MapPost("/claude/sessions/{id}/stop", async (string id) =>
         {
             await claude.StopSession(id);
@@ -129,4 +141,5 @@ public static class ClaudeSessionEndpoints
     private record AiSessionGenerateRequest(string? Project, string? Prompt);
     private record StartSessionRequest(string? ProjectPath);
     private record SendMessageRequest(string? Content);
+    private record SetPermissionModeRequest(string? Mode);
 }

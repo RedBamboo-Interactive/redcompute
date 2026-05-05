@@ -1,13 +1,16 @@
 import { useState, useRef, useCallback } from "react"
+import type { PermissionMode } from "@/api/types"
 
 interface Props {
   onSend: (content: string) => void
   onInterrupt: () => void
   disabled: boolean
   isStreaming: boolean
+  permissionMode?: PermissionMode
+  onTogglePlanMode?: () => void
 }
 
-export function MessageInput({ onSend, onInterrupt, disabled, isStreaming }: Props) {
+export function MessageInput({ onSend, onInterrupt, disabled, isStreaming, permissionMode, onTogglePlanMode }: Props) {
   const [value, setValue] = useState("")
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -31,6 +34,11 @@ export function MessageInput({ onSend, onInterrupt, disabled, isStreaming }: Pro
       onInterrupt()
       return
     }
+    if (e.key === "Tab" && e.shiftKey && onTogglePlanMode) {
+      e.preventDefault()
+      onTogglePlanMode()
+      return
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       handleSubmit()
@@ -45,10 +53,26 @@ export function MessageInput({ onSend, onInterrupt, disabled, isStreaming }: Pro
   }
 
   const inputDisabled = disabled && !isStreaming
+  const isPlan = permissionMode === "plan"
 
   return (
     <div className="px-3 pt-3 pb-5 shrink-0">
       <div className="max-w-3xl mx-auto flex gap-2 items-center">
+        {onTogglePlanMode && (
+          <button
+            onClick={onTogglePlanMode}
+            disabled={inputDisabled}
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors shrink-0 ${
+              isPlan
+                ? "bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 border border-violet-500/30"
+                : "bg-white/[0.06] text-text-muted hover:bg-white/10"
+            } disabled:opacity-30 disabled:cursor-not-allowed`}
+            title="Toggle plan mode (Shift+Tab)"
+          >
+            <i className={`fa-solid ${isPlan ? "fa-compass-drafting" : "fa-bolt"} mr-1.5`} />
+            {isPlan ? "Plan" : "Act"}
+          </button>
+        )}
         <textarea
           ref={textareaRef}
           value={value}

@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react"
-import type { ClaudeSessionInfo, CapabilityStatus } from "@/api/types"
+import type { ClaudeSessionInfo, CapabilityStatus, PermissionMode } from "@/api/types"
 import type { MessageBlock } from "@/hooks/use-claude"
 import { SessionSidebar } from "@/components/claude/session-sidebar"
 import { ChatArea } from "@/components/claude/chat-area"
@@ -18,6 +18,8 @@ interface Props {
   onInterruptSession: (sessionId: string) => Promise<void>
   onStopSession: (sessionId: string) => Promise<void>
   onDismissSession: (sessionId: string) => void
+  onSetPermissionMode: (sessionId: string, mode: PermissionMode) => Promise<void>
+  onExecutePlan: (sessionId: string) => Promise<void>
 }
 
 export function ClaudePage({
@@ -32,6 +34,8 @@ export function ClaudePage({
   onInterruptSession,
   onStopSession,
   onDismissSession,
+  onSetPermissionMode,
+  onExecutePlan,
 }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [mobileTab, setMobileTab] = useState(1)
@@ -50,6 +54,17 @@ export function ClaudePage({
     if (!activeSessionId) return
     onStopSession(activeSessionId)
   }, [activeSessionId, onStopSession])
+
+  const handleTogglePlanMode = useCallback(() => {
+    if (!activeSessionId || !activeSession) return
+    const next = activeSession.permissionMode === "plan" ? "bypassPermissions" : "plan"
+    onSetPermissionMode(activeSessionId, next as PermissionMode)
+  }, [activeSessionId, activeSession, onSetPermissionMode])
+
+  const handleExecutePlan = useCallback(() => {
+    if (!activeSessionId) return
+    onExecutePlan(activeSessionId)
+  }, [activeSessionId, onExecutePlan])
 
   const sidebarHeader = (
     <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
@@ -91,6 +106,8 @@ export function ClaudePage({
             onSend={handleSend}
             onStop={handleStop}
             onInterrupt={handleInterrupt}
+            onTogglePlanMode={handleTogglePlanMode}
+            onExecutePlan={handleExecutePlan}
           />
         </div>
       </div>
@@ -123,6 +140,8 @@ export function ClaudePage({
             onSend={handleSend}
             onStop={handleStop}
             onInterrupt={handleInterrupt}
+            onTogglePlanMode={handleTogglePlanMode}
+            onExecutePlan={handleExecutePlan}
           />
         </TabsContent>
       </Tabs>

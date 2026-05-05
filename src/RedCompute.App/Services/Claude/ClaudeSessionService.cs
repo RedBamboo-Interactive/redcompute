@@ -226,6 +226,36 @@ public class ClaudeSessionService
         }
     }
 
+    public bool SetPermissionMode(string sessionId, string mode)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session))
+            return false;
+
+        try
+        {
+            var requestId = $"perm-{++session.ControlRequestCounter}";
+            var msg = new
+            {
+                type = "control_request",
+                request_id = requestId,
+                request = new { subtype = "set_permission_mode", mode }
+            };
+            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
+            session.Process.StandardInput.Flush();
+
+            session.Info.PermissionMode = mode;
+            SessionUpdated?.Invoke(session.Info);
+
+            _log($"[Claude] Permission mode set to '{mode}' for session {sessionId}", null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to set permission mode for {sessionId}: {ex.Message}", null);
+            return false;
+        }
+    }
+
     public async Task StopSession(string sessionId)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
@@ -462,6 +492,10 @@ public class ClaudeSessionService
             case "result":
                 return ParseResultEvent(root, session);
 
+            case "control_response":
+                HandleControlResponse(root, session);
+                return null;
+
             case "rate_limit_event":
                 return null;
 
@@ -478,11 +512,32 @@ public class ClaudeSessionService
                 session.Info.ClaudeSessionId = sid.GetString();
             if (root.TryGetProperty("model", out var model))
                 session.Info.Model = model.GetString();
+            if (root.TryGetProperty("permissionMode", out var pm))
+                session.Info.PermissionMode = pm.GetString() ?? "bypassPermissions";
 
             session.Info.Status = SessionStatus.Active;
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
-            _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model})", null);
+            _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode})", null);
+        }
+    }
+
+    private void HandleControlResponse(JsonElement root, ManagedSession session)
+    {
+        if (root.TryGetProperty("response", out var resp))
+        {
+            var subtype = resp.TryGetProperty("subtype", out var sub) ? sub.GetString() : null;
+            var reqId = resp.TryGetProperty("request_id", out var rid) ? rid.GetString() : null;
+
+            if (subtype == "error")
+            {
+                var error = resp.TryGetProperty("error", out var e) ? e.GetString() : "unknown";
+                _log($"[Claude] Control request {reqId} failed: {error}", null);
+            }
+            else
+            {
+                _log($"[Claude] Control request {reqId} succeeded", null);
+            }
         }
     }
 
@@ -764,6 +819,7 @@ public class ClaudeSessionService
         public CancellationTokenSource Cts { get; }
         public List<object> MessageHistory { get; } = new();
         public bool InterruptPending { get; set; }
+        public int ControlRequestCounter { get; set; }
 
         public ManagedSession(ClaudeSessionInfo info, Process process, CancellationTokenSource cts)
         {

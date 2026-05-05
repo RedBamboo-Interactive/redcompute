@@ -11,9 +11,11 @@ interface Props {
   onSend: (content: string) => void
   onStop: () => void
   onInterrupt: () => void
+  onTogglePlanMode?: () => void
+  onExecutePlan?: () => void
 }
 
-export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInterrupt }: Props) {
+export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInterrupt, onTogglePlanMode, onExecutePlan }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScroll = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -79,6 +81,11 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
         <div className="max-w-3xl mx-auto flex items-center gap-3 px-4 py-2.5">
           <span className="font-medium text-sm">{session.title || session.projectName}</span>
           {session.title && <span className="text-xs text-text-muted">{session.projectName}</span>}
+          {session.permissionMode === "plan" && (
+            <span className="text-[10px] font-medium text-violet-300 bg-violet-500/20 px-1.5 py-0.5 rounded border border-violet-500/30">
+              PLAN MODE
+            </span>
+          )}
           <span className="flex-1" />
         </div>
       </div>
@@ -92,7 +99,12 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
             </div>
           )}
           {messages.map(block => (
-            <MessageBlock key={block.id} block={block} />
+            <MessageBlock
+              key={block.id}
+              block={block}
+              permissionMode={session?.permissionMode}
+              onExecutePlan={onExecutePlan}
+            />
           ))}
           {isStreaming && (
             <div className="flex items-center gap-2 text-text-muted text-sm py-1">
@@ -129,6 +141,8 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInt
         onInterrupt={handleInterrupt}
         disabled={!canSend}
         isStreaming={isStreaming}
+        permissionMode={session?.permissionMode}
+        onTogglePlanMode={onTogglePlanMode}
       />
     </div>
   )

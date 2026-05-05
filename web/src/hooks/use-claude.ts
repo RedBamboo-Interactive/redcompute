@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react"
 import { api } from "@/api/client"
-import type { ClaudeSessionInfo, ClaudeStreamEvent, ProjectInfo, WsEvent } from "@/api/types"
+import type { ClaudeSessionInfo, ClaudeStreamEvent, PermissionMode, ProjectInfo, WsEvent } from "@/api/types"
 
 export interface MessageBlock {
   id: string
@@ -96,12 +96,17 @@ export function useClaude() {
       for (const s of data) {
         if (s.status === "Active") activeStreams[s.id] = true
       }
-      setStreaming(prev => ({ ...prev, ...activeStreams }))
+      setStreaming(activeStreams)
     } catch { /* offline */ }
   }, [])
 
-  // Load active sessions on mount
-  useEffect(() => { refresh() }, [refresh])
+  // Load active sessions on mount and when app resumes from background
+  useEffect(() => {
+    refresh()
+    const onVisible = () => { if (document.visibilityState === "visible") refresh() }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => document.removeEventListener("visibilitychange", onVisible)
+  }, [refresh])
 
   // Load persisted history when switching sessions (messages intentionally excluded)
   useEffect(() => {
@@ -163,6 +168,33 @@ export function useClaude() {
     try { await api.post(`/claude/sessions/${sessionId}/dismiss`) } catch {}
   }, [])
 
+  const setPermissionMode = useCallback(async (sessionId: string, mode: PermissionMode) => {
+    await api.post(`/claude/sessions/${sessionId}/permission-mode`, { mode })
+    setSessions(prev => prev.map(s =>
+      s.id === sessionId ? { ...s, permissionMode: mode } : s
+    ))
+  }, [])
+
+  const executePlan = useCallback(async (sessionId: string) => {
+    await api.post(`/claude/sessions/${sessionId}/permission-mode`, { mode: "bypassPermissions" })
+    setSessions(prev => prev.map(s =>
+      s.id === sessionId ? { ...s, permissionMode: "bypassPermissions" as PermissionMode } : s
+    ))
+    const content = "Go ahead and execute the plan."
+    const userBlock: MessageBlock = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      parts: [{ type: "text", content }],
+      timestamp: new Date().toISOString(),
+    }
+    setMessages(prev => ({
+      ...prev,
+      [sessionId]: [...(prev[sessionId] || []), userBlock],
+    }))
+    setStreaming(prev => ({ ...prev, [sessionId]: true }))
+    await api.post(`/claude/sessions/${sessionId}/message`, { content })
+  }, [])
+
   const handleWsEvent = useCallback((event: WsEvent) => {
     if (event.type === "claude.session.created") {
       const session = event.data as ClaudeSessionInfo
@@ -174,6 +206,9 @@ export function useClaude() {
     } else if (event.type === "claude.session.updated") {
       const session = event.data as ClaudeSessionInfo
       setSessions(prev => prev.map(s => s.id === session.id ? session : s))
+      if (session.status !== "Active") {
+        setStreaming(prev => ({ ...prev, [session.id]: false }))
+      }
     } else if (event.type === "claude.session.ended") {
       const { id } = event.data as { id: string }
       setSessions(prev => prev.map(s => s.id === id ? { ...s, status: "Stopped" as const } : s))
@@ -245,6 +280,8 @@ export function useClaude() {
     interruptSession,
     stopSession,
     dismissSession,
+    setPermissionMode,
+    executePlan,
     handleWsEvent,
   }
 }
