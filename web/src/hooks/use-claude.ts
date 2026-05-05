@@ -169,6 +169,7 @@ export function useClaude() {
         if (prev.some(s => s.id === session.id)) return prev
         return [...prev, session]
       })
+      setActiveSessionId(session.id)
     } else if (event.type === "claude.session.updated") {
       const session = event.data as ClaudeSessionInfo
       setSessions(prev => prev.map(s => s.id === session.id ? session : s))

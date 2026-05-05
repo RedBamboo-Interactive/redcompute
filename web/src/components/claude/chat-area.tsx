@@ -10,12 +10,34 @@ interface Props {
   isStreaming: boolean
   onSend: (content: string) => void
   onStop: () => void
+  onInterrupt: () => void
 }
 
-export function ChatArea({ session, messages, isStreaming, onSend, onStop }: Props) {
+export function ChatArea({ session, messages, isStreaming, onSend, onStop, onInterrupt }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScroll = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const [interruptPending, setInterruptPending] = useState(false)
+  const [interruptTimedOut, setInterruptTimedOut] = useState(false)
+
+  const handleInterrupt = useCallback(() => {
+    onInterrupt()
+    setInterruptPending(true)
+    setInterruptTimedOut(false)
+  }, [onInterrupt])
+
+  useEffect(() => {
+    if (!isStreaming) {
+      setInterruptPending(false)
+      setInterruptTimedOut(false)
+    }
+  }, [isStreaming])
+
+  useEffect(() => {
+    if (!interruptPending) return
+    const timer = setTimeout(() => setInterruptTimedOut(true), 5000)
+    return () => clearTimeout(timer)
+  }, [interruptPending])
 
   useEffect(() => {
     if (shouldAutoScroll.current && scrollRef.current) {
@@ -61,11 +83,20 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop }: Pro
             {session.messageCount} msg{session.messageCount !== 1 ? "s" : ""}
             {session.costUsd != null && ` · $${session.costUsd.toFixed(3)}`}
           </span>
+          {canSend && isStreaming && (
+            <button
+              onClick={handleInterrupt}
+              className="text-text-muted hover:text-amber-400 transition-colors"
+              title="Interrupt current turn (Escape)"
+            >
+              <i className="fa-solid fa-hand text-sm" />
+            </button>
+          )}
           {canSend && (
             <button
               onClick={onStop}
               className="text-text-muted hover:text-red-400 transition-colors"
-              title="Stop session"
+              title="End session"
             >
               <i className="fa-solid fa-stop text-sm" />
             </button>
@@ -87,7 +118,16 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop }: Pro
           {isStreaming && (
             <div className="flex items-center gap-2 text-text-muted text-sm py-1">
               <i className="fa-solid fa-circle-notch fa-spin text-xs" />
-              <span>Claude is responding...</span>
+              <span>{interruptPending ? "Interrupting..." : "Claude is responding..."}</span>
+            </div>
+          )}
+          {interruptTimedOut && isStreaming && (
+            <div className="flex items-center gap-2 text-amber-400 text-sm py-1">
+              <i className="fa-solid fa-triangle-exclamation text-xs" />
+              <span>Interrupt not acknowledged.</span>
+              <button onClick={onStop} className="underline hover:text-red-400">
+                Force stop session
+              </button>
             </div>
           )}
         </div>
@@ -107,6 +147,7 @@ export function ChatArea({ session, messages, isStreaming, onSend, onStop }: Pro
       {/* Input */}
       <MessageInput
         onSend={onSend}
+        onInterrupt={handleInterrupt}
         disabled={!canSend}
         isStreaming={isStreaming}
       />

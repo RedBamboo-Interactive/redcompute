@@ -86,6 +86,7 @@ export default function App() {
                 capabilities={caps.capabilities}
                 onSelectSession={claude.setActiveSessionId}
                 onSendMessage={claude.sendMessage}
+                onInterruptSession={claude.interruptSession}
                 onStopSession={claude.stopSession}
                 onDismissSession={claude.dismissSession}
               />

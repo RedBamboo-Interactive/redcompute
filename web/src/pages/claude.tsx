@@ -14,6 +14,7 @@ interface Props {
   capabilities: CapabilityStatus[]
   onSelectSession: (id: string) => void
   onSendMessage: (sessionId: string, content: string) => Promise<void>
+  onInterruptSession: (sessionId: string) => Promise<void>
   onStopSession: (sessionId: string) => Promise<void>
   onDismissSession: (sessionId: string) => void
 }
@@ -27,6 +28,7 @@ export function ClaudePage({
   capabilities,
   onSelectSession,
   onSendMessage,
+  onInterruptSession,
   onStopSession,
   onDismissSession,
 }: Props) {
@@ -37,6 +39,11 @@ export function ClaudePage({
     if (!activeSessionId) return
     onSendMessage(activeSessionId, content)
   }, [activeSessionId, onSendMessage])
+
+  const handleInterrupt = useCallback(() => {
+    if (!activeSessionId) return
+    onInterruptSession(activeSessionId)
+  }, [activeSessionId, onInterruptSession])
 
   const handleStop = useCallback(() => {
     if (!activeSessionId) return
@@ -91,6 +98,7 @@ export function ClaudePage({
             isStreaming={isStreaming}
             onSend={handleSend}
             onStop={handleStop}
+            onInterrupt={handleInterrupt}
           />
         </div>
       </div>

@@ -2,15 +2,20 @@ import { useState, useRef, useCallback } from "react"
 
 interface Props {
   onSend: (content: string) => void
+  onInterrupt: () => void
   disabled: boolean
   isStreaming: boolean
 }
 
-export function MessageInput({ onSend, disabled, isStreaming }: Props) {
+export function MessageInput({ onSend, onInterrupt, disabled, isStreaming }: Props) {
   const [value, setValue] = useState("")
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const handleSubmit = useCallback(() => {
+    if (isStreaming) {
+      onInterrupt()
+      return
+    }
     const trimmed = value.trim()
     if (!trimmed || disabled) return
     onSend(trimmed)
@@ -18,9 +23,14 @@ export function MessageInput({ onSend, disabled, isStreaming }: Props) {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto"
     }
-  }, [value, disabled, onSend])
+  }, [value, disabled, isStreaming, onSend, onInterrupt])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape" && isStreaming) {
+      e.preventDefault()
+      onInterrupt()
+      return
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       handleSubmit()
@@ -34,6 +44,8 @@ export function MessageInput({ onSend, disabled, isStreaming }: Props) {
     el.style.height = Math.min(el.scrollHeight, 200) + "px"
   }
 
+  const inputDisabled = disabled && !isStreaming
+
   return (
     <div className="border-t border-border-subtle p-3">
       <div className="max-w-3xl mx-auto flex gap-2 items-end">
@@ -42,22 +54,34 @@ export function MessageInput({ onSend, disabled, isStreaming }: Props) {
           value={value}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder={disabled ? "Session not active" : "Send a message... (Enter to send, Shift+Enter for newline)"}
+          disabled={inputDisabled}
+          placeholder={
+            inputDisabled
+              ? "Session not active"
+              : isStreaming
+                ? "Press Escape to interrupt, or type a follow-up..."
+                : "Send a message... (Enter to send, Shift+Enter for newline)"
+          }
           rows={1}
           className="flex-1 resize-none bg-white/5 border border-border-subtle rounded-lg px-3 py-2 text-sm placeholder:text-text-muted focus:outline-none focus:border-white/30 disabled:opacity-50"
         />
-        <button
-          onClick={handleSubmit}
-          disabled={disabled || !value.trim()}
-          className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        >
-          {isStreaming ? (
-            <i className="fa-solid fa-circle-notch fa-spin text-sm" />
-          ) : (
+        {isStreaming ? (
+          <button
+            onClick={onInterrupt}
+            className="px-3 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 transition-colors"
+            title="Interrupt (Escape)"
+          >
+            <i className="fa-solid fa-stop text-sm" />
+          </button>
+        ) : (
+          <button
+            onClick={handleSubmit}
+            disabled={disabled || !value.trim()}
+            className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
             <i className="fa-solid fa-paper-plane text-sm" />
-          )}
-        </button>
+          </button>
+        )}
       </div>
     </div>
   )
