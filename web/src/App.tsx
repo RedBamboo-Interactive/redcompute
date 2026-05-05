@@ -56,6 +56,10 @@ export default function App() {
       jobsRef.current.handleWsEvent(event)
       logsRef.current.handleWsEvent(event)
       settingsRef.current.handleWsEvent(event)
+    }, () => {
+      capsRef.current.refresh()
+      claudeRef.current.refresh()
+      jobsRef.current.refresh()
     })
     return () => ws.close()
   }, [authed])

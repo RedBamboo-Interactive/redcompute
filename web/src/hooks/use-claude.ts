@@ -100,13 +100,31 @@ export function useClaude() {
     } catch { /* offline */ }
   }, [])
 
+  const reloadActiveSession = useCallback((sessionId: string) => {
+    api.get<{ session: ClaudeSessionInfo; messages: PersistedMessage[] }>(`/claude/sessions/${sessionId}`)
+      .then(data => {
+        if (data.session) {
+          setSessions(prev => prev.map(s => s.id === sessionId ? data.session : s))
+        }
+        if (data.messages?.length) {
+          setMessages(prev => ({ ...prev, [sessionId]: rebuildBlocks(data.messages) }))
+        }
+      })
+      .catch(() => {})
+  }, [])
+
   // Load active sessions on mount and when app resumes from background
   useEffect(() => {
     refresh()
-    const onVisible = () => { if (document.visibilityState === "visible") refresh() }
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        refresh()
+        if (activeSessionId) reloadActiveSession(activeSessionId)
+      }
+    }
     document.addEventListener("visibilitychange", onVisible)
     return () => document.removeEventListener("visibilitychange", onVisible)
-  }, [refresh])
+  }, [refresh, activeSessionId, reloadActiveSession])
 
   // Load persisted history when switching sessions (messages intentionally excluded)
   useEffect(() => {

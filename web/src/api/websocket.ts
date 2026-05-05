@@ -3,7 +3,7 @@ import type { WsEvent } from "./types"
 
 type EventHandler = (event: WsEvent) => void
 
-export function createWebSocket(onEvent: EventHandler) {
+export function createWebSocket(onEvent: EventHandler, onReconnect?: () => void) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
   const token = getToken()
   const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ""
@@ -11,10 +11,16 @@ export function createWebSocket(onEvent: EventHandler) {
   let ws: WebSocket | null = null
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
   let closed = false
+  let hasConnected = false
 
   function connect() {
     if (closed) return
     ws = new WebSocket(url)
+
+    ws.onopen = () => {
+      if (hasConnected && onReconnect) onReconnect()
+      hasConnected = true
+    }
 
     ws.onmessage = (e) => {
       try {
