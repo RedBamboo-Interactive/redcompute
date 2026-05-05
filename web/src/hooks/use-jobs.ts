@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { api } from "@/api/client"
 import type { JobRecord, WsEvent } from "@/api/types"
 
-interface ApiJob {
+export interface ApiJob {
   id: string
   capability: string
   providerName: string
@@ -24,7 +24,7 @@ interface ApiJob {
   errorDetails?: string
 }
 
-function mapJob(j: ApiJob): JobRecord {
+export function mapJob(j: ApiJob): JobRecord {
   return {
     id: j.id,
     capabilitySlug: j.capability,

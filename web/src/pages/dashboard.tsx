@@ -1,9 +1,8 @@
 import { CapabilityCard } from "@/components/dashboard/capability-card"
-import type { CapabilityStatus, JobRecord } from "@/api/types"
+import type { CapabilityStatus } from "@/api/types"
 
-export function DashboardPage({ capabilities, jobs, onRefresh }: {
+export function DashboardPage({ capabilities, onRefresh }: {
   capabilities: CapabilityStatus[]
-  jobs: JobRecord[]
   onRefresh: () => void
 }) {
   return (
@@ -18,7 +17,7 @@ export function DashboardPage({ capabilities, jobs, onRefresh }: {
       ) : (
         <div className="flex flex-col gap-4 md:flex-row md:flex-wrap md:gap-x-5 md:gap-y-5">
           {capabilities.map(cap => (
-            <CapabilityCard key={cap.slug} cap={cap} jobs={jobs} onRefresh={onRefresh} />
+            <CapabilityCard key={cap.slug} cap={cap} onRefresh={onRefresh} />
           ))}
         </div>
       )}

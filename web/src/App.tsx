@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { HashRouter, Routes, Route } from "react-router-dom"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { AppShell } from "@/components/layout/app-shell"
@@ -13,6 +13,7 @@ import { useClaude } from "@/hooks/use-claude"
 import { useJobs } from "@/hooks/use-jobs"
 import { useLogs } from "@/hooks/use-logs"
 import { useSettings } from "@/hooks/use-settings"
+import { WsEventContext, type WsEventContextValue } from "@/contexts/ws-events"
 import { createWebSocket } from "@/api/websocket"
 import { isRemoteAccess, getToken, setToken } from "@/api/auth"
 import type { WsEvent } from "@/api/types"
@@ -37,6 +38,17 @@ export default function App() {
   const logs = useLogs()
   const settings = useSettings()
 
+  const wsHandlers = useRef(new Set<(e: WsEvent) => void>())
+  const wsContext = useMemo<WsEventContextValue>(() => ({
+    subscribe: (handler) => {
+      wsHandlers.current.add(handler)
+      return () => { wsHandlers.current.delete(handler) }
+    },
+    dispatch: (event) => {
+      wsHandlers.current.forEach(h => h(event))
+    },
+  }), [])
+
   const capsRef = useRef(caps)
   const claudeRef = useRef(claude)
   const jobsRef = useRef(jobs)
@@ -51,6 +63,7 @@ export default function App() {
   useEffect(() => {
     if (!authed) return
     const ws = createWebSocket((event: WsEvent) => {
+      wsContext.dispatch(event)
       capsRef.current.handleWsEvent(event)
       claudeRef.current.handleWsEvent(event)
       jobsRef.current.handleWsEvent(event)
@@ -75,11 +88,12 @@ export default function App() {
   }
 
   return (
+    <WsEventContext.Provider value={wsContext}>
     <HashRouter>
       <TooltipProvider>
         <Routes>
           <Route element={<AppShell />}>
-            <Route index element={<DashboardPage capabilities={caps.capabilities} jobs={jobs.jobs} onRefresh={caps.refresh} />} />
+            <Route index element={<DashboardPage capabilities={caps.capabilities} onRefresh={caps.refresh} />} />
             <Route path="claude" element={
               <ClaudePage
                 sessions={claude.sessions}
@@ -125,5 +139,6 @@ export default function App() {
         </Routes>
       </TooltipProvider>
     </HashRouter>
+    </WsEventContext.Provider>
   )
 }

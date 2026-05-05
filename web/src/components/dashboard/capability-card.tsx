@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom"
 import { api } from "@/api/client"
 import { MiniFrieze } from "./mini-frieze"
 import { QueueJobDialog } from "@/components/jobs/queue-job-dialog"
-import type { CapabilityStatus, JobRecord } from "@/api/types"
+import { useCapabilityJobs } from "@/hooks/use-capability-jobs"
+import type { CapabilityStatus } from "@/api/types"
 
 const capabilityIcons: Record<string, string> = {
   tts: "fa-solid fa-volume-high",
@@ -25,16 +26,15 @@ function statusIconColor(status: string, sleeping: boolean): string {
   }
 }
 
-export function CapabilityCard({ cap, jobs, onRefresh }: {
+export function CapabilityCard({ cap, onRefresh }: {
   cap: CapabilityStatus
-  jobs: JobRecord[]
   onRefresh: () => void
 }) {
   const [queueOpen, setQueueOpen] = useState(false)
   const navigate = useNavigate()
   const isRunning = cap.status === "Running"
   const iconColor = statusIconColor(cap.status, cap.sleeping)
-  const capJobs = jobs.filter(j => j.capabilitySlug === cap.slug)
+  const capJobs = useCapabilityJobs(cap.slug)
 
   async function togglePower() {
     try {
