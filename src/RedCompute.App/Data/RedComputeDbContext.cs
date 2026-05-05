@@ -13,6 +13,7 @@ public class RedComputeDbContext : DbContext
     public DbSet<JobRecord> Jobs => Set<JobRecord>();
     public DbSet<LogEntry> LogEntries => Set<LogEntry>();
     public DbSet<ClaudeMessageRecord> ClaudeMessages => Set<ClaudeMessageRecord>();
+    public DbSet<ClaudeSessionRecord> ClaudeSessions => Set<ClaudeSessionRecord>();
 
     public RedComputeDbContext()
     {
@@ -70,6 +71,23 @@ public class RedComputeDbContext : DbContext
             CREATE INDEX IF NOT EXISTS IX_ClaudeMessages_Timestamp ON ClaudeMessages(Timestamp);
             """;
         cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS ClaudeSessions (
+                Id TEXT PRIMARY KEY,
+                ProjectName TEXT NOT NULL,
+                ProjectPath TEXT NOT NULL,
+                Status TEXT NOT NULL,
+                StartedAt TEXT NOT NULL,
+                Model TEXT NULL,
+                ClaudeSessionId TEXT NULL,
+                Title TEXT NULL,
+                MessageCount INTEGER NOT NULL DEFAULT 0,
+                CostUsd REAL NULL,
+                JobId TEXT NULL
+            );
+            """;
+        cmd.ExecuteNonQuery();
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -117,6 +135,14 @@ public class RedComputeDbContext : DbContext
             entity.HasIndex(m => m.SessionId);
             entity.HasIndex(m => m.Timestamp);
             entity.Property(m => m.Timestamp).HasConversion(
+                v => v.ToString("O"),
+                v => DateTimeOffset.Parse(v));
+        });
+
+        modelBuilder.Entity<ClaudeSessionRecord>(entity =>
+        {
+            entity.HasKey(s => s.Id);
+            entity.Property(s => s.StartedAt).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));
         });

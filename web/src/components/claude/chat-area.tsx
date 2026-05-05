@@ -9,9 +9,10 @@ interface Props {
   messages: MessageBlockType[]
   isStreaming: boolean
   onSend: (content: string) => void
+  onStop: () => void
 }
 
-export function ChatArea({ session, messages, isStreaming, onSend }: Props) {
+export function ChatArea({ session, messages, isStreaming, onSend, onStop }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScroll = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -51,32 +52,45 @@ export function ChatArea({ session, messages, isStreaming, onSend }: Props) {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 relative">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border-subtle shrink-0">
-        <span className="font-medium text-sm">{session.projectName}</span>
-        <span className="text-xs text-text-muted">{session.model || ""}</span>
-        <span className="text-xs text-text-muted ml-auto">
-          {session.messageCount} msg{session.messageCount !== 1 ? "s" : ""}
-          {session.costUsd != null && ` · $${session.costUsd.toFixed(3)}`}
-        </span>
+      {/* Session header */}
+      <div className="border-b border-border-subtle shrink-0">
+        <div className="max-w-3xl mx-auto flex items-center gap-3 px-4 py-2.5">
+          <span className="font-medium text-sm">{session.title || session.projectName}</span>
+          {session.title && <span className="text-xs text-text-muted">{session.projectName}</span>}
+          <span className="text-xs text-text-muted ml-auto">
+            {session.messageCount} msg{session.messageCount !== 1 ? "s" : ""}
+            {session.costUsd != null && ` · $${session.costUsd.toFixed(3)}`}
+          </span>
+          {canSend && (
+            <button
+              onClick={onStop}
+              className="text-text-muted hover:text-red-400 transition-colors"
+              title="Stop session"
+            >
+              <i className="fa-solid fa-stop text-sm" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-3">
-        {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full text-text-muted text-sm">
-            Send a message to get started
-          </div>
-        )}
-        {messages.map(block => (
-          <MessageBlock key={block.id} block={block} />
-        ))}
-        {isStreaming && (
-          <div className="flex items-center gap-2 text-text-muted text-sm py-1">
-            <i className="fa-solid fa-circle-notch fa-spin text-xs" />
-            <span>Claude is responding...</span>
-          </div>
-        )}
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto py-3">
+        <div className="max-w-3xl mx-auto px-4">
+          {messages.length === 0 && (
+            <div className="flex items-center justify-center h-full text-text-muted text-sm">
+              Send a message to get started
+            </div>
+          )}
+          {messages.map(block => (
+            <MessageBlock key={block.id} block={block} />
+          ))}
+          {isStreaming && (
+            <div className="flex items-center gap-2 text-text-muted text-sm py-1">
+              <i className="fa-solid fa-circle-notch fa-spin text-xs" />
+              <span>Claude is responding...</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Scroll to bottom */}

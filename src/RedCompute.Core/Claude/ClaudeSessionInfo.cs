@@ -11,6 +11,7 @@ public class ClaudeSessionInfo
     public DateTimeOffset StartedAt { get; init; }
     public string? Model { get; set; }
     public string? ClaudeSessionId { get; set; }
+    public string? Title { get; set; }
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
     public Guid? JobId { get; set; }

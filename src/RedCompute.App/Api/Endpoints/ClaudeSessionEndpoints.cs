@@ -82,6 +82,23 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(new { sent = true });
         });
 
+        app.MapPost("/claude/sessions/{id}/interrupt", (string id) =>
+        {
+            var result = claude.InterruptSession(id);
+            return result switch
+            {
+                ClaudeSessionService.InterruptResult.Interrupted =>
+                    Results.Ok(new { interrupted = true }),
+                ClaudeSessionService.InterruptResult.NotActive =>
+                    Results.Ok(new { interrupted = false, reason = "not_active" }),
+                ClaudeSessionService.InterruptResult.NotFound =>
+                    Results.NotFound(new { error = "not_found", message = "Session not found" }),
+                _ =>
+                    Results.Json(new { error = "interrupt_failed", message = "Failed to send interrupt" },
+                        statusCode: 500),
+            };
+        });
+
         app.MapPost("/claude/sessions/{id}/stop", async (string id) =>
         {
             await claude.StopSession(id);

@@ -87,6 +87,7 @@ export default function App() {
                 onSelectSession={claude.setActiveSessionId}
                 onSendMessage={claude.sendMessage}
                 onStopSession={claude.stopSession}
+                onDismissSession={claude.dismissSession}
               />
             } />
             <Route path="jobs" element={<JobsPage jobs={jobs.jobs} selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} />} />

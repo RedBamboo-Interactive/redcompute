@@ -36,7 +36,7 @@ export function MessageInput({ onSend, disabled, isStreaming }: Props) {
 
   return (
     <div className="border-t border-border-subtle p-3">
-      <div className="flex gap-2 items-end">
+      <div className="max-w-3xl mx-auto flex gap-2 items-end">
         <textarea
           ref={textareaRef}
           value={value}

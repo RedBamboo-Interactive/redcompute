@@ -123,6 +123,7 @@ export interface ClaudeSessionInfo {
   startedAt: string
   model?: string
   claudeSessionId?: string
+  title?: string
   messageCount: number
   costUsd?: number
 }

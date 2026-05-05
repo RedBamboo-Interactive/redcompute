@@ -92,6 +92,11 @@ export function useClaude() {
     try {
       const data = await api.get<ClaudeSessionInfo[]>("/claude/sessions")
       setSessions(data)
+      const activeStreams: Record<string, boolean> = {}
+      for (const s of data) {
+        if (s.status === "Active") activeStreams[s.id] = true
+      }
+      setStreaming(prev => ({ ...prev, ...activeStreams }))
     } catch { /* offline */ }
   }, [])
 
@@ -140,8 +145,21 @@ export function useClaude() {
     await api.post(`/claude/sessions/${sessionId}/message`, { content })
   }, [])
 
+  const interruptSession = useCallback(async (sessionId: string) => {
+    try {
+      await api.post(`/claude/sessions/${sessionId}/interrupt`)
+    } catch {
+      // If interrupt fails, user can still use stop
+    }
+  }, [])
+
   const stopSession = useCallback(async (sessionId: string) => {
     await api.post(`/claude/sessions/${sessionId}/stop`)
+  }, [])
+
+  const dismissSession = useCallback((sessionId: string) => {
+    setSessions(prev => prev.filter(s => s.id !== sessionId))
+    setActiveSessionId(prev => prev === sessionId ? null : prev)
   }, [])
 
   const handleWsEvent = useCallback((event: WsEvent) => {
@@ -161,7 +179,7 @@ export function useClaude() {
     } else if (event.type === "claude.stream") {
       const { sessionId, event: evt } = event.data as { sessionId: string; event: ClaudeStreamEvent }
 
-      if (evt.type === "status" && evt.content === "idle") {
+      if (evt.type === "status" && (evt.content === "idle" || evt.content === "interrupted")) {
         setStreaming(prev => ({ ...prev, [sessionId]: false }))
         return
       }
@@ -222,7 +240,9 @@ export function useClaude() {
     loadProjects,
     startSession,
     sendMessage,
+    interruptSession,
     stopSession,
+    dismissSession,
     handleWsEvent,
   }
 }

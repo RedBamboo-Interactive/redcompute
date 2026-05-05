@@ -27,6 +27,29 @@ public class ClaudeSessionService
         _config = config;
         _jobTracker = jobTracker;
         _log = log;
+        RecoverSessions();
+    }
+
+    private void RecoverSessions()
+    {
+        try
+        {
+            using var db = new RedComputeDbContext();
+            var active = db.ClaudeSessions
+                .Where(s => s.Status == "Active" || s.Status == "Idle" || s.Status == "Starting")
+                .ToList();
+            foreach (var s in active)
+            {
+                s.Status = "Stopped";
+                _log($"[Claude] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
+            }
+            if (active.Count > 0)
+                db.SaveChanges();
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to recover sessions: {ex.Message}", null);
+        }
     }
 
     public List<ProjectInfo> ListProjects()
@@ -127,6 +150,8 @@ public class ClaudeSessionService
         _jobTracker.MarkRunning(job.Id);
         info.JobId = job.Id;
 
+        PersistSessionRecord(info);
+
         _log($"[Claude] Session {id} started for {info.ProjectName} (PID {process.Id}, Job {job.Id})", null);
         SessionCreated?.Invoke(info);
 
@@ -166,6 +191,40 @@ public class ClaudeSessionService
         }
     }
 
+    public enum InterruptResult { Interrupted, NotActive, NotFound, Error }
+
+    public InterruptResult InterruptSession(string sessionId)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session))
+            return InterruptResult.NotFound;
+
+        if (session.Info.Status != SessionStatus.Active)
+            return InterruptResult.NotActive;
+
+        try
+        {
+            var msg = new { type = "abort" };
+            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
+            session.Process.StandardInput.Flush();
+            session.InterruptPending = true;
+
+            _log($"[Claude] Interrupt sent for session {sessionId}", null);
+
+            StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent
+            {
+                Type = "status",
+                Content = "interrupting"
+            });
+
+            return InterruptResult.Interrupted;
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to send interrupt to {sessionId}: {ex.Message}", null);
+            return InterruptResult.Error;
+        }
+    }
+
     public async Task StopSession(string sessionId)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
@@ -188,6 +247,7 @@ public class ClaudeSessionService
         session.Cts.Cancel();
         session.Info.Status = SessionStatus.Stopped;
         _sessions.TryRemove(sessionId, out _);
+        PersistSessionRecord(session.Info);
 
         if (session.Info.JobId.HasValue)
             _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}");
@@ -203,6 +263,7 @@ public class ClaudeSessionService
         try { session.Process.Kill(entireProcessTree: true); } catch { }
         session.Cts.Cancel();
         session.Info.Status = SessionStatus.Stopped;
+        PersistSessionRecord(session.Info);
 
         if (session.Info.JobId.HasValue)
             _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}");
@@ -213,15 +274,46 @@ public class ClaudeSessionService
 
     public List<ClaudeSessionInfo> GetSessions()
     {
-        return _sessions.Values.Select(s => s.Info).ToList();
+        var live = _sessions.Values.Select(s => s.Info).ToList();
+        var liveIds = live.Select(s => s.Id).ToHashSet();
+
+        using var db = new RedComputeDbContext();
+        var dbSessions = db.ClaudeSessions
+            .Where(s => !liveIds.Contains(s.Id))
+            .OrderByDescending(s => s.StartedAt)
+            .Take(20)
+            .ToList()
+            .Select(ToSessionInfo)
+            .ToList();
+
+        return [.. live, .. dbSessions];
     }
 
     public (ClaudeSessionInfo? Info, List<ClaudeMessageRecord> History) GetSession(string sessionId)
     {
-        if (!_sessions.TryGetValue(sessionId, out var session))
-            return (null, []);
-        return (session.Info, GetHistory(sessionId));
+        if (_sessions.TryGetValue(sessionId, out var session))
+            return (session.Info, GetHistory(sessionId));
+
+        using var db = new RedComputeDbContext();
+        var record = db.ClaudeSessions.Find(sessionId);
+        if (record == null) return (null, []);
+        return (ToSessionInfo(record), GetHistory(sessionId));
     }
+
+    private static ClaudeSessionInfo ToSessionInfo(ClaudeSessionRecord r) => new()
+    {
+        Id = r.Id,
+        ProjectName = r.ProjectName,
+        ProjectPath = r.ProjectPath,
+        Status = Enum.TryParse<SessionStatus>(r.Status, out var s) ? s : SessionStatus.Stopped,
+        StartedAt = r.StartedAt,
+        Model = r.Model,
+        ClaudeSessionId = r.ClaudeSessionId,
+        Title = r.Title,
+        MessageCount = r.MessageCount,
+        CostUsd = r.CostUsd,
+        JobId = r.JobId
+    };
 
     public List<ClaudeMessageRecord> GetHistory(string sessionId, int limit = 500)
     {
@@ -369,6 +461,7 @@ public class ClaudeSessionService
                 session.Info.Model = model.GetString();
 
             session.Info.Status = SessionStatus.Active;
+            PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
             _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model})", null);
         }
@@ -431,11 +524,17 @@ public class ClaudeSessionService
 
         if (subtype == "success")
         {
+            session.InterruptPending = false;
             session.Info.Status = SessionStatus.Idle;
-            SessionUpdated?.Invoke(session.Info);
 
             if (root.TryGetProperty("total_cost_usd", out var cost))
                 session.Info.CostUsd = (session.Info.CostUsd ?? 0) + cost.GetDouble();
+
+            if (root.TryGetProperty("session_title", out var title))
+                session.Info.Title = title.GetString();
+
+            PersistSessionRecord(session.Info);
+            SessionUpdated?.Invoke(session.Info);
 
             var resultText = root.TryGetProperty("result", out var r) ? r.GetString() : null;
             return new ClaudeStreamEvent { Type = "status", Content = "idle" };
@@ -444,6 +543,20 @@ public class ClaudeSessionService
         if (subtype == "error")
         {
             var error = root.TryGetProperty("error", out var e) ? e.GetString() : "unknown error";
+
+            if (session.InterruptPending)
+            {
+                session.InterruptPending = false;
+                session.Info.Status = SessionStatus.Idle;
+
+                if (root.TryGetProperty("total_cost_usd", out var intCost))
+                    session.Info.CostUsd = (session.Info.CostUsd ?? 0) + intCost.GetDouble();
+
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                return new ClaudeStreamEvent { Type = "status", Content = "interrupted" };
+            }
+
             return new ClaudeStreamEvent { Type = "error", Content = error };
         }
 
@@ -469,6 +582,7 @@ public class ClaudeSessionService
         if (session.Info.Status != SessionStatus.Stopped)
         {
             session.Info.Status = SessionStatus.Error;
+            PersistSessionRecord(session.Info);
             _log($"[Claude] Session {sessionId} process exited unexpectedly (code {exitCode})", null);
 
             if (session.Info.JobId.HasValue)
@@ -492,6 +606,47 @@ public class ClaudeSessionService
     {
         if (session.MessageHistory.Count > 500)
             session.MessageHistory.RemoveRange(0, session.MessageHistory.Count - 400);
+    }
+
+    private void PersistSessionRecord(ClaudeSessionInfo info)
+    {
+        try
+        {
+            using var db = new RedComputeDbContext();
+            var existing = db.ClaudeSessions.Find(info.Id);
+            if (existing != null)
+            {
+                existing.Status = info.Status.ToString();
+                existing.Model = info.Model;
+                existing.ClaudeSessionId = info.ClaudeSessionId;
+                existing.Title = info.Title;
+                existing.MessageCount = info.MessageCount;
+                existing.CostUsd = info.CostUsd;
+                existing.JobId = info.JobId;
+            }
+            else
+            {
+                db.ClaudeSessions.Add(new ClaudeSessionRecord
+                {
+                    Id = info.Id,
+                    ProjectName = info.ProjectName,
+                    ProjectPath = info.ProjectPath,
+                    Status = info.Status.ToString(),
+                    StartedAt = info.StartedAt,
+                    Model = info.Model,
+                    ClaudeSessionId = info.ClaudeSessionId,
+                    Title = info.Title,
+                    MessageCount = info.MessageCount,
+                    CostUsd = info.CostUsd,
+                    JobId = info.JobId
+                });
+            }
+            db.SaveChanges();
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to persist session record: {ex.Message}", null);
+        }
     }
 
     private void PersistMessage(string sessionId, string role, string eventType, string? content,
@@ -526,6 +681,7 @@ public class ClaudeSessionService
         public Process Process { get; }
         public CancellationTokenSource Cts { get; }
         public List<object> MessageHistory { get; } = new();
+        public bool InterruptPending { get; set; }
 
         public ManagedSession(ClaudeSessionInfo info, Process process, CancellationTokenSource cts)
         {

@@ -15,6 +15,7 @@ interface Props {
   onSelectSession: (id: string) => void
   onSendMessage: (sessionId: string, content: string) => Promise<void>
   onStopSession: (sessionId: string) => Promise<void>
+  onDismissSession: (sessionId: string) => void
 }
 
 export function ClaudePage({
@@ -27,6 +28,7 @@ export function ClaudePage({
   onSelectSession,
   onSendMessage,
   onStopSession,
+  onDismissSession,
 }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [mobileTab, setMobileTab] = useState<"sessions" | "chat">("chat")
@@ -35,6 +37,11 @@ export function ClaudePage({
     if (!activeSessionId) return
     onSendMessage(activeSessionId, content)
   }, [activeSessionId, onSendMessage])
+
+  const handleStop = useCallback(() => {
+    if (!activeSessionId) return
+    onStopSession(activeSessionId)
+  }, [activeSessionId, onStopSession])
 
   return (
     <div className="flex flex-col h-full">
@@ -60,14 +67,20 @@ export function ClaudePage({
 
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
-        <div className={`w-60 shrink-0 ${mobileTab === "sessions" ? "block" : "hidden"} md:block`}>
-          <SessionSidebar
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSelect={(id) => { onSelectSession(id); setMobileTab("chat") }}
-            onNewSession={() => setDialogOpen(true)}
-            onStop={onStopSession}
-          />
+        <div className={`w-60 shrink-0 flex flex-col border-r border-border-subtle ${mobileTab === "sessions" ? "block" : "hidden"} md:flex`}>
+          <div className="shrink-0 px-4 pt-4 pb-2">
+            <h1 className="text-[20px] font-semibold text-white opacity-95">AI Sessions</h1>
+          </div>
+          <div className="flex-1 min-h-0">
+            <SessionSidebar
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onSelect={(id) => { onSelectSession(id); setMobileTab("chat") }}
+              onNewSession={() => setDialogOpen(true)}
+              onStop={onStopSession}
+              onDismiss={onDismissSession}
+            />
+          </div>
         </div>
 
         {/* Chat */}
@@ -77,6 +90,7 @@ export function ClaudePage({
             messages={activeMessages}
             isStreaming={isStreaming}
             onSend={handleSend}
+            onStop={handleStop}
           />
         </div>
       </div>
