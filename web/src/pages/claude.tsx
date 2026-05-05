@@ -101,7 +101,6 @@ export function ClaudePage({
               activeSessionId={activeSessionId}
               onSelect={(id) => { onSelectSession(id); setMobileTab(1) }}
               onStop={onStopSession}
-              onResume={onResumeSession}
               onDismiss={onDismissSession}
             />
           </div>
@@ -136,7 +135,6 @@ export function ClaudePage({
                 activeSessionId={activeSessionId}
                 onSelect={(id) => { onSelectSession(id); setMobileTab(1) }}
                 onStop={onStopSession}
-                onResume={onResumeSession}
                 onDismiss={onDismissSession}
               />
             </div>
