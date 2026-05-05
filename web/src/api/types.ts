@@ -147,6 +147,11 @@ export interface ClaudeStreamEvent {
   messageId?: string
 }
 
+export interface ImageAttachment {
+  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+  base64: string
+}
+
 export interface ProjectInfo {
   name: string
   path: string

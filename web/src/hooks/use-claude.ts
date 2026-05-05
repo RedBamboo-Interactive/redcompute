@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react"
 import { api } from "@/api/client"
-import type { ClaudeSessionInfo, ClaudeStreamEvent, PermissionMode, ProjectInfo, WsEvent } from "@/api/types"
+import type { ClaudeSessionInfo, ClaudeStreamEvent, PermissionMode, ProjectInfo, WsEvent, ImageAttachment } from "@/api/types"
 
 export interface MessageBlock {
   id: string
@@ -14,6 +14,7 @@ export interface MessagePart {
   content: string
   toolName?: string
   toolInput?: string
+  images?: ImageAttachment[]
 }
 
 interface PersistedMessage {
@@ -153,11 +154,11 @@ export function useClaude() {
     return session
   }, [])
 
-  const sendMessage = useCallback(async (sessionId: string, content: string) => {
+  const sendMessage = useCallback(async (sessionId: string, content: string, images?: ImageAttachment[]) => {
     const userBlock: MessageBlock = {
       id: `user-${Date.now()}`,
       role: "user",
-      parts: [{ type: "text", content }],
+      parts: [{ type: "text", content, images }],
       timestamp: new Date().toISOString(),
     }
     setMessages(prev => ({
@@ -165,7 +166,7 @@ export function useClaude() {
       [sessionId]: [...(prev[sessionId] || []), userBlock],
     }))
     setStreaming(prev => ({ ...prev, [sessionId]: true }))
-    await api.post(`/claude/sessions/${sessionId}/message`, { content })
+    await api.post(`/claude/sessions/${sessionId}/message`, { content, images })
   }, [])
 
   const interruptSession = useCallback(async (sessionId: string) => {

@@ -275,7 +275,7 @@ public class ClaudeSessionService
         return info;
     }
 
-    public bool SendMessage(string sessionId, string content)
+    public bool SendMessage(string sessionId, string content, ImageAttachment[]? images = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -285,10 +285,25 @@ public class ClaudeSessionService
 
         try
         {
+            object contentPayload;
+            if (images != null && images.Length > 0)
+            {
+                var blocks = new List<object>();
+                if (!string.IsNullOrWhiteSpace(content))
+                    blocks.Add(new { type = "text", text = content });
+                foreach (var img in images)
+                    blocks.Add(new { type = "image", source = new { type = "base64", media_type = img.MediaType, data = img.Base64 } });
+                contentPayload = blocks;
+            }
+            else
+            {
+                contentPayload = content;
+            }
+
             var msg = new
             {
                 type = "user",
-                message = new { role = "user", content },
+                message = new { role = "user", content = contentPayload },
                 parent_tool_use_id = (string?)null
             };
             session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
@@ -1034,3 +1049,5 @@ public class ClaudeSessionService
         }
     }
 }
+
+public record ImageAttachment(string MediaType, string Base64);

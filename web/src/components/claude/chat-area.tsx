@@ -2,14 +2,14 @@ import { useEffect, useRef, useState, useCallback } from "react"
 import type { MessageBlock as MessageBlockType } from "@/hooks/use-claude"
 import { MessageBlock } from "./message-block"
 import { MessageInput } from "./message-input"
-import type { ClaudeSessionInfo } from "@/api/types"
+import type { ClaudeSessionInfo, ImageAttachment } from "@/api/types"
 import { ContextIndicator } from "./context-indicator"
 
 interface Props {
   session: ClaudeSessionInfo | null
   messages: MessageBlockType[]
   isStreaming: boolean
-  onSend: (content: string) => void
+  onSend: (content: string, images?: ImageAttachment[]) => void
   onStop: () => void
   onInterrupt: () => void
   onResume?: () => void

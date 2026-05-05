@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react"
-import type { ClaudeSessionInfo, CapabilityStatus, PermissionMode } from "@/api/types"
+import type { ClaudeSessionInfo, CapabilityStatus, PermissionMode, ImageAttachment } from "@/api/types"
 import type { MessageBlock } from "@/hooks/use-claude"
 import { SessionSidebar } from "@/components/claude/session-sidebar"
 import { ChatArea } from "@/components/claude/chat-area"
@@ -14,7 +14,7 @@ interface Props {
   isStreaming: boolean
   capabilities: CapabilityStatus[]
   onSelectSession: (id: string) => void
-  onSendMessage: (sessionId: string, content: string) => Promise<void>
+  onSendMessage: (sessionId: string, content: string, images?: ImageAttachment[]) => Promise<void>
   onInterruptSession: (sessionId: string) => Promise<void>
   onStopSession: (sessionId: string) => Promise<void>
   onResumeSession: (sessionId: string) => Promise<unknown>
@@ -42,9 +42,9 @@ export function ClaudePage({
   const [dialogOpen, setDialogOpen] = useState(false)
   const [mobileTab, setMobileTab] = useState(1)
 
-  const handleSend = useCallback((content: string) => {
+  const handleSend = useCallback((content: string, images?: ImageAttachment[]) => {
     if (!activeSessionId) return
-    onSendMessage(activeSessionId, content)
+    onSendMessage(activeSessionId, content, images)
   }, [activeSessionId, onSendMessage])
 
   const handleInterrupt = useCallback(() => {

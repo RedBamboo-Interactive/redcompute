@@ -80,10 +80,10 @@ public static class ClaudeSessionEndpoints
 
         app.MapPost("/claude/sessions/{id}/message", (string id, SendMessageRequest req) =>
         {
-            if (string.IsNullOrWhiteSpace(req.Content))
-                return Results.UnprocessableEntity(new { error = "validation", message = "content is required" });
+            if (string.IsNullOrWhiteSpace(req.Content) && (req.Images == null || req.Images.Length == 0))
+                return Results.UnprocessableEntity(new { error = "validation", message = "content or images required" });
 
-            var sent = claude.SendMessage(id, req.Content);
+            var sent = claude.SendMessage(id, req.Content ?? "", req.Images);
             if (!sent)
                 return Results.NotFound(new { error = "send_failed", message = "Session not found or not active" });
 
@@ -157,7 +157,7 @@ public static class ClaudeSessionEndpoints
 
     private record AiSessionGenerateRequest(string? Project, string? Prompt);
     private record StartSessionRequest(string? ProjectPath);
-    private record SendMessageRequest(string? Content);
+    private record SendMessageRequest(string? Content, ImageAttachment[]? Images);
     private record SetPermissionModeRequest(string? Mode);
     private record UpdateConfigRequest(string? Model, string? Effort);
 }
