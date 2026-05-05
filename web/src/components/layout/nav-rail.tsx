@@ -13,7 +13,7 @@ export function NavRail() {
   const { canInstall, install } = useInstallPrompt()
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 flex flex-row items-center justify-around w-full h-14 bg-surface-deep border-t border-border-subtle px-2 gap-1 md:static md:flex-col md:justify-start md:w-14 md:h-auto md:border-t-0 md:border-r md:py-3 md:px-0 md:shrink-0">
+    <nav className="shrink-0 flex flex-row items-center justify-around w-full h-14 bg-surface-deep border-t border-border-subtle px-2 pb-[env(safe-area-inset-bottom)] gap-1 md:order-first md:flex-col md:justify-start md:w-14 md:h-auto md:border-t-0 md:border-r md:py-3 md:px-0 md:pb-3">
       {navItems.map(({ to, icon, label }) => (
         <NavLink
           key={to}

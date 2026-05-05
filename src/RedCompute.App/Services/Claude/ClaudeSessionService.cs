@@ -530,9 +530,7 @@ public class ClaudeSessionService
             if (root.TryGetProperty("total_cost_usd", out var cost))
                 session.Info.CostUsd = (session.Info.CostUsd ?? 0) + cost.GetDouble();
 
-            if (root.TryGetProperty("session_title", out var title))
-                session.Info.Title = title.GetString();
-
+            SyncTitleFromClaudeSession(session);
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
 
@@ -589,6 +587,31 @@ public class ClaudeSessionService
                 _jobTracker.MarkFailed(session.Info.JobId.Value, $"Process exited with code {exitCode}");
 
             SessionEnded?.Invoke(sessionId, $"process_exited:{exitCode}");
+        }
+    }
+
+    private void SyncTitleFromClaudeSession(ManagedSession session)
+    {
+        try
+        {
+            var pid = session.Process.Id;
+            var claudeDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "sessions");
+            var sessionFile = Path.Combine(claudeDir, $"{pid}.json");
+
+            if (!File.Exists(sessionFile)) return;
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(sessionFile));
+            if (doc.RootElement.TryGetProperty("name", out var name))
+            {
+                var title = name.GetString();
+                if (!string.IsNullOrEmpty(title))
+                    session.Info.Title = title;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to read session title for {session.Info.Id}: {ex.Message}", null);
         }
     }
 
