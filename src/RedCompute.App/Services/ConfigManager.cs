@@ -51,6 +51,8 @@ public class ConfigManager
         File.WriteAllText(ConfigPath, json);
     }
 
+    private static readonly HashSet<string> RemovedCapabilities = ["ai-prompt"];
+
     private void MergeNewCapabilities()
     {
         var defaults = CreateDefault();
@@ -62,6 +64,11 @@ public class ConfigManager
                 Config.Capabilities[slug] = capConfig;
                 dirty = true;
             }
+        }
+        foreach (var slug in RemovedCapabilities)
+        {
+            if (Config.Capabilities.Remove(slug))
+                dirty = true;
         }
         if (dirty) Save();
     }
@@ -125,22 +132,6 @@ public class ConfigManager
                             {
                                 ["BaseUrl"] = "https://api.sunoapi.org",
                                 ["Model"] = "V4_5"
-                            }
-                        }
-                    }
-                },
-                ["ai-prompt"] = new()
-                {
-                    Enabled = true,
-                    ActiveProvider = "anthropic",
-                    Providers = new Dictionary<string, ProviderConfig>
-                    {
-                        ["anthropic"] = new()
-                        {
-                            Type = "Anthropic",
-                            Extra = new Dictionary<string, object?>
-                            {
-                                ["DefaultModel"] = "haiku"
                             }
                         }
                     }

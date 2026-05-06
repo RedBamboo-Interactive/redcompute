@@ -92,10 +92,9 @@ public class RelayServer
         ImageGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         SttEndpoints.Map(_app, _registry, _jobTracker, _log);
-        AiPromptEndpoints.Map(_app, _registry, _jobTracker, _log);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
         WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService);
-        ClaudeSessionEndpoints.Map(_app, _claudeService);
+        ClaudeSessionEndpoints.Map(_app, _claudeService, _jobTracker, _log);
         TunnelEndpoints.Map(_app, _tunnelService);
         SettingsEndpoints.Map(_app, _configManager, _tunnelService, _registry);
 

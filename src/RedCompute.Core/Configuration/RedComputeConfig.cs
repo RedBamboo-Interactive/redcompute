@@ -18,6 +18,7 @@ public class ClaudeConfig
     public string? ClaudePath { get; set; }
     public int MaxSessions { get; set; } = 5;
     public string? Model { get; set; }
+    public string DefaultOneshotModel { get; set; } = "haiku";
 }
 
 public class TunnelConfig

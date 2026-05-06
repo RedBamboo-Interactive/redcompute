@@ -280,24 +280,43 @@ public static class DiscoverEndpoints
                 {
                     Method = "POST",
                     Path = "/ai-session/generate",
-                    Description = "Start a new AI coding session in a project directory with an optional initial prompt.",
+                    Description = "Unified AI endpoint. mode=session (default): start a coding session in a project. mode=oneshot: fast, stateless LLM inference for summarization, classification, etc.",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
+                        ["mode"] = new()
+                        {
+                            Type = "string",
+                            Required = false,
+                            Default = "session",
+                            Enum = ["session", "oneshot"],
+                            Description = "'session' starts a persistent coding session; 'oneshot' runs a single stateless prompt"
+                        },
                         ["project"] = new()
                         {
                             Type = "string",
-                            Required = true,
-                            Description = "Project name to start the session in",
+                            Required = false,
+                            Description = "(session mode) Project name to start the session in",
                             Enum = _claudeService?.ListProjects().Select(p => p.Name).ToList()
                         },
                         ["prompt"] = new()
                         {
                             Type = "string",
                             Required = false,
-                            Description = "Initial message to send after session starts"
-                        }
+                            Description = "(session mode) Initial message to send after session starts"
+                        },
+                        ["model"] = new() { Type = "string", Required = false, Default = "haiku", Description = "(oneshot mode) Model alias. GET /ai-session/models for options." },
+                        ["system"] = new() { Type = "string", Required = false, Description = "(oneshot mode) System prompt to set behavior and context" },
+                        ["messages"] = new() { Type = "array", Required = false, Description = "(oneshot mode) Array of {role, content} message objects. Required for oneshot." },
+                        ["maxTokens"] = new() { Type = "integer", Required = false, Default = 1024, Min = 1, Max = 8192, Description = "(oneshot mode) Maximum tokens to generate" }
                     },
                     Returns = new ReturnSchema { ContentType = "application/json", Streaming = true }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/ai-session/models",
+                    Description = "List available LLM models with their default and speed characteristics (for oneshot mode)",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
                 },
                 new()
                 {
@@ -388,30 +407,6 @@ public static class DiscoverEndpoints
                     Method = "DELETE",
                     Path = "/claude/sessions/{id}",
                     Description = "Force-kill a session process immediately"
-                }
-            },
-            "ai-prompt" => new List<EndpointManifest>
-            {
-                new()
-                {
-                    Method = "POST",
-                    Path = "/ai-prompt/generate",
-                    Description = "One-shot LLM prompt via the Anthropic Messages API. Fast, stateless — ideal for summarization, reformulation, classification, and other quick tasks. No persistent session or tool access.",
-                    Parameters = new Dictionary<string, ParameterSchema>
-                    {
-                        ["model"] = new() { Type = "string", Required = false, Default = "haiku", Description = "Anthropic model ID. GET /ai-prompt/models for available options." },
-                        ["system"] = new() { Type = "string", Required = false, Description = "System prompt to set behavior and context" },
-                        ["messages"] = new() { Type = "array", Required = true, Description = "Array of {role, content} message objects. role must be 'user' or 'assistant'." },
-                        ["maxTokens"] = new() { Type = "integer", Required = false, Default = 1024, Min = 1, Max = 8192, Description = "Maximum tokens to generate" }
-                    },
-                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
-                },
-                new()
-                {
-                    Method = "GET",
-                    Path = "/ai-prompt/models",
-                    Description = "List available LLM models with their default and speed characteristics",
-                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
                 }
             },
             _ => new List<EndpointManifest>()

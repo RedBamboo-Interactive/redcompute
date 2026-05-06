@@ -73,6 +73,122 @@ public class ClaudeSessionService
 
     public string? LastStartError { get; private set; }
 
+    public record OneshotResult(bool Success, string? Text, string? Model, int InputTokens, int OutputTokens, string? Error);
+
+    public async Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages, int maxTokens, CancellationToken ct)
+    {
+        var claudePath = ResolveClaudePath();
+        if (claudePath == null)
+            return new OneshotResult(false, null, null, 0, 0, "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
+
+        var resolvedModel = model ?? _config.DefaultOneshotModel;
+
+        var prompt = BuildOneshotPrompt(messages);
+        if (string.IsNullOrWhiteSpace(prompt))
+            return new OneshotResult(false, null, null, 0, 0, "messages produced empty prompt");
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = claudePath,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        startInfo.ArgumentList.Add("-p");
+        startInfo.ArgumentList.Add("--output-format");
+        startInfo.ArgumentList.Add("json");
+        startInfo.ArgumentList.Add("--model");
+        startInfo.ArgumentList.Add(resolvedModel);
+        startInfo.ArgumentList.Add("--no-session-persistence");
+        if (!string.IsNullOrEmpty(system))
+        {
+            startInfo.ArgumentList.Add("--system-prompt");
+            startInfo.ArgumentList.Add(system);
+        }
+
+        using var process = Process.Start(startInfo);
+        if (process == null)
+            return new OneshotResult(false, null, null, 0, 0, "Failed to start claude process");
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
+
+        await process.StandardInput.WriteAsync(prompt);
+        process.StandardInput.Close();
+
+        var stdout = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        var stderr = await process.StandardError.ReadToEndAsync(timeoutCts.Token);
+
+        await process.WaitForExitAsync(timeoutCts.Token);
+
+        if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
+        {
+            var errMsg = stderr.Length > 300 ? stderr[..300] : stderr;
+            _log($"[Claude] Oneshot exited {process.ExitCode}: {errMsg}", null);
+            return new OneshotResult(false, null, null, 0, 0, $"claude exited with code {process.ExitCode}: {errMsg}");
+        }
+
+        var text = stdout.Trim();
+        var inputTokens = 0;
+        var outputTokens = 0;
+        var actualModel = resolvedModel;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(stdout);
+            var root = doc.RootElement;
+
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var evt in root.EnumerateArray())
+                {
+                    var evtType = evt.TryGetProperty("type", out var t) ? t.GetString() : null;
+                    if (evtType == "result")
+                    {
+                        if (evt.TryGetProperty("result", out var r))
+                            text = r.GetString() ?? text;
+                        if (evt.TryGetProperty("usage", out var usage))
+                        {
+                            if (usage.TryGetProperty("input_tokens", out var it)) inputTokens = it.GetInt32();
+                            if (usage.TryGetProperty("output_tokens", out var ot)) outputTokens = ot.GetInt32();
+                        }
+                        if (evt.TryGetProperty("total_cost_usd", out var cost))
+                            _log($"[Claude] Oneshot cost: ${cost.GetDouble():F6}", null);
+                        break;
+                    }
+                    if (evtType == "system" && evt.TryGetProperty("model", out var m))
+                        actualModel = m.GetString() ?? resolvedModel;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Plain text output — use as-is
+        }
+
+        _log($"[Claude] Oneshot {actualModel} done ({text.Length} chars)", null);
+        return new OneshotResult(true, text, actualModel, inputTokens, outputTokens, null);
+    }
+
+    private static string BuildOneshotPrompt(JsonElement messages)
+    {
+        if (messages.ValueKind != JsonValueKind.Array) return "";
+        var sb = new StringBuilder();
+        foreach (var msg in messages.EnumerateArray())
+        {
+            var role = msg.TryGetProperty("role", out var r) ? r.GetString() : "user";
+            var content = msg.TryGetProperty("content", out var c) ? c.GetString() : "";
+            if (string.IsNullOrEmpty(content)) continue;
+            sb.AppendLine(role == "assistant" ? $"[Assistant]: {content}" : $"[User]: {content}");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
     public ClaudeSessionInfo? StartSession(string projectPath)
     {
         if (_sessions.Count >= _config.MaxSessions)

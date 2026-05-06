@@ -1,12 +1,16 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
+using RedCompute.App.Services.Jobs;
+using RedCompute.Core.Discovery;
 
 namespace RedCompute.App.Api.Endpoints;
 
 public static class ClaudeSessionEndpoints
 {
-    public static void Map(WebApplication app, ClaudeSessionService claude)
+    public static void Map(WebApplication app, ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log)
     {
         app.MapGet("/claude/projects", () =>
         {
@@ -22,32 +26,32 @@ public static class ClaudeSessionEndpoints
             return Results.File(iconPath);
         });
 
-        // Standard capability generate endpoint
-        app.MapPost("/ai-session/generate", async (AiSessionGenerateRequest req) =>
+        app.MapPost("/ai-session/generate", async (HttpContext ctx) =>
         {
-            if (string.IsNullOrWhiteSpace(req.Project))
-                return Results.UnprocessableEntity(new { error = "validation", message = "project is required" });
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Results.Json(new ErrorResponse { Error = "invalid_body", Message = "Request body must be valid JSON" }, statusCode: 400); }
 
-            // Resolve project name to full path
-            var project = claude.ListProjects().FirstOrDefault(p =>
-                p.Name.Equals(req.Project, StringComparison.OrdinalIgnoreCase));
-            if (project == null)
-                return Results.UnprocessableEntity(new { error = "validation", message = $"Project '{req.Project}' not found" });
+            var mode = body.TryGetProperty("mode", out var m) ? m.GetString() : "session";
 
-            var session = claude.StartSession(project.Path);
-            if (session == null)
-                return Results.Json(
-                    new { error = "start_failed", message = claude.LastStartError ?? "Unknown error" },
-                    statusCode: 503);
+            if (mode == "oneshot")
+                return await HandleOneshot(ctx, body, claude, jobTracker, log);
 
-            // Send initial prompt if provided
-            if (!string.IsNullOrWhiteSpace(req.Prompt))
+            return await HandleSessionGenerate(body, claude);
+        });
+
+        app.MapGet("/ai-session/models", () =>
+        {
+            return Results.Json(new
             {
-                await Task.Delay(2000); // Give the process a moment to initialize
-                claude.SendMessage(session.Id, req.Prompt);
-            }
-
-            return Results.Accepted($"/claude/sessions/{session.Id}", new { jobId = session.JobId, sessionId = session.Id });
+                models = new[]
+                {
+                    new { id = "haiku", name = "Haiku", fast = true },
+                    new { id = "sonnet", name = "Sonnet", fast = false },
+                    new { id = "opus", name = "Opus", fast = false }
+                },
+                @default = "haiku"
+            });
         });
 
         app.MapPost("/claude/sessions", (StartSessionRequest req) =>
@@ -155,7 +159,91 @@ public static class ClaudeSessionEndpoints
         });
     }
 
-    private record AiSessionGenerateRequest(string? Project, string? Prompt);
+    private static async Task<IResult> HandleOneshot(HttpContext ctx, JsonElement body, ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log)
+    {
+        if (!body.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array || messages.GetArrayLength() == 0)
+            return Results.Json(new ErrorResponse { Error = "validation_failed", Message = "messages is required and must be a non-empty array" }, statusCode: 422);
+
+        var maxTokens = 1024;
+        if (body.TryGetProperty("maxTokens", out var mt))
+        {
+            if (mt.ValueKind != JsonValueKind.Number || !mt.TryGetInt32(out var val) || val < 1 || val > 8192)
+                return Results.Json(new ErrorResponse { Error = "validation_failed", Message = "maxTokens must be an integer between 1 and 8192" }, statusCode: 422);
+            maxTokens = val;
+        }
+
+        var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
+        var system = body.TryGetProperty("system", out var sys) ? sys.GetString() : null;
+
+        var inputSummary = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens });
+        var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
+        var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
+        var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
+        var rationale = ctx.Request.Headers.TryGetValue("X-Job-Rationale", out var jr) ? jr.ToString() : null;
+
+        var job = jobTracker.CreateJob("ai-session", "Claude Code", inputSummary, callerInfo, idempotencyKey, jobName, rationale);
+        jobTracker.MarkRunning(job.Id);
+        log($"[Claude] Oneshot job {job.Id} started", job.Id);
+
+        try
+        {
+            var result = await claude.ExecuteOneshotAsync(model, system, messages, maxTokens, ctx.RequestAborted);
+
+            if (!result.Success)
+            {
+                jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
+                log($"[Claude] Oneshot job {job.Id} failed: {result.Error}", job.Id);
+                return Results.Json(new ErrorResponse { Error = "execution_failed", Message = result.Error ?? "Unknown error" }, statusCode: 502);
+            }
+
+            var resultJson = JsonSerializer.Serialize(new { text = result.Text, model = result.Model, inputTokens = result.InputTokens, outputTokens = result.OutputTokens });
+            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json");
+            log($"[Claude] Oneshot job {job.Id} completed", job.Id);
+
+            ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+            return Results.Content(resultJson, "application/json");
+        }
+        catch (TaskCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            jobTracker.MarkCancelled(job.Id);
+            return Results.Empty;
+        }
+        catch (Exception ex)
+        {
+            jobTracker.MarkFailed(job.Id, ex.Message);
+            log($"[Claude] Oneshot job {job.Id} exception: {ex.Message}", job.Id);
+            return Results.Json(new ErrorResponse { Error = "execution_failed", Message = ex.Message }, statusCode: 500);
+        }
+    }
+
+    private static async Task<IResult> HandleSessionGenerate(JsonElement body, ClaudeSessionService claude)
+    {
+        var project = body.TryGetProperty("project", out var p) ? p.GetString() : null;
+        var prompt = body.TryGetProperty("prompt", out var pr) ? pr.GetString() : null;
+
+        if (string.IsNullOrWhiteSpace(project))
+            return Results.UnprocessableEntity(new { error = "validation", message = "project is required" });
+
+        var resolved = claude.ListProjects().FirstOrDefault(proj =>
+            proj.Name.Equals(project, StringComparison.OrdinalIgnoreCase));
+        if (resolved == null)
+            return Results.UnprocessableEntity(new { error = "validation", message = $"Project '{project}' not found" });
+
+        var session = claude.StartSession(resolved.Path);
+        if (session == null)
+            return Results.Json(
+                new { error = "start_failed", message = claude.LastStartError ?? "Unknown error" },
+                statusCode: 503);
+
+        if (!string.IsNullOrWhiteSpace(prompt))
+        {
+            await Task.Delay(2000);
+            claude.SendMessage(session.Id, prompt);
+        }
+
+        return Results.Accepted($"/claude/sessions/{session.Id}", new { jobId = session.JobId, sessionId = session.Id });
+    }
+
     private record StartSessionRequest(string? ProjectPath);
     private record SendMessageRequest(string? Content, ImageAttachment[]? Images);
     private record SetPermissionModeRequest(string? Mode);

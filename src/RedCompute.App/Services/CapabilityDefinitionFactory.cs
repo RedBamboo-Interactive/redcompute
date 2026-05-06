@@ -44,12 +44,6 @@ public static class CapabilityDefinitionFactory
                 Type = CapabilityType.AiSession,
                 DisplayName = "AI Session"
             },
-            "ai-prompt" => new CapabilityDefinition
-            {
-                Slug = "ai-prompt",
-                Type = CapabilityType.AiPrompt,
-                DisplayName = "AI Prompt"
-            },
             _ => null
         };
     }
