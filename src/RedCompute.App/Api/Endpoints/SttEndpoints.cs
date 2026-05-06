@@ -356,7 +356,7 @@ public static class SttEndpoints
     {
         var content = new MultipartFormDataContent();
         var audioContent = new ByteArrayContent(audioBytes);
-        audioContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        audioContent.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
         content.Add(audioContent, "audio", filename);
         content.Add(new StringContent(language), "language");
         content.Add(new StringContent(task), "task");

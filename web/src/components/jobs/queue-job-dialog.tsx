@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -33,10 +33,31 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
   const navigate = useNavigate()
   const runningCaps = capabilities.filter(c => c.status === "Running")
   const [selectedSlug, setSelectedSlug] = useState("")
+  const [endpointPath, setEndpointPath] = useState("")
   const [params, setParams] = useState<Record<string, ParameterSchema>>({})
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [recording, setRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop()
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    setRecording(false)
+  }, [])
+
+  useEffect(() => {
+    if (!open) stopRecording()
+  }, [open, stopRecording])
 
   useEffect(() => {
     if (!open) return
@@ -44,6 +65,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
     setSubmitting(false)
     setParams({})
     setValues({})
+    setEndpointPath("")
     const initial = defaultSlug || runningCaps[0]?.slug || ""
     setSelectedSlug(initial)
   }, [open, defaultSlug, runningCaps.length])
@@ -52,11 +74,17 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
     if (!open || !selectedSlug) return
     api.get<DiscoverResponse>("/discover").then(data => {
       const cap = data.capabilities.find(c => c.slug === selectedSlug)
-      const generateEndpoint = cap?.endpoints.find(e => e.method === "POST" && e.path.endsWith("/generate"))
-      if (generateEndpoint?.parameters) {
-        setParams(generateEndpoint.parameters)
+      const primaryEndpoint = cap?.endpoints.find(e => e.method === "POST" && e.parameters && Object.keys(e.parameters).length > 0)
+      if (primaryEndpoint?.parameters) {
+        setEndpointPath(primaryEndpoint.path)
+        const visible: Record<string, ParameterSchema> = {}
+        for (const [key, schema] of Object.entries(primaryEndpoint.parameters)) {
+          if (key.endsWith("_base64") || key.endsWith("_content_type")) continue
+          visible[key] = schema
+        }
+        setParams(visible)
         const defaults: Record<string, unknown> = {}
-        for (const [key, schema] of Object.entries(generateEndpoint.parameters)) {
+        for (const [key, schema] of Object.entries(visible)) {
           if (schema.default !== undefined) defaults[key] = schema.default
         }
         setValues(defaults)
@@ -65,11 +93,24 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
   }, [open, selectedSlug])
 
   async function submit() {
-    if (!selectedSlug) return
+    if (!selectedSlug || !endpointPath) return
     setSubmitting(true)
     setError(null)
     try {
-      const result = await api.post<{ jobId?: string; sessionId?: string }>(`/${selectedSlug}/generate?async=true`, values)
+      const body: Record<string, unknown> = {}
+      for (const [key, val] of Object.entries(values)) {
+        if (val instanceof File) {
+          const buf = await val.arrayBuffer()
+          const bytes = new Uint8Array(buf)
+          let binary = ""
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+          body[key + "_base64"] = btoa(binary)
+          body[key + "_content_type"] = val.type || "audio/wav"
+        } else {
+          body[key] = val
+        }
+      }
+      const result = await api.post<{ jobId?: string; sessionId?: string }>(endpointPath + "?async=true", body)
       onOpenChange(false)
       if (selectedSlug === "ai-session") {
         navigate("/claude")
@@ -113,7 +154,70 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
                   <p className="text-[11px] text-text-muted mt-0.5 leading-relaxed">{schema.description}</p>
                 )}
               </div>
-              {schema.type === "boolean" ? (
+              {schema.type === "file" ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (recording) {
+                          stopRecording()
+                          return
+                        }
+                        try {
+                          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+                          chunksRef.current = []
+                          const mr = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm" })
+                          mediaRecorderRef.current = mr
+                          mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+                          mr.onstop = () => {
+                            stream.getTracks().forEach(t => t.stop())
+                            const blob = new Blob(chunksRef.current, { type: mr.mimeType })
+                            const file = new File([blob], "recording.webm", { type: mr.mimeType })
+                            setValues(prev => ({ ...prev, [key]: file }))
+                          }
+                          mr.start(250)
+                          setRecording(true)
+                          setRecordingTime(0)
+                          timerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000)
+                        } catch {
+                          setError("Microphone access denied")
+                        }
+                      }}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        recording
+                          ? "bg-accent-red/20 text-accent-red border border-accent-red/40"
+                          : "bg-surface-base border border-border-subtle text-text-secondary hover:text-white"
+                      }`}
+                    >
+                      <i className={`fa-solid ${recording ? "fa-stop" : "fa-microphone"} text-xs`} />
+                      {recording
+                        ? `Stop (${Math.floor(recordingTime / 60)}:${String(recordingTime % 60).padStart(2, "0")})`
+                        : "Record"}
+                    </button>
+                    <span className="text-text-muted text-xs">or</span>
+                    <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-surface-base border border-border-subtle text-text-secondary hover:text-white cursor-pointer transition-colors">
+                      <i className="fa-solid fa-file-audio text-xs" />
+                      Upload file
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        onChange={e => {
+                          const file = e.target.files?.[0]
+                          if (file) setValues(prev => ({ ...prev, [key]: file }))
+                        }}
+                      />
+                    </label>
+                  </div>
+                  {values[key] instanceof File && !recording && (
+                    <div className="flex items-center gap-2 text-xs text-accent-teal">
+                      <i className="fa-solid fa-check" />
+                      {(values[key] as File).name} ({Math.round((values[key] as File).size / 1024)}KB)
+                    </div>
+                  )}
+                </div>
+              ) : schema.type === "boolean" ? (
                 <Switch
                   checked={!!values[key]}
                   onCheckedChange={checked => setValues(prev => ({ ...prev, [key]: checked }))}
@@ -150,13 +254,13 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
 
           <div className="flex justify-end gap-2 pt-2">
             <DialogClose render={<Button variant="ghost">Cancel</Button>} />
-            <Button onClick={submit} disabled={!selectedSlug || submitting}>
+            <Button onClick={submit} disabled={!selectedSlug || !endpointPath || submitting}>
               {submitting ? (
                 <span className="flex items-center gap-2">
                   <i className="fa-solid fa-spinner fa-spin text-xs" />
                   Submitting...
                 </span>
-              ) : "Generate"}
+              ) : selectedSlug === "stt" ? "Transcribe" : "Generate"}
             </Button>
           </div>
         </div>
