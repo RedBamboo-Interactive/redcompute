@@ -7,6 +7,7 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
+using RedCompute.App.Api;
 using RedCompute.Core.Providers;
 using RedCompute.Providers.ComfyUI;
 
@@ -25,17 +26,26 @@ public static class ImageGenEndpoints
         app.MapPost("/image-gen/generate", async (HttpContext ctx) =>
         {
             var entry = registry.Get("image-gen");
-            if (entry?.ActiveProvider == null)
-                return ErrorResult(503, "provider_not_configured", "Image generation provider is not configured. Check config.json");
+            if (entry == null)
+                return ErrorResult(503, "provider_not_configured", "Image generation capability is not configured. Check config.json");
 
             if (entry.IsSleeping)
                 return ErrorResult(503, "capability_sleeping", "Image generation is sleeping. Wake it via POST /control/wake/image-gen");
 
-            var status = await entry.ActiveProvider.GetStatusAsync();
+            var body = await ReadJsonBody(ctx);
+
+            var requestedProvider = ProviderResolver.GetRequestedProvider(ctx, body);
+            var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, "image-gen");
+            if (providerError != null) return providerError;
+            if (provider == null)
+                return ErrorResult(503, "provider_not_configured", "Image generation provider is not configured. Check config.json");
+
+            ProviderResolver.StripProviderFromBody(body);
+
+            var status = await provider.GetStatusAsync();
             if (status != BackendStatus.Running)
                 return ErrorResult(503, "provider_not_running", $"Image generation backend is {status}. Start it via POST /control/start/image-gen");
 
-            var body = await ReadJsonBody(ctx);
             if (!body.ContainsKey("prompt") || string.IsNullOrWhiteSpace(body.GetValueOrDefault("prompt")?.ToString()))
                 return Results.Json(new ErrorResponse { Error = "validation_failed", Message = "One or more parameters are invalid", Fields = new() { ["prompt"] = "required" } }, statusCode: 422);
 
@@ -45,7 +55,7 @@ public static class ImageGenEndpoints
             var jobRationale = body.GetValueOrDefault("rationale")?.ToString()
                 ?? ctx.Request.Headers["X-Job-Rationale"].FirstOrDefault();
 
-            var job = jobTracker.CreateJob("image-gen", entry.ActiveProvider.Name,
+            var job = jobTracker.CreateJob("image-gen", provider.Name,
                 JsonSerializer.Serialize(body), ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), idempotencyKey,
                 name: jobName, rationale: jobRationale);
             jobTracker.MarkRunning(job.Id);
@@ -54,7 +64,7 @@ public static class ImageGenEndpoints
             var workflow = body.GetValueOrDefault("workflow")?.ToString() ?? "default";
             log($"[ImageGen] Job {job.Id} started: \"{Truncate(prompt, 60)}\" workflow={workflow}", job.Id);
 
-            if (entry.ActiveProvider is ComfyUIProvider comfyProvider)
+            if (provider is ComfyUIProvider comfyProvider)
                 comfyProvider.ProgressCallback = frac => jobTracker.UpdateProgress(job.Id, frac);
 
             var isAsync = ctx.Request.Query.ContainsKey("async")
@@ -74,7 +84,7 @@ public static class ImageGenEndpoints
                 {
                     try
                     {
-                        var result = await entry.ActiveProvider.ExecuteAsync(request);
+                        var result = await provider.ExecuteAsync(request);
                         if (result is { Success: true, OutputStream: not null })
                         {
                             var path = SaveOutput(job.Id, result.OutputStream, result.ContentType);
@@ -101,7 +111,7 @@ public static class ImageGenEndpoints
             // Synchronous: hold connection until done
             try
             {
-                var result = await entry.ActiveProvider.ExecuteAsync(request, ctx.RequestAborted);
+                var result = await provider.ExecuteAsync(request, ctx.RequestAborted);
                 if (result is { Success: true, OutputStream: not null })
                 {
                     var path = SaveOutput(job.Id, result.OutputStream, result.ContentType);
@@ -126,7 +136,7 @@ public static class ImageGenEndpoints
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
                 log($"[ImageGen] Job {job.Id} failed (connection): {ex.Message}", job.Id);
-                _ = entry.ActiveProvider.GetStatusAsync();
+                _ = provider.GetStatusAsync();
                 return ErrorResult(502, "backend_unavailable", $"Backend connection failed: {ex.Message}");
             }
             catch (TaskCanceledException)

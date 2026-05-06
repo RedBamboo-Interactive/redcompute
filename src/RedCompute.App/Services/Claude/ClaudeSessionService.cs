@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using RedCompute.App.Data;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Claude;
@@ -436,6 +437,9 @@ public class ClaudeSessionService
 
     public async Task<ClaudeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort)
     {
+        if (_sessions.ContainsKey(sessionId))
+            await StopSession(sessionId);
+
         using var db = new RedComputeDbContext();
         var record = db.ClaudeSessions.Find(sessionId);
         if (record == null) return null;
@@ -444,11 +448,8 @@ public class ClaudeSessionService
         if (effort != null) record.Effort = effort;
         db.SaveChanges();
 
-        if (_sessions.ContainsKey(sessionId))
-        {
-            await StopSession(sessionId);
+        if (!string.IsNullOrEmpty(record.ClaudeSessionId))
             return ResumeSession(sessionId);
-        }
 
         var info = ToSessionInfo(record);
         SessionUpdated?.Invoke(info);
@@ -679,6 +680,15 @@ public class ClaudeSessionService
         }
     }
 
+    private static int? ParseContextFromModelHint(string? model)
+    {
+        if (model == null) return null;
+        var match = Regex.Match(model, @"\[(\d+)([km])\]", RegexOptions.IgnoreCase);
+        if (!match.Success) return null;
+        var n = int.Parse(match.Groups[1].Value);
+        return n * (match.Groups[2].Value.ToLowerInvariant() == "m" ? 1_000_000 : 1_000);
+    }
+
     private void HandleSystemEvent(JsonElement root, ManagedSession session)
     {
         if (root.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "init")
@@ -686,7 +696,10 @@ public class ClaudeSessionService
             if (root.TryGetProperty("session_id", out var sid))
                 session.Info.ClaudeSessionId = sid.GetString();
             if (root.TryGetProperty("model", out var model))
+            {
                 session.Info.Model = model.GetString();
+                session.Info.ContextWindow ??= ParseContextFromModelHint(model.GetString());
+            }
             if (root.TryGetProperty("permissionMode", out var pm))
                 session.Info.PermissionMode = pm.GetString() ?? "bypassPermissions";
 

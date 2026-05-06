@@ -99,14 +99,17 @@ public partial class App : Application
             if (definition == null) continue;
             definition.Enabled = capConfig.Enabled;
 
-            IBackendProvider? provider = null;
-            if (capConfig.ActiveProvider != null && capConfig.Providers.TryGetValue(capConfig.ActiveProvider, out var providerConfig))
+            var providers = new Dictionary<string, IBackendProvider>();
+            foreach (var (providerName, providerConfig) in capConfig.Providers)
             {
-                provider = ProviderFactory.Create(definition.Type, providerConfig, s => Log(s));
+                var provider = ProviderFactory.Create(definition.Type, providerConfig, s => Log(s));
+                if (provider != null)
+                    providers[providerName] = provider;
             }
 
-            Registry.Register(slug, definition, capConfig, provider);
-            Log($"[App] Registered capability: {slug} (provider: {provider?.Name ?? "none"})");
+            Registry.Register(slug, definition, capConfig, providers, capConfig.ActiveProvider);
+            var names = providers.Count > 0 ? string.Join(", ", providers.Keys) : "none";
+            Log($"[App] Registered capability: {slug} (providers: {names}, default: {capConfig.ActiveProvider ?? "none"})");
         }
     }
 
@@ -139,7 +142,8 @@ public partial class App : Application
         var definition = CapabilityDefinitionFactory.Create("ai-session")!;
         definition.Enabled = capConfig.Enabled;
         var provider = new Services.Claude.ClaudeCodeProvider(ClaudeService);
-        Registry.Register("ai-session", definition, capConfig, provider);
+        var providers = new Dictionary<string, IBackendProvider> { ["claude-code"] = provider };
+        Registry.Register("ai-session", definition, capConfig, providers, capConfig.ActiveProvider);
         Log("[App] Registered capability: ai-session (provider: Claude Code)");
     }
 

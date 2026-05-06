@@ -11,10 +11,12 @@ namespace RedCompute.App.Api.Endpoints;
 public static class SettingsEndpoints
 {
     private static CloudflareTunnelService _tunnelService = null!;
+    private static CapabilityRegistry _registry = null!;
 
-    public static void Map(WebApplication app, ConfigManager configManager, CloudflareTunnelService tunnelService)
+    public static void Map(WebApplication app, ConfigManager configManager, CloudflareTunnelService tunnelService, CapabilityRegistry registry)
     {
         _tunnelService = tunnelService;
+        _registry = registry;
 
         app.MapGet("/settings", () =>
         {
@@ -86,7 +88,13 @@ public static class SettingsEndpoints
 
             var cap = config.Capabilities[slug];
             if (body.Enabled.HasValue) cap.Enabled = body.Enabled.Value;
-            if (body.ActiveProvider != null) cap.ActiveProvider = body.ActiveProvider;
+            if (body.ActiveProvider != null)
+            {
+                cap.ActiveProvider = body.ActiveProvider;
+                var entry = _registry.Get(slug);
+                if (entry != null)
+                    entry.DefaultProviderName = body.ActiveProvider;
+            }
 
             configManager.Save();
             return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.Enabled, cap.ActiveProvider });

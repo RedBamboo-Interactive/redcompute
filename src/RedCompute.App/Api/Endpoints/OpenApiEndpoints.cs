@@ -76,7 +76,7 @@ public static class OpenApiEndpoints
                 ["post"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "StartCapability",
-                    ["summary"] = "Start the backend provider for a capability",
+                    ["summary"] = "Start the default provider's backend for a capability",
                     ["parameters"] = new object[] { PathParam("slug", "string", "Capability slug (tts, stt, image-gen, etc.)") },
                     ["responses"] = Responses("application/json", Schema("object", "ControlResult"))
                 }
@@ -86,8 +86,36 @@ public static class OpenApiEndpoints
                 ["post"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "StopCapability",
-                    ["summary"] = "Stop the backend provider for a capability",
+                    ["summary"] = "Stop the default provider's backend for a capability",
                     ["parameters"] = new object[] { PathParam("slug", "string", "Capability slug") },
+                    ["responses"] = Responses("application/json", Schema("object", "ControlResult"))
+                }
+            },
+            ["/control/start/{slug}/{provider}"] = new Dictionary<string, object>
+            {
+                ["post"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "StartCapabilityProvider",
+                    ["summary"] = "Start a specific provider's backend for a capability",
+                    ["parameters"] = new object[]
+                    {
+                        PathParam("slug", "string", "Capability slug (tts, stt, image-gen, etc.)"),
+                        PathParam("provider", "string", "Provider name (e.g. local-wsl, comfyui, suno)")
+                    },
+                    ["responses"] = Responses("application/json", Schema("object", "ControlResult"))
+                }
+            },
+            ["/control/stop/{slug}/{provider}"] = new Dictionary<string, object>
+            {
+                ["post"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "StopCapabilityProvider",
+                    ["summary"] = "Stop a specific provider's backend for a capability",
+                    ["parameters"] = new object[]
+                    {
+                        PathParam("slug", "string", "Capability slug"),
+                        PathParam("provider", "string", "Provider name")
+                    },
                     ["responses"] = Responses("application/json", Schema("object", "ControlResult"))
                 }
             },
@@ -150,21 +178,16 @@ public static class OpenApiEndpoints
                 {
                     ["operationId"] = "TtsGenerate",
                     ["summary"] = "Generate speech audio from text",
-                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    ["requestBody"] = RequestBody(BuildGenerateBody(registry, "tts", new Dictionary<string, object>
                     {
-                        ["type"] = "object",
-                        ["required"] = new[] { "text" },
-                        ["properties"] = new Dictionary<string, object>
-                        {
-                            ["text"] = Prop("string", "Text to synthesize"),
-                            ["voice"] = PropEnum("Speaker voice name", "Serena", TtsVoiceDiscovery.AllVoices(registry).ToArray()),
-                            ["language"] = PropEnum("Language for synthesis", "English", "English", "Chinese", "French", "Japanese", "Korean"),
-                            ["emotion"] = PropEnum("Emotional tone", "neutral", "neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"),
-                            ["instruct"] = Prop("string", "Natural language instruction for voice style (overrides emotion)"),
-                            ["speed"] = PropNum("Playback speed multiplier", 1.0, 0.5, 2.0),
-                            ["stream"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "If true, streams raw PCM audio (s16le, 24kHz, mono) instead of buffered WAV", ["default"] = false }
-                        }
-                    }),
+                        ["text"] = Prop("string", "Text to synthesize"),
+                        ["voice"] = PropEnum("Speaker voice name", "Serena", TtsVoiceDiscovery.AllVoices(registry).ToArray()),
+                        ["language"] = PropEnum("Language for synthesis", "English", "English", "Chinese", "French", "Japanese", "Korean"),
+                        ["emotion"] = PropEnum("Emotional tone", "neutral", "neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"),
+                        ["instruct"] = Prop("string", "Natural language instruction for voice style (overrides emotion)"),
+                        ["speed"] = PropNum("Playback speed multiplier", 1.0, 0.5, 2.0),
+                        ["stream"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "If true, streams raw PCM audio (s16le, 24kHz, mono) instead of buffered WAV", ["default"] = false }
+                    }, new[] { "text" })),
                     ["responses"] = new Dictionary<string, object>
                     {
                         ["200"] = new Dictionary<string, object>
@@ -182,6 +205,7 @@ public static class OpenApiEndpoints
                                 }
                             }
                         },
+                        ["404"] = ErrorResponse("Provider not found (when explicit provider is requested)"),
                         ["422"] = ErrorResponse("Validation failed — field-level errors in 'fields'"),
                         ["503"] = ErrorResponse("Provider not running")
                     }
@@ -248,21 +272,16 @@ public static class OpenApiEndpoints
                     {
                         QueryParam("async", "boolean", "Return 202 with job ID instead of waiting for result")
                     },
-                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    ["requestBody"] = RequestBody(BuildGenerateBody(registry, "image-gen", new Dictionary<string, object>
                     {
-                        ["type"] = "object",
-                        ["required"] = new[] { "prompt" },
-                        ["properties"] = new Dictionary<string, object>
-                        {
-                            ["prompt"] = Prop("string", "Text description of the image to generate"),
-                            ["workflow"] = Prop("string", "Workflow name (GET /image-gen/workflows for options)", "z_turbo"),
-                            ["negative"] = Prop("string", "Negative prompt (things to avoid)", ""),
-                            ["seed"] = Prop("integer", "Random seed for reproducibility"),
-                            ["width"] = Prop("integer", "Image width in pixels (workflow-dependent)"),
-                            ["height"] = Prop("integer", "Image height in pixels (workflow-dependent)"),
-                            ["image_url"] = Prop("string", "Source image URL for img2img or video workflows")
-                        }
-                    }),
+                        ["prompt"] = Prop("string", "Text description of the image to generate"),
+                        ["workflow"] = Prop("string", "Workflow name (GET /image-gen/workflows for options)", "z_turbo"),
+                        ["negative"] = Prop("string", "Negative prompt (things to avoid)", ""),
+                        ["seed"] = Prop("integer", "Random seed for reproducibility"),
+                        ["width"] = Prop("integer", "Image width in pixels (workflow-dependent)"),
+                        ["height"] = Prop("integer", "Image height in pixels (workflow-dependent)"),
+                        ["image_url"] = Prop("string", "Source image URL for img2img or video workflows")
+                    }, new[] { "prompt" })),
                     ["responses"] = new Dictionary<string, object>
                     {
                         ["200"] = new Dictionary<string, object>
@@ -295,6 +314,7 @@ public static class OpenApiEndpoints
                                 }
                             }
                         },
+                        ["404"] = ErrorResponse("Provider not found"),
                         ["422"] = ErrorResponse("Validation failed"),
                         ["503"] = ErrorResponse("Provider not running")
                     }
@@ -374,18 +394,13 @@ public static class OpenApiEndpoints
                     {
                         QueryParam("async", "boolean", "Return 202 with job ID instead of waiting for result")
                     },
-                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    ["requestBody"] = RequestBody(BuildGenerateBody(registry, "music-gen", new Dictionary<string, object>
                     {
-                        ["type"] = "object",
-                        ["required"] = new[] { "prompt" },
-                        ["properties"] = new Dictionary<string, object>
-                        {
-                            ["prompt"] = Prop("string", "Musical description — mood, instruments, lyrics"),
-                            ["style"] = Prop("string", "Genre/style tags", ""),
-                            ["title"] = Prop("string", "Track title", ""),
-                            ["instrumental"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Instrumental only (no vocals)", ["default"] = true }
-                        }
-                    }),
+                        ["prompt"] = Prop("string", "Musical description — mood, instruments, lyrics"),
+                        ["style"] = Prop("string", "Genre/style tags", ""),
+                        ["title"] = Prop("string", "Track title", ""),
+                        ["instrumental"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Instrumental only (no vocals)", ["default"] = true }
+                    }, new[] { "prompt" })),
                     ["responses"] = new Dictionary<string, object>
                     {
                         ["200"] = new Dictionary<string, object>
@@ -418,6 +433,7 @@ public static class OpenApiEndpoints
                                 }
                             }
                         },
+                        ["404"] = ErrorResponse("Provider not found"),
                         ["422"] = ErrorResponse("Validation failed"),
                         ["503"] = ErrorResponse("Provider not running")
                     }
@@ -781,4 +797,24 @@ public static class OpenApiEndpoints
     {
         ["type"] = "string", ["description"] = desc, ["default"] = defaultVal, ["enum"] = values
     };
+
+    private static Dictionary<string, object> BuildGenerateBody(CapabilityRegistry registry, string slug, Dictionary<string, object> properties, string[] required)
+    {
+        var entry = registry.Get(slug);
+        if (entry != null && entry.Providers.Count > 1)
+        {
+            properties["provider"] = PropEnum(
+                "Provider to use. Defaults to the configured default provider.",
+                entry.DefaultProviderName ?? "",
+                entry.Providers.Keys.ToArray());
+        }
+
+        var body = new Dictionary<string, object>
+        {
+            ["type"] = "object",
+            ["required"] = required,
+            ["properties"] = properties
+        };
+        return body;
+    }
 }

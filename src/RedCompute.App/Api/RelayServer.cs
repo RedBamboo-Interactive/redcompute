@@ -95,7 +95,7 @@ public class RelayServer
         WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService);
         ClaudeSessionEndpoints.Map(_app, _claudeService);
         TunnelEndpoints.Map(_app, _tunnelService);
-        SettingsEndpoints.Map(_app, _configManager, _tunnelService);
+        SettingsEndpoints.Map(_app, _configManager, _tunnelService, _registry);
 
         if (Directory.Exists(webRoot))
         {

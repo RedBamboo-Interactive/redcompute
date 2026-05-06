@@ -8,6 +8,7 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
+using RedCompute.App.Api;
 using RedCompute.Core.Providers;
 namespace RedCompute.App.Api.Endpoints;
 
@@ -24,18 +25,27 @@ public static class CapabilityEndpoints
         app.MapPost("/tts/generate", async (HttpContext ctx) =>
         {
             var entry = registry.Get("tts");
-            if (entry?.ActiveProvider == null)
-                return ErrorResult(ctx, 503, "provider_not_configured", "TTS provider is not configured. Check config.json");
+            if (entry == null)
+                return ErrorResult(ctx, 503, "provider_not_configured", "TTS capability is not configured. Check config.json");
 
             if (entry.IsSleeping)
                 return ErrorResult(ctx, 503, "capability_sleeping", "TTS is sleeping. Wake it via POST /control/wake/tts");
 
             var body = await ReadJsonBody(ctx);
+
+            var requestedProvider = ProviderResolver.GetRequestedProvider(ctx, body);
+            var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, "TTS");
+            if (providerError != null) return providerError;
+            if (provider == null)
+                return ErrorResult(ctx, 503, "provider_not_configured", "TTS provider is not configured. Check config.json");
+
+            ProviderResolver.StripProviderFromBody(body);
+
             var errors = ValidateTtsRequest(body);
             if (errors.Count > 0)
                 return ValidationError(ctx, errors);
 
-            var status = await entry.ActiveProvider.GetStatusAsync();
+            var status = await provider.GetStatusAsync();
             if (status != BackendStatus.Running)
             {
                 return ErrorResult(ctx, 503, "provider_not_running",
@@ -51,8 +61,7 @@ public static class CapabilityEndpoints
                 : false;
             var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
 
-            // Ensure the right model/checkpoint is loaded for this voice
-            var proxyUrlForModel = entry.ActiveProvider.GetProxyTargetUrl();
+            var proxyUrlForModel = provider.GetProxyTargetUrl();
             if (proxyUrlForModel != null)
             {
                 var voicesBasePath = TtsVoiceDiscovery.GetVoicesBasePath(registry);
@@ -62,7 +71,6 @@ public static class CapabilityEndpoints
                     return ErrorResult(ctx, 422, "voice_not_available", modelError ?? $"Voice '{voice}' is not available");
             }
 
-            // Map RedCompute simplified params → Qwen3-TTS backend format
             var backendBody = new Dictionary<string, object?>
             {
                 ["text"] = text,
@@ -80,7 +88,7 @@ public static class CapabilityEndpoints
             var jobRationale = body.GetValueOrDefault("rationale")?.ToString()
                 ?? ctx.Request.Headers["X-Job-Rationale"].FirstOrDefault();
 
-            var job = jobTracker.CreateJob("tts", entry.ActiveProvider.Name,
+            var job = jobTracker.CreateJob("tts", provider.Name,
                 JsonSerializer.Serialize(body), ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), idempotencyKey,
                 name: jobName, rationale: jobRationale);
 
@@ -92,7 +100,7 @@ public static class CapabilityEndpoints
 
             if (isAsync)
             {
-                var capturedProvider = entry.ActiveProvider;
+                var capturedProvider = provider;
                 _ = Task.Run(async () =>
                 {
                     try
@@ -156,7 +164,7 @@ public static class CapabilityEndpoints
             // Synchronous: hold connection until done
             try
             {
-                var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
+                var proxyUrl = provider.GetProxyTargetUrl();
                 if (proxyUrl != null)
                 {
                     using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
@@ -258,7 +266,7 @@ public static class CapabilityEndpoints
                         Parameters = body,
                         CallerInfo = ctx.Request.Headers["X-Caller-Info"].FirstOrDefault()
                     };
-                    var result = await entry.ActiveProvider.ExecuteAsync(request, ctx.RequestAborted);
+                    var result = await provider.ExecuteAsync(request, ctx.RequestAborted);
                     if (result is { Success: true, OutputStream: not null })
                     {
                         var contentType = result.ContentType ?? "audio/wav";
@@ -284,7 +292,7 @@ public static class CapabilityEndpoints
             {
                 jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
                 log($"[TTS] Job {job.Id} failed (connection): {ex.Message}", job.Id);
-                _ = entry.ActiveProvider.GetStatusAsync();
+                _ = provider.GetStatusAsync();
                 return ErrorResult(ctx, 502, "backend_unavailable",
                     $"Backend connection failed: {ex.Message}. The backend may have stopped.");
             }
@@ -329,16 +337,16 @@ public static class CapabilityEndpoints
         app.MapGet("/tts/voices", async (HttpContext ctx) =>
         {
             var entry = registry.Get("tts");
-            if (entry?.ActiveProvider == null)
+            var requestedProvider = ProviderResolver.GetRequestedProvider(ctx);
+            var ttsProvider = entry?.ResolveProvider(requestedProvider);
+            if (ttsProvider == null)
                 return Results.Json(new { voices = Array.Empty<object>(), message = "Provider not configured" });
 
-            // Discover custom voices from disk
             var voicesBasePath = TtsVoiceDiscovery.GetVoicesBasePath(registry);
             var customNames = TtsVoiceDiscovery.DiscoverCustomVoices(voicesBasePath);
 
-            // Built-in speakers are always available (via model reload if needed)
             var builtinNames = new HashSet<string>(TtsVoiceDiscovery.BuiltInSpeakers, StringComparer.OrdinalIgnoreCase);
-            var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
+            var proxyUrl = ttsProvider.GetProxyTargetUrl();
             if (proxyUrl != null)
             {
                 try
@@ -373,8 +381,8 @@ public static class CapabilityEndpoints
             var slug = capSlug;
             app.Map($"/{slug}/{{**path}}", async (HttpContext ctx, string? path) =>
             {
-                var entry = registry.Get(slug);
-                if (entry?.ActiveProvider == null)
+                var capEntry = registry.Get(slug);
+                if (capEntry == null)
                 {
                     ctx.Response.StatusCode = 503;
                     await ctx.Response.WriteAsJsonAsync(new ErrorResponse
@@ -385,7 +393,7 @@ public static class CapabilityEndpoints
                     return;
                 }
 
-                if (entry.IsSleeping)
+                if (capEntry.IsSleeping)
                 {
                     ctx.Response.StatusCode = 503;
                     await ctx.Response.WriteAsJsonAsync(new ErrorResponse
@@ -396,7 +404,20 @@ public static class CapabilityEndpoints
                     return;
                 }
 
-                var proxyUrl = entry.ActiveProvider.GetProxyTargetUrl();
+                var requestedProv = ProviderResolver.GetRequestedProvider(ctx);
+                var proxyProvider = capEntry.ResolveProvider(requestedProv);
+                if (proxyProvider == null)
+                {
+                    ctx.Response.StatusCode = 503;
+                    await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                    {
+                        Error = "provider_not_running",
+                        Message = $"Provider for '{slug}' is not configured"
+                    });
+                    return;
+                }
+
+                var proxyUrl = proxyProvider.GetProxyTargetUrl();
                 if (proxyUrl == null)
                 {
                     ctx.Response.StatusCode = 501;

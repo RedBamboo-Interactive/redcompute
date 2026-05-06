@@ -37,12 +37,20 @@ export interface LogEntry {
   jobId?: string
 }
 
+export interface ProviderStatus {
+  name: string
+  type: string
+  status: BackendStatus
+}
+
 export interface CapabilityStatus {
   slug: string
   displayName: string
   type: string
   status: BackendStatus
   provider?: string
+  defaultProvider?: string
+  providers?: ProviderStatus[]
   sleeping: boolean
   endpoints?: EndpointManifest[]
 }

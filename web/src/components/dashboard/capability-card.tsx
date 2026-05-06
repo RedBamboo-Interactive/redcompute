@@ -35,10 +35,18 @@ export function CapabilityCard({ cap, onRefresh }: {
   const isRunning = cap.status === "Running"
   const iconColor = statusIconColor(cap.status, cap.sleeping)
   const capJobs = useCapabilityJobs(cap.slug)
+  const hasMultipleProviders = (cap.providers?.length ?? 0) > 1
 
-  async function togglePower() {
+  async function togglePower(providerName?: string) {
     try {
-      await api.post(`/control/${isRunning ? "stop" : "start"}/${cap.slug}`)
+      const status = providerName
+        ? cap.providers?.find(p => p.name === providerName)?.status
+        : cap.status
+      const running = status === "Running"
+      const path = providerName
+        ? `/control/${running ? "stop" : "start"}/${cap.slug}/${providerName}`
+        : `/control/${isRunning ? "stop" : "start"}/${cap.slug}`
+      await api.post(path)
       onRefresh()
     } catch { /* */ }
   }
@@ -64,14 +72,16 @@ export function CapabilityCard({ cap, onRefresh }: {
                   opacity: cap.sleeping ? 1 : 0.4,
                 }} />
             </button>
-            <button onClick={togglePower} title={cap.status}
-              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
-              <i className="fa-solid fa-power-off text-sm"
-                style={{
-                  color: isRunning ? "#26A69A" : "#6B6F77",
-                  opacity: isRunning ? 1 : 0.4,
-                }} />
-            </button>
+            {!hasMultipleProviders && (
+              <button onClick={() => togglePower()} title={cap.status}
+                className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
+                <i className="fa-solid fa-power-off text-sm"
+                  style={{
+                    color: isRunning ? "#26A69A" : "#6B6F77",
+                    opacity: isRunning ? 1 : 0.4,
+                  }} />
+              </button>
+            )}
           </div>
 
           {/* Centered icon — shows + overlay on hover to queue a job */}
@@ -87,12 +97,32 @@ export function CapabilityCard({ cap, onRefresh }: {
             </button>
           </div>
 
-          {/* Title + provider */}
+          {/* Title + provider(s) */}
           <div className="text-center mb-3.5">
             <div className="text-[15px] font-semibold text-white">{cap.displayName}</div>
-            <div className="text-[11px] text-text-muted opacity-70 truncate">
-              {cap.provider || "No provider"}
-            </div>
+            {hasMultipleProviders ? (
+              <div className="mt-1.5 space-y-1">
+                {cap.providers!.map(p => {
+                  const pRunning = p.status === "Running"
+                  const isDefault = p.name === cap.defaultProvider
+                  return (
+                    <div key={p.name} className="flex items-center justify-center gap-1.5 text-[11px]">
+                      <button onClick={() => togglePower(p.name)} title={`${pRunning ? "Stop" : "Start"} ${p.name}`}
+                        className="w-[18px] h-[18px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
+                        <i className="fa-solid fa-power-off text-[9px]"
+                          style={{ color: pRunning ? "#26A69A" : "#6B6F77", opacity: pRunning ? 1 : 0.4 }} />
+                      </button>
+                      <span className="text-text-muted opacity-70">{p.name}</span>
+                      {isDefault && <span className="text-[9px] text-text-muted opacity-50">default</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="text-[11px] text-text-muted opacity-70 truncate">
+                {cap.provider || "No provider"}
+              </div>
+            )}
           </div>
 
           {/* Separator — full-width (negative margin to match WPF -20,0) */}

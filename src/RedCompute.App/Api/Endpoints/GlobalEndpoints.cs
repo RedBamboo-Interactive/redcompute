@@ -17,17 +17,26 @@ public static class GlobalEndpoints
             var capabilities = new List<object>();
             foreach (var (slug, entry) in registry.Capabilities)
             {
-                var status = entry.ActiveProvider != null
+                var defaultStatus = entry.ActiveProvider != null
                     ? await entry.ActiveProvider.GetStatusAsync()
                     : BackendStatus.Stopped;
+
+                var providerStatuses = new List<object>();
+                foreach (var (name, prov) in entry.Providers)
+                {
+                    var pStatus = await prov.GetStatusAsync();
+                    providerStatuses.Add(new { name, status = pStatus.ToString() });
+                }
 
                 capabilities.Add(new
                 {
                     slug,
                     entry.Definition.DisplayName,
                     entry.Definition.Type,
-                    status = status.ToString(),
+                    status = defaultStatus.ToString(),
                     provider = entry.ActiveProvider?.Name,
+                    defaultProvider = entry.DefaultProviderName,
+                    providers = providerStatuses,
                     enabled = entry.Definition.Enabled,
                     sleeping = entry.IsSleeping
                 });
@@ -216,6 +225,32 @@ public static class GlobalEndpoints
                 return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
             entry.IsSleeping = false;
             return Results.Ok(new { slug, sleeping = false });
+        });
+
+        app.MapPost("/control/start/{slug}/{providerName}", async (string slug, string providerName) =>
+        {
+            var entry = registry.Get(slug);
+            if (entry == null)
+                return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+            if (!entry.Providers.TryGetValue(providerName, out var provider))
+                return Results.NotFound(new { error = "provider_not_found", message = $"Provider '{providerName}' not found for '{slug}'. Available: {string.Join(", ", entry.Providers.Keys)}" });
+
+            var success = await provider.StartAsync();
+            if (success)
+                return Results.Ok(new { slug, provider = providerName, status = "Running" });
+            return Results.Json(new { error = "start_failed", message = $"Failed to start provider '{providerName}' for '{slug}'" }, statusCode: 500);
+        });
+
+        app.MapPost("/control/stop/{slug}/{providerName}", async (string slug, string providerName) =>
+        {
+            var entry = registry.Get(slug);
+            if (entry == null)
+                return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+            if (!entry.Providers.TryGetValue(providerName, out var provider))
+                return Results.NotFound(new { error = "provider_not_found", message = $"Provider '{providerName}' not found for '{slug}'. Available: {string.Join(", ", entry.Providers.Keys)}" });
+
+            await provider.StopAsync();
+            return Results.Ok(new { slug, provider = providerName, status = "Stopped" });
         });
 
         // ============================================================

@@ -247,7 +247,7 @@ function CapabilityCard({ slug, cap, saving, onUpdateCapability, onUpdateProvide
       </div>
 
       {providerNames.length > 1 ? (
-        <FieldRow label="Provider">
+        <FieldRow label="Default Provider">
           <select
             className={`${inputSmClass} w-full`}
             value={activeProvider}

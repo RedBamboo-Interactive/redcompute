@@ -34,11 +34,31 @@ public class CapabilityManifest
     [JsonPropertyName("provider")]
     public string? Provider { get; init; }
 
+    [JsonPropertyName("defaultProvider")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DefaultProvider { get; init; }
+
+    [JsonPropertyName("providers")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ProviderManifest>? Providers { get; init; }
+
     [JsonPropertyName("sleeping")]
     public bool Sleeping { get; init; }
 
     [JsonPropertyName("endpoints")]
     public required List<EndpointManifest> Endpoints { get; init; }
+}
+
+public class ProviderManifest
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("type")]
+    public required string Type { get; init; }
+
+    [JsonPropertyName("status")]
+    public required string Status { get; init; }
 }
 
 public class EndpointManifest

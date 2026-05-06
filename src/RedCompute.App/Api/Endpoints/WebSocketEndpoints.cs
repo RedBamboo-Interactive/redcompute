@@ -186,11 +186,18 @@ public static class WebSocketEndpoints
             {
                 try
                 {
-                    var status = entry.ActiveProvider != null
+                    var defaultStatus = entry.ActiveProvider != null
                         ? (await entry.ActiveProvider.GetStatusAsync()).ToString()
                         : "Stopped";
 
-                    var key = $"{slug}:{status}:{entry.IsSleeping}";
+                    var provStatuses = new List<object>();
+                    foreach (var (name, prov) in entry.Providers)
+                    {
+                        var ps = (await prov.GetStatusAsync()).ToString();
+                        provStatuses.Add(new { name, status = ps });
+                    }
+
+                    var key = $"{slug}:{defaultStatus}:{entry.IsSleeping}:{string.Join(",", provStatuses.Select(p => p.ToString()))}";
                     if (lastStatuses.TryGetValue(slug, out var prev) && prev == key)
                         continue;
 
@@ -199,9 +206,11 @@ public static class WebSocketEndpoints
                     {
                         slug,
                         displayName = entry.Definition.DisplayName,
-                        status,
+                        status = defaultStatus,
                         sleeping = entry.IsSleeping,
-                        provider = entry.ActiveProvider?.Name
+                        provider = entry.ActiveProvider?.Name,
+                        defaultProvider = entry.DefaultProviderName,
+                        providers = provStatuses
                     });
                 }
                 catch { }

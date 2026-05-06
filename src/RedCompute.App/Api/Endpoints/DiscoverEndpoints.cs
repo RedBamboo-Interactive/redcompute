@@ -26,19 +26,34 @@ public static class DiscoverEndpoints
 
             foreach (var (slug, entry) in registry.Capabilities)
             {
-                var status = entry.ActiveProvider != null
+                var defaultStatus = entry.ActiveProvider != null
                     ? await entry.ActiveProvider.GetStatusAsync()
                     : BackendStatus.Stopped;
 
-                var endpoints = GetEndpointsForCapability(slug, registry);
+                var endpoints = GetEndpointsForCapability(slug, registry, entry);
+
+                var providerManifests = new List<ProviderManifest>();
+                foreach (var (name, prov) in entry.Providers)
+                {
+                    var pStatus = await prov.GetStatusAsync();
+                    var provType = entry.Config.Providers.TryGetValue(name, out var pc) ? pc.Type : "Unknown";
+                    providerManifests.Add(new ProviderManifest
+                    {
+                        Name = name,
+                        Type = provType,
+                        Status = pStatus.ToString()
+                    });
+                }
 
                 capabilities.Add(new CapabilityManifest
                 {
                     Slug = slug,
                     Type = entry.Definition.Type.ToString(),
                     DisplayName = entry.Definition.DisplayName,
-                    Status = status.ToString(),
+                    Status = defaultStatus.ToString(),
                     Provider = entry.ActiveProvider?.Name,
+                    DefaultProvider = entry.DefaultProviderName,
+                    Providers = providerManifests.Count > 0 ? providerManifests : null,
                     Sleeping = entry.IsSleeping,
                     Endpoints = endpoints
                 });
@@ -66,8 +81,10 @@ public static class DiscoverEndpoints
                         new { method = "GET", path = "/logs", description = "Query logs (tag, search, since, until, jobId, level, limit, offset)" },
                         new { method = "GET", path = "/logs/tags", description = "List log tags with counts" },
                         new { method = "GET", path = "/logs/summary", description = "Log summary statistics" },
-                        new { method = "POST", path = "/control/start/{slug}", description = "Start a capability's backend" },
-                        new { method = "POST", path = "/control/stop/{slug}", description = "Stop a capability's backend" },
+                        new { method = "POST", path = "/control/start/{slug}", description = "Start the default provider's backend" },
+                        new { method = "POST", path = "/control/stop/{slug}", description = "Stop the default provider's backend" },
+                        new { method = "POST", path = "/control/start/{slug}/{provider}", description = "Start a specific provider's backend" },
+                        new { method = "POST", path = "/control/stop/{slug}/{provider}", description = "Stop a specific provider's backend" },
                         new { method = "POST", path = "/control/sleep/{slug}", description = "Put a capability to sleep (stop after idle)" },
                         new { method = "POST", path = "/control/wake/{slug}", description = "Wake a sleeping capability" },
                         new { method = "GET", path = "/settings", description = "Current service configuration (API keys masked)" },
@@ -95,9 +112,12 @@ public static class DiscoverEndpoints
         });
     }
 
-    private static List<EndpointManifest> GetEndpointsForCapability(string slug, CapabilityRegistry registry)
+    private static List<EndpointManifest> GetEndpointsForCapability(string slug, CapabilityRegistry registry, CapabilityEntry entry)
     {
-        return slug switch
+        ParameterSchema? providerParam = entry.Providers.Count > 1
+            ? new() { Type = "string", Required = false, Default = entry.DefaultProviderName, Enum = entry.Providers.Keys.ToList(), Description = "Provider to use for this request. Defaults to the configured default provider." }
+            : null;
+        var result = slug switch
         {
             "tts" => new List<EndpointManifest>
             {
@@ -345,5 +365,16 @@ public static class DiscoverEndpoints
             },
             _ => new List<EndpointManifest>()
         };
+
+        if (providerParam != null)
+        {
+            foreach (var ep in result)
+            {
+                if (ep.Method == "POST" && ep.Path.EndsWith("/generate") && ep.Parameters != null)
+                    ep.Parameters["provider"] = providerParam;
+            }
+        }
+
+        return result;
     }
 }

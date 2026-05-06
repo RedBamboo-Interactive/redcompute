@@ -7,6 +7,7 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
+using RedCompute.App.Api;
 using RedCompute.Core.Providers;
 using RedCompute.Providers.Suno;
 
@@ -25,17 +26,26 @@ public static class MusicGenEndpoints
         app.MapPost("/music-gen/generate", async (HttpContext ctx) =>
         {
             var entry = registry.Get("music-gen");
-            if (entry?.ActiveProvider == null)
-                return ErrorResult(503, "provider_not_configured", "Music generation provider is not configured. Check config.json");
+            if (entry == null)
+                return ErrorResult(503, "provider_not_configured", "Music generation capability is not configured. Check config.json");
 
             if (entry.IsSleeping)
                 return ErrorResult(503, "capability_sleeping", "Music generation is sleeping. Wake it via POST /control/wake/music-gen");
 
-            var status = await entry.ActiveProvider.GetStatusAsync();
+            var body = await ReadJsonBody(ctx);
+
+            var requestedProvider = ProviderResolver.GetRequestedProvider(ctx, body);
+            var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, "music-gen");
+            if (providerError != null) return providerError;
+            if (provider == null)
+                return ErrorResult(503, "provider_not_configured", "Music generation provider is not configured. Check config.json");
+
+            ProviderResolver.StripProviderFromBody(body);
+
+            var status = await provider.GetStatusAsync();
             if (status != BackendStatus.Running)
                 return ErrorResult(503, "provider_not_running", $"Music generation backend is {status}. Start it via POST /control/start/music-gen");
 
-            var body = await ReadJsonBody(ctx);
             if (!body.ContainsKey("prompt") || string.IsNullOrWhiteSpace(body.GetValueOrDefault("prompt")?.ToString()))
                 return Results.Json(new ErrorResponse { Error = "validation_failed", Message = "One or more parameters are invalid", Fields = new() { ["prompt"] = "required" } }, statusCode: 422);
 
@@ -45,7 +55,7 @@ public static class MusicGenEndpoints
             var jobRationale = body.GetValueOrDefault("rationale")?.ToString()
                 ?? ctx.Request.Headers["X-Job-Rationale"].FirstOrDefault();
 
-            var job = jobTracker.CreateJob("music-gen", entry.ActiveProvider.Name,
+            var job = jobTracker.CreateJob("music-gen", provider.Name,
                 JsonSerializer.Serialize(body), ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), idempotencyKey,
                 name: jobName, rationale: jobRationale);
             jobTracker.MarkRunning(job.Id);
@@ -53,7 +63,7 @@ public static class MusicGenEndpoints
             var prompt = body.GetValueOrDefault("prompt")?.ToString() ?? "";
             log($"[MusicGen] Job {job.Id} started: \"{Truncate(prompt, 60)}\"", job.Id);
 
-            if (entry.ActiveProvider is SunoProvider sunoProvider)
+            if (provider is SunoProvider sunoProvider)
                 sunoProvider.ProgressCallback = frac => jobTracker.UpdateProgress(job.Id, frac);
 
             var isAsync = ctx.Request.Query.ContainsKey("async")
@@ -73,12 +83,12 @@ public static class MusicGenEndpoints
                 {
                     try
                     {
-                        var result = await entry.ActiveProvider.ExecuteAsync(request);
+                        var result = await provider.ExecuteAsync(request);
                         if (result is { Success: true, OutputStream: not null })
                         {
                             var path = SaveOutput(job.Id, result.OutputStream, "audio/mpeg");
                             var size = new FileInfo(path).Length;
-                            SaveExtraClips(job.Id, entry.ActiveProvider as SunoProvider);
+                            SaveExtraClips(job.Id, provider as SunoProvider);
                             jobTracker.MarkCompleted(job.Id, path, size, "audio/mpeg", result.ResultJson);
                             log($"[MusicGen] Job {job.Id} completed ({size / 1024}KB)", job.Id);
                         }
@@ -101,12 +111,12 @@ public static class MusicGenEndpoints
             // Synchronous
             try
             {
-                var result = await entry.ActiveProvider.ExecuteAsync(request, ctx.RequestAborted);
+                var result = await provider.ExecuteAsync(request, ctx.RequestAborted);
                 if (result is { Success: true, OutputStream: not null })
                 {
                     var path = SaveOutput(job.Id, result.OutputStream, "audio/mpeg");
                     var size = new FileInfo(path).Length;
-                    SaveExtraClips(job.Id, entry.ActiveProvider as SunoProvider);
+                    SaveExtraClips(job.Id, provider as SunoProvider);
                     jobTracker.MarkCompleted(job.Id, path, size, "audio/mpeg", result.ResultJson);
                     log($"[MusicGen] Job {job.Id} completed ({size / 1024}KB)", job.Id);
 

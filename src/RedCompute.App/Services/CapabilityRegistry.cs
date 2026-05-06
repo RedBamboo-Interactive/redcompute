@@ -8,8 +8,19 @@ public class CapabilityEntry
 {
     public required CapabilityDefinition Definition { get; init; }
     public required CapabilityConfig Config { get; init; }
-    public IBackendProvider? ActiveProvider { get; set; }
+    public Dictionary<string, IBackendProvider> Providers { get; init; } = new();
+    public string? DefaultProviderName { get; set; }
     public bool IsSleeping { get; set; }
+
+    public IBackendProvider? ActiveProvider =>
+        DefaultProviderName != null && Providers.TryGetValue(DefaultProviderName, out var p) ? p : null;
+
+    public IBackendProvider? ResolveProvider(string? requestedProvider)
+    {
+        if (requestedProvider != null && Providers.TryGetValue(requestedProvider, out var p))
+            return p;
+        return ActiveProvider;
+    }
 }
 
 public class CapabilityRegistry
@@ -18,13 +29,15 @@ public class CapabilityRegistry
 
     public IReadOnlyDictionary<string, CapabilityEntry> Capabilities => _capabilities;
 
-    public void Register(string slug, CapabilityDefinition definition, CapabilityConfig config, IBackendProvider? provider)
+    public void Register(string slug, CapabilityDefinition definition, CapabilityConfig config,
+        Dictionary<string, IBackendProvider> providers, string? defaultProviderName)
     {
         _capabilities[slug] = new CapabilityEntry
         {
             Definition = definition,
             Config = config,
-            ActiveProvider = provider
+            Providers = providers,
+            DefaultProviderName = defaultProviderName
         };
     }
 
@@ -44,10 +57,10 @@ public class CapabilityRegistry
     {
         foreach (var entry in _capabilities.Values)
         {
-            if (entry.ActiveProvider != null)
+            foreach (var provider in entry.Providers.Values)
             {
-                await entry.ActiveProvider.StopAsync();
-                await entry.ActiveProvider.DisposeAsync();
+                await provider.StopAsync();
+                await provider.DisposeAsync();
             }
         }
     }
