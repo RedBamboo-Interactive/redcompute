@@ -8,5 +8,6 @@ public enum CapabilityType
     MusicGen,
     Llm,
     VideoGen,
-    AiSession
+    AiSession,
+    AiPrompt
 }

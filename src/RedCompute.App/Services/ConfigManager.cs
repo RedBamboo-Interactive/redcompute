@@ -129,6 +129,22 @@ public class ConfigManager
                         }
                     }
                 },
+                ["ai-prompt"] = new()
+                {
+                    Enabled = true,
+                    ActiveProvider = "anthropic",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["anthropic"] = new()
+                        {
+                            Type = "Anthropic",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["DefaultModel"] = "haiku"
+                            }
+                        }
+                    }
+                },
                 ["image-gen"] = new()
                 {
                     Enabled = false,

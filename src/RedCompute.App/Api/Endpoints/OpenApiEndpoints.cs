@@ -457,6 +457,101 @@ public static class OpenApiEndpoints
             };
         }
 
+        if (registry.Capabilities.ContainsKey("ai-prompt"))
+        {
+            paths["/ai-prompt/generate"] = new Dictionary<string, object>
+            {
+                ["post"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "AiPromptGenerate",
+                    ["summary"] = "One-shot LLM prompt via the Anthropic Messages API. Fast, stateless — ideal for summarization, reformulation, and other quick tasks.",
+                    ["requestBody"] = RequestBody(new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["required"] = new[] { "messages" },
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["model"] = Prop("string", "Anthropic model ID", "haiku"),
+                            ["system"] = Prop("string", "System prompt to set behavior and context"),
+                            ["messages"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "array",
+                                ["description"] = "Array of {role, content} message objects. role must be 'user' or 'assistant'.",
+                                ["items"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "object",
+                                    ["required"] = new[] { "role", "content" },
+                                    ["properties"] = new Dictionary<string, object>
+                                    {
+                                        ["role"] = PropEnum("Message role", "user", "user", "assistant"),
+                                        ["content"] = Prop("string", "Message text content")
+                                    }
+                                }
+                            },
+                            ["maxTokens"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "integer", ["description"] = "Maximum tokens to generate",
+                                ["default"] = 1024, ["minimum"] = 1, ["maximum"] = 8192
+                            }
+                        }
+                    }),
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["200"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Generated text response with token usage",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["application/json"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new Dictionary<string, object>
+                                        {
+                                            ["text"] = Prop("string", "Generated text"),
+                                            ["model"] = Prop("string", "Model used for generation"),
+                                            ["inputTokens"] = Prop("integer", "Input tokens consumed"),
+                                            ["outputTokens"] = Prop("integer", "Output tokens generated")
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ["422"] = ErrorResponse("Validation failed"),
+                        ["502"] = ErrorResponse("Anthropic API error"),
+                        ["503"] = ErrorResponse("Provider not running")
+                    }
+                }
+            };
+            paths["/ai-prompt/models"] = new Dictionary<string, object>
+            {
+                ["get"] = Op("AiPromptListModels", "List available LLM models with speed characteristics and default model", "application/json",
+                    new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["models"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object>
+                                    {
+                                        ["id"] = Prop("string", "Model identifier"),
+                                        ["name"] = Prop("string", "Display name"),
+                                        ["fast"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Whether this model is optimized for speed" }
+                                    }
+                                }
+                            },
+                            ["default"] = Prop("string", "Default model ID")
+                        }
+                    })
+            };
+        }
+
         if (registry.Capabilities.ContainsKey("image-gen"))
         {
             paths["/image-gen/generate"] = new Dictionary<string, object>

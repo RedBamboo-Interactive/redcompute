@@ -390,6 +390,30 @@ public static class DiscoverEndpoints
                     Description = "Force-kill a session process immediately"
                 }
             },
+            "ai-prompt" => new List<EndpointManifest>
+            {
+                new()
+                {
+                    Method = "POST",
+                    Path = "/ai-prompt/generate",
+                    Description = "One-shot LLM prompt via the Anthropic Messages API. Fast, stateless — ideal for summarization, reformulation, classification, and other quick tasks. No persistent session or tool access.",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["model"] = new() { Type = "string", Required = false, Default = "haiku", Description = "Anthropic model ID. GET /ai-prompt/models for available options." },
+                        ["system"] = new() { Type = "string", Required = false, Description = "System prompt to set behavior and context" },
+                        ["messages"] = new() { Type = "array", Required = true, Description = "Array of {role, content} message objects. role must be 'user' or 'assistant'." },
+                        ["maxTokens"] = new() { Type = "integer", Required = false, Default = 1024, Min = 1, Max = 8192, Description = "Maximum tokens to generate" }
+                    },
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/ai-prompt/models",
+                    Description = "List available LLM models with their default and speed characteristics",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                }
+            },
             _ => new List<EndpointManifest>()
         };
 
