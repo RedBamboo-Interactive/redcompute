@@ -152,6 +152,7 @@ public partial class App : Application
         foreach (var (slug, entry) in Registry.Capabilities)
         {
             if (entry.ActiveProvider == null) continue;
+            if (!entry.Definition.Enabled) continue;
             try
             {
                 var started = await entry.ActiveProvider.StartAsync();

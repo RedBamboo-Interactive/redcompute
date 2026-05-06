@@ -40,6 +40,8 @@ public class ConfigManager
         {
             Config = CreateDefault();
         }
+
+        MergeNewCapabilities();
     }
 
     public void Save()
@@ -47,6 +49,21 @@ public class ConfigManager
         Directory.CreateDirectory(ConfigDir);
         var json = JsonSerializer.Serialize(Config, JsonOptions);
         File.WriteAllText(ConfigPath, json);
+    }
+
+    private void MergeNewCapabilities()
+    {
+        var defaults = CreateDefault();
+        var dirty = false;
+        foreach (var (slug, capConfig) in defaults.Capabilities)
+        {
+            if (!Config.Capabilities.ContainsKey(slug))
+            {
+                Config.Capabilities[slug] = capConfig;
+                dirty = true;
+            }
+        }
+        if (dirty) Save();
     }
 
     private static RedComputeConfig CreateDefault()
