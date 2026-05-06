@@ -220,12 +220,49 @@ public static class OpenApiEndpoints
 
         if (registry.Capabilities.ContainsKey("stt"))
         {
+            var sttMultipartProps = new Dictionary<string, object>
+            {
+                ["audio"] = new { type = "string", format = "binary", description = "Audio file (wav, mp3, opus, flac, ogg, webm)" },
+                ["language"] = Prop("string", "ISO 639-1 language code or 'auto' for detection", "auto"),
+                ["task"] = PropEnum("Transcription task", "transcribe", "transcribe", "translate"),
+                ["word_timestamps"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Include word-level timestamps in output", ["default"] = false },
+                ["stream"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Stream segments as NDJSON lines as they are decoded", ["default"] = false },
+                ["initial_prompt"] = Prop("string", "Optional text to condition the model (vocabulary hints, prior context)"),
+                ["vad_filter"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Apply Silero VAD to skip silence", ["default"] = true }
+            };
+            var sttJsonProps = new Dictionary<string, object>
+            {
+                ["audio_base64"] = Prop("string", "Base64-encoded audio data"),
+                ["audio_content_type"] = Prop("string", "MIME type of the encoded audio", "audio/wav"),
+                ["language"] = Prop("string", "ISO 639-1 language code or 'auto'", "auto"),
+                ["task"] = PropEnum("Transcription task", "transcribe", "transcribe", "translate"),
+                ["word_timestamps"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Include word-level timestamps", ["default"] = false },
+                ["stream"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Stream segments as NDJSON", ["default"] = false },
+                ["initial_prompt"] = Prop("string", "Optional conditioning text"),
+                ["vad_filter"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Apply Silero VAD", ["default"] = true }
+            };
+
+            var sttEntry = registry.Get("stt");
+            if (sttEntry != null && sttEntry.Providers.Count > 1)
+            {
+                var providerProp = PropEnum(
+                    "Provider to use. Defaults to the configured default provider.",
+                    sttEntry.DefaultProviderName ?? "",
+                    sttEntry.Providers.Keys.ToArray());
+                sttMultipartProps["provider"] = providerProp;
+                sttJsonProps["provider"] = providerProp;
+            }
+
             paths["/stt/transcribe"] = new Dictionary<string, object>
             {
                 ["post"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "SttTranscribe",
-                    ["summary"] = "Transcribe audio to text",
+                    ["summary"] = "Transcribe audio to text. Accepts multipart/form-data (file upload) or application/json (base64). Sync by default, async with ?async=true, streaming segments with stream=true.",
+                    ["parameters"] = new object[]
+                    {
+                        QueryParam("async", "boolean", "Return 202 with job ID instead of waiting for result")
+                    },
                     ["requestBody"] = new Dictionary<string, object>
                     {
                         ["required"] = true,
@@ -237,26 +274,186 @@ public static class OpenApiEndpoints
                                 {
                                     ["type"] = "object",
                                     ["required"] = new[] { "audio" },
-                                    ["properties"] = new Dictionary<string, object>
-                                    {
-                                        ["audio"] = new { type = "string", format = "binary", description = "Audio file (wav, mp3, opus, flac)" },
-                                        ["language"] = Prop("string", "Language hint (ISO 639-1 or 'auto')", "auto")
-                                    }
+                                    ["properties"] = sttMultipartProps
+                                }
+                            },
+                            ["application/json"] = new Dictionary<string, object>
+                            {
+                                ["schema"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "object",
+                                    ["required"] = new[] { "audio_base64" },
+                                    ["properties"] = sttJsonProps
                                 }
                             }
                         }
                     },
-                    ["responses"] = Responses("application/json", new Dictionary<string, object>
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["200"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Transcription result (sync mode). Content-Type is application/json (default) or application/x-ndjson (when stream=true)",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["application/json"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new Dictionary<string, object>
+                                        {
+                                            ["text"] = Prop("string", "Full transcription text"),
+                                            ["language"] = Prop("string", "Detected language (ISO 639-1)"),
+                                            ["language_probability"] = PropNum("Detection confidence", 0, 0, 1),
+                                            ["duration_seconds"] = Prop("number", "Audio duration in seconds"),
+                                            ["processing_seconds"] = Prop("number", "Processing time in seconds"),
+                                            ["segments"] = new Dictionary<string, object>
+                                            {
+                                                ["type"] = "array",
+                                                ["description"] = "Timed transcript segments",
+                                                ["items"] = new Dictionary<string, object>
+                                                {
+                                                    ["type"] = "object",
+                                                    ["properties"] = new Dictionary<string, object>
+                                                    {
+                                                        ["start"] = Prop("number", "Segment start time in seconds"),
+                                                        ["end"] = Prop("number", "Segment end time in seconds"),
+                                                        ["text"] = Prop("string", "Segment text"),
+                                                        ["avg_logprob"] = Prop("number", "Average log probability"),
+                                                        ["no_speech_prob"] = Prop("number", "Probability of no speech"),
+                                                        ["words"] = new Dictionary<string, object>
+                                                        {
+                                                            ["type"] = "array",
+                                                            ["description"] = "Word-level timestamps (only when word_timestamps=true)",
+                                                            ["items"] = new Dictionary<string, object>
+                                                            {
+                                                                ["type"] = "object",
+                                                                ["properties"] = new Dictionary<string, object>
+                                                                {
+                                                                    ["start"] = Prop("number", "Word start time"),
+                                                                    ["end"] = Prop("number", "Word end time"),
+                                                                    ["word"] = Prop("string", "Word text"),
+                                                                    ["probability"] = Prop("number", "Word confidence")
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                ["application/x-ndjson"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["description"] = "NDJSON stream: each line is a segment object with type='segment', final line has type='result' with full text and metadata"
+                                    }
+                                }
+                            }
+                        },
+                        ["202"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Job accepted (async mode)",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["application/json"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new Dictionary<string, object>
+                                        {
+                                            ["jobId"] = new { type = "string", format = "uuid" },
+                                            ["status"] = new { type = "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ["404"] = ErrorResponse("Provider not found (when explicit provider is requested)"),
+                        ["415"] = ErrorResponse("Unsupported Content-Type"),
+                        ["422"] = ErrorResponse("Validation failed — field-level errors in 'fields'"),
+                        ["503"] = ErrorResponse("Provider not running")
+                    }
+                }
+            };
+            paths["/stt/jobs/{id}/output"] = new Dictionary<string, object>
+            {
+                ["get"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "SttJobOutput",
+                    ["summary"] = "Download the transcription result for a completed STT job",
+                    ["parameters"] = new object[] { PathParam("id", "string", "Job UUID") },
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["200"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Transcription JSON",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["application/json"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new { type = "object" }
+                                }
+                            }
+                        },
+                        ["409"] = ErrorResponse("Job still running"),
+                        ["404"] = ErrorResponse("Job or output not found")
+                    }
+                }
+            };
+            paths["/stt/models"] = new Dictionary<string, object>
+            {
+                ["get"] = Op("SttListModels", "List available Whisper models with size, VRAM requirements, and relative speed. Shows which model is currently loaded.", "application/json",
+                    new Dictionary<string, object>
                     {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object>
                         {
-                            ["text"] = new { type = "string" },
-                            ["language"] = new { type = "string" },
-                            ["duration_ms"] = new { type = "integer" }
+                            ["models"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object>
+                                    {
+                                        ["name"] = Prop("string", "Model identifier"),
+                                        ["parameters"] = Prop("string", "Parameter count"),
+                                        ["vram_gb"] = Prop("number", "Approximate VRAM usage in GB"),
+                                        ["relative_speed"] = Prop("integer", "Speed relative to large-v3 (higher = faster)")
+                                    }
+                                }
+                            },
+                            ["current"] = Prop("string", "Currently loaded model name")
                         }
                     })
-                }
+            };
+            paths["/stt/languages"] = new Dictionary<string, object>
+            {
+                ["get"] = Op("SttListLanguages", "List all supported languages with ISO 639-1 codes. Use these codes in the 'language' parameter.", "application/json",
+                    new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["languages"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "array",
+                                ["items"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object>
+                                    {
+                                        ["code"] = Prop("string", "ISO 639-1 language code"),
+                                        ["name"] = Prop("string", "Language name in English")
+                                    }
+                                }
+                            }
+                        }
+                    })
             };
         }
 

@@ -76,6 +76,24 @@ public class ConfigManager
                         }
                     }
                 },
+                ["stt"] = new()
+                {
+                    Enabled = false,
+                    ActiveProvider = "local-wsl",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["local-wsl"] = new()
+                        {
+                            Type = "LocalWsl",
+                            WslDistro = "Ubuntu-24.04",
+                            ServerPath = @"T:\Projects\faster-whisper-server",
+                            BackendPort = 8766,
+                            HealthEndpoint = "/health",
+                            Model = "large-v3",
+                            StartupTimeoutSeconds = 300
+                        }
+                    }
+                },
                 ["music-gen"] = new()
                 {
                     Enabled = false,

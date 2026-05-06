@@ -91,6 +91,7 @@ public class RelayServer
         OpenApiEndpoints.Map(_app, _config, _registry);
         ImageGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
+        SttEndpoints.Map(_app, _registry, _jobTracker, _log);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
         WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService);
         ClaudeSessionEndpoints.Map(_app, _claudeService);

@@ -159,12 +159,39 @@ public static class DiscoverEndpoints
                 {
                     Method = "POST",
                     Path = "/stt/transcribe",
-                    Description = "Transcribe audio to text",
+                    Description = "Transcribe audio to text. Accepts multipart/form-data (file upload) or application/json (base64-encoded audio). Returns full transcription with timed segments. Use stream=true for NDJSON segment streaming, ?async=true for background processing.",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
-                        ["audio"] = new() { Type = "file", Required = true, Description = "Audio file (wav, mp3, opus, flac)" },
-                        ["language"] = new() { Type = "string", Required = false, Default = "auto", Description = "Language hint (ISO 639-1 code or 'auto')" }
+                        ["audio"] = new() { Type = "file", Required = true, Description = "Audio file upload (wav, mp3, opus, flac, ogg, webm). Use multipart/form-data." },
+                        ["audio_base64"] = new() { Type = "string", Required = false, Description = "Alternative: base64-encoded audio in JSON body (use application/json content type instead of multipart)" },
+                        ["language"] = new() { Type = "string", Required = false, Default = "auto", Description = "ISO 639-1 language code (e.g. 'en', 'fr', 'ja') or 'auto' for detection. GET /stt/languages for full list." },
+                        ["task"] = new() { Type = "string", Required = false, Default = "transcribe", Enum = ["transcribe", "translate"], Description = "'transcribe' preserves source language, 'translate' outputs English" },
+                        ["word_timestamps"] = new() { Type = "boolean", Required = false, Default = false, Description = "Include word-level start/end times and confidence in each segment" },
+                        ["stream"] = new() { Type = "boolean", Required = false, Default = false, Description = "Stream segments as NDJSON lines as they are decoded. Each line is a JSON object with type='segment' or type='result'." },
+                        ["initial_prompt"] = new() { Type = "string", Required = false, Description = "Conditioning text for the model — use for vocabulary hints, acronyms, or prior context" },
+                        ["vad_filter"] = new() { Type = "boolean", Required = false, Default = true, Description = "Apply Silero Voice Activity Detection to skip silence regions" }
                     },
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false, OutputEndpoint = "/stt/jobs/{id}/output" }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/stt/jobs/{id}/output",
+                    Description = "Download the transcription result JSON for a completed STT job",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/stt/models",
+                    Description = "List available Whisper models with parameter count, VRAM requirements, and relative speed. Shows which model is currently loaded.",
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/stt/languages",
+                    Description = "List all supported languages with ISO 639-1 codes. Use these codes in the 'language' parameter of /stt/transcribe.",
                     Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
                 }
             },
@@ -370,7 +397,7 @@ public static class DiscoverEndpoints
         {
             foreach (var ep in result)
             {
-                if (ep.Method == "POST" && ep.Path.EndsWith("/generate") && ep.Parameters != null)
+                if (ep.Method == "POST" && (ep.Path.EndsWith("/generate") || ep.Path.EndsWith("/transcribe")) && ep.Parameters != null)
                     ep.Parameters["provider"] = providerParam;
             }
         }
