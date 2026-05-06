@@ -52,9 +52,25 @@ public class RelayServer
             options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
         });
 
+        builder.Services.AddCors(options =>
+        {
+            options.AddDefaultPolicy(policy =>
+            {
+                policy.AllowAnyOrigin()
+                      .AllowAnyHeader()
+                      .AllowAnyMethod();
+            });
+        });
+
         _app = builder.Build();
 
+        _app.UseCors();
         _app.UseWebSockets();
+        _app.Use(async (ctx, next) =>
+        {
+            ctx.Response.Headers["X-RedCompute-Version"] = "0.2.0";
+            await next();
+        });
         _app.UseMiddleware<BearerAuthMiddleware>((Func<string?>)(() => _config.Tunnel.AccessToken));
 
         // Prefer web/dist in the repo root for dev (live Vite rebuilds), fall back to wwwroot for production

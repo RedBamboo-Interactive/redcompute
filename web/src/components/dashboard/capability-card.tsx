@@ -4,7 +4,7 @@ import { api } from "@/api/client"
 import { MiniFrieze } from "./mini-frieze"
 import { QueueJobDialog } from "@/components/jobs/queue-job-dialog"
 import { useCapabilityJobs } from "@/hooks/use-capability-jobs"
-import type { CapabilityStatus } from "@/api/types"
+import type { CapabilityStatus, JobRecord } from "@/api/types"
 
 const capabilityIcons: Record<string, string> = {
   tts: "fa-solid fa-volume-high",

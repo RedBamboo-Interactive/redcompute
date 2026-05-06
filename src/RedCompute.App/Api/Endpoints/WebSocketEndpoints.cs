@@ -112,6 +112,38 @@ public static class WebSocketEndpoints
                     type = "tunnel.status",
                     description = "Fired when the Cloudflare tunnel status changes",
                     fields = new[] { "status", "hostname", "error" }
+                },
+                new
+                {
+                    type = "claude.session.created",
+                    description = "Fired when a new AI session is started",
+                    dataSchema = "ClaudeSessionInfo",
+                    fields = new[] { "id", "projectName", "projectPath", "status", "startedAt", "model", "claudeSessionId", "title", "messageCount", "permissionMode" }
+                },
+                new
+                {
+                    type = "claude.session.updated",
+                    description = "Fired when a session's status, tokens, cost, or title changes",
+                    dataSchema = "ClaudeSessionInfo",
+                    fields = new[] { "id", "projectName", "status", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "contextWindow", "effort", "permissionMode" }
+                },
+                new
+                {
+                    type = "claude.session.ended",
+                    description = "Fired when a session stops or errors out",
+                    fields = new[] { "id", "reason" }
+                },
+                new
+                {
+                    type = "claude.stream",
+                    description = "Fired for each streaming event from an active session (text, tool calls, thinking, errors)",
+                    fields = new[] { "sessionId", "event" },
+                    eventSchema = new
+                    {
+                        type_field = "type",
+                        types = new[] { "text", "thinking", "tool_use", "tool_result", "error", "status" },
+                        fields = new[] { "type", "content", "toolName", "toolInput", "toolResult", "isPartial", "messageId" }
+                    }
                 }
             }
         }));

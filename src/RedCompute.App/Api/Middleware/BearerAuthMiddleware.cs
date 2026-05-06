@@ -35,6 +35,12 @@ public class BearerAuthMiddleware
             return;
         }
 
+        if (context.Request.Path.StartsWithSegments("/ping"))
+        {
+            await _next(context);
+            return;
+        }
+
         string? provided = null;
 
         var authHeader = context.Request.Headers.Authorization.FirstOrDefault();

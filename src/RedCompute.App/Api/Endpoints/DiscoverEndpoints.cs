@@ -82,7 +82,7 @@ public static class DiscoverEndpoints
                     websocket = new
                     {
                         url = $"ws://localhost:{config.ApiPort}/ws",
-                        description = "Real-time event stream. Events: job.created, job.updated, log.entry, capability.status",
+                        description = "Real-time event stream. Events: job.created, job.updated, log.entry, capability.status, claude.session.created, claude.session.updated, claude.session.ended, claude.stream",
                         schemaEndpoint = "/ws/schema"
                     },
                     dashboard = new
@@ -233,14 +233,14 @@ public static class DiscoverEndpoints
                 {
                     Method = "POST",
                     Path = "/ai-session/generate",
-                    Description = "Start a new AI coding session in a project directory. Returns a long-running job that stays active until the session is stopped.",
+                    Description = "Start a new AI coding session in a project directory with an optional initial prompt.",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
                         ["project"] = new()
                         {
                             Type = "string",
                             Required = true,
-                            Description = "Project directory to start the session in",
+                            Description = "Project name to start the session in",
                             Enum = _claudeService?.ListProjects().Select(p => p.Name).ToList()
                         },
                         ["prompt"] = new()
@@ -255,24 +255,92 @@ public static class DiscoverEndpoints
                 new()
                 {
                     Method = "GET",
+                    Path = "/claude/projects",
+                    Description = "List available projects that can host AI sessions"
+                },
+                new()
+                {
+                    Method = "POST",
                     Path = "/claude/sessions",
-                    Description = "List all active AI sessions"
+                    Description = "Start a new session by project path",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["projectPath"] = new() { Type = "string", Required = true, Description = "Full path to the project directory" }
+                    }
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/claude/sessions",
+                    Description = "List all active and recent AI sessions"
+                },
+                new()
+                {
+                    Method = "GET",
+                    Path = "/claude/sessions/{id}",
+                    Description = "Get session details and full message history"
                 },
                 new()
                 {
                     Method = "POST",
                     Path = "/claude/sessions/{id}/message",
-                    Description = "Send a message to an active session",
+                    Description = "Send a message or images to an active session",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
-                        ["content"] = new() { Type = "string", Required = true, Description = "Message content" }
+                        ["content"] = new() { Type = "string", Required = false, Description = "Message text" },
+                        ["images"] = new() { Type = "array", Required = false, Description = "Array of {mediaType, base64} image attachments" }
                     }
                 },
                 new()
                 {
                     Method = "POST",
+                    Path = "/claude/sessions/{id}/interrupt",
+                    Description = "Interrupt the currently running operation in a session"
+                },
+                new()
+                {
+                    Method = "POST",
                     Path = "/claude/sessions/{id}/stop",
-                    Description = "Stop an active session gracefully"
+                    Description = "Stop a session gracefully"
+                },
+                new()
+                {
+                    Method = "POST",
+                    Path = "/claude/sessions/{id}/resume",
+                    Description = "Resume a previously stopped session"
+                },
+                new()
+                {
+                    Method = "POST",
+                    Path = "/claude/sessions/{id}/dismiss",
+                    Description = "Mark a stopped session as dismissed (hide from listings)"
+                },
+                new()
+                {
+                    Method = "POST",
+                    Path = "/claude/sessions/{id}/config",
+                    Description = "Update session model and effort configuration (restarts the session)",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["model"] = new() { Type = "string", Required = false, Description = "Model alias: sonnet, opus, haiku", Enum = ["sonnet", "opus", "haiku"] },
+                        ["effort"] = new() { Type = "string", Required = false, Description = "Reasoning effort level", Enum = ["low", "medium", "high", "xhigh", "max"] }
+                    }
+                },
+                new()
+                {
+                    Method = "POST",
+                    Path = "/claude/sessions/{id}/permission-mode",
+                    Description = "Set the permission mode for tool execution",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["mode"] = new() { Type = "string", Required = true, Description = "Permission mode", Enum = ["bypassPermissions", "plan", "default", "acceptEdits", "auto"] }
+                    }
+                },
+                new()
+                {
+                    Method = "DELETE",
+                    Path = "/claude/sessions/{id}",
+                    Description = "Force-kill a session process immediately"
                 }
             },
             _ => new List<EndpointManifest>()

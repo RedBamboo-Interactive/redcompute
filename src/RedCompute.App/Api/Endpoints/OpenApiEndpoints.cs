@@ -474,6 +474,150 @@ public static class OpenApiEndpoints
             };
         }
 
+        // AI Session (Claude Code) endpoints
+        paths["/ping"] = new Dictionary<string, object>
+        {
+            ["get"] = Op("Ping", "Health check — no auth required. Returns { ok: true, version }", "application/json",
+                new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object> { ["ok"] = new { type = "boolean" }, ["version"] = new { type = "string" } } })
+        };
+        paths["/claude/projects"] = new Dictionary<string, object>
+        {
+            ["get"] = Op("ClaudeListProjects", "List available projects that can host AI sessions", "application/json",
+                new Dictionary<string, object> { ["type"] = "array", ["items"] = new { @ref = "#/components/schemas/ProjectInfo" } })
+        };
+        paths["/claude/sessions"] = new Dictionary<string, object>
+        {
+            ["get"] = Op("ClaudeListSessions", "List all active and recent AI sessions", "application/json",
+                new Dictionary<string, object> { ["type"] = "array", ["items"] = new { @ref = "#/components/schemas/ClaudeSessionInfo" } }),
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeStartSession",
+                ["summary"] = "Start a new AI coding session in a project directory",
+                ["requestBody"] = RequestBody(new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["required"] = new[] { "projectPath" },
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["projectPath"] = Prop("string", "Full path to the project directory")
+                    }
+                }),
+                ["responses"] = Responses("application/json", new { @ref = "#/components/schemas/ClaudeSessionInfo" })
+            }
+        };
+        paths["/claude/sessions/{id}"] = new Dictionary<string, object>
+        {
+            ["get"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeGetSession",
+                ["summary"] = "Get session details and full message history",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["responses"] = Responses("application/json", new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["session"] = new { @ref = "#/components/schemas/ClaudeSessionInfo" },
+                        ["messages"] = new Dictionary<string, object> { ["type"] = "array", ["items"] = new { @ref = "#/components/schemas/ClaudeMessage" } }
+                    }
+                })
+            },
+            ["delete"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeForceKill",
+                ["summary"] = "Force-kill a session process immediately",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["responses"] = Responses("application/json", new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object> { ["killed"] = new { type = "boolean" } } })
+            }
+        };
+        paths["/claude/sessions/{id}/message"] = new Dictionary<string, object>
+        {
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeSendMessage",
+                ["summary"] = "Send a message or images to an active session",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["requestBody"] = RequestBody(new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["content"] = Prop("string", "Message text"),
+                        ["images"] = new Dictionary<string, object> { ["type"] = "array", ["description"] = "Image attachments", ["items"] = new { @ref = "#/components/schemas/ImageAttachment" } }
+                    }
+                }),
+                ["responses"] = Responses("application/json", new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object> { ["sent"] = new { type = "boolean" } } })
+            }
+        };
+        paths["/claude/sessions/{id}/interrupt"] = new Dictionary<string, object>
+        {
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeInterrupt",
+                ["summary"] = "Interrupt the currently running operation",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["responses"] = Responses("application/json", new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object> { ["interrupted"] = new { type = "boolean" } } })
+            }
+        };
+        paths["/claude/sessions/{id}/stop"] = new Dictionary<string, object>
+        {
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeStop",
+                ["summary"] = "Stop a session gracefully",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["responses"] = Responses("application/json", new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object> { ["stopped"] = new { type = "boolean" } } })
+            }
+        };
+        paths["/claude/sessions/{id}/resume"] = new Dictionary<string, object>
+        {
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeResume",
+                ["summary"] = "Resume a previously stopped session",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["responses"] = Responses("application/json", new { @ref = "#/components/schemas/ClaudeSessionInfo" })
+            }
+        };
+        paths["/claude/sessions/{id}/config"] = new Dictionary<string, object>
+        {
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeUpdateConfig",
+                ["summary"] = "Update model and effort (restarts the session process)",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["requestBody"] = RequestBody(new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["model"] = PropEnum("Model alias", "opus", "sonnet", "opus", "haiku"),
+                        ["effort"] = PropEnum("Reasoning effort", "high", "low", "medium", "high", "xhigh", "max")
+                    }
+                }),
+                ["responses"] = Responses("application/json", new { @ref = "#/components/schemas/ClaudeSessionInfo" })
+            }
+        };
+        paths["/claude/sessions/{id}/permission-mode"] = new Dictionary<string, object>
+        {
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeSetPermissionMode",
+                ["summary"] = "Set the permission mode for tool execution",
+                ["parameters"] = new object[] { PathParam("id", "string", "Session ID") },
+                ["requestBody"] = RequestBody(new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["required"] = new[] { "mode" },
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["mode"] = PropEnum("Permission mode", "bypassPermissions", "bypassPermissions", "plan", "default", "acceptEdits", "auto")
+                    }
+                }),
+                ["responses"] = Responses("application/json", new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object> { ["mode"] = new { type = "string" } } })
+            }
+        };
+
         return new Dictionary<string, object>
         {
             ["openapi"] = "3.1.0",
@@ -499,6 +643,68 @@ public static class OpenApiEndpoints
                             ["fields"] = new { type = "object", description = "Per-field validation errors (key=field, value=error)", additionalProperties = new { type = "string" } }
                         },
                         ["required"] = new[] { "error", "message" }
+                    },
+                    ["ClaudeSessionInfo"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["id"] = Prop("string", "Short session identifier"),
+                            ["projectName"] = Prop("string", "Project directory name"),
+                            ["projectPath"] = Prop("string", "Full path to project"),
+                            ["status"] = PropEnum("Session lifecycle state", "Idle", "Starting", "Active", "Idle", "Stopped", "Error"),
+                            ["startedAt"] = Prop("string", "ISO 8601 timestamp"),
+                            ["model"] = Prop("string", "Claude model identifier"),
+                            ["claudeSessionId"] = Prop("string", "Internal Claude session UUID (for resume)"),
+                            ["title"] = Prop("string", "Auto-generated conversation title"),
+                            ["messageCount"] = Prop("integer", "Number of messages exchanged"),
+                            ["costUsd"] = PropNum("Cost in USD", 0, 0, 999),
+                            ["inputTokens"] = Prop("integer", "Input tokens consumed"),
+                            ["outputTokens"] = Prop("integer", "Output tokens generated"),
+                            ["cacheReadInputTokens"] = Prop("integer", "Tokens read from prompt cache"),
+                            ["cacheCreationInputTokens"] = Prop("integer", "Tokens written to prompt cache"),
+                            ["contextWindow"] = Prop("integer", "Max context window size for current model"),
+                            ["effort"] = PropEnum("Reasoning effort level", "high", "low", "medium", "high", "xhigh", "max"),
+                            ["permissionMode"] = PropEnum("Tool permission mode", "bypassPermissions", "bypassPermissions", "plan", "default", "acceptEdits", "auto")
+                        }
+                    },
+                    ["ClaudeMessage"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["id"] = Prop("integer", "Auto-increment message ID"),
+                            ["sessionId"] = Prop("string", "Parent session ID"),
+                            ["role"] = PropEnum("Message author", "user", "user", "assistant"),
+                            ["eventType"] = PropEnum("Content type", "text", "text", "thinking", "tool_use", "tool_result", "error", "status"),
+                            ["content"] = Prop("string", "Text content"),
+                            ["toolName"] = Prop("string", "Tool name (for tool_use events)"),
+                            ["toolInput"] = Prop("string", "JSON-serialized tool input"),
+                            ["toolResult"] = Prop("string", "Tool execution result"),
+                            ["messageId"] = Prop("string", "Internal message ID for IPC linking"),
+                            ["timestamp"] = Prop("string", "ISO 8601 timestamp")
+                        }
+                    },
+                    ["ProjectInfo"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["name"] = Prop("string", "Project directory name"),
+                            ["path"] = Prop("string", "Full filesystem path"),
+                            ["hasClaudeMd"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Whether CLAUDE.md exists in the project" },
+                            ["hasIcon"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Whether a project icon is available" }
+                        }
+                    },
+                    ["ImageAttachment"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["required"] = new[] { "mediaType", "base64" },
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["mediaType"] = PropEnum("MIME type", "image/png", "image/png", "image/jpeg", "image/gif", "image/webp"),
+                            ["base64"] = Prop("string", "Base64-encoded image data")
+                        }
                     }
                 }
             }
