@@ -94,6 +94,18 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(new { sent = true });
         });
 
+        app.MapPost("/claude/sessions/{id}/answer", (string id, AnswerQuestionRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Answer))
+                return Results.UnprocessableEntity(new { error = "validation", message = "answer is required" });
+
+            var sent = claude.SendAnswer(id, req.Answer);
+            if (!sent)
+                return Results.NotFound(new { error = "send_failed", message = "Session not found or not active" });
+
+            return Results.Ok(new { sent = true });
+        });
+
         app.MapPost("/claude/sessions/{id}/interrupt", (string id) =>
         {
             var result = claude.InterruptSession(id);
@@ -246,6 +258,7 @@ public static class ClaudeSessionEndpoints
 
     private record StartSessionRequest(string? ProjectPath);
     private record SendMessageRequest(string? Content, ImageAttachment[]? Images);
+    private record AnswerQuestionRequest(string? Answer);
     private record SetPermissionModeRequest(string? Mode);
     private record UpdateConfigRequest(string? Model, string? Effort);
 }

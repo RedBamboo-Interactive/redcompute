@@ -360,6 +360,16 @@ public static class DiscoverEndpoints
                 new()
                 {
                     Method = "POST",
+                    Path = "/claude/sessions/{id}/answer",
+                    Description = "Answer a pending AskUserQuestion tool call",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["answer"] = new() { Type = "string", Required = true, Description = "The user's answer to the question" }
+                    }
+                },
+                new()
+                {
+                    Method = "POST",
                     Path = "/claude/sessions/{id}/interrupt",
                     Description = "Interrupt the currently running operation in a session"
                 },

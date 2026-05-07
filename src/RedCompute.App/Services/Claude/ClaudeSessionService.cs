@@ -440,6 +440,38 @@ public class ClaudeSessionService
         }
     }
 
+    public bool SendAnswer(string sessionId, string answer)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session))
+            return false;
+
+        if (session.Info.Status is SessionStatus.Stopped or SessionStatus.Error)
+            return false;
+
+        try
+        {
+            var msg = new
+            {
+                type = "user",
+                message = new { role = "user", content = (object)answer },
+                parent_tool_use_id = (string?)null
+            };
+            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
+            session.Process.StandardInput.Flush();
+            session.Info.Status = SessionStatus.Active;
+            SessionUpdated?.Invoke(session.Info);
+
+            PersistMessage(sessionId, "user", "text", answer, null, null, null, null);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to send answer to {sessionId}: {ex.Message}", null);
+            return false;
+        }
+    }
+
     public enum InterruptResult { Interrupted, NotActive, NotFound, Error }
 
     public InterruptResult InterruptSession(string sessionId)
@@ -839,6 +871,7 @@ public class ClaudeSessionService
                 return null;
 
             default:
+                _log($"[Claude] Unhandled event type '{type}': {line.Substring(0, Math.Min(line.Length, 500))}", null);
                 return null;
         }
     }
