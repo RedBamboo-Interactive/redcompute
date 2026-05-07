@@ -931,24 +931,7 @@ public class ClaudeSessionService
     private static ClaudeStreamEvent? ParseAssistantEvent(JsonElement root)
     {
         if (!root.TryGetProperty("message", out var message))
-        {
-            // content_block_delta style event — token-level streaming
-            if (root.TryGetProperty("content_block", out var block))
-            {
-                var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
-                if (blockType == "thinking")
-                {
-                    var thinking = block.TryGetProperty("thinking", out var t) ? t.GetString() : null;
-                    return new ClaudeStreamEvent { Type = "thinking", Content = thinking, IsPartial = true };
-                }
-                if (blockType == "text")
-                {
-                    var text = block.TryGetProperty("text", out var t) ? t.GetString() : null;
-                    return new ClaudeStreamEvent { Type = "text", Content = text, IsPartial = true };
-                }
-            }
             return null;
-        }
 
         if (!message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
             return null;
@@ -987,6 +970,7 @@ public class ClaudeSessionService
             return null;
 
         var evtType = evt.TryGetProperty("type", out var et) ? et.GetString() : null;
+
         if (evtType != "content_block_delta")
             return null;
 
