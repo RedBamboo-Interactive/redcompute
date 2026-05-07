@@ -82,7 +82,6 @@ export function JobsPage({ jobs, selectedJob, onSelectJob }: {
 
   return (
     <div className="flex flex-col gap-2 h-full p-4 md:p-6">
-      <h1 className="text-[20px] font-semibold text-white opacity-95">Job Monitor</h1>
 
       <ActivityFrieze jobs={activityJobs} />
 

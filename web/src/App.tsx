@@ -4,8 +4,6 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { AppShell } from "@/components/layout/app-shell"
 import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"
-import { LogsPage } from "@/pages/logs"
-import { SettingsPage } from "@/pages/settings"
 import { TokenPrompt } from "@/components/auth/token-prompt"
 import { useCapabilities } from "@/hooks/use-capabilities"
 import { useJobs } from "@/hooks/use-jobs"
@@ -85,31 +83,26 @@ export default function App() {
     <HashRouter>
       <TooltipProvider>
         <Routes>
-          <Route element={<AppShell />}>
+          <Route element={
+            <AppShell
+              settings={settings.settings}
+              saving={settings.saving}
+              onUpdateGeneral={settings.updateGeneral}
+              onUpdateCapability={settings.updateCapability}
+              onUpdateProvider={settings.updateProvider}
+              logEntries={logs.entries}
+              logTags={logs.tags}
+              logSearch={logs.search}
+              setLogSearch={logs.setSearch}
+              logTagFilter={logs.tagFilter}
+              setLogTagFilter={logs.setTagFilter}
+              logSelectedEntry={logs.selectedEntry}
+              setLogSelectedEntry={logs.setSelectedEntry}
+              logAutoScrollRef={logs.autoScrollRef}
+            />
+          }>
             <Route index element={<DashboardPage capabilities={caps.capabilities} onRefresh={caps.refresh} />} />
             <Route path="jobs" element={<JobsPage jobs={jobs.jobs} selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} />} />
-            <Route path="logs" element={
-              <LogsPage
-                entries={logs.entries}
-                tags={logs.tags}
-                search={logs.search}
-                setSearch={logs.setSearch}
-                tagFilter={logs.tagFilter}
-                setTagFilter={logs.setTagFilter}
-                selectedEntry={logs.selectedEntry}
-                setSelectedEntry={logs.setSelectedEntry}
-                autoScrollRef={logs.autoScrollRef}
-              />
-            } />
-            <Route path="settings" element={
-              <SettingsPage
-                settings={settings.settings}
-                saving={settings.saving}
-                onUpdateGeneral={settings.updateGeneral}
-                onUpdateCapability={settings.updateCapability}
-                onUpdateProvider={settings.updateProvider}
-              />
-            } />
           </Route>
         </Routes>
       </TooltipProvider>

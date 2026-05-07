@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
-import { QRCodeSVG } from "qrcode.react"
-import type { Settings } from "@/api/types"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { api } from "@/api/client"
+import type { Settings } from "@/api/types"
 
 interface DiscoverEndpoint { method: string; path: string; description: string }
 interface DiscoverResponse {
@@ -12,7 +12,9 @@ interface DiscoverResponse {
 const inputClass = "bg-surface-deep border border-white/10 rounded px-2 py-1 outline-none text-white text-[13px] font-mono focus:border-white/30"
 const inputSmClass = "bg-surface-deep border border-white/10 rounded px-2 py-1 outline-none text-white text-[11px] font-mono min-w-0 focus:border-white/30"
 
-export function SettingsPage({ settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider }: {
+export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
   settings: Settings | null
   saving: boolean
   onUpdateGeneral: (updates: Record<string, unknown>) => void
@@ -29,6 +31,7 @@ export function SettingsPage({ settings, saving, onUpdateGeneral, onUpdateCapabi
   const [showAccessToken, setShowAccessToken] = useState(false)
 
   useEffect(() => {
+    if (!open) return
     api.get<DiscoverResponse>("/discover").then(data => {
       const all: DiscoverEndpoint[] = []
       for (const cap of data.capabilities)
@@ -36,9 +39,9 @@ export function SettingsPage({ settings, saving, onUpdateGeneral, onUpdateCapabi
       all.push(...data.management.endpoints)
       setEndpoints(all)
     }).catch(() => {})
-  }, [])
+  }, [open])
 
-  if (!settings) return <p className="text-text-muted p-8">Loading settings...</p>
+  if (!settings) return null
 
   const tunnel = settings.tunnel
   const statusColor = {
@@ -49,126 +52,118 @@ export function SettingsPage({ settings, saving, onUpdateGeneral, onUpdateCapabi
   }[tunnel.status] ?? "#727680"
 
   return (
-    <div className="p-4 md:p-6 max-w-[600px]">
-      <h1 className="text-[20px] font-semibold text-white opacity-95 mb-5">Settings</h1>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-surface-elevated border-border-subtle max-w-lg w-[calc(100vw-2rem)] max-h-[85dvh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Settings</DialogTitle>
+        </DialogHeader>
 
-      {/* GENERAL */}
-      <SectionLabel>GENERAL</SectionLabel>
-      <div className="bg-surface-elevated rounded-lg p-4 mb-4">
-        <FieldRow label="API Port">
-          <input type="number" className={`${inputClass} w-24`}
-            placeholder={String(settings.apiPort)} value={port}
-            onChange={e => setPort(e.target.value)}
-            onBlur={() => { if (port && port !== String(settings.apiPort)) { onUpdateGeneral({ apiPort: Number(port) }); setPort("") } }} />
-        </FieldRow>
-      </div>
-
-      {/* REMOTE ACCESS */}
-      <SectionLabel>REMOTE ACCESS</SectionLabel>
-      <div className="bg-surface-elevated rounded-lg p-4 mb-4">
-        <FieldRow label="Status">
-          <div className="flex items-center gap-2">
-            <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: statusColor }} />
-            <span className="text-white text-[11px]">{tunnel.status}</span>
-            {tunnel.status === "Running" && tunnel.hostname && (
-              <button
-                className="text-[11px] text-text-muted hover:text-white font-mono ml-1 transition-colors"
-                onClick={() => navigator.clipboard.writeText(`https://${tunnel.hostname}`)}
-                title="Copy URL"
-              >
-                https://{tunnel.hostname}
-              </button>
-            )}
-          </div>
-        </FieldRow>
-        {tunnel.error && (
-          <FieldRow label="">
-            <span className="text-[11px] text-red-400">{tunnel.error}</span>
+        {/* GENERAL */}
+        <SectionLabel>GENERAL</SectionLabel>
+        <div className="bg-surface-deep rounded-lg p-4 mb-4">
+          <FieldRow label="API Port">
+            <input type="number" className={`${inputClass} w-24`}
+              placeholder={String(settings.apiPort)} value={port}
+              onChange={e => setPort(e.target.value)}
+              onBlur={() => { if (port && port !== String(settings.apiPort)) { onUpdateGeneral({ apiPort: Number(port) }); setPort("") } }} />
           </FieldRow>
-        )}
-        <FieldRow label="Enabled">
-          <Toggle enabled={tunnel.enabled} disabled={saving}
-            onToggle={() => onUpdateGeneral({ tunnelEnabled: !tunnel.enabled })} />
-        </FieldRow>
-        <FieldRow label="Tunnel Token">
-          <div className="flex items-center gap-1">
-            <input
-              type={showTunnelToken ? "text" : "password"}
-              className={`${inputSmClass} flex-1`}
-              placeholder={tunnel.tunnelToken ? "***" : "Paste from Cloudflare dashboard"}
-              value={tunnelToken}
-              onChange={e => setTunnelToken(e.target.value)}
-              onBlur={() => { if (tunnelToken) { onUpdateGeneral({ tunnelToken }); setTunnelToken("") } }}
-            />
-            <button className="text-[10px] text-text-muted hover:text-white shrink-0 transition-colors"
-              onClick={() => setShowTunnelToken(!showTunnelToken)}>{showTunnelToken ? "hide" : "show"}</button>
-          </div>
-        </FieldRow>
-        <FieldRow label="Access Token">
-          <div className="flex items-center gap-1">
-            <input
-              type={showAccessToken ? "text" : "password"}
-              className={`${inputSmClass} flex-1`}
-              placeholder={tunnel.accessToken ? "***" : "Auto-generated on enable"}
-              value={accessToken}
-              onChange={e => setAccessToken(e.target.value)}
-              onBlur={() => { if (accessToken) { onUpdateGeneral({ tunnelAccessToken: accessToken }); setAccessToken("") } }}
-            />
-            <button className="text-[10px] text-text-muted hover:text-white shrink-0 transition-colors"
-              onClick={() => setShowAccessToken(!showAccessToken)}>{showAccessToken ? "hide" : "show"}</button>
-          </div>
-        </FieldRow>
-        <FieldRow label="Hostname">
-          <input
-            type="text"
-            className={`${inputSmClass} w-full`}
-            placeholder={tunnel.hostname ?? "redcompute.example.com"}
-            value={hostname}
-            onChange={e => setHostname(e.target.value)}
-            onBlur={() => { if (hostname && hostname !== (tunnel.hostname ?? "")) { onUpdateGeneral({ tunnelHostname: hostname }); setHostname("") } }}
-          />
-        </FieldRow>
-        <FieldRow label="Cloudflared Path">
-          <input
-            type="text"
-            className={`${inputSmClass} w-full`}
-            placeholder={tunnel.cloudflaredPath ?? "auto-detect"}
-            value={cloudflaredPath}
-            onChange={e => setCloudflaredPath(e.target.value)}
-            onBlur={() => { if (cloudflaredPath) { onUpdateGeneral({ tunnelCloudflaredPath: cloudflaredPath }); setCloudflaredPath("") } }}
-          />
-        </FieldRow>
-        {tunnel.status === "Running" && tunnel.hostname && tunnel.accessToken && tunnel.accessToken !== "***" && (
-          <div className="mt-3 pt-3 border-t border-white/5 flex flex-col items-center gap-2">
-            <p className="text-[11px] text-text-muted">Scan to connect from your phone</p>
-            <QRCodeSVG
-              value={`https://${tunnel.hostname}/#/?token=${tunnel.accessToken}`}
-              size={160}
-              bgColor="transparent"
-              fgColor="#ffffff"
-              level="M"
-            />
-          </div>
-        )}
-      </div>
+        </div>
 
-      {/* CAPABILITIES */}
-      <SectionLabel>CAPABILITIES</SectionLabel>
-      {Object.entries(settings.capabilities).map(([slug, cap]) => (
-        <CapabilityCard key={slug} slug={slug} cap={cap} saving={saving}
-          onUpdateCapability={onUpdateCapability}
-          onUpdateProvider={onUpdateProvider} />
-      ))}
+        {/* REMOTE ACCESS */}
+        <SectionLabel>REMOTE ACCESS</SectionLabel>
+        <div className="bg-surface-deep rounded-lg p-4 mb-4">
+          <FieldRow label="Status">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: statusColor }} />
+              <span className="text-white text-[11px]">{tunnel.status}</span>
+              {tunnel.status === "Running" && tunnel.hostname && (
+                <button
+                  className="text-[11px] text-text-muted hover:text-white font-mono ml-1 transition-colors"
+                  onClick={() => navigator.clipboard.writeText(`https://${tunnel.hostname}`)}
+                  title="Copy URL"
+                >
+                  https://{tunnel.hostname}
+                </button>
+              )}
+            </div>
+          </FieldRow>
+          {tunnel.error && (
+            <FieldRow label="">
+              <span className="text-[11px] text-red-400">{tunnel.error}</span>
+            </FieldRow>
+          )}
+          <FieldRow label="Enabled">
+            <Toggle enabled={tunnel.enabled} disabled={saving}
+              onToggle={() => onUpdateGeneral({ tunnelEnabled: !tunnel.enabled })} />
+          </FieldRow>
+          <FieldRow label="Tunnel Token">
+            <div className="flex items-center gap-1">
+              <input
+                type={showTunnelToken ? "text" : "password"}
+                className={`${inputSmClass} flex-1`}
+                placeholder={tunnel.tunnelToken ? "***" : "Paste from Cloudflare dashboard"}
+                value={tunnelToken}
+                onChange={e => setTunnelToken(e.target.value)}
+                onBlur={() => { if (tunnelToken) { onUpdateGeneral({ tunnelToken }); setTunnelToken("") } }}
+              />
+              <button className="text-[10px] text-text-muted hover:text-white shrink-0 transition-colors"
+                onClick={() => setShowTunnelToken(!showTunnelToken)}>{showTunnelToken ? "hide" : "show"}</button>
+            </div>
+          </FieldRow>
+          <FieldRow label="Access Token">
+            <div className="flex items-center gap-1">
+              <input
+                type={showAccessToken ? "text" : "password"}
+                className={`${inputSmClass} flex-1`}
+                placeholder={tunnel.accessToken ? "***" : "Auto-generated on enable"}
+                value={accessToken}
+                onChange={e => setAccessToken(e.target.value)}
+                onBlur={() => { if (accessToken) { onUpdateGeneral({ tunnelAccessToken: accessToken }); setAccessToken("") } }}
+              />
+              <button className="text-[10px] text-text-muted hover:text-white shrink-0 transition-colors"
+                onClick={() => setShowAccessToken(!showAccessToken)}>{showAccessToken ? "hide" : "show"}</button>
+            </div>
+          </FieldRow>
+          <FieldRow label="Hostname">
+            <input
+              type="text"
+              className={`${inputSmClass} w-full`}
+              placeholder={tunnel.hostname ?? "redcompute.example.com"}
+              value={hostname}
+              onChange={e => setHostname(e.target.value)}
+              onBlur={() => { if (hostname && hostname !== (tunnel.hostname ?? "")) { onUpdateGeneral({ tunnelHostname: hostname }); setHostname("") } }}
+            />
+          </FieldRow>
+          <FieldRow label="Cloudflared Path">
+            <input
+              type="text"
+              className={`${inputSmClass} w-full`}
+              placeholder={tunnel.cloudflaredPath ?? "auto-detect"}
+              value={cloudflaredPath}
+              onChange={e => setCloudflaredPath(e.target.value)}
+              onBlur={() => { if (cloudflaredPath) { onUpdateGeneral({ tunnelCloudflaredPath: cloudflaredPath }); setCloudflaredPath("") } }}
+            />
+          </FieldRow>
+        </div>
 
-      {/* API ENDPOINTS */}
-      <SectionLabel>API ENDPOINTS</SectionLabel>
-      <div className="bg-surface-elevated rounded-lg p-4 mb-4 space-y-1">
-        {endpoints.map((ep, i) => (
-          <EndpointLine key={i} method={ep.method} path={ep.path} description={ep.description} />
+        {/* CAPABILITIES */}
+        <SectionLabel>CAPABILITIES</SectionLabel>
+        {Object.entries(settings.capabilities).map(([slug, cap]) => (
+          <CapabilitySettingsCard key={slug} slug={slug} cap={cap} saving={saving}
+            onUpdateCapability={onUpdateCapability}
+            onUpdateProvider={onUpdateProvider} />
         ))}
-        {endpoints.length === 0 && <p className="text-[11px] text-text-muted">Loading...</p>}
-      </div>
-    </div>
+
+        {/* API ENDPOINTS */}
+        <SectionLabel>API ENDPOINTS</SectionLabel>
+        <div className="bg-surface-deep rounded-lg p-4 mb-4 space-y-1">
+          {endpoints.map((ep, i) => (
+            <EndpointLine key={i} method={ep.method} path={ep.path} description={ep.description} />
+          ))}
+          {endpoints.length === 0 && <p className="text-[11px] text-text-muted">Loading...</p>}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -211,7 +206,7 @@ const PROVIDER_FIELDS: { key: string; label: string; type?: "number" | "password
 
 type CapabilityEntry = Settings["capabilities"][string]
 
-function CapabilityCard({ slug, cap, saving, onUpdateCapability, onUpdateProvider }: {
+function CapabilitySettingsCard({ slug, cap, saving, onUpdateCapability, onUpdateProvider }: {
   slug: string
   cap: CapabilityEntry
   saving: boolean
@@ -239,7 +234,7 @@ function CapabilityCard({ slug, cap, saving, onUpdateCapability, onUpdateProvide
   }
 
   return (
-    <div className={`bg-surface-elevated rounded-lg p-4 mb-3 ${!cap.enabled ? "opacity-50" : ""}`}>
+    <div className={`bg-surface-deep rounded-lg p-4 mb-3 ${!cap.enabled ? "opacity-50" : ""}`}>
       <div className="flex items-center justify-between mb-2">
         <span className="text-[13px] font-semibold text-white">{slug}</span>
         <Toggle enabled={cap.enabled} disabled={saving}

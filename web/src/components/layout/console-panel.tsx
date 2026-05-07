@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react"
 import type { LogEntry, TagInfo } from "@/api/types"
 
-export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFilter, selectedEntry, setSelectedEntry, autoScrollRef }: {
+export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSearch, tagFilter, setTagFilter, selectedEntry, setSelectedEntry, autoScrollRef }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
   entries: LogEntry[]
   tags: TagInfo[]
   search: string
@@ -15,18 +17,32 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (autoScrollRef.current) {
+    if (open && autoScrollRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" })
     }
-  }, [entries.length, autoScrollRef])
+  }, [entries.length, open, autoScrollRef])
+
+  if (!open) return null
 
   return (
-    <div className="flex flex-col h-full p-4 md:p-6">
-      <h1 className="text-[20px] font-semibold text-white opacity-95 mb-2">Logs</h1>
-      <div className="bg-surface-elevated rounded-lg flex-1 flex flex-col overflow-hidden">
-        {/* Toolbar — matches WPF ConsoleTabContent toolbar */}
-        <div className="flex flex-col gap-2 px-3 py-2 border-b border-[#3F4147] md:flex-row md:items-center md:gap-3 md:flex-wrap">
-          {/* Search box */}
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/40" onClick={() => onOpenChange(false)} />
+
+      <div className="relative w-full max-w-2xl bg-surface-deep border-l border-border-subtle flex flex-col h-full">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] shrink-0">
+          <span className="text-sm font-semibold text-white">Console</span>
+          <button
+            onClick={() => onOpenChange(false)}
+            className="text-text-muted hover:text-white p-1.5 rounded hover:bg-white/10 transition-colors"
+            title="Close console"
+          >
+            <i className="fa-solid fa-xmark text-sm" />
+          </button>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex flex-col gap-2 px-3 py-2 border-b border-[#3F4147] shrink-0 md:flex-row md:items-center md:gap-3 md:flex-wrap">
           <div className="flex items-center gap-1.5 bg-white/[0.08] rounded px-2 py-1.5 w-full md:max-w-[250px] md:w-auto md:py-1">
             <i className="fa-solid fa-magnifying-glass text-[11px] text-text-disabled" />
             <input
@@ -38,7 +54,6 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
             />
           </div>
 
-          {/* Tag filter chips */}
           <div className="flex gap-1.5 overflow-x-auto flex-nowrap md:flex-wrap md:flex-1 md:overflow-visible">
             {tags.map(t => (
               <button
@@ -66,7 +81,7 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
           </div>
         </div>
 
-        {/* Log entries list */}
+        {/* Log entries */}
         <div className="flex-1 overflow-auto">
           {entries.map(entry => (
             <button
@@ -76,12 +91,10 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
                 selectedEntry?.id === entry.id ? "bg-white/[0.08]" : "hover:bg-white/[0.03]"
               }`}
             >
-              {/* Timestamp — Consolas, 11px, muted */}
               <span className="font-mono text-[11px] text-white/40 w-[82px] shrink-0 hidden md:inline">
                 {formatTimestamp(entry.timestamp)}
               </span>
 
-              {/* Tag badge — colored background */}
               {entry.tag && (
                 <span
                   className="rounded px-1.5 py-px text-[10px] font-medium shrink-0"
@@ -94,14 +107,12 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
                 </span>
               )}
 
-              {/* Message — Consolas, 12px */}
               <span className={`font-mono text-[12px] flex-1 truncate ${
                 entry.isError ? "text-accent-red" : "text-[#DCDDDE]"
               }`}>
                 {entry.message}
               </span>
 
-              {/* Expand chevron for multiline */}
               {entry.isMultiline && (
                 <i className="fa-solid fa-chevron-down text-[10px] text-white/30 mt-1 shrink-0" />
               )}
@@ -110,11 +121,11 @@ export function LogsPage({ entries, tags, search, setSearch, tagFilter, setTagFi
           <div ref={bottomRef} />
         </div>
 
-        {/* Detail panel — shown when entry is selected */}
+        {/* Detail panel */}
         {selectedEntry && (
           <>
-            <div className="h-px bg-border-subtle" />
-            <div className="bg-white/[0.08] px-3 py-2 min-h-[120px] max-h-[400px] overflow-auto">
+            <div className="h-px bg-border-subtle shrink-0" />
+            <div className="bg-white/[0.08] px-3 py-2 min-h-[120px] max-h-[400px] overflow-auto shrink-0">
               <div className="flex items-center gap-2 mb-2">
                 <span className="font-mono text-[11px] text-white/40">
                   {formatTimestamp(selectedEntry.timestamp)}
