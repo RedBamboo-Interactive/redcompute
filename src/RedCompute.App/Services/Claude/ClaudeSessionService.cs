@@ -452,12 +452,18 @@ public class ClaudeSessionService
 
         try
         {
-            var msg = new { type = "abort" };
+            var requestId = $"interrupt-{++session.ControlRequestCounter}";
+            var msg = new
+            {
+                type = "control_request",
+                request_id = requestId,
+                request = new { subtype = "interrupt" }
+            };
             session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
             session.Process.StandardInput.Flush();
             session.InterruptPending = true;
 
-            _log($"[Claude] Interrupt sent for session {sessionId}", null);
+            _log($"[Claude] Interrupt sent for session {sessionId} (request {requestId})", null);
 
             StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent
             {
@@ -465,12 +471,44 @@ public class ClaudeSessionService
                 Content = "interrupting"
             });
 
+            // CLI often acknowledges but doesn't actually abort — kill after timeout
+            _ = ForceInterruptAfterTimeout(sessionId, session, TimeSpan.FromSeconds(3));
+
             return InterruptResult.Interrupted;
         }
         catch (Exception ex)
         {
             _log($"[Claude] Failed to send interrupt to {sessionId}: {ex.Message}", null);
             return InterruptResult.Error;
+        }
+    }
+
+    private async Task ForceInterruptAfterTimeout(string sessionId, ManagedSession session, TimeSpan timeout)
+    {
+        try
+        {
+            await Task.Delay(timeout, session.Cts.Token);
+        }
+        catch (OperationCanceledException) { return; }
+
+        if (!session.InterruptPending)
+            return;
+
+        _log($"[Claude] Interrupt not honored after {timeout.TotalSeconds}s, killing session {sessionId}", null);
+
+        // Emit interrupted status so the frontend stops streaming immediately
+        StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "interrupted" });
+
+        try { session.Process.Kill(entireProcessTree: true); } catch { }
+
+        // Wait for OnProcessExited cleanup, then auto-resume
+        try { await session.Process.WaitForExitAsync(); } catch { }
+        await Task.Delay(300);
+
+        if (!string.IsNullOrEmpty(session.Info.ClaudeSessionId))
+        {
+            _log($"[Claude] Auto-resuming session {sessionId} after forced interrupt", null);
+            ResumeSession(sessionId);
         }
     }
 
@@ -511,13 +549,22 @@ public class ClaudeSessionService
 
         _log($"[Claude] Stopping session {sessionId}", null);
 
+        // Try graceful interrupt first, then kill quickly
         try
         {
-            session.Process.StandardInput.Close();
+            var requestId = $"stop-{++session.ControlRequestCounter}";
+            var msg = new
+            {
+                type = "control_request",
+                request_id = requestId,
+                request = new { subtype = "interrupt" }
+            };
+            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
+            session.Process.StandardInput.Flush();
         }
         catch { }
 
-        var exited = await WaitForExit(session.Process, TimeSpan.FromSeconds(10));
+        var exited = await WaitForExit(session.Process, TimeSpan.FromSeconds(3));
         if (!exited)
         {
             try { session.Process.Kill(entireProcessTree: true); } catch { }
