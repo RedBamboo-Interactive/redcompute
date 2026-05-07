@@ -10,7 +10,7 @@ export function DashboardPage({ capabilities, onRefresh }: {
       {capabilities.length === 0 ? (
         <p className="text-text-muted">No capabilities registered. Check your config.json.</p>
       ) : (
-        <div className="flex flex-col gap-4 md:flex-row md:flex-wrap md:gap-x-5 md:gap-y-5">
+        <div className="grid grid-cols-2 gap-3">
           {capabilities.map(cap => (
             <CapabilityCard key={cap.slug} cap={cap} onRefresh={onRefresh} />
           ))}

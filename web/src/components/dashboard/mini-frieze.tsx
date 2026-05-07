@@ -64,7 +64,7 @@ export function MiniFrieze({ jobs, count = 32 }: { jobs: JobRecord[]; count?: nu
   return (
     <div className="flex flex-wrap justify-center">
       {segments.map((seg, i) => (
-        <div key={i} className="w-2 h-2 p-px" title={seg.tooltip || undefined}>
+        <div key={i} style={{ width: 8, height: 8 }} className="p-px" title={seg.tooltip || undefined}>
           <div className="w-full h-full rounded-[1px]" style={{ backgroundColor: seg.color }} />
         </div>
       ))}

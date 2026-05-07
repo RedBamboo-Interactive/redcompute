@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { api } from "@/api/client"
 import { MiniFrieze } from "./mini-frieze"
@@ -26,6 +26,8 @@ function statusIconColor(status: string, sleeping: boolean): string {
   }
 }
 
+const SQUARE_PX = 8
+
 export function CapabilityCard({ cap, onRefresh }: {
   cap: CapabilityStatus
   onRefresh: () => void
@@ -36,6 +38,21 @@ export function CapabilityCard({ cap, onRefresh }: {
   const iconColor = statusIconColor(cap.status, cap.sleeping)
   const capJobs = useCapabilityJobs(cap.slug)
   const hasMultipleProviders = (cap.providers?.length ?? 0) > 1
+
+  const friezeRef = useRef<HTMLDivElement>(null)
+  const [friezeCols, setFriezeCols] = useState(0)
+
+  const measure = useCallback(() => {
+    if (!friezeRef.current) return
+    setFriezeCols(Math.floor(friezeRef.current.clientWidth / SQUARE_PX))
+  }, [])
+
+  useEffect(() => {
+    measure()
+    const ro = new ResizeObserver(measure)
+    if (friezeRef.current) ro.observe(friezeRef.current)
+    return () => ro.disconnect()
+  }, [measure])
 
   async function togglePower(providerName?: string) {
     try {
@@ -60,7 +77,7 @@ export function CapabilityCard({ cap, onRefresh }: {
 
   return (
     <>
-      <div className="w-full md:w-[310px] rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
+      <div className="rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
         <div className="bg-surface-elevated rounded-xl p-5">
           {/* Action buttons — top right */}
           <div className="flex justify-end gap-0 -mt-1 -mr-1 mb-0">
@@ -125,17 +142,15 @@ export function CapabilityCard({ cap, onRefresh }: {
             )}
           </div>
 
-          {/* Separator — full-width (negative margin to match WPF -20,0) */}
+          {/* Separator */}
           <div className="h-px bg-border-subtle opacity-50 -mx-5" />
 
-          {/* Mini frieze (activity timeline) */}
-          <div className="mt-3.5 mb-1.5">
-            <MiniFrieze jobs={capJobs} count={32} />
-          </div>
-
-          {/* Job frieze (recent job results) */}
-          <div className="mb-0.5">
-            <JobFrieze jobs={capJobs} count={32} onSelectJob={id => navigate(`/jobs?select=${id}`)} />
+          {/* Friezes — adaptive to card width */}
+          <div ref={friezeRef} className="mt-3.5">
+            <div className="mb-1.5">
+              <MiniFrieze jobs={capJobs} count={friezeCols} />
+            </div>
+            <JobFrieze jobs={capJobs} count={friezeCols} onSelectJob={id => navigate(`/jobs?select=${id}`)} />
           </div>
         </div>
       </div>
@@ -180,7 +195,8 @@ function JobFrieze({ jobs, count, onSelectJob }: { jobs: JobRecord[]; count: num
       {segments.map((seg, i) => (
         <div
           key={i}
-          className={`w-2 h-2 p-px ${seg.jobId ? "cursor-pointer" : ""}`}
+          style={{ width: SQUARE_PX, height: SQUARE_PX }}
+          className={`p-px ${seg.jobId ? "cursor-pointer" : ""}`}
           title={seg.tooltip || undefined}
           onClick={seg.jobId ? () => onSelectJob(seg.jobId!) : undefined}
         >
