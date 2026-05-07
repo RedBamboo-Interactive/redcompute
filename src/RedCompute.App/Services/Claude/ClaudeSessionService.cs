@@ -766,7 +766,7 @@ public class ClaudeSessionService
 
     private string BuildArgs(string? resumeClaudeSessionId = null, string? model = null, string? effort = null)
     {
-        var sb = new StringBuilder("--output-format stream-json --verbose --input-format stream-json --permission-mode bypassPermissions");
+        var sb = new StringBuilder("--output-format stream-json --verbose --input-format stream-json --include-partial-messages --permission-mode bypassPermissions");
         var m = model ?? _config.Model;
         if (m != null)
             sb.Append($" --model {m}");
@@ -867,6 +867,9 @@ public class ClaudeSessionService
                 HandleControlResponse(root, session);
                 return null;
 
+            case "stream_event":
+                return ParseStreamEvent(root);
+
             case "rate_limit_event":
                 return null;
 
@@ -929,14 +932,19 @@ public class ClaudeSessionService
     {
         if (!root.TryGetProperty("message", out var message))
         {
-            // Might be a content_block_delta style event
+            // content_block_delta style event — token-level streaming
             if (root.TryGetProperty("content_block", out var block))
             {
                 var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
                 if (blockType == "thinking")
                 {
                     var thinking = block.TryGetProperty("thinking", out var t) ? t.GetString() : null;
-                    return new ClaudeStreamEvent { Type = "thinking", Content = thinking };
+                    return new ClaudeStreamEvent { Type = "thinking", Content = thinking, IsPartial = true };
+                }
+                if (blockType == "text")
+                {
+                    var text = block.TryGetProperty("text", out var t) ? t.GetString() : null;
+                    return new ClaudeStreamEvent { Type = "text", Content = text, IsPartial = true };
                 }
             }
             return null;
@@ -951,9 +959,10 @@ public class ClaudeSessionService
 
             switch (blockType)
             {
+                // text and thinking arrive as token-level stream_event deltas — skip the complete blocks
                 case "text":
-                    var text = block.TryGetProperty("text", out var t) ? t.GetString() : null;
-                    return new ClaudeStreamEvent { Type = "text", Content = text };
+                case "thinking":
+                    continue;
 
                 case "tool_use":
                     var toolName = block.TryGetProperty("name", out var n) ? n.GetString() : null;
@@ -966,14 +975,42 @@ public class ClaudeSessionService
                         ToolInput = toolInput,
                         MessageId = toolId
                     };
-
-                case "thinking":
-                    var thinkContent = block.TryGetProperty("thinking", out var th) ? th.GetString() : null;
-                    return new ClaudeStreamEvent { Type = "thinking", Content = thinkContent };
             }
         }
 
         return null;
+    }
+
+    private static ClaudeStreamEvent? ParseStreamEvent(JsonElement root)
+    {
+        if (!root.TryGetProperty("event", out var evt))
+            return null;
+
+        var evtType = evt.TryGetProperty("type", out var et) ? et.GetString() : null;
+        if (evtType != "content_block_delta")
+            return null;
+
+        if (!evt.TryGetProperty("delta", out var delta))
+            return null;
+
+        var deltaType = delta.TryGetProperty("type", out var dt) ? dt.GetString() : null;
+
+        return deltaType switch
+        {
+            "text_delta" => new ClaudeStreamEvent
+            {
+                Type = "text",
+                Content = delta.TryGetProperty("text", out var t) ? t.GetString() : null,
+                IsPartial = true
+            },
+            "thinking_delta" => new ClaudeStreamEvent
+            {
+                Type = "thinking",
+                Content = delta.TryGetProperty("thinking", out var th) ? th.GetString() : null,
+                IsPartial = true
+            },
+            _ => null
+        };
     }
 
     private ClaudeStreamEvent? ParseResultEvent(JsonElement root, ManagedSession session)
