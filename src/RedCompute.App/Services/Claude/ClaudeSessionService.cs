@@ -125,9 +125,11 @@ public class ClaudeSessionService
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }
 
+        var sw = Stopwatch.StartNew();
         using var process = Process.Start(startInfo);
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start process");
+        _log($"[Claude] TIMING Process.Start took {sw.ElapsedMilliseconds}ms (docker={useDocker})", null);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeout));
@@ -139,14 +141,22 @@ public class ClaudeSessionService
             // Write stdin in background to avoid pipe deadlock with Docker buffers
             var stdinTask = Task.Run(async () =>
             {
+                var stdinSw = Stopwatch.StartNew();
                 await process.StandardInput.WriteAsync(prompt.AsMemory(), timeoutCts.Token);
                 process.StandardInput.Close();
+                _log($"[Claude] TIMING stdin write took {stdinSw.ElapsedMilliseconds}ms ({prompt.Length} chars)", null);
             }, timeoutCts.Token);
 
             // Read stdout line-by-line, broadcasting stream events in real time
             var sb = new StringBuilder();
+            var firstLineLogged = false;
             while (await process.StandardOutput.ReadLineAsync(timeoutCts.Token) is { } line)
             {
+                if (!firstLineLogged)
+                {
+                    _log($"[Claude] TIMING first stdout after {sw.ElapsedMilliseconds}ms (prompt {prompt.Length} chars)", null);
+                    firstLineLogged = true;
+                }
                 sb.AppendLine(line);
                 if (streamKey != null && !string.IsNullOrWhiteSpace(line))
                 {
@@ -226,6 +236,29 @@ public class ClaudeSessionService
         var root = doc.RootElement;
         var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
 
+        if (type == "user")
+        {
+            if (root.TryGetProperty("message", out var userMsg)
+                && userMsg.TryGetProperty("content", out var userContent))
+            {
+                foreach (var block in userContent.EnumerateArray())
+                {
+                    var bt = block.TryGetProperty("type", out var btp) ? btp.GetString() : null;
+                    if (bt != "tool_result") continue;
+                    var resultContent = block.TryGetProperty("content", out var c) ? ExtractTextFromContent(c) : null;
+                    var toolUseId = block.TryGetProperty("tool_use_id", out var tuid) ? tuid.GetString() : null;
+                    events.Add(new ClaudeStreamEvent
+                    {
+                        Type = "tool_result",
+                        ToolResult = resultContent,
+                        Content = resultContent,
+                        MessageId = toolUseId,
+                    });
+                }
+            }
+            return events;
+        }
+
         if (type != "assistant" || !root.TryGetProperty("message", out var msg)
                                 || !msg.TryGetProperty("content", out var content))
             return events;
@@ -237,26 +270,17 @@ public class ClaudeSessionService
             var bt = block.TryGetProperty("type", out var btp) ? btp.GetString() : null;
             switch (bt)
             {
-                case "thinking" when block.TryGetProperty("thinking", out var th):
-                    events.Add(new ClaudeStreamEvent { Type = "thinking", Content = th.GetString(), MessageId = msgId });
-                    break;
-                case "text" when block.TryGetProperty("text", out var txt):
-                    events.Add(new ClaudeStreamEvent { Type = "text", Content = txt.GetString(), MessageId = msgId });
-                    break;
+                // text/thinking arrive as repeated verbose snapshots — skip during live streaming;
+                // complete content is shown via parseStreamOutput when the job finishes
+                case "thinking":
+                case "text":
+                    continue;
                 case "tool_use":
                     events.Add(new ClaudeStreamEvent
                     {
                         Type = "tool_use",
                         ToolName = block.TryGetProperty("name", out var n) ? n.GetString() : null,
                         ToolInput = block.TryGetProperty("input", out var inp) ? inp.Clone() : null,
-                        MessageId = msgId,
-                    });
-                    break;
-                case "tool_result":
-                    events.Add(new ClaudeStreamEvent
-                    {
-                        Type = "tool_result",
-                        ToolResult = block.TryGetProperty("content", out var c) ? c.ToString() : null,
                         MessageId = msgId,
                     });
                     break;
@@ -961,6 +985,34 @@ public class ClaudeSessionService
         return (ToSessionInfo(record), GetHistory(sessionId));
     }
 
+    public Dictionary<Guid, SessionStatus> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds)
+    {
+        var result = new Dictionary<Guid, SessionStatus>();
+        var remaining = new HashSet<Guid>(jobIds);
+
+        foreach (var session in _sessions.Values)
+        {
+            if (session.Info.JobId is { } jid && remaining.Remove(jid))
+                result[jid] = session.Info.Status;
+        }
+
+        if (remaining.Count > 0)
+        {
+            using var db = new RedComputeDbContext();
+            var records = db.ClaudeSessions
+                .Where(s => s.JobId != null && remaining.Contains(s.JobId.Value))
+                .Select(s => new { s.JobId, s.Status })
+                .ToList();
+            foreach (var r in records)
+            {
+                if (r.JobId is { } jid && Enum.TryParse<SessionStatus>(r.Status, out var status))
+                    result[jid] = status;
+            }
+        }
+
+        return result;
+    }
+
     public (ClaudeSessionInfo? Info, List<ClaudeMessageRecord> History) GetSessionByJobId(Guid jobId)
     {
         var live = _sessions.Values.FirstOrDefault(s => s.Info.JobId == jobId);
@@ -995,7 +1047,7 @@ public class ClaudeSessionService
         JobId = r.JobId
     };
 
-    public List<ClaudeMessageRecord> GetHistory(string sessionId, int limit = 500)
+    public List<ClaudeMessageRecord> GetHistory(string sessionId, int limit = 50_000)
     {
         using var db = new RedComputeDbContext();
         return db.ClaudeMessages
@@ -1565,6 +1617,28 @@ public class ClaudeSessionService
         {
             _log($"[Claude] Failed to persist session record: {ex.Message}", null);
         }
+    }
+
+    private void PersistCompleteAssistantBlocks(string line, string sessionId)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("type", out var t) && t.GetString() != "assistant") return;
+            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) return;
+
+            var msgId = msg.TryGetProperty("id", out var mid) ? mid.GetString() : null;
+            foreach (var block in content.EnumerateArray())
+            {
+                var bt = block.TryGetProperty("type", out var btp) ? btp.GetString() : null;
+                if (bt == "thinking" && block.TryGetProperty("thinking", out var th) && !string.IsNullOrEmpty(th.GetString()))
+                    PersistMessage(sessionId, "assistant", "thinking", th.GetString(), null, null, null, msgId);
+                else if (bt == "text" && block.TryGetProperty("text", out var txt) && !string.IsNullOrEmpty(txt.GetString()))
+                    PersistMessage(sessionId, "assistant", "text", txt.GetString(), null, null, null, msgId);
+            }
+        }
+        catch { }
     }
 
     private void PersistMessage(string sessionId, string role, string eventType, string? content,

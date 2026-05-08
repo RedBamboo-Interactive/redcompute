@@ -2,7 +2,9 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Helpers;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Jobs;
+using RedCompute.Core.Claude;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 
@@ -10,7 +12,7 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class GlobalEndpoints
 {
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, ClaudeSessionService? claudeService = null)
     {
         app.MapGet("/status", async () =>
         {
@@ -59,6 +61,18 @@ public static class GlobalEndpoints
                 statusFilter = parsed;
 
             var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, caller, search, limit ?? 50, offset ?? 0);
+
+            var sessionStatuses = new Dictionary<Guid, SessionStatus>();
+            if (claudeService != null)
+            {
+                var aiSessionJobIds = jobs
+                    .Where(j => j.CapabilitySlug == "ai-session" && j.Status == JobStatus.Running)
+                    .Select(j => j.Id)
+                    .ToList();
+                if (aiSessionJobIds.Count > 0)
+                    sessionStatuses = claudeService.GetSessionStatusesByJobIds(aiSessionJobIds);
+            }
+
             return Results.Ok(new
             {
                 items = jobs.Select(j => new
@@ -74,7 +88,8 @@ public static class GlobalEndpoints
                     j.ErrorMessage,
                     j.CallerInfo,
                     j.Name,
-                    j.Rationale
+                    j.Rationale,
+                    sessionStatus = sessionStatuses.TryGetValue(j.Id, out var ss) ? ss.ToString() : (string?)null
                 }),
                 total = totalCount
             });

@@ -22,6 +22,7 @@ export interface JobRecord {
   name?: string
   rationale?: string
   durationMs?: number
+  sessionStatus?: SessionStatus
 }
 
 export interface LogEntry {

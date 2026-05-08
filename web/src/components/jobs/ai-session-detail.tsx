@@ -20,6 +20,7 @@ const eventTypeConfig: Record<string, { label: string; color: string; bg: string
   tool_use: { label: "tool", color: "text-accent-gold", bg: "bg-accent-gold/20" },
   tool_result: { label: "result", color: "text-accent-teal", bg: "bg-accent-teal/20" },
   error: { label: "error", color: "text-accent-red", bg: "bg-accent-red/20" },
+  prompt: { label: "prompt", color: "text-blue-400", bg: "bg-blue-400/20" },
 }
 
 const statusBadgeColor: Record<string, string> = {
@@ -53,10 +54,6 @@ function shortModel(model?: string): string {
   if (model.includes("sonnet")) return "Sonnet"
   if (model.includes("haiku")) return "Haiku"
   return model.split("-").slice(0, 2).join("-")
-}
-
-function formatTime(ts: string): string {
-  return new Date(ts).toLocaleTimeString("en-US", { hour12: false, fractionalSecondDigits: 3 })
 }
 
 function truncate(s: string, max: number): string {
@@ -259,10 +256,11 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
             </div>
           ) : (
             <div className="divide-y divide-white/[0.04]">
-              {filteredEvents.map(event => (
+              {filteredEvents.map((event, idx) => (
                 <EventLogRow
                   key={event.id}
                   event={event}
+                  index={idx + 1}
                   expanded={expandedIds.has(event.id)}
                   onToggle={() => toggleExpand(event.id)}
                 />
@@ -284,7 +282,7 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
   )
 }
 
-function EventLogRow({ event, expanded, onToggle }: { event: ClaudeMessageRecord; expanded: boolean; onToggle: () => void }) {
+function EventLogRow({ event, index, expanded, onToggle }: { event: ClaudeMessageRecord; index: number; expanded: boolean; onToggle: () => void }) {
   const cfg = eventTypeConfig[event.eventType] || eventTypeConfig.text
   const isToolUse = event.eventType === "tool_use"
   const isToolResult = event.eventType === "tool_result"
@@ -304,18 +302,12 @@ function EventLogRow({ event, expanded, onToggle }: { event: ClaudeMessageRecord
           expanded ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"
         }`}
       >
-        <span className="font-mono text-[11px] text-white/40 w-[82px] shrink-0 pt-px">
-          {formatTime(event.timestamp)}
+        <span className="font-mono text-[11px] text-white/40 w-[28px] shrink-0 pt-px text-right">
+          {index}
         </span>
 
         <span className={`inline-flex items-center px-1.5 py-px rounded text-[10px] font-medium shrink-0 ${tBg} ${tColor}`}>
           {isToolUse ? event.toolName || "tool" : cfg.label}
-        </span>
-
-        <span className={`text-[11px] px-1 py-px rounded shrink-0 ${
-          event.role === "user" ? "text-text-disabled" : "text-text-muted"
-        }`}>
-          {event.role === "user" ? "usr" : "ast"}
         </span>
 
         <span className={`text-xs truncate flex-1 ${isError ? "text-accent-red" : "text-text-muted"}`}>
@@ -328,7 +320,7 @@ function EventLogRow({ event, expanded, onToggle }: { event: ClaudeMessageRecord
       </button>
 
       {expanded && (
-        <div className="px-2.5 pb-3 pt-1 ml-[90px]">
+        <div className="px-2.5 pb-3 pt-1 ml-[38px]">
           <ExpandedContent event={event} isThinking={isThinking} isToolUse={isToolUse} isToolResult={isToolResult} isError={isError} />
         </div>
       )}
@@ -369,10 +361,23 @@ function ExpandedContent({ event, isThinking, isToolUse, isToolResult, isError }
   isToolResult: boolean
   isError: boolean
 }) {
-  if (isToolUse && event.toolInput) {
+  if (isToolUse) {
+    const result = event.toolResult
+    const looksLikeJson = result && (result.trimStart().startsWith("{") || result.trimStart().startsWith("["))
     return (
-      <div className="bg-surface-deep rounded-lg p-3 overflow-auto max-h-96">
-        <JsonHighlight json={event.toolInput} />
+      <div className="space-y-2">
+        {event.toolInput && (
+          <div className="bg-surface-deep rounded-lg p-3 overflow-auto max-h-64">
+            <JsonHighlight json={event.toolInput} />
+          </div>
+        )}
+        {result && (
+          <div className="bg-surface-deep rounded-lg p-3 overflow-auto max-h-64">
+            {looksLikeJson ? <JsonHighlight json={result} /> : (
+              <pre className="text-xs font-mono whitespace-pre-wrap break-all text-text-muted">{result}</pre>
+            )}
+          </div>
+        )}
       </div>
     )
   }

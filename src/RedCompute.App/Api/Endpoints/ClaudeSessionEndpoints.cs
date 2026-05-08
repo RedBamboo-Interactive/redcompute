@@ -198,11 +198,13 @@ public static class ClaudeSessionEndpoints
 
         app.MapPost("/ai-session/execute", async (HttpContext ctx) =>
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Results.Json(new ErrorResponse { Error = "invalid_body", Message = "Request body must be valid JSON" }, statusCode: 400); }
+            log($"[Claude] TIMING body parsed in {sw.ElapsedMilliseconds}ms", null);
 
-            return await HandleExecute(ctx, body, claude, jobTracker, log);
+            return await HandleExecute(ctx, body, claude, jobTracker, log, sw);
         });
     }
 
@@ -210,7 +212,8 @@ public static class ClaudeSessionEndpoints
     private static readonly string[] ValidEfforts = ["low", "medium", "high", "xhigh", "max"];
 
     private static async Task<IResult> HandleExecute(HttpContext ctx, JsonElement body,
-        ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log)
+        ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log,
+        System.Diagnostics.Stopwatch? sw = null)
     {
         // --- Validation ---
         var prompt = body.TryGetProperty("prompt", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
@@ -281,6 +284,7 @@ public static class ClaudeSessionEndpoints
             addDirs = ad.EnumerateArray().Select(x => x.GetString()!).Where(x => x != null).ToArray();
 
         // --- Job tracking ---
+        if (sw != null) log($"[Claude] TIMING validation done at {sw.ElapsedMilliseconds}ms", null);
         var inputSummary = JsonSerializer.Serialize(new { model, effort, maxTurns, container, timeout, promptLength = prompt!.Length });
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
@@ -289,7 +293,7 @@ public static class ClaudeSessionEndpoints
 
         var job = jobTracker.CreateJob("ai-session", "Claude Code", inputSummary, callerInfo, idempotencyKey, jobName, rationale);
         jobTracker.MarkRunning(job.Id);
-        log($"[Claude] Execute job {job.Id} started (container={container ?? "local"}, model={model ?? "default"}, maxTurns={maxTurns})", job.Id);
+        log($"[Claude] Execute job {job.Id} started (container={container ?? "local"}, model={model ?? "default"}, maxTurns={maxTurns}) [TIMING {sw?.ElapsedMilliseconds}ms since request]", job.Id);
 
         try
         {

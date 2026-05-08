@@ -1085,7 +1085,8 @@ public static class OpenApiEndpoints
                             ["outputLocation"] = Prop("string", "File path to output artifact (only on GET /jobs/{id})"),
                             ["outputSizeBytes"] = Prop("integer", "Output file size in bytes"),
                             ["outputContentType"] = Prop("string", "MIME type of the output (e.g. audio/wav, image/png)"),
-                            ["resultMetadata"] = Prop("string", "JSON-serialized result metadata (only on GET /jobs/{id})")
+                            ["resultMetadata"] = Prop("string", "JSON-serialized result metadata (only on GET /jobs/{id})"),
+                            ["sessionStatus"] = PropEnum("AI session lifecycle state (only for ai-session jobs, null otherwise)", "Idle", "Starting", "Active", "Idle", "Stopped", "Error")
                         }
                     },
                     ["ClaudeSessionInfo"] = new Dictionary<string, object>

@@ -87,6 +87,8 @@ public class RedComputeDbContext : DbContext
             );
             CREATE INDEX IF NOT EXISTS IX_ClaudeMessages_SessionId ON ClaudeMessages(SessionId);
             CREATE INDEX IF NOT EXISTS IX_ClaudeMessages_Timestamp ON ClaudeMessages(Timestamp);
+
+            UPDATE ClaudeMessages SET Role = 'assistant' WHERE Role = 'user' AND EventType = 'tool_result';
             """;
         cmd.ExecuteNonQuery();
 

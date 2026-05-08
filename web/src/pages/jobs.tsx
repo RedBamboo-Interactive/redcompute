@@ -29,6 +29,7 @@ interface ApiJob {
   callerInfo?: string
   name?: string
   rationale?: string
+  sessionStatus?: string
 }
 
 function mapApiJob(j: ApiJob): JobRecord {
@@ -38,6 +39,7 @@ function mapApiJob(j: ApiJob): JobRecord {
     startedAt: j.startedAt, completedAt: j.completedAt, durationMs: j.durationMs,
     errorMessage: j.errorMessage, callerInfo: j.callerInfo, name: j.name,
     rationale: j.rationale, inputJson: "{}",
+    sessionStatus: j.sessionStatus as JobRecord["sessionStatus"],
   }
 }
 

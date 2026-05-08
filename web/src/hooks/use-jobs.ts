@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { api } from "@/api/client"
-import type { JobRecord, WsEvent } from "@/api/types"
+import type { JobRecord, WsEvent, ClaudeSessionInfo } from "@/api/types"
 
 export interface ApiJob {
   id: string
@@ -15,6 +15,7 @@ export interface ApiJob {
   callerInfo?: string
   name?: string
   rationale?: string
+  sessionStatus?: string
   progress?: number
   input?: string
   outputLocation?: string
@@ -45,6 +46,7 @@ export function mapJob(j: ApiJob): JobRecord {
     outputContentType: j.outputContentType,
     resultJson: j.resultMetadata,
     errorDetails: j.errorDetails,
+    sessionStatus: j.sessionStatus as JobRecord["sessionStatus"],
   }
 }
 
@@ -144,11 +146,18 @@ export function useJobs(filters: JobFilters = {}, pageSize = 50) {
             setTotal(t => t - 1)
             return prev.filter(j => j.id !== job.id)
           }
-          return prev.map(j => j.id === job.id ? job : j)
+          return prev.map(j => j.id === job.id ? { ...job, sessionStatus: j.sessionStatus } : j)
         }
         return prev
       })
-      setSelectedJob(prev => prev?.id === job.id ? job : prev)
+      setSelectedJob(prev => prev?.id === job.id ? { ...job, sessionStatus: prev.sessionStatus } : prev)
+    } else if (event.type === "claude.session.updated") {
+      const session = event.data as ClaudeSessionInfo
+      if (session.jobId) {
+        const jobId = session.jobId
+        setJobs(prev => prev.map(j => j.id === jobId ? { ...j, sessionStatus: session.status } : j))
+        setSelectedJob(prev => prev?.id === jobId ? { ...prev, sessionStatus: session.status } : prev)
+      }
     }
   }, [filters.capability, filters.caller, filters.status, debouncedSearch])
 

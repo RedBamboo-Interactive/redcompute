@@ -10,6 +10,7 @@ const statusColor: Record<string, string> = {
 }
 
 const IDLE = "#2A2A2A"
+const SESSION_IDLE = "#1A3A36"
 
 const statusPriority: Record<string, number> = {
   Failed: 6, Running: 5, Queued: 4, Completed: 3, Cancelled: 2,
@@ -39,14 +40,15 @@ export function MiniFrieze({ jobs, count = 32 }: { jobs: JobRecord[]; count?: nu
     let bestPriority = -1
 
     for (const job of jobs) {
+      const isIdleSession = job.capabilitySlug === "ai-session" && job.sessionStatus === "Idle"
       const jobStart = new Date(job.startedAt || job.queuedAt).getTime()
       const jobEnd = job.completedAt ? new Date(job.completedAt).getTime() : now
 
       if (jobStart < qEnd && jobEnd > qStart) {
-        const p = statusPriority[job.status] ?? 0
+        const p = isIdleSession ? 1 : (statusPriority[job.status] ?? 0)
         if (p > bestPriority) {
           bestPriority = p
-          bestColor = statusColor[job.status] || IDLE
+          bestColor = isIdleSession ? SESSION_IDLE : (statusColor[job.status] || IDLE)
           bestTooltip = job.status === "Running"
             ? `Running: ${job.capabilitySlug}`
             : job.status === "Completed"

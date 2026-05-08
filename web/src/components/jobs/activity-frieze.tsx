@@ -10,6 +10,7 @@ const statusColor: Record<string, string> = {
 }
 
 const IDLE = "#2A2A2A"
+const SESSION_IDLE = "#1A3A36"
 const QUANTUM_MS = 5000
 const SQUARE_PX = 10
 const ROWS = 3
@@ -52,11 +53,12 @@ export function ActivityFrieze({ jobs }: { jobs: JobRecord[] }) {
       const overlapping: { color: string; name: string }[] = []
 
       for (const job of jobs) {
+        const isIdleSession = job.capabilitySlug === "ai-session" && job.sessionStatus === "Idle"
         const jobStart = new Date(job.startedAt || job.queuedAt).getTime()
         const jobEnd = job.completedAt ? new Date(job.completedAt).getTime() : now
         if (jobStart < qEnd && jobEnd > qStart) {
           overlapping.push({
-            color: statusColor[job.status] || IDLE,
+            color: isIdleSession ? SESSION_IDLE : (statusColor[job.status] || IDLE),
             name: job.name || job.capabilitySlug,
           })
         }

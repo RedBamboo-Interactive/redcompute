@@ -17,43 +17,68 @@ interface SessionEventsResult {
   clearFilters: () => void
 }
 
+function aggregateDeltas(records: ClaudeMessageRecord[]): ClaudeMessageRecord[] {
+  const result: ClaudeMessageRecord[] = []
+  for (const rec of records) {
+    if (rec.eventType === "status") continue
+    // Remap user text to "prompt" so it gets its own badge and filter
+    if (rec.role === "user" && rec.eventType === "text") {
+      result.push({ ...rec, eventType: "prompt" })
+      continue
+    }
+    const last = result[result.length - 1]
+    if (last && last.eventType === rec.eventType && last.role === rec.role
+        && (rec.eventType === "text" || rec.eventType === "thinking")) {
+      result[result.length - 1] = { ...last, content: (last.content || "") + (rec.content || "") }
+    } else if (last && last.eventType === "tool_use" && rec.eventType === "tool_result") {
+      result[result.length - 1] = { ...last, toolResult: rec.toolResult || rec.content }
+    } else {
+      result.push(rec)
+    }
+  }
+  return result
+}
+
 function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessageRecord[] {
   const events: ClaudeMessageRecord[] = []
   let nextId = 1
   const baseTime = new Date(startedAt).getTime()
-  const seenBlockCounts = new Map<string, number>()
 
   for (const line of streamOutput.split("\n")) {
     if (!line.trim()) continue
     let obj: Record<string, unknown>
     try { obj = JSON.parse(line) } catch { continue }
 
-    if (obj.type !== "assistant") continue
-    const msg = obj.message as Record<string, unknown> | undefined
-    const content = msg?.content as Array<Record<string, unknown>> | undefined
-    if (!content || !Array.isArray(content)) continue
-
-    const msgId = (msg?.id as string) || ""
-    const prevCount = seenBlockCounts.get(msgId) || 0
     const sessionId = (obj.session_id as string) || ""
 
-    for (let i = prevCount; i < content.length; i++) {
-      const block = content[i]
-      const timestamp = new Date(baseTime + nextId).toISOString()
+    if (obj.type === "assistant") {
+      const msg = obj.message as Record<string, unknown> | undefined
+      const content = msg?.content as Array<Record<string, unknown>> | undefined
+      if (!content || !Array.isArray(content)) continue
 
-      if (block.type === "thinking" && block.thinking) {
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content: block.thinking as string, timestamp })
-      } else if (block.type === "text" && block.text) {
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content: block.text as string, timestamp })
-      } else if (block.type === "tool_use") {
-        const input = block.input != null ? (typeof block.input === "string" ? block.input : JSON.stringify(block.input)) : undefined
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: block.name as string, toolInput: input, timestamp })
-      } else if (block.type === "tool_result") {
+      for (const block of content) {
+        const timestamp = new Date(baseTime + nextId).toISOString()
+        if (block.type === "thinking" && block.thinking) {
+          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content: block.thinking as string, timestamp })
+        } else if (block.type === "text" && block.text) {
+          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content: block.text as string, timestamp })
+        } else if (block.type === "tool_use") {
+          const input = block.input != null ? (typeof block.input === "string" ? block.input : JSON.stringify(block.input)) : undefined
+          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: block.name as string, toolInput: input, timestamp })
+        }
+      }
+    } else if (obj.type === "user") {
+      const msg = obj.message as Record<string, unknown> | undefined
+      const content = msg?.content as Array<Record<string, unknown>> | undefined
+      if (!content || !Array.isArray(content)) continue
+
+      for (const block of content) {
+        if (block.type !== "tool_result") continue
+        const timestamp = new Date(baseTime + nextId).toISOString()
         const rc = typeof block.content === "string" ? block.content : JSON.stringify(block.content)
         events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: rc, toolResult: rc, timestamp })
       }
     }
-    seenBlockCounts.set(msgId, content.length)
   }
 
   return events
@@ -93,7 +118,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
         const data = await fetchSession(directId)
         resolvedSessionId.current = directId
         setSession(data.session)
-        setEvents(data.messages.toReversed())
+        setEvents(aggregateDeltas(data.messages))
         prevStatus.current = data.session.status
         setLoading(false)
         return
@@ -107,7 +132,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
       )
       resolvedSessionId.current = data.session.id
       setSession(data.session)
-      setEvents(data.messages.toReversed())
+      setEvents(aggregateDeltas(data.messages))
       prevStatus.current = data.session.status
       setLoading(false)
       return
@@ -127,6 +152,21 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
           const streamEvents = typeof r.streamOutput === "string"
             ? parseStreamOutput(r.streamOutput, job.startedAt || job.queuedAt)
             : []
+
+          // Inject the user prompt as the first event
+          try {
+            const input = JSON.parse(job.inputJson) as Record<string, unknown>
+            if (typeof input.prompt === "string" && input.prompt) {
+              streamEvents.unshift({
+                id: 0,
+                sessionId: "",
+                role: "user",
+                eventType: "text",
+                content: input.prompt,
+                timestamp: job.startedAt || job.queuedAt,
+              })
+            }
+          } catch { /* ignore */ }
 
           setSession({
             id: job.id,
@@ -191,7 +231,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
           resolvedSessionId.current = s.id
           fetchSession(s.id).then(data => {
             setSession(data.session)
-            setEvents(data.messages.toReversed())
+            setEvents(aggregateDeltas(data.messages))
             prevStatus.current = data.session.status
             setLoading(false)
           }).catch(() => {})
@@ -204,7 +244,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
           // Re-fetch clean persisted messages when assistant turn completes
           if (wasActive && nowIdle) {
             fetchSession(s.id).then(data => {
-              setEvents(data.messages.toReversed())
+              setEvents(aggregateDeltas(data.messages))
             }).catch(() => {})
           }
         }
