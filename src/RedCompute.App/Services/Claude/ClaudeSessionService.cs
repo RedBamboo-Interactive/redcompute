@@ -151,7 +151,9 @@ public class ClaudeSessionService
                     if (evtType == "result")
                     {
                         if (evt.TryGetProperty("result", out var r))
-                            text = r.GetString() ?? text;
+                            text = r.ValueKind == JsonValueKind.String
+                                ? r.GetString() ?? text
+                                : ExtractTextFromContent(r) ?? text;
                         if (evt.TryGetProperty("usage", out var usage))
                         {
                             if (usage.TryGetProperty("input_tokens", out var it)) inputTokens = it.GetInt32();
@@ -182,7 +184,9 @@ public class ClaudeSessionService
         foreach (var msg in messages.EnumerateArray())
         {
             var role = msg.TryGetProperty("role", out var r) ? r.GetString() : "user";
-            var content = msg.TryGetProperty("content", out var c) ? c.GetString() : "";
+            string? content = null;
+            if (msg.TryGetProperty("content", out var c))
+                content = c.ValueKind == JsonValueKind.String ? c.GetString() : ExtractTextFromContent(c);
             if (string.IsNullOrEmpty(content)) continue;
             sb.AppendLine(role == "assistant" ? $"[Assistant]: {content}" : $"[User]: {content}");
         }
@@ -882,6 +886,21 @@ public class ClaudeSessionService
         }
     }
 
+    private static string? ExtractTextFromContent(JsonElement el)
+    {
+        if (el.ValueKind == JsonValueKind.String)
+            return el.GetString();
+        if (el.ValueKind != JsonValueKind.Array)
+            return el.ToString();
+        var sb = new StringBuilder();
+        foreach (var part in el.EnumerateArray())
+        {
+            if (part.TryGetProperty("text", out var txt))
+                sb.Append(txt.GetString());
+        }
+        return sb.Length > 0 ? sb.ToString() : null;
+    }
+
     private static int? ParseContextFromModelHint(string? model)
     {
         if (model == null) return null;
@@ -980,7 +999,7 @@ public class ClaudeSessionService
             var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
             if (blockType != "tool_result") continue;
 
-            var resultContent = block.TryGetProperty("content", out var c) ? c.GetString() : null;
+            var resultContent = block.TryGetProperty("content", out var c) ? ExtractTextFromContent(c) : null;
             var toolUseId = block.TryGetProperty("tool_use_id", out var tuid) ? tuid.GetString() : null;
             var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
 
@@ -1047,13 +1066,15 @@ public class ClaudeSessionService
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
 
-            var resultText = root.TryGetProperty("result", out var r) ? r.GetString() : null;
             return new ClaudeStreamEvent { Type = "status", Content = "idle" };
         }
 
         if (subtype == "error")
         {
-            var error = root.TryGetProperty("error", out var e) ? e.GetString() : "unknown error";
+            var error = root.TryGetProperty("error", out var e)
+                ? (e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString()) ?? "unknown error"
+                : "unknown error";
+            _log($"[Claude] Session {session.Info.Id} result error: {error}", null);
 
             if (session.InterruptPending)
             {
@@ -1069,11 +1090,18 @@ public class ClaudeSessionService
                 return new ClaudeStreamEvent { Type = "status", Content = "interrupted" };
             }
 
+            session.Info.Status = SessionStatus.Idle;
+            if (root.TryGetProperty("total_cost_usd", out var errCost))
+                session.Info.CostUsd = (session.Info.CostUsd ?? 0) + errCost.GetDouble();
+            ParseTokenUsage(root, session);
+            PersistSessionRecord(session.Info);
+            SessionUpdated?.Invoke(session.Info);
+
             return new ClaudeStreamEvent { Type = "error", Content = error };
         }
 
         // tool_result or other result types
-        var content = root.TryGetProperty("content", out var c) ? c.GetString() : null;
+        var content = root.TryGetProperty("content", out var c) ? ExtractTextFromContent(c) : null;
         var toolUseId = root.TryGetProperty("tool_use_id", out var tuid) ? tuid.GetString() : null;
         return new ClaudeStreamEvent
         {
