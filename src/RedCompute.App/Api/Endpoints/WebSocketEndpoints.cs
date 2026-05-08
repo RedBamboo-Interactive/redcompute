@@ -125,7 +125,7 @@ public static class WebSocketEndpoints
                     type = "claude.session.updated",
                     description = "Fired when a session's status, tokens, cost, or title changes",
                     dataSchema = "ClaudeSessionInfo",
-                    fields = new[] { "id", "projectName", "status", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "contextWindow", "effort", "permissionMode" }
+                    fields = new[] { "id", "projectName", "status", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "contextTokens", "contextWindow", "effort", "permissionMode" }
                 },
                 new
                 {

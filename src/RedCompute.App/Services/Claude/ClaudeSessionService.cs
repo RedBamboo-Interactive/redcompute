@@ -340,6 +340,7 @@ public class ClaudeSessionService
             OutputTokens = record.OutputTokens,
             CacheReadInputTokens = record.CacheReadInputTokens,
             CacheCreationInputTokens = record.CacheCreationInputTokens,
+            ContextTokens = record.ContextTokens,
             ContextWindow = record.ContextWindow,
             Effort = record.Effort,
         };
@@ -729,6 +730,7 @@ public class ClaudeSessionService
         OutputTokens = r.OutputTokens,
         CacheReadInputTokens = r.CacheReadInputTokens,
         CacheCreationInputTokens = r.CacheCreationInputTokens,
+        ContextTokens = r.ContextTokens,
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
         JobId = r.JobId
@@ -887,6 +889,7 @@ public class ClaudeSessionService
                 return null;
 
             case "stream_event":
+                UpdateContextFromStreamEvent(root, session);
                 return ParseStreamEvent(root);
 
             case "rate_limit_event":
@@ -1123,26 +1126,53 @@ public class ClaudeSessionService
         };
     }
 
+    private void UpdateContextFromStreamEvent(JsonElement root, ManagedSession session)
+    {
+        if (!root.TryGetProperty("event", out var evt)) return;
+        var evtType = evt.TryGetProperty("type", out var et) ? et.GetString() : null;
+        if (evtType != "message_start") return;
+        if (!evt.TryGetProperty("message", out var msg)) return;
+        if (!msg.TryGetProperty("usage", out var usage)) return;
+
+        var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
+        var cacheRead = usage.TryGetProperty("cache_read_input_tokens", out var cr) ? cr.GetInt32() : 0;
+        var cacheWrite = usage.TryGetProperty("cache_creation_input_tokens", out var cc) ? cc.GetInt32() : 0;
+        session.Info.ContextTokens = input + cacheRead + cacheWrite;
+
+        _log($"[Claude] Context from message_start: {session.Info.ContextTokens:N0} tokens (input={input} cacheRead={cacheRead} cacheWrite={cacheWrite})", null);
+    }
+
     private void ParseTokenUsage(JsonElement root, ManagedSession session)
     {
-        var numTurns = root.TryGetProperty("num_turns", out var nt) ? nt.GetInt32() : 1;
-        if (numTurns < 1) numTurns = 1;
-
-        // usage contains cumulative tokens across all API sub-calls in the turn
-        // Divide by num_turns to get per-call context size
         if (root.TryGetProperty("usage", out var usage))
         {
+            int turnInput = 0, turnCacheRead = 0, turnCacheWrite = 0;
+
             if (usage.TryGetProperty("input_tokens", out var inTok))
-                session.Info.InputTokens = inTok.GetInt32() / numTurns;
+            {
+                turnInput = inTok.GetInt32();
+                session.Info.InputTokens = (session.Info.InputTokens ?? 0) + turnInput;
+            }
             if (usage.TryGetProperty("output_tokens", out var outTok))
-                session.Info.OutputTokens = outTok.GetInt32() / numTurns;
+                session.Info.OutputTokens = (session.Info.OutputTokens ?? 0) + outTok.GetInt32();
             if (usage.TryGetProperty("cache_read_input_tokens", out var cacheR))
-                session.Info.CacheReadInputTokens = cacheR.GetInt32() / numTurns;
+            {
+                turnCacheRead = cacheR.GetInt32();
+                session.Info.CacheReadInputTokens = (session.Info.CacheReadInputTokens ?? 0) + turnCacheRead;
+            }
             if (usage.TryGetProperty("cache_creation_input_tokens", out var cacheC))
-                session.Info.CacheCreationInputTokens = cacheC.GetInt32() / numTurns;
+            {
+                turnCacheWrite = cacheC.GetInt32();
+                session.Info.CacheCreationInputTokens = (session.Info.CacheCreationInputTokens ?? 0) + turnCacheWrite;
+            }
+
+            if (session.Info.ContextTokens is null or 0)
+            {
+                var ctx = turnInput + turnCacheRead + turnCacheWrite;
+                if (ctx > 0) session.Info.ContextTokens = ctx;
+            }
         }
 
-        // modelUsage contains contextWindow (the actual max for this model)
         if (root.TryGetProperty("modelUsage", out var modelUsage))
         {
             foreach (var model in modelUsage.EnumerateObject())
@@ -1244,6 +1274,7 @@ public class ClaudeSessionService
                 existing.OutputTokens = info.OutputTokens;
                 existing.CacheReadInputTokens = info.CacheReadInputTokens;
                 existing.CacheCreationInputTokens = info.CacheCreationInputTokens;
+                existing.ContextTokens = info.ContextTokens;
                 existing.ContextWindow = info.ContextWindow;
                 existing.Effort = info.Effort;
                 existing.JobId = info.JobId;
@@ -1266,6 +1297,7 @@ public class ClaudeSessionService
                     OutputTokens = info.OutputTokens,
                     CacheReadInputTokens = info.CacheReadInputTokens,
                     CacheCreationInputTokens = info.CacheCreationInputTokens,
+                    ContextTokens = info.ContextTokens,
                     ContextWindow = info.ContextWindow,
                     Effort = info.Effort,
                     JobId = info.JobId

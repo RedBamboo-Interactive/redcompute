@@ -1033,6 +1033,7 @@ public static class OpenApiEndpoints
                             ["outputTokens"] = Prop("integer", "Output tokens generated"),
                             ["cacheReadInputTokens"] = Prop("integer", "Tokens read from prompt cache"),
                             ["cacheCreationInputTokens"] = Prop("integer", "Tokens written to prompt cache"),
+                            ["contextTokens"] = Prop("integer", "Current context size (input + cache) from last API call"),
                             ["contextWindow"] = Prop("integer", "Max context window size for current model"),
                             ["effort"] = PropEnum("Reasoning effort level", "high", "low", "medium", "high", "xhigh", "max"),
                             ["permissionMode"] = PropEnum("Tool permission mode", "bypassPermissions", "bypassPermissions", "plan", "default", "acceptEdits", "auto")

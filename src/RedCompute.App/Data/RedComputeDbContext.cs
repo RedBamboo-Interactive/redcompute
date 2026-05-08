@@ -50,6 +50,9 @@ public class RedComputeDbContext : DbContext
         cmd.CommandText = "ALTER TABLE ClaudeSessions ADD COLUMN ContextWindow INTEGER NULL";
         try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
 
+        cmd.CommandText = "ALTER TABLE ClaudeSessions ADD COLUMN ContextTokens INTEGER NULL";
+        try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
+
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS LogEntries (
                 Id INTEGER PRIMARY KEY AUTOINCREMENT,
