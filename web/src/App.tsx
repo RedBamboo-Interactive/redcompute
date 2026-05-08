@@ -6,7 +6,7 @@ import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"
 import { TokenPrompt } from "@/components/auth/token-prompt"
 import { useCapabilities } from "@/hooks/use-capabilities"
-import { useJobs } from "@/hooks/use-jobs"
+import { useJobs, type JobFilters } from "@/hooks/use-jobs"
 import { useLogs } from "@/hooks/use-logs"
 import { useSettings } from "@/hooks/use-settings"
 import { WsEventContext, type WsEventContextValue } from "@/contexts/ws-events"
@@ -29,7 +29,8 @@ export default function App() {
     return !isRemoteAccess() || !!getToken()
   })
   const caps = useCapabilities()
-  const jobs = useJobs()
+  const [jobFilters, setJobFilters] = useState<JobFilters>({})
+  const jobs = useJobs(jobFilters)
   const logs = useLogs()
   const settings = useSettings()
 
@@ -102,7 +103,13 @@ export default function App() {
             />
           }>
             <Route index element={<DashboardPage capabilities={caps.capabilities} onRefresh={caps.refresh} />} />
-            <Route path="jobs" element={<JobsPage jobs={jobs.jobs} selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} />} />
+            <Route path="jobs" element={
+              <JobsPage
+                jobs={jobs.jobs} total={jobs.total} hasMore={jobs.hasMore} loading={jobs.loading}
+                selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} onLoadMore={jobs.loadMore}
+                filters={jobFilters} onFiltersChange={setJobFilters}
+              />
+            } />
           </Route>
         </Routes>
       </TooltipProvider>

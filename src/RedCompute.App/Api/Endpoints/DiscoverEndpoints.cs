@@ -72,7 +72,7 @@ public static class DiscoverEndpoints
                         new { method = "GET", path = "/status", description = "Service status with capabilities and uptime" },
                         new { method = "GET", path = "/discover", description = "Full API discovery manifest with all endpoints" },
                         new { method = "GET", path = "/openapi.json", description = "OpenAPI 3.1 specification" },
-                        new { method = "GET", path = "/jobs", description = "List jobs (query: capability, status, limit, offset)" },
+                        new { method = "GET", path = "/jobs", description = "List jobs with filtering and pagination. Query: capability (slug), status (Queued|Running|Completed|Failed|Cancelled), caller (exact callerInfo match), search (case-insensitive across name, provider, caller, capability), limit (default 50), offset. Returns { items: JobRecord[], total: int }." },
                         new { method = "GET", path = "/jobs/{id}", description = "Get a specific job by ID" },
                         new { method = "DELETE", path = "/jobs/{id}", description = "Cancel a job" },
                         new { method = "DELETE", path = "/jobs/cleanup", description = "Delete old jobs and logs (query: olderThanDays, default 30)" },

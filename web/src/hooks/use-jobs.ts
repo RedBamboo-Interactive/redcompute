@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { api } from "@/api/client"
 import type { JobRecord, WsEvent } from "@/api/types"
 
@@ -48,29 +48,109 @@ export function mapJob(j: ApiJob): JobRecord {
   }
 }
 
-export function useJobs(limit = 50) {
+export interface JobFilters {
+  search?: string
+  capability?: string
+  caller?: string
+  status?: string
+}
+
+interface JobsResponse {
+  items: ApiJob[]
+  total: number
+}
+
+export function useJobs(filters: JobFilters = {}, pageSize = 50) {
   const [jobs, setJobs] = useState<JobRecord[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
   const [selectedJob, setSelectedJob] = useState<JobRecord | null>(null)
+  const [debouncedSearch, setDebouncedSearch] = useState(filters.search || "")
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(filters.search || ""), 300)
+    return () => clearTimeout(timer)
+  }, [filters.search])
+
+  const filtersRef = useRef(filters)
+  filtersRef.current = filters
+  const debouncedSearchRef = useRef(debouncedSearch)
+  debouncedSearchRef.current = debouncedSearch
+
+  function buildQuery(offset: number): string {
+    const params = new URLSearchParams()
+    params.set("limit", String(pageSize))
+    params.set("offset", String(offset))
+    if (debouncedSearchRef.current) params.set("search", debouncedSearchRef.current)
+    if (filtersRef.current.capability) params.set("capability", filtersRef.current.capability)
+    if (filtersRef.current.caller) params.set("caller", filtersRef.current.caller)
+    if (filtersRef.current.status) params.set("status", filtersRef.current.status)
+    return `/jobs?${params.toString()}`
+  }
 
   const refresh = useCallback(async () => {
+    setLoading(true)
     try {
-      const data = await api.get<ApiJob[]>(`/jobs?limit=${limit}`)
-      setJobs(data.map(mapJob))
+      const data = await api.get<JobsResponse>(buildQuery(0))
+      setJobs(data.items.map(mapJob))
+      setTotal(data.total)
     } catch { /* offline */ }
-  }, [limit])
+    setLoading(false)
+  }, [debouncedSearch, filters.capability, filters.caller, filters.status, pageSize])
 
   useEffect(() => { refresh() }, [refresh])
+
+  const loadMore = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await api.get<JobsResponse>(buildQuery(jobs.length))
+      setJobs(prev => [...prev, ...data.items.map(mapJob)])
+      setTotal(data.total)
+    } catch { /* offline */ }
+    setLoading(false)
+  }, [jobs.length, debouncedSearch, filters.capability, filters.caller, filters.status, pageSize])
+
+  const hasMore = jobs.length < total
+
+  function jobMatchesFilters(job: JobRecord): boolean {
+    const f = filtersRef.current
+    if (f.capability && job.capabilitySlug !== f.capability) return false
+    if (f.caller && (job.callerInfo || "") !== f.caller) return false
+    if (f.status && job.status !== f.status) return false
+    if (debouncedSearchRef.current) {
+      const q = debouncedSearchRef.current.toLowerCase()
+      const matches =
+        (job.name || job.capabilitySlug).toLowerCase().includes(q) ||
+        job.providerName.toLowerCase().includes(q) ||
+        (job.callerInfo || "").toLowerCase().includes(q)
+      if (!matches) return false
+    }
+    return true
+  }
 
   const handleWsEvent = useCallback((event: WsEvent) => {
     if (event.type === "job.created") {
       const job = event.data as JobRecord
-      setJobs(prev => [job, ...prev].slice(0, limit))
+      if (jobMatchesFilters(job)) {
+        setJobs(prev => [job, ...prev])
+        setTotal(prev => prev + 1)
+      }
     } else if (event.type === "job.updated") {
       const job = event.data as JobRecord
-      setJobs(prev => prev.map(j => j.id === job.id ? job : j))
+      setJobs(prev => {
+        const exists = prev.some(j => j.id === job.id)
+        if (exists) {
+          if (!jobMatchesFilters(job)) {
+            setTotal(t => t - 1)
+            return prev.filter(j => j.id !== job.id)
+          }
+          return prev.map(j => j.id === job.id ? job : j)
+        }
+        return prev
+      })
       setSelectedJob(prev => prev?.id === job.id ? job : prev)
     }
-  }, [limit])
+  }, [filters.capability, filters.caller, filters.status, debouncedSearch])
 
   const selectJob = useCallback(async (job: JobRecord) => {
     try {
@@ -81,5 +161,5 @@ export function useJobs(limit = 50) {
     }
   }, [])
 
-  return { jobs, selectedJob, setSelectedJob: selectJob, refresh, handleWsEvent }
+  return { jobs, total, hasMore, loading, selectedJob, setSelectedJob: selectJob, refresh, loadMore, handleWsEvent }
 }

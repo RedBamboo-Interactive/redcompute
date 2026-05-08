@@ -52,28 +52,32 @@ public static class GlobalEndpoints
 
         app.MapGet("/ping", () => Results.Ok(new { ok = true, version = "0.2.0" }));
 
-        app.MapGet("/jobs", (string? capability, string? status, int? limit, int? offset) =>
+        app.MapGet("/jobs", (string? capability, string? status, string? caller, string? search, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;
             if (status != null && Enum.TryParse<JobStatus>(status, true, out var parsed))
                 statusFilter = parsed;
 
-            var jobs = jobTracker.GetJobs(capability, statusFilter, limit ?? 50, offset ?? 0);
-            return Results.Ok(jobs.Select(j => new
+            var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, caller, search, limit ?? 50, offset ?? 0);
+            return Results.Ok(new
             {
-                j.Id,
-                capability = j.CapabilitySlug,
-                j.ProviderName,
-                status = j.Status.ToString(),
-                j.QueuedAt,
-                j.StartedAt,
-                j.CompletedAt,
-                durationMs = j.DurationMs,
-                j.ErrorMessage,
-                j.CallerInfo,
-                j.Name,
-                j.Rationale
-            }));
+                items = jobs.Select(j => new
+                {
+                    j.Id,
+                    capability = j.CapabilitySlug,
+                    j.ProviderName,
+                    status = j.Status.ToString(),
+                    j.QueuedAt,
+                    j.StartedAt,
+                    j.CompletedAt,
+                    durationMs = j.DurationMs,
+                    j.ErrorMessage,
+                    j.CallerInfo,
+                    j.Name,
+                    j.Rationale
+                }),
+                total = totalCount
+            });
         });
 
         app.MapGet("/jobs/{id:guid}", (Guid id) =>

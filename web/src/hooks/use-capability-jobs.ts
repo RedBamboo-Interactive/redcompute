@@ -8,8 +8,8 @@ export function useCapabilityJobs(slug: string, limit = 50) {
   const [jobs, setJobs] = useState<JobRecord[]>([])
 
   useEffect(() => {
-    api.get<ApiJob[]>(`/jobs?capability=${slug}&limit=${limit}`)
-      .then(data => setJobs(data.map(mapJob)))
+    api.get<{ items: ApiJob[]; total: number }>(`/jobs?capability=${slug}&limit=${limit}`)
+      .then(data => setJobs(data.items.map(mapJob)))
       .catch(() => {})
   }, [slug, limit])
 

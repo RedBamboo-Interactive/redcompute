@@ -43,15 +43,31 @@ public static class OpenApiEndpoints
                 ["get"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "ListJobs",
-                    ["summary"] = "Paginated job history, filterable by capability and status",
+                    ["summary"] = "Paginated job history with full-text search. Returns { items, total } for pagination.",
                     ["parameters"] = new object[]
                     {
-                        QueryParam("capability", "string", "Filter by capability slug"),
+                        QueryParam("capability", "string", "Filter by capability slug (e.g. tts, stt, image-gen, music-gen, ai-session)"),
                         QueryParam("status", "string", "Filter by job status (Queued, Running, Completed, Failed, Cancelled)"),
-                        QueryParam("limit", "integer", "Max results (default 50)"),
-                        QueryParam("offset", "integer", "Skip N results")
+                        QueryParam("caller", "string", "Filter by callerInfo (exact match — identifies who queued the job)"),
+                        QueryParam("search", "string", "Case-insensitive text search across job name, providerName, callerInfo, and capabilitySlug"),
+                        QueryParam("limit", "integer", "Max results per page (default 50)"),
+                        QueryParam("offset", "integer", "Skip N results for pagination (use with total to page through results)")
                     },
-                    ["responses"] = Responses("application/json", Schema("array", "JobRecord"))
+                    ["responses"] = Responses("application/json", new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["description"] = "Paginated result with total count for building pagination",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["items"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "array",
+                                ["items"] = new { @ref = "#/components/schemas/JobRecord" }
+                            },
+                            ["total"] = new Dictionary<string, object> { ["type"] = "integer", ["description"] = "Total matching records before pagination. Compare with offset+items.length to determine if more pages exist." }
+                        },
+                        ["required"] = new[] { "items", "total" }
+                    })
                 }
             },
             ["/jobs/{id}"] = new Dictionary<string, object>
@@ -59,9 +75,9 @@ public static class OpenApiEndpoints
                 ["get"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "GetJob",
-                    ["summary"] = "Get full details of a single job",
+                    ["summary"] = "Get full details of a single job including input, output, and error details",
                     ["parameters"] = new object[] { PathParam("id", "string", "Job UUID") },
-                    ["responses"] = Responses("application/json", Schema("object", "JobRecord"))
+                    ["responses"] = Responses("application/json", new { @ref = "#/components/schemas/JobRecord" })
                 },
                 ["delete"] = new Dictionary<string, object>
                 {
@@ -952,6 +968,33 @@ public static class OpenApiEndpoints
                             ["fields"] = new { type = "object", description = "Per-field validation errors (key=field, value=error)", additionalProperties = new { type = "string" } }
                         },
                         ["required"] = new[] { "error", "message" }
+                    },
+                    ["JobRecord"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["description"] = "A compute job tracked by RedCompute. Returned by GET /jobs (in items array) and GET /jobs/{id}.",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["id"] = new { type = "string", format = "uuid", description = "Unique job identifier" },
+                            ["capability"] = Prop("string", "Capability slug (tts, stt, image-gen, music-gen, ai-session)"),
+                            ["providerName"] = Prop("string", "Provider that executed/is executing this job"),
+                            ["status"] = PropEnum("Job lifecycle state", "Queued", "Queued", "Running", "Completed", "Failed", "Cancelled"),
+                            ["queuedAt"] = Prop("string", "ISO 8601 timestamp when the job was queued"),
+                            ["startedAt"] = Prop("string", "ISO 8601 timestamp when execution began (null if still queued)"),
+                            ["completedAt"] = Prop("string", "ISO 8601 timestamp when the job finished (null if not done)"),
+                            ["durationMs"] = Prop("integer", "Wall-clock duration in milliseconds (null if not completed)"),
+                            ["progress"] = PropNum("Execution progress", 0, 0, 1),
+                            ["name"] = Prop("string", "User-friendly job name (null if auto-generated)"),
+                            ["rationale"] = Prop("string", "Why this job was queued (set by the caller)"),
+                            ["callerInfo"] = Prop("string", "Identifier of who queued the job (API caller, agent name, etc.)"),
+                            ["errorMessage"] = Prop("string", "Error summary (only for Failed jobs)"),
+                            ["errorDetails"] = Prop("string", "Full error details/stack trace (only on GET /jobs/{id})"),
+                            ["input"] = Prop("string", "JSON-serialized input parameters (only on GET /jobs/{id})"),
+                            ["outputLocation"] = Prop("string", "File path to output artifact (only on GET /jobs/{id})"),
+                            ["outputSizeBytes"] = Prop("integer", "Output file size in bytes"),
+                            ["outputContentType"] = Prop("string", "MIME type of the output (e.g. audio/wav, image/png)"),
+                            ["resultMetadata"] = Prop("string", "JSON-serialized result metadata (only on GET /jobs/{id})")
+                        }
                     },
                     ["ClaudeSessionInfo"] = new Dictionary<string, object>
                     {

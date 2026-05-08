@@ -27,10 +27,14 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(seconds / 86400)}d ago`
 }
 
-export function JobList({ jobs, selectedId, onSelect }: {
+export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore, loading, onLoadMore }: {
   jobs: JobRecord[]
   selectedId: string | null
   onSelect: (job: JobRecord) => void
+  hasActiveFilters?: boolean
+  hasMore?: boolean
+  loading?: boolean
+  onLoadMore?: () => void
 }) {
   return (
     <ScrollArea className="h-full">
@@ -73,8 +77,24 @@ export function JobList({ jobs, selectedId, onSelect }: {
             </div>
           </button>
         ))}
+        {hasMore && (
+          <button
+            onClick={onLoadMore}
+            disabled={loading}
+            className="flex items-center justify-center gap-2 px-4 py-3 text-[12px] text-accent-teal hover:text-white transition-colors border-b border-white/[0.06] hover:bg-white/[0.04]"
+          >
+            {loading ? (
+              <i className="fa-solid fa-spinner fa-spin text-xs" />
+            ) : (
+              <i className="fa-solid fa-chevron-down text-xs" />
+            )}
+            <span>Load more</span>
+          </button>
+        )}
         {jobs.length === 0 && (
-          <p className="text-text-muted text-sm p-4 text-center">No jobs yet</p>
+          <p className="text-text-muted text-sm p-4 text-center">
+            {hasActiveFilters ? "No matching jobs" : "No jobs yet"}
+          </p>
         )}
       </div>
     </ScrollArea>

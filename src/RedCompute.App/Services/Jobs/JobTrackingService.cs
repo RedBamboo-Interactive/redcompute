@@ -120,7 +120,7 @@ public class JobTrackingService
         return db.SaveChanges();
     }
 
-    public List<JobRecord> GetJobs(string? capabilitySlug = null, JobStatus? status = null, int limit = 50, int offset = 0)
+    public (List<JobRecord> Items, int TotalCount) GetJobs(string? capabilitySlug = null, JobStatus? status = null, string? caller = null, string? search = null, int limit = 50, int offset = 0)
     {
         using var db = new RedComputeDbContext();
         IQueryable<JobRecord> query = db.Jobs.OrderByDescending(j => j.QueuedAt);
@@ -129,8 +129,18 @@ public class JobTrackingService
             query = query.Where(j => j.CapabilitySlug == capabilitySlug);
         if (status != null)
             query = query.Where(j => j.Status == status);
+        if (caller != null)
+            query = query.Where(j => j.CallerInfo == caller);
+        if (!string.IsNullOrEmpty(search))
+            query = query.Where(j =>
+                (j.Name != null && j.Name.Contains(search)) ||
+                j.ProviderName.Contains(search) ||
+                (j.CallerInfo != null && j.CallerInfo.Contains(search)) ||
+                j.CapabilitySlug.Contains(search));
 
-        return query.Skip(offset).Take(limit).ToList();
+        var totalCount = query.Count();
+        var items = query.Skip(offset).Take(limit).ToList();
+        return (items, totalCount);
     }
 
     public JobRecord? GetJob(Guid id)
