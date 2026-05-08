@@ -313,6 +313,25 @@ public static class DiscoverEndpoints
                 },
                 new()
                 {
+                    Method = "POST",
+                    Path = "/ai-session/execute",
+                    Description = "Execute a prompt with full agent capabilities (tools, multi-turn reasoning) in a local or Docker-sandboxed environment. Returns extracted response text plus raw stream-json output for logging.",
+                    Parameters = new Dictionary<string, ParameterSchema>
+                    {
+                        ["prompt"] = new() { Type = "string", Required = true, Description = "Full prompt text sent to Claude via stdin" },
+                        ["container"] = new() { Type = "string", Required = false, Description = "Docker container name for sandboxed execution via 'docker exec'. Omit for local execution." },
+                        ["workingDir"] = new() { Type = "string", Required = false, Default = "/workspace", Description = "Working directory inside the container (or on host if no container)" },
+                        ["model"] = new() { Type = "string", Required = false, Enum = ["haiku", "sonnet", "opus"], Default = "sonnet", Description = "Claude model to use" },
+                        ["effort"] = new() { Type = "string", Required = false, Enum = ["low", "medium", "high", "xhigh", "max"], Default = "high", Description = "Reasoning effort level" },
+                        ["maxTurns"] = new() { Type = "integer", Required = false, Default = 1, Min = 1, Max = 200, Description = "Maximum tool-use turns for multi-step agent reasoning" },
+                        ["allowedTools"] = new() { Type = "array", Required = false, Description = "Tool whitelist passed via --allowed-tools. Common: Read, Write, Edit, Glob, Bash, WebFetch, WebSearch" },
+                        ["addDirs"] = new() { Type = "array", Required = false, Description = "Additional directories to expose to Claude via --add-dir (e.g. skill directories)" },
+                        ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Execution timeout in seconds" }
+                    },
+                    Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
+                },
+                new()
+                {
                     Method = "GET",
                     Path = "/ai-session/models",
                     Description = "List available LLM models with their default and speed characteristics (for oneshot mode)",

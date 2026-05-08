@@ -195,6 +195,145 @@ public static class ClaudeSessionEndpoints
             await claude.ForceKill(id);
             return Results.Ok(new { killed = true });
         });
+
+        app.MapPost("/ai-session/execute", async (HttpContext ctx) =>
+        {
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Results.Json(new ErrorResponse { Error = "invalid_body", Message = "Request body must be valid JSON" }, statusCode: 400); }
+
+            return await HandleExecute(ctx, body, claude, jobTracker, log);
+        });
+    }
+
+    private static readonly string[] ValidModels = ["haiku", "sonnet", "opus"];
+    private static readonly string[] ValidEfforts = ["low", "medium", "high", "xhigh", "max"];
+
+    private static async Task<IResult> HandleExecute(HttpContext ctx, JsonElement body,
+        ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log)
+    {
+        // --- Validation ---
+        var prompt = body.TryGetProperty("prompt", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        if (string.IsNullOrWhiteSpace(prompt))
+            return Results.Json(new ErrorResponse
+            {
+                Error = "validation_failed", Message = "One or more parameters are invalid",
+                Fields = new() { ["prompt"] = "required, must be a non-empty string" }
+            }, statusCode: 422);
+
+        var container = body.TryGetProperty("container", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+        var workingDir = body.TryGetProperty("workingDir", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : null;
+
+        string? model = null;
+        if (body.TryGetProperty("model", out var mod) && mod.ValueKind == JsonValueKind.String)
+        {
+            model = mod.GetString();
+            if (model != null && !ValidModels.Contains(model))
+                return Results.Json(new ErrorResponse
+                {
+                    Error = "validation_failed", Message = "One or more parameters are invalid",
+                    Fields = new() { ["model"] = $"must be one of: {string.Join(", ", ValidModels)}" }
+                }, statusCode: 422);
+        }
+
+        string? effort = null;
+        if (body.TryGetProperty("effort", out var eff) && eff.ValueKind == JsonValueKind.String)
+        {
+            effort = eff.GetString();
+            if (effort != null && !ValidEfforts.Contains(effort))
+                return Results.Json(new ErrorResponse
+                {
+                    Error = "validation_failed", Message = "One or more parameters are invalid",
+                    Fields = new() { ["effort"] = $"must be one of: {string.Join(", ", ValidEfforts)}" }
+                }, statusCode: 422);
+        }
+
+        var maxTurns = 1;
+        if (body.TryGetProperty("maxTurns", out var mt))
+        {
+            if (mt.ValueKind != JsonValueKind.Number || !mt.TryGetInt32(out var val) || val < 1 || val > 200)
+                return Results.Json(new ErrorResponse
+                {
+                    Error = "validation_failed", Message = "One or more parameters are invalid",
+                    Fields = new() { ["maxTurns"] = "must be an integer between 1 and 200" }
+                }, statusCode: 422);
+            maxTurns = val;
+        }
+
+        var timeout = 600;
+        if (body.TryGetProperty("timeout", out var to))
+        {
+            if (to.ValueKind != JsonValueKind.Number || !to.TryGetInt32(out var val) || val < 1 || val > 1800)
+                return Results.Json(new ErrorResponse
+                {
+                    Error = "validation_failed", Message = "One or more parameters are invalid",
+                    Fields = new() { ["timeout"] = "must be an integer between 1 and 1800" }
+                }, statusCode: 422);
+            timeout = val;
+        }
+
+        string[]? allowedTools = null;
+        if (body.TryGetProperty("allowedTools", out var at) && at.ValueKind == JsonValueKind.Array)
+            allowedTools = at.EnumerateArray().Select(x => x.GetString()!).Where(x => x != null).ToArray();
+
+        string[]? addDirs = null;
+        if (body.TryGetProperty("addDirs", out var ad) && ad.ValueKind == JsonValueKind.Array)
+            addDirs = ad.EnumerateArray().Select(x => x.GetString()!).Where(x => x != null).ToArray();
+
+        // --- Job tracking ---
+        var inputSummary = JsonSerializer.Serialize(new { model, effort, maxTurns, container, timeout, promptLength = prompt!.Length });
+        var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
+        var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
+        var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
+        var rationale = ctx.Request.Headers.TryGetValue("X-Job-Rationale", out var jr) ? jr.ToString() : null;
+
+        var job = jobTracker.CreateJob("ai-session", "Claude Code", inputSummary, callerInfo, idempotencyKey, jobName, rationale);
+        jobTracker.MarkRunning(job.Id);
+        log($"[Claude] Execute job {job.Id} started (container={container ?? "local"}, model={model ?? "default"}, maxTurns={maxTurns})", job.Id);
+
+        try
+        {
+            var result = await claude.ExecuteAgentAsync(
+                prompt, container, workingDir,
+                model, effort, maxTurns,
+                allowedTools, addDirs, timeout,
+                ctx.RequestAborted);
+
+            if (!result.Success)
+            {
+                jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
+                log($"[Claude] Execute job {job.Id} failed: {result.Error}", job.Id);
+                return Results.Json(new ErrorResponse { Error = "execution_failed", Message = result.Error ?? "Unknown error" }, statusCode: 502);
+            }
+
+            var resultJson = JsonSerializer.Serialize(new
+            {
+                success = true,
+                text = result.Text,
+                streamOutput = result.StreamOutput,
+                model = result.Model,
+                inputTokens = result.InputTokens,
+                outputTokens = result.OutputTokens,
+                costUsd = result.CostUsd,
+                error = (string?)null
+            });
+            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json");
+            log($"[Claude] Execute job {job.Id} completed ({result.InputTokens}in/{result.OutputTokens}out)", job.Id);
+
+            ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+            return Results.Content(resultJson, "application/json");
+        }
+        catch (TaskCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            jobTracker.MarkCancelled(job.Id);
+            return Results.Empty;
+        }
+        catch (Exception ex)
+        {
+            jobTracker.MarkFailed(job.Id, ex.Message);
+            log($"[Claude] Execute job {job.Id} exception: {ex.Message}", job.Id);
+            return Results.Json(new ErrorResponse { Error = "execution_failed", Message = ex.Message }, statusCode: 500);
+        }
     }
 
     private static async Task<IResult> HandleOneshot(HttpContext ctx, JsonElement body, ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log)

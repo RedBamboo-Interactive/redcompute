@@ -542,6 +542,80 @@ public static class OpenApiEndpoints
                 }
             }
         };
+        paths["/ai-session/execute"] = new Dictionary<string, object>
+        {
+            ["post"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "AiSessionExecute",
+                ["summary"] = "Execute a prompt with full agent capabilities (tools, multi-turn reasoning) in a local or Docker-sandboxed environment.",
+                ["requestBody"] = RequestBody(new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["required"] = new[] { "prompt" },
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["prompt"] = Prop("string", "Full prompt text sent to Claude via stdin"),
+                        ["container"] = Prop("string", "Docker container name for sandboxed execution via 'docker exec'. Omit for local execution."),
+                        ["workingDir"] = Prop("string", "Working directory inside the container or on host", "/workspace"),
+                        ["model"] = PropEnum("Claude model to use", "sonnet", "haiku", "sonnet", "opus"),
+                        ["effort"] = PropEnum("Reasoning effort level", "high", "low", "medium", "high", "xhigh", "max"),
+                        ["maxTurns"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "integer", ["description"] = "Maximum tool-use turns for multi-step agent reasoning",
+                            ["default"] = 1, ["minimum"] = 1, ["maximum"] = 200
+                        },
+                        ["allowedTools"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "array",
+                            ["description"] = "Tool whitelist passed via --allowed-tools. Common: Read, Write, Edit, Glob, Bash, WebFetch, WebSearch",
+                            ["items"] = new Dictionary<string, object> { ["type"] = "string" }
+                        },
+                        ["addDirs"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "array",
+                            ["description"] = "Additional directories to expose to Claude via --add-dir (e.g. skill directories)",
+                            ["items"] = new Dictionary<string, object> { ["type"] = "string" }
+                        },
+                        ["timeout"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "integer", ["description"] = "Execution timeout in seconds",
+                            ["default"] = 600, ["minimum"] = 1, ["maximum"] = 1800
+                        }
+                    }
+                }),
+                ["responses"] = new Dictionary<string, object>
+                {
+                    ["200"] = new Dictionary<string, object>
+                    {
+                        ["description"] = "Execution completed. Contains extracted text, raw stream-json output, token usage, and cost.",
+                        ["content"] = new Dictionary<string, object>
+                        {
+                            ["application/json"] = new Dictionary<string, object>
+                            {
+                                ["schema"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object>
+                                    {
+                                        ["success"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Whether execution completed successfully" },
+                                        ["text"] = Prop("string", "Extracted final text response from Claude"),
+                                        ["streamOutput"] = Prop("string", "Raw stream-json stdout (newline-delimited) for invocation logging"),
+                                        ["model"] = Prop("string", "Actual model used for generation"),
+                                        ["inputTokens"] = Prop("integer", "Input tokens consumed"),
+                                        ["outputTokens"] = Prop("integer", "Output tokens generated"),
+                                        ["costUsd"] = Prop("number", "Total cost in USD"),
+                                        ["error"] = Prop("string", "Error message if success is false")
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    ["422"] = ErrorResponse("Validation failed — check 'fields' for per-parameter errors"),
+                    ["502"] = ErrorResponse("Execution error — claude process failed or container not found"),
+                    ["503"] = ErrorResponse("Service unavailable")
+                }
+            }
+        };
         paths["/ai-session/models"] = new Dictionary<string, object>
         {
             ["get"] = Op("AiSessionListModels", "List available LLM models with speed characteristics and default model (for oneshot mode)", "application/json",

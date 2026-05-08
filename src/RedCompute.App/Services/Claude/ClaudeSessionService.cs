@@ -75,6 +75,199 @@ public class ClaudeSessionService
 
     public record OneshotResult(bool Success, string? Text, string? Model, int InputTokens, int OutputTokens, string? Error);
 
+    public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
+                                int InputTokens, int OutputTokens, double? CostUsd, string? Error);
+
+    public async Task<ExecuteResult> ExecuteAgentAsync(
+        string prompt, string? container, string? workingDir,
+        string? model, string? effort, int maxTurns,
+        string[]? allowedTools, string[]? addDirs, int timeout,
+        CancellationToken ct)
+    {
+        var useDocker = !string.IsNullOrWhiteSpace(container);
+
+        if (!useDocker)
+        {
+            var claudePath = ResolveClaudePath();
+            if (claudePath == null)
+                return new ExecuteResult(false, null, null, null, 0, 0, null,
+                    "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        if (useDocker)
+        {
+            startInfo.FileName = "docker";
+            var args = new List<string> { "exec", "-i" };
+            args.Add(container!);
+            args.Add("claude");
+            AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
+            foreach (var a in args) startInfo.ArgumentList.Add(a);
+        }
+        else
+        {
+            startInfo.FileName = ResolveClaudePath()!;
+            if (!string.IsNullOrWhiteSpace(workingDir))
+                startInfo.WorkingDirectory = workingDir;
+            var args = new List<string>();
+            AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
+            foreach (var a in args) startInfo.ArgumentList.Add(a);
+        }
+
+        using var process = Process.Start(startInfo);
+        if (process == null)
+            return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start process");
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeout));
+
+        try
+        {
+            // Read stdout/stderr concurrently with writing stdin to avoid pipe deadlock
+            // on large prompts (docker exec buffers are limited).
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+
+            await process.StandardInput.WriteAsync(prompt.AsMemory(), timeoutCts.Token);
+            process.StandardInput.Close();
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            await process.WaitForExitAsync(timeoutCts.Token);
+
+            if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
+            {
+                var errMsg = stderr.Length > 500 ? stderr[..500] : stderr;
+                _log($"[Claude] Execute exited {process.ExitCode}: {errMsg}", null);
+                return new ExecuteResult(false, null, null, null, 0, 0, null,
+                    $"claude exited with code {process.ExitCode}: {errMsg}");
+            }
+
+            return ParseStreamJsonOutput(stdout, model);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            return new ExecuteResult(false, null, null, null, 0, 0, null,
+                $"Execution timed out after {timeout}s");
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+    }
+
+    private static void AddAgentArgs(List<string> args, string? model, string? effort,
+        int maxTurns, string[]? allowedTools, string[]? addDirs)
+    {
+        args.AddRange(["--print", "--output-format", "stream-json", "--verbose"]);
+        args.AddRange(["--max-turns", maxTurns.ToString()]);
+        args.Add("--dangerously-skip-permissions");
+        if (!string.IsNullOrEmpty(model))
+        {
+            args.Add("--model");
+            args.Add(model);
+        }
+        if (!string.IsNullOrEmpty(effort))
+        {
+            args.Add("--effort");
+            args.Add(effort);
+        }
+        if (allowedTools is { Length: > 0 })
+        {
+            args.Add("--allowed-tools");
+            args.Add(string.Join(",", allowedTools));
+        }
+        if (addDirs != null)
+        {
+            foreach (var dir in addDirs)
+            {
+                args.Add("--add-dir");
+                args.Add(dir);
+            }
+        }
+    }
+
+    private ExecuteResult ParseStreamJsonOutput(string stdout, string? requestedModel)
+    {
+        var lastAssistantText = "";
+        var hadToolUse = false;
+        var inputTokens = 0;
+        var outputTokens = 0;
+        double? costUsd = null;
+        string? actualModel = requestedModel;
+
+        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                var evtType = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+                if (evtType == "result")
+                {
+                    var resultText = root.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.String
+                        ? r.GetString() : null;
+                    if (root.TryGetProperty("usage", out var usage))
+                    {
+                        if (usage.TryGetProperty("input_tokens", out var it)) inputTokens = it.GetInt32();
+                        if (usage.TryGetProperty("output_tokens", out var ot)) outputTokens = ot.GetInt32();
+                    }
+                    if (root.TryGetProperty("total_cost_usd", out var cost))
+                        costUsd = cost.GetDouble();
+
+                    var text = resultText ?? lastAssistantText;
+                    if (string.IsNullOrEmpty(text) && !hadToolUse)
+                        text = "No response generated";
+
+                    _log($"[Claude] Execute done: {inputTokens}in/{outputTokens}out" +
+                         (costUsd.HasValue ? $" ${costUsd:F4}" : ""), null);
+
+                    return new ExecuteResult(true, text, stdout, actualModel, inputTokens, outputTokens, costUsd, null);
+                }
+
+                if (evtType == "assistant")
+                {
+                    if (root.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var content))
+                    {
+                        foreach (var block in content.EnumerateArray())
+                        {
+                            var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
+                            if (blockType == "text" && block.TryGetProperty("text", out var txt))
+                                lastAssistantText = txt.GetString() ?? "";
+                            else if (blockType == "tool_use")
+                                hadToolUse = true;
+                        }
+                    }
+                }
+
+                if (evtType == "system" && root.TryGetProperty("model", out var m))
+                    actualModel = m.GetString() ?? requestedModel;
+            }
+            catch (JsonException) { }
+        }
+
+        return new ExecuteResult(
+            !string.IsNullOrEmpty(lastAssistantText) || hadToolUse,
+            lastAssistantText,
+            stdout,
+            actualModel, inputTokens, outputTokens, costUsd,
+            string.IsNullOrEmpty(lastAssistantText) && !hadToolUse ? "No result event in stream output" : null);
+    }
+
     public async Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages, int maxTokens, CancellationToken ct)
     {
         var claudePath = ResolveClaudePath();
@@ -1136,10 +1329,9 @@ public class ClaudeSessionService
 
         var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
         var cacheRead = usage.TryGetProperty("cache_read_input_tokens", out var cr) ? cr.GetInt32() : 0;
-        var cacheWrite = usage.TryGetProperty("cache_creation_input_tokens", out var cc) ? cc.GetInt32() : 0;
-        session.Info.ContextTokens = input + cacheRead + cacheWrite;
+        session.Info.ContextTokens = input + cacheRead;
 
-        _log($"[Claude] Context from message_start: {session.Info.ContextTokens:N0} tokens (input={input} cacheRead={cacheRead} cacheWrite={cacheWrite})", null);
+        _log($"[Claude] Context from message_start: {session.Info.ContextTokens:N0} tokens (input={input} cacheRead={cacheRead})", null);
     }
 
     private void ParseTokenUsage(JsonElement root, ManagedSession session)
@@ -1166,11 +1358,8 @@ public class ClaudeSessionService
                 session.Info.CacheCreationInputTokens = (session.Info.CacheCreationInputTokens ?? 0) + turnCacheWrite;
             }
 
-            if (session.Info.ContextTokens is null or 0)
-            {
-                var ctx = turnInput + turnCacheRead + turnCacheWrite;
-                if (ctx > 0) session.Info.ContextTokens = ctx;
-            }
+            var ctx = turnInput + turnCacheRead;
+            if (ctx > 0) session.Info.ContextTokens = ctx;
         }
 
         if (root.TryGetProperty("modelUsage", out var modelUsage))
