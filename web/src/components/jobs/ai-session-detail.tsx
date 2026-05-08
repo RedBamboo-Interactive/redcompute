@@ -65,7 +65,7 @@ function truncate(s: string, max: number): string {
 
 export function AiSessionDetail({ job }: { job: JobRecord }) {
   const { session, filteredEvents, loading, isLive, search, setSearch, typeFilter, toggleType, clearFilters, events } =
-    useSessionEvents(job.id)
+    useSessionEvents(job)
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScroll = useRef(true)
@@ -134,6 +134,15 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
             Live
           </span>
         )}
+        <a
+          href={`${window.location.protocol}//${window.location.hostname}:18801/?session=${session.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-accent-teal/15 text-accent-teal hover:bg-accent-teal/25 transition-colors"
+        >
+          <i className="fa-solid fa-arrow-up-right-from-square text-[10px]" />
+          {isLive ? "Open in CodeRed" : "Resume in CodeRed"}
+        </a>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap text-xs text-text-muted">

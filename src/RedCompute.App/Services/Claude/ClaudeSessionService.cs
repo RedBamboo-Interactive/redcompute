@@ -267,7 +267,7 @@ public class ClaudeSessionService
         info.Status = SessionStatus.Idle;
 
         // Create a job record for this session
-        var inputJson = System.Text.Json.JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName });
+        var inputJson = System.Text.Json.JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = info.Id });
         var job = _jobTracker.CreateJob("ai-session", "Claude Code", inputJson, name: info.ProjectName);
         _jobTracker.MarkRunning(job.Id);
         info.JobId = job.Id;
@@ -699,6 +699,18 @@ public class ClaudeSessionService
         var record = db.ClaudeSessions.Find(sessionId);
         if (record == null) return (null, []);
         return (ToSessionInfo(record), GetHistory(sessionId));
+    }
+
+    public (ClaudeSessionInfo? Info, List<ClaudeMessageRecord> History) GetSessionByJobId(Guid jobId)
+    {
+        var live = _sessions.Values.FirstOrDefault(s => s.Info.JobId == jobId);
+        if (live != null)
+            return (live.Info, GetHistory(live.Info.Id));
+
+        using var db = new RedComputeDbContext();
+        var record = db.ClaudeSessions.FirstOrDefault(s => s.JobId == jobId);
+        if (record == null) return (null, []);
+        return (ToSessionInfo(record), GetHistory(record.Id));
     }
 
     private static ClaudeSessionInfo ToSessionInfo(ClaudeSessionRecord r) => new()

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { api } from "@/api/client"
-import type { ClaudeSessionInfo, ClaudeMessageRecord, ClaudeStreamEvent, WsEvent } from "@/api/types"
+import type { JobRecord, ClaudeSessionInfo, ClaudeMessageRecord, ClaudeStreamEvent, WsEvent } from "@/api/types"
 import { useWsSubscribe } from "@/contexts/ws-events"
 
 interface SessionEventsResult {
@@ -22,7 +22,16 @@ function fetchSession(sessionId: string) {
   )
 }
 
-export function useSessionEvents(jobId: string): SessionEventsResult {
+function extractSessionId(job: JobRecord): string | null {
+  try {
+    const obj = JSON.parse(job.inputJson) as Record<string, unknown>
+    if (typeof obj.sessionId === "string") return obj.sessionId
+  } catch { /* ignore */ }
+  return null
+}
+
+export function useSessionEvents(job: JobRecord): SessionEventsResult {
+  const jobId = job.id
   const [session, setSession] = useState<ClaudeSessionInfo | null>(null)
   const [events, setEvents] = useState<ClaudeMessageRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -33,22 +42,32 @@ export function useSessionEvents(jobId: string): SessionEventsResult {
   const prevStatus = useRef<string | null>(null)
 
   const resolveAndFetch = useCallback(async () => {
-    try {
-      const sessions = await api.get<ClaudeSessionInfo[]>("/claude/sessions")
-      const match = sessions.find(s => s.jobId === jobId)
-      if (!match) {
+    // Try direct session ID from job input first (works for all sessions, even old/dismissed)
+    const directId = extractSessionId(job)
+    if (directId) {
+      try {
+        const data = await fetchSession(directId)
+        resolvedSessionId.current = directId
+        setSession(data.session)
+        setEvents(data.messages.toReversed())
+        prevStatus.current = data.session.status
         setLoading(false)
         return
-      }
-      resolvedSessionId.current = match.id
+      } catch { /* session not found by direct ID, fall through */ }
+    }
 
-      const data = await fetchSession(match.id)
+    // Fallback: DB lookup by jobId (handles old sessions without sessionId in inputJson)
+    try {
+      const data = await api.get<{ session: ClaudeSessionInfo; messages: ClaudeMessageRecord[] }>(
+        `/claude/sessions/by-job/${jobId}`
+      )
+      resolvedSessionId.current = data.session.id
       setSession(data.session)
       setEvents(data.messages.toReversed())
       prevStatus.current = data.session.status
-    } catch { /* offline */ }
+    } catch { /* not found or offline */ }
     setLoading(false)
-  }, [jobId])
+  }, [job, jobId])
 
   useEffect(() => {
     resolvedSessionId.current = null

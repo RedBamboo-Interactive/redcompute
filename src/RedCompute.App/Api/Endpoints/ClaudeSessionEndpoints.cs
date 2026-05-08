@@ -82,6 +82,15 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(new { session = info, messages = history });
         });
 
+        app.MapGet("/claude/sessions/by-job/{jobId:guid}", (Guid jobId) =>
+        {
+            var (info, history) = claude.GetSessionByJobId(jobId);
+            if (info == null)
+                return Results.NotFound(new { error = "not_found", message = "No session found for this job" });
+
+            return Results.Ok(new { session = info, messages = history });
+        });
+
         app.MapPost("/claude/sessions/{id}/message", (string id, SendMessageRequest req) =>
         {
             if (string.IsNullOrWhiteSpace(req.Content) && (req.Images == null || req.Images.Length == 0))

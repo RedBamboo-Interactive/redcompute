@@ -855,6 +855,24 @@ public static class OpenApiEndpoints
                 ["responses"] = Responses("application/json", new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object> { ["killed"] = new { type = "boolean" } } })
             }
         };
+        paths["/claude/sessions/by-job/{jobId}"] = new Dictionary<string, object>
+        {
+            ["get"] = new Dictionary<string, object>
+            {
+                ["operationId"] = "ClaudeGetSessionByJob",
+                ["summary"] = "Look up session by its linked job ID",
+                ["parameters"] = new object[] { PathParam("jobId", "string", "Job ID (GUID)") },
+                ["responses"] = Responses("application/json", new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["session"] = new { @ref = "#/components/schemas/ClaudeSessionInfo" },
+                        ["messages"] = new Dictionary<string, object> { ["type"] = "array", ["items"] = new { @ref = "#/components/schemas/ClaudeMessage" } }
+                    }
+                })
+            }
+        };
         paths["/claude/sessions/{id}/message"] = new Dictionary<string, object>
         {
             ["post"] = new Dictionary<string, object>
