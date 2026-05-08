@@ -82,7 +82,8 @@ public class ClaudeSessionService
         string prompt, string? container, string? workingDir,
         string? model, string? effort, int maxTurns,
         string[]? allowedTools, string[]? addDirs, int timeout,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? streamKey = null)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
 
@@ -133,18 +134,36 @@ public class ClaudeSessionService
 
         try
         {
-            // Read stdout/stderr concurrently with writing stdin to avoid pipe deadlock
-            // on large prompts (docker exec buffers are limited).
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
             var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
-            await process.StandardInput.WriteAsync(prompt.AsMemory(), timeoutCts.Token);
-            process.StandardInput.Close();
+            // Write stdin in background to avoid pipe deadlock with Docker buffers
+            var stdinTask = Task.Run(async () =>
+            {
+                await process.StandardInput.WriteAsync(prompt.AsMemory(), timeoutCts.Token);
+                process.StandardInput.Close();
+            }, timeoutCts.Token);
 
-            var stdout = await stdoutTask;
+            // Read stdout line-by-line, broadcasting stream events in real time
+            var sb = new StringBuilder();
+            while (await process.StandardOutput.ReadLineAsync(timeoutCts.Token) is { } line)
+            {
+                sb.AppendLine(line);
+                if (streamKey != null && !string.IsNullOrWhiteSpace(line))
+                {
+                    try
+                    {
+                        foreach (var evt in ParseExecuteStreamLine(line))
+                            StreamEvent?.Invoke(streamKey, evt);
+                    }
+                    catch { /* ignore parse errors during streaming */ }
+                }
+            }
+
+            try { await stdinTask; } catch { /* stdin may already be closed */ }
             var stderr = await stderrTask;
-
             await process.WaitForExitAsync(timeoutCts.Token);
+
+            var stdout = sb.ToString();
 
             if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
             {
@@ -198,6 +217,53 @@ public class ClaudeSessionService
                 args.Add(dir);
             }
         }
+    }
+
+    private static List<ClaudeStreamEvent> ParseExecuteStreamLine(string line)
+    {
+        var events = new List<ClaudeStreamEvent>();
+        using var doc = JsonDocument.Parse(line);
+        var root = doc.RootElement;
+        var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+        if (type != "assistant" || !root.TryGetProperty("message", out var msg)
+                                || !msg.TryGetProperty("content", out var content))
+            return events;
+
+        var msgId = msg.TryGetProperty("id", out var mid) ? mid.GetString() : null;
+
+        foreach (var block in content.EnumerateArray())
+        {
+            var bt = block.TryGetProperty("type", out var btp) ? btp.GetString() : null;
+            switch (bt)
+            {
+                case "thinking" when block.TryGetProperty("thinking", out var th):
+                    events.Add(new ClaudeStreamEvent { Type = "thinking", Content = th.GetString(), MessageId = msgId });
+                    break;
+                case "text" when block.TryGetProperty("text", out var txt):
+                    events.Add(new ClaudeStreamEvent { Type = "text", Content = txt.GetString(), MessageId = msgId });
+                    break;
+                case "tool_use":
+                    events.Add(new ClaudeStreamEvent
+                    {
+                        Type = "tool_use",
+                        ToolName = block.TryGetProperty("name", out var n) ? n.GetString() : null,
+                        ToolInput = block.TryGetProperty("input", out var inp) ? inp.Clone() : null,
+                        MessageId = msgId,
+                    });
+                    break;
+                case "tool_result":
+                    events.Add(new ClaudeStreamEvent
+                    {
+                        Type = "tool_result",
+                        ToolResult = block.TryGetProperty("content", out var c) ? c.ToString() : null,
+                        MessageId = msgId,
+                    });
+                    break;
+            }
+        }
+
+        return events;
     }
 
     private ExecuteResult ParseStreamJsonOutput(string stdout, string? requestedModel)
@@ -1329,9 +1395,13 @@ public class ClaudeSessionService
 
         var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
         var cacheRead = usage.TryGetProperty("cache_read_input_tokens", out var cr) ? cr.GetInt32() : 0;
-        session.Info.ContextTokens = input + cacheRead;
-
-        _log($"[Claude] Context from message_start: {session.Info.ContextTokens:N0} tokens (input={input} cacheRead={cacheRead})", null);
+        var cacheWrite = usage.TryGetProperty("cache_creation_input_tokens", out var cc) ? cc.GetInt32() : 0;
+        var ctx = input + cacheRead + cacheWrite;
+        if (ctx > 0)
+        {
+            session.Info.ContextTokens = ctx;
+            _log($"[Claude] Context from message_start: {ctx:N0} tokens (input={input} cacheRead={cacheRead} cacheWrite={cacheWrite})", null);
+        }
     }
 
     private void ParseTokenUsage(JsonElement root, ManagedSession session)
@@ -1357,9 +1427,6 @@ public class ClaudeSessionService
                 turnCacheWrite = cacheC.GetInt32();
                 session.Info.CacheCreationInputTokens = (session.Info.CacheCreationInputTokens ?? 0) + turnCacheWrite;
             }
-
-            var ctx = turnInput + turnCacheRead;
-            if (ctx > 0) session.Info.ContextTokens = ctx;
         }
 
         if (root.TryGetProperty("modelUsage", out var modelUsage))

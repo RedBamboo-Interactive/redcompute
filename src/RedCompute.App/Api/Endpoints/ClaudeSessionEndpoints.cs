@@ -297,7 +297,8 @@ public static class ClaudeSessionEndpoints
                 prompt, container, workingDir,
                 model, effort, maxTurns,
                 allowedTools, addDirs, timeout,
-                ctx.RequestAborted);
+                ctx.RequestAborted,
+                streamKey: job.Id.ToString());
 
             if (!result.Success)
             {

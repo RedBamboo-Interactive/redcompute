@@ -65,7 +65,7 @@ function truncate(s: string, max: number): string {
 }
 
 export function AiSessionDetail({ job }: { job: JobRecord }) {
-  const { session, filteredEvents, loading, isLive, search, setSearch, typeFilter, toggleType, clearFilters, events } =
+  const { session, filteredEvents, loading, isLive, isExecuteResult, search, setSearch, typeFilter, toggleType, clearFilters, events } =
     useSessionEvents(job)
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -115,7 +115,11 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
   if (!session) {
     return (
       <div className="flex items-center justify-center h-40 text-text-muted text-sm">
-        Session not found for this job.
+        {job.status === "Running" || job.status === "Queued" ? (
+          <><i className="fa-solid fa-spinner-third fa-spin mr-2" />Executing agent&hellip;</>
+        ) : (
+          "Session not found for this job."
+        )}
       </div>
     )
   }
@@ -136,30 +140,32 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
             Live
           </span>
         )}
-        <button
-          onClick={async () => {
-            try {
-              await api.post(`/claude/sessions/${session.id}/open-in-codered`)
-              setCodeRedStatus("sent")
-              setTimeout(() => setCodeRedStatus("idle"), 2000)
-            } catch {
-              setCodeRedStatus("error")
-              setTimeout(() => setCodeRedStatus("idle"), 3000)
-            }
-          }}
-          className={`ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors ${
-            codeRedStatus === "sent"
-              ? "bg-white/[0.08] text-accent-teal"
-              : codeRedStatus === "error"
-              ? "bg-white/[0.08] text-accent-red"
-              : "bg-white/[0.06] text-text-muted hover:bg-white/[0.10] hover:text-text-primary"
-          }`}
-        >
-          <i className={`${
-            codeRedStatus === "sent" ? "fa-solid fa-check text-accent-teal" : codeRedStatus === "error" ? "fa-solid fa-xmark text-accent-red" : "fa-regular fa-square-terminal text-accent-red"
-          } text-[11px]`} />
-          {codeRedStatus === "sent" ? "Sent to CodeRed" : codeRedStatus === "error" ? "CodeRed unreachable" : isLive ? "Open in CodeRed" : "Resume in CodeRed"}
-        </button>
+        {!isExecuteResult && (
+          <button
+            onClick={async () => {
+              try {
+                await api.post(`/claude/sessions/${session.id}/open-in-codered`)
+                setCodeRedStatus("sent")
+                setTimeout(() => setCodeRedStatus("idle"), 2000)
+              } catch {
+                setCodeRedStatus("error")
+                setTimeout(() => setCodeRedStatus("idle"), 3000)
+              }
+            }}
+            className={`ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors ${
+              codeRedStatus === "sent"
+                ? "bg-white/[0.08] text-accent-teal"
+                : codeRedStatus === "error"
+                ? "bg-white/[0.08] text-accent-red"
+                : "bg-white/[0.06] text-text-muted hover:bg-white/[0.10] hover:text-text-primary"
+            }`}
+          >
+            <i className={`${
+              codeRedStatus === "sent" ? "fa-solid fa-check text-accent-teal" : codeRedStatus === "error" ? "fa-solid fa-xmark text-accent-red" : "fa-regular fa-square-terminal text-accent-red"
+            } text-[11px]`} />
+            {codeRedStatus === "sent" ? "Sent to CodeRed" : codeRedStatus === "error" ? "CodeRed unreachable" : isLive ? "Open in CodeRed" : "Resume in CodeRed"}
+          </button>
+        )}
       </div>
 
       <div className="flex items-center gap-3 flex-wrap text-xs text-text-muted">
