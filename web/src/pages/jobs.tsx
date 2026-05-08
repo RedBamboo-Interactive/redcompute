@@ -251,7 +251,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
               hasActiveFilters={hasActiveFilters} hasMore={hasMore} loading={loading} onLoadMore={onLoadMore} />
           </div>
         </div>
-        <div className="flex-1 overflow-auto">
+        <div className={`flex-1 ${selectedJob?.capabilitySlug === "ai-session" ? "overflow-hidden" : "overflow-auto"}`}>
           {detailContent}
         </div>
       </div>

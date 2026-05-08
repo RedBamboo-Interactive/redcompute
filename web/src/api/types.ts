@@ -143,6 +143,20 @@ export interface ClaudeSessionInfo {
   contextWindow?: number
   effort?: string
   permissionMode?: PermissionMode
+  jobId?: string
+}
+
+export interface ClaudeMessageRecord {
+  id: number
+  sessionId: string
+  role: string
+  eventType: string
+  content?: string
+  toolName?: string
+  toolInput?: string
+  toolResult?: string
+  messageId?: string
+  timestamp: string
 }
 
 export interface ClaudeStreamEvent {

@@ -7,6 +7,7 @@ import { authUrl } from "@/api/auth"
 import type { JobRecord, LogEntry } from "@/api/types"
 import { AudioPlayer } from "./audio-player"
 import { ImageLightbox } from "./image-lightbox"
+import { AiSessionDetail } from "./ai-session-detail"
 
 const statusBadgeColor: Record<string, string> = {
   Queued: "bg-accent-gold/20 text-accent-gold border-accent-gold/30",
@@ -23,6 +24,7 @@ const capLabels: Record<string, string> = {
   "music-gen": "Music Generation",
   "video-gen": "Video Generation",
   llm: "LLM",
+  "ai-session": "AI Session",
 }
 
 function formatDuration(ms: number): string {
@@ -68,6 +70,13 @@ function parseClipTitles(resultJson?: string): string[] {
 }
 
 export function JobDetail({ job }: { job: JobRecord }) {
+  if (job.capabilitySlug === "ai-session") {
+    return <AiSessionDetail job={job} />
+  }
+  return <MediaJobDetail job={job} />
+}
+
+function MediaJobDetail({ job }: { job: JobRecord }) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [clipCount, setClipCount] = useState(1)
   const [lightbox, setLightbox] = useState(false)
