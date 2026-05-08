@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { api } from "@/api/client"
+import { authUrl } from "@/api/auth"
 import type { JobRecord, LogEntry } from "@/api/types"
 import { AudioPlayer } from "./audio-player"
 import { ImageLightbox } from "./image-lightbox"
@@ -88,7 +89,7 @@ export function JobDetail({ job }: { job: JobRecord }) {
       for (let i = 1; i <= 4; i++) {
         try {
           const controller = new AbortController()
-          const res = await fetch(`/music-gen/jobs/${job.id}/output?clip=${i}`, {
+          const res = await fetch(authUrl(`/music-gen/jobs/${job.id}/output?clip=${i}`), {
             signal: controller.signal,
           })
           if (res.ok) {
@@ -181,8 +182,8 @@ export function JobDetail({ job }: { job: JobRecord }) {
             <div className="space-y-2">
               {Array.from({ length: clipCount }, (_, i) => {
                 const url = job.capabilitySlug === "music-gen"
-                  ? `/music-gen/jobs/${job.id}/output?clip=${i}`
-                  : outputUrl
+                  ? authUrl(`/music-gen/jobs/${job.id}/output?clip=${i}`)
+                  : authUrl(outputUrl)
                 const label = clipTitles[i] || (clipCount > 1 ? `Variation ${i + 1}` : null)
                 return <AudioPlayer key={i} src={url} label={label} />
               })}
@@ -192,27 +193,27 @@ export function JobDetail({ job }: { job: JobRecord }) {
           {isImage && (
             <>
               <img
-                src={outputUrl}
+                src={authUrl(outputUrl)}
                 alt="Generated output"
                 className="max-w-full rounded-lg cursor-pointer hover:brightness-105 transition-all"
                 onClick={() => setLightbox(true)}
               />
               {lightbox && (
-                <ImageLightbox src={outputUrl} alt="Generated output" onClose={() => setLightbox(false)} />
+                <ImageLightbox src={authUrl(outputUrl)} alt="Generated output" onClose={() => setLightbox(false)} />
               )}
             </>
           )}
 
           {isVideo && (
-            <video controls src={outputUrl} className="max-w-full rounded-lg" />
+            <video controls src={authUrl(outputUrl)} className="max-w-full rounded-lg" />
           )}
 
           {/* Actions */}
           <div className="flex items-center gap-3 mt-2.5">
-            <a href={outputUrl} download className="inline-flex items-center gap-1.5 text-xs text-accent-teal hover:text-accent-teal/80 transition-colors">
+            <a href={authUrl(outputUrl)} download className="inline-flex items-center gap-1.5 text-xs text-accent-teal hover:text-accent-teal/80 transition-colors">
               <i className="fa-solid fa-download" />Download
             </a>
-            <a href={outputUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary transition-colors">
+            <a href={authUrl(outputUrl)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary transition-colors">
               <i className="fa-solid fa-arrow-up-right-from-square" />Open
             </a>
             <button

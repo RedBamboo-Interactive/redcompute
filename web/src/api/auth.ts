@@ -18,3 +18,10 @@ export function isRemoteAccess(): boolean {
   const host = window.location.hostname
   return host !== "localhost" && host !== "127.0.0.1" && host !== "::1"
 }
+
+export function authUrl(path: string): string {
+  const token = getToken()
+  if (!token || !isRemoteAccess()) return path
+  const sep = path.includes("?") ? "&" : "?"
+  return `${path}${sep}token=${encodeURIComponent(token)}`
+}

@@ -49,8 +49,7 @@ public class BearerAuthMiddleware
 
         provided ??= context.Request.Cookies["redcompute_token"];
 
-        if (provided == null && context.WebSockets.IsWebSocketRequest)
-            provided = context.Request.Query["token"].FirstOrDefault();
+        provided ??= context.Request.Query["token"].FirstOrDefault();
 
         if (provided == null || !string.Equals(provided, accessToken, StringComparison.Ordinal))
         {
