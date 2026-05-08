@@ -134,10 +134,6 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
               Clear filters
             </button>
           )}
-          <button className="flex items-center gap-1 text-text-muted text-[12px] hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/10"
-            title="Clear all jobs">
-            <i className="fa-solid fa-trash-can text-xs" />
-          </button>
         </div>
       </div>
 
