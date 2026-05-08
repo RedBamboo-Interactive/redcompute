@@ -860,6 +860,9 @@ public class ClaudeSessionService
             case "assistant":
                 return ParseAssistantEvent(root);
 
+            case "user":
+                return ParseUserEvent(root);
+
             case "result":
                 return ParseResultEvent(root, session);
 
@@ -959,6 +962,36 @@ public class ClaudeSessionService
                         MessageId = toolId
                     };
             }
+        }
+
+        return null;
+    }
+
+    private static ClaudeStreamEvent? ParseUserEvent(JsonElement root)
+    {
+        if (!root.TryGetProperty("message", out var message))
+            return null;
+
+        if (!message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            return null;
+
+        foreach (var block in content.EnumerateArray())
+        {
+            var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
+            if (blockType != "tool_result") continue;
+
+            var resultContent = block.TryGetProperty("content", out var c) ? c.GetString() : null;
+            var toolUseId = block.TryGetProperty("tool_use_id", out var tuid) ? tuid.GetString() : null;
+            var isError = block.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
+
+            return new ClaudeStreamEvent
+            {
+                Type = "tool_result",
+                ToolResult = resultContent,
+                Content = resultContent,
+                MessageId = toolUseId,
+                IsPartial = false
+            };
         }
 
         return null;
