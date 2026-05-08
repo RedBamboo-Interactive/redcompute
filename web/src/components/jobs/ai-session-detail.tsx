@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { JsonHighlight } from "@/components/ui/json-highlight"
+import { api } from "@/api/client"
 import { useSessionEvents } from "@/hooks/use-session-events"
 import type { JobRecord, ClaudeMessageRecord } from "@/api/types"
 import Markdown from "react-markdown"
@@ -70,6 +71,7 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const shouldAutoScroll = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const [codeRedStatus, setCodeRedStatus] = useState<"idle" | "sent" | "error">("idle")
 
   const toggleExpand = useCallback((id: number) => {
     setExpandedIds(prev => {
@@ -134,15 +136,30 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
             Live
           </span>
         )}
-        <a
-          href={`${window.location.protocol}//${window.location.hostname}:18801/?session=${session.id}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-accent-teal/15 text-accent-teal hover:bg-accent-teal/25 transition-colors"
+        <button
+          onClick={async () => {
+            try {
+              await api.post(`/claude/sessions/${session.id}/open-in-codered`)
+              setCodeRedStatus("sent")
+              setTimeout(() => setCodeRedStatus("idle"), 2000)
+            } catch {
+              setCodeRedStatus("error")
+              setTimeout(() => setCodeRedStatus("idle"), 3000)
+            }
+          }}
+          className={`ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors ${
+            codeRedStatus === "sent"
+              ? "bg-white/[0.08] text-accent-teal"
+              : codeRedStatus === "error"
+              ? "bg-white/[0.08] text-accent-red"
+              : "bg-white/[0.06] text-text-muted hover:bg-white/[0.10] hover:text-text-primary"
+          }`}
         >
-          <i className="fa-solid fa-arrow-up-right-from-square text-[10px]" />
-          {isLive ? "Open in CodeRed" : "Resume in CodeRed"}
-        </a>
+          <i className={`${
+            codeRedStatus === "sent" ? "fa-solid fa-check text-accent-teal" : codeRedStatus === "error" ? "fa-solid fa-xmark text-accent-red" : "fa-regular fa-square-terminal text-accent-red"
+          } text-[11px]`} />
+          {codeRedStatus === "sent" ? "Sent to CodeRed" : codeRedStatus === "error" ? "CodeRed unreachable" : isLive ? "Open in CodeRed" : "Resume in CodeRed"}
+        </button>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap text-xs text-text-muted">

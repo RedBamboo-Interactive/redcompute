@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -89,6 +90,22 @@ public static class ClaudeSessionEndpoints
                 return Results.NotFound(new { error = "not_found", message = "No session found for this job" });
 
             return Results.Ok(new { session = info, messages = history });
+        });
+
+        app.MapPost("/claude/sessions/{id}/open-in-codered", async (string id) =>
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                var res = await http.PostAsync($"http://localhost:18801/api/navigate?session={id}", null);
+                return res.IsSuccessStatusCode
+                    ? Results.Ok(new { sent = true })
+                    : Results.Json(new { sent = false, error = "CodeRed returned " + (int)res.StatusCode }, statusCode: 502);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { sent = false, error = ex.Message }, statusCode: 502);
+            }
         });
 
         app.MapPost("/claude/sessions/{id}/message", (string id, SendMessageRequest req) =>
