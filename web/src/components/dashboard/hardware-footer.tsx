@@ -2,6 +2,15 @@ import { useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import type { HardwareSnapshot, GpuInfo } from "@/api/types"
 
+const capabilityNames: Record<string, string> = {
+  tts: "Text to Speech",
+  stt: "Speech to Text",
+  "image-gen": "Image Generation",
+  "music-gen": "Music Generation",
+  "ai-session": "AI Session",
+  llm: "LLM",
+}
+
 function formatBytes(bytes: number): string {
   if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + " GB"
   if (bytes >= 1048576) return (bytes / 1048576).toFixed(0) + " MB"
@@ -36,6 +45,40 @@ function MetricRow({ label, value, sub, bar }: { label: string; value: string; s
   )
 }
 
+function CapabilityVramSection({ gpu }: { gpu: GpuInfo }) {
+  const entries = Object.entries(gpu.capabilityVram || {}).sort((a, b) => b[1] - a[1])
+  if (entries.length === 0) return null
+
+  const attributed = entries.reduce((sum, [, v]) => sum + v, 0)
+  const other = gpu.memory.usedBytes - attributed
+
+  return (
+    <div className="pt-2 border-t border-white/[0.06]">
+      <span className="text-white/40 text-[11px]">VRAM by Capability</span>
+      <div className="mt-1.5 space-y-1.5">
+        {entries.map(([slug, bytes]) => (
+          <div key={slug}>
+            <div className="flex items-baseline justify-between text-[11px] font-mono mb-0.5">
+              <span className="text-white/70">{capabilityNames[slug] || slug}</span>
+              <span className="text-white">{formatBytes(bytes)}</span>
+            </div>
+            <Bar value={bytes} max={gpu.memory.totalBytes} color="#7C4DFF" />
+          </div>
+        ))}
+        {other > 0 && (
+          <div>
+            <div className="flex items-baseline justify-between text-[11px] font-mono mb-0.5">
+              <span className="text-white/40">Other</span>
+              <span className="text-white/50">{formatBytes(other)}</span>
+            </div>
+            <Bar value={other} max={gpu.memory.totalBytes} color="#9098A0" />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function GpuDetail({ gpu }: { gpu: GpuInfo }) {
   const shortName = gpu.name.replace(/^NVIDIA\s+/, "").replace(/GeForce\s+/, "")
   return (
@@ -49,13 +92,17 @@ function GpuDetail({ gpu }: { gpu: GpuInfo }) {
         <MetricRow label="Graphics Clock" value={`${gpu.graphicsClockMHz} MHz`} />
         <MetricRow label="Memory Clock" value={`${gpu.memoryClockMHz} MHz`} />
       </div>
+      <CapabilityVramSection gpu={gpu} />
       {gpu.processes.length > 0 && (
         <div className="pt-2 border-t border-white/[0.06]">
           <span className="text-white/40 text-[11px]">GPU Processes</span>
           <div className="mt-1.5 space-y-0.5">
             {gpu.processes.slice(0, 15).map(p => (
               <div key={p.pid} className="flex items-center gap-2 text-[11px] font-mono">
-                <span className="text-white/60 truncate flex-1">{p.processName}</span>
+                <span className="text-white/60 truncate flex-1">
+                  {p.processName}
+                  {p.capabilitySlug && <span className="text-[#7C4DFF] ml-1.5">{capabilityNames[p.capabilitySlug] || p.capabilitySlug}</span>}
+                </span>
                 <span className="text-white/25">{p.pid}</span>
                 <span className="text-white/50 w-16 text-right">{p.usedMemoryBytes > 0 ? formatBytes(p.usedMemoryBytes) : "—"}</span>
               </div>

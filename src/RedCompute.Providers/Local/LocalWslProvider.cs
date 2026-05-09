@@ -14,6 +14,8 @@ public class LocalWslProvider : IBackendProvider
     private readonly Action<string> _log;
     private Process? _process;
     private BackendStatus _status = BackendStatus.Stopped;
+
+    public int? ProcessId => _process is { HasExited: false } ? _process.Id : null;
     private string? _backendHost;
     private static readonly HttpClient HealthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
 

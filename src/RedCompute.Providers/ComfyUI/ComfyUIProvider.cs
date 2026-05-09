@@ -26,6 +26,8 @@ public class ComfyUIProvider : IBackendProvider
     private BackendStatus _status = BackendStatus.Stopped;
     private DateTime _lastHealthCheck;
 
+    public int? ProcessId => _process is { HasExited: false } ? _process.Id : null;
+
     private const double PollTimeoutSeconds = 300.0;
 
     public string Name => "ComfyUI";

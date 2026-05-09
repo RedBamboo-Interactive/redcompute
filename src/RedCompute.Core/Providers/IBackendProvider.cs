@@ -13,4 +13,5 @@ public interface IBackendProvider : IAsyncDisposable
     string? GetProxyTargetUrl();
     Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default);
     TimeSpan HealthCheckInterval { get; }
+    int? ProcessId => null;
 }

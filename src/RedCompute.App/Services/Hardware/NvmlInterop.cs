@@ -90,6 +90,26 @@ internal static class NvmlInterop
         IntPtr device, ref uint infoCount, [Out] NvmlProcessInfo[]? infos);
 }
 
+internal static class NtInterop
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PROCESS_BASIC_INFORMATION
+    {
+        public IntPtr Reserved1;
+        public IntPtr PebBaseAddress;
+        public IntPtr Reserved2_0;
+        public IntPtr Reserved2_1;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    [DllImport("ntdll.dll")]
+    public static extern int NtQueryInformationProcess(
+        IntPtr processHandle, int processInformationClass,
+        ref PROCESS_BASIC_INFORMATION processInformation,
+        int processInformationLength, out int returnLength);
+}
+
 internal static class SystemInterop
 {
     [StructLayout(LayoutKind.Sequential)]

@@ -143,12 +143,14 @@ export interface GpuInfo {
   graphicsClockMHz: number
   memoryClockMHz: number
   processes: GpuProcessInfo[]
+  capabilityVram: Record<string, number>
 }
 
 export interface GpuProcessInfo {
   pid: number
   processName: string
   usedMemoryBytes: number
+  capabilitySlug?: string
 }
 
 // Claude Code Sessions

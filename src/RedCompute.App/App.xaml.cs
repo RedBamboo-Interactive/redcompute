@@ -51,10 +51,9 @@ public partial class App : Application
 
         ClaudeService = new ClaudeSessionService(ConfigManager.Config.Claude, JobTracker, (msg, jobId) => Log(msg, jobId));
 
-        HardwareMonitor.Start();
-
         InitializeCapabilities();
         RegisterClaudeCodeCapability();
+        HardwareMonitor.Start(Registry);
         await StartRelayServer();
         _ = ProbeRunningBackends();
         _ = StartTunnelIfEnabled();

@@ -51,8 +51,10 @@ public static class HardwareEndpoints
                     {
                         pid = p.Pid,
                         processName = p.ProcessName,
-                        usedMemoryBytes = p.UsedMemoryBytes
-                    })
+                        usedMemoryBytes = p.UsedMemoryBytes,
+                        capabilitySlug = p.CapabilitySlug
+                    }),
+                    capabilityVram = g.CapabilityVram
                 })
             });
         });

@@ -35,6 +35,7 @@ public class GpuInfo
     public int GraphicsClockMHz { get; set; }
     public int MemoryClockMHz { get; set; }
     public List<GpuProcessInfo> Processes { get; set; } = new();
+    public Dictionary<string, ulong> CapabilityVram { get; set; } = new();
 }
 
 public class GpuMemoryInfo
@@ -49,4 +50,5 @@ public class GpuProcessInfo
     public uint Pid { get; set; }
     public string ProcessName { get; set; } = "";
     public ulong UsedMemoryBytes { get; set; }
+    public string? CapabilitySlug { get; set; }
 }
