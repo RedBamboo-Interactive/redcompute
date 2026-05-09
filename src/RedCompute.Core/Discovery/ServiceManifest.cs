@@ -45,6 +45,9 @@ public class CapabilityManifest
     [JsonPropertyName("sleeping")]
     public bool Sleeping { get; init; }
 
+    [JsonPropertyName("disabled")]
+    public bool Disabled { get; init; }
+
     [JsonPropertyName("endpoints")]
     public required List<EndpointManifest> Endpoints { get; init; }
 }

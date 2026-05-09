@@ -92,7 +92,7 @@ public static class OpenApiEndpoints
                 ["post"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "StartCapability",
-                    ["summary"] = "Start the default provider's backend for a capability",
+                    ["summary"] = "Start the default provider's backend for a capability (clears manual-disable flag)",
                     ["parameters"] = new object[] { PathParam("slug", "string", "Capability slug (tts, stt, image-gen, etc.)") },
                     ["responses"] = Responses("application/json", Schema("object", "ControlResult"))
                 }
@@ -102,7 +102,7 @@ public static class OpenApiEndpoints
                 ["post"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "StopCapability",
-                    ["summary"] = "Stop the default provider's backend for a capability",
+                    ["summary"] = "Stop the default provider's backend for a capability (prevents auto-restart)",
                     ["parameters"] = new object[] { PathParam("slug", "string", "Capability slug") },
                     ["responses"] = Responses("application/json", Schema("object", "ControlResult"))
                 }

@@ -39,7 +39,8 @@ public static class GlobalEndpoints
                     provider = entry.ActiveProvider?.Name,
                     defaultProvider = entry.DefaultProviderName,
                     providers = providerStatuses,
-                    sleeping = entry.IsSleeping
+                    sleeping = entry.IsSleeping,
+                    disabled = entry.IsManuallyDisabled
                 });
             }
 
@@ -212,6 +213,7 @@ public static class GlobalEndpoints
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
             if (entry.ActiveProvider == null) return Results.BadRequest(new { error = "no_provider", message = "No active provider configured" });
 
+            entry.IsManuallyDisabled = false;
             var success = await entry.ActiveProvider.StartAsync();
             if (success)
                 return Results.Ok(new { slug, status = "Running" });
@@ -224,6 +226,7 @@ public static class GlobalEndpoints
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
             if (entry.ActiveProvider == null) return Results.Ok(new { slug, status = "Stopped" });
 
+            entry.IsManuallyDisabled = true;
             await entry.ActiveProvider.StopAsync();
             return Results.Ok(new { slug, status = "Stopped" });
         });

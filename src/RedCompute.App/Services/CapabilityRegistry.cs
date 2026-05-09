@@ -11,6 +11,7 @@ public class CapabilityEntry
     public Dictionary<string, IBackendProvider> Providers { get; init; } = new();
     public string? DefaultProviderName { get; set; }
     public bool IsSleeping { get; set; }
+    public bool IsManuallyDisabled { get; set; }
 
     public IBackendProvider? ActiveProvider =>
         DefaultProviderName != null && Providers.TryGetValue(DefaultProviderName, out var p) ? p : null;

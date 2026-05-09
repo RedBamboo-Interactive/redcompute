@@ -185,6 +185,7 @@ public partial class App : Application
             foreach (var (slug, entry) in Registry.Capabilities)
             {
                 if (entry.ActiveProvider == null) continue;
+                if (entry.IsManuallyDisabled) continue;
 
                 var status = await entry.ActiveProvider.GetStatusAsync();
                 if (status is not (BackendStatus.Error or BackendStatus.Stopped)) continue;

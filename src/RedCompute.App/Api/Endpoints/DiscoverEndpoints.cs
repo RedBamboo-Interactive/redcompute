@@ -55,6 +55,7 @@ public static class DiscoverEndpoints
                     DefaultProvider = entry.DefaultProviderName,
                     Providers = providerManifests.Count > 0 ? providerManifests : null,
                     Sleeping = entry.IsSleeping,
+                    Disabled = entry.IsManuallyDisabled,
                     Endpoints = endpoints
                 });
             }

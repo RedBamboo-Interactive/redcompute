@@ -205,7 +205,7 @@ public static class WebSocketEndpoints
                         provStatuses.Add(new { name, status = ps });
                     }
 
-                    var key = $"{slug}:{defaultStatus}:{entry.IsSleeping}:{string.Join(",", provStatuses.Select(p => p.ToString()))}";
+                    var key = $"{slug}:{defaultStatus}:{entry.IsSleeping}:{entry.IsManuallyDisabled}:{string.Join(",", provStatuses.Select(p => p.ToString()))}";
                     if (lastStatuses.TryGetValue(slug, out var prev) && prev == key)
                         continue;
 
@@ -216,6 +216,7 @@ public static class WebSocketEndpoints
                         displayName = entry.Definition.DisplayName,
                         status = defaultStatus,
                         sleeping = entry.IsSleeping,
+                        disabled = entry.IsManuallyDisabled,
                         provider = entry.ActiveProvider?.Name,
                         defaultProvider = entry.DefaultProviderName,
                         providers = provStatuses

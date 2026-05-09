@@ -53,6 +53,7 @@ export interface CapabilityStatus {
   defaultProvider?: string
   providers?: ProviderStatus[]
   sleeping: boolean
+  disabled: boolean
   endpoints?: EndpointManifest[]
 }
 
