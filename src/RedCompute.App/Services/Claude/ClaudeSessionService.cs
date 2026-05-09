@@ -43,6 +43,7 @@ public class ClaudeSessionService
             {
                 s.Status = "Stopped";
                 _log($"[Claude] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
+                BackfillFromJsonl(s);
             }
             if (active.Count > 0)
                 db.SaveChanges();
@@ -50,6 +51,141 @@ public class ClaudeSessionService
         catch (Exception ex)
         {
             _log($"[Claude] Failed to recover sessions: {ex.Message}", null);
+        }
+    }
+
+    private void BackfillFromJsonl(ClaudeSessionRecord session)
+    {
+        try
+        {
+            var claudeSessionId = session.ClaudeSessionId;
+            if (string.IsNullOrEmpty(claudeSessionId) || string.IsNullOrEmpty(session.ProjectPath))
+                return;
+
+            var slug = session.ProjectPath.Replace(":", "-").Replace("\\", "-").Replace("/", "-");
+            var jsonlPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".claude", "projects", slug, $"{claudeSessionId}.jsonl");
+
+            if (!File.Exists(jsonlPath)) return;
+
+            using var db = new RedComputeDbContext();
+            var lastTimestamp = db.ClaudeMessages
+                .Where(m => m.SessionId == session.Id)
+                .OrderByDescending(m => m.Timestamp)
+                .Select(m => m.Timestamp)
+                .FirstOrDefault();
+
+            var inserted = 0;
+            foreach (var line in File.ReadLines(jsonlPath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+
+                    if (!root.TryGetProperty("timestamp", out var tsProp)) continue;
+                    if (!DateTimeOffset.TryParse(tsProp.GetString(), out var ts)) continue;
+                    if (ts <= lastTimestamp) continue;
+
+                    var type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null;
+                    if (type != "assistant" && type != "user") continue;
+                    if (!root.TryGetProperty("message", out var message)) continue;
+                    if (!message.TryGetProperty("content", out var content)) continue;
+
+                    var msgId = message.TryGetProperty("id", out var mid) ? mid.GetString() : null;
+
+                    if (content.ValueKind == JsonValueKind.String)
+                    {
+                        if (type == "user")
+                        {
+                            db.ClaudeMessages.Add(new ClaudeMessageRecord
+                            {
+                                SessionId = session.Id, Role = "user", EventType = "text",
+                                Content = content.GetString(), Timestamp = ts
+                            });
+                            inserted++;
+                        }
+                        continue;
+                    }
+
+                    if (content.ValueKind != JsonValueKind.Array) continue;
+
+                    foreach (var block in content.EnumerateArray())
+                    {
+                        var bt = block.TryGetProperty("type", out var btp) ? btp.GetString() : null;
+
+                        switch (bt)
+                        {
+                            case "thinking" when type == "assistant":
+                            {
+                                var text = block.TryGetProperty("thinking", out var th) ? th.GetString() : null;
+                                if (string.IsNullOrEmpty(text)) continue;
+                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                {
+                                    SessionId = session.Id, Role = "assistant", EventType = "thinking",
+                                    Content = text, MessageId = msgId, Timestamp = ts
+                                });
+                                inserted++;
+                                break;
+                            }
+                            case "text" when type == "assistant":
+                            {
+                                var text = block.TryGetProperty("text", out var txt) ? txt.GetString() : null;
+                                if (string.IsNullOrEmpty(text)) continue;
+                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                {
+                                    SessionId = session.Id, Role = "assistant", EventType = "text",
+                                    Content = text, MessageId = msgId, Timestamp = ts
+                                });
+                                inserted++;
+                                break;
+                            }
+                            case "tool_use" when type == "assistant":
+                            {
+                                var toolName = block.TryGetProperty("name", out var n) ? n.GetString() : null;
+                                var toolInput = block.TryGetProperty("input", out var inp) ? inp.ToString() : null;
+                                var toolId = block.TryGetProperty("id", out var tid) ? tid.GetString() : null;
+                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                {
+                                    SessionId = session.Id, Role = "assistant", EventType = "tool_use",
+                                    ToolName = toolName, ToolInput = toolInput, MessageId = toolId, Timestamp = ts
+                                });
+                                inserted++;
+                                break;
+                            }
+                            case "tool_result" when type == "user":
+                            {
+                                var resultContent = block.TryGetProperty("content", out var c)
+                                    ? ExtractTextFromContent(c) : null;
+                                var toolUseId = block.TryGetProperty("tool_use_id", out var tuid)
+                                    ? tuid.GetString() : null;
+                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                {
+                                    SessionId = session.Id, Role = "assistant", EventType = "tool_result",
+                                    Content = resultContent, ToolResult = resultContent,
+                                    MessageId = toolUseId, Timestamp = ts
+                                });
+                                inserted++;
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch (JsonException) { }
+            }
+
+            if (inserted > 0)
+            {
+                db.SaveChanges();
+                _log($"[Claude] Backfilled {inserted} messages for session {session.Id} ({session.ProjectName}) from JSONL", null);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to backfill session {session.Id}: {ex.Message}", null);
         }
     }
 
