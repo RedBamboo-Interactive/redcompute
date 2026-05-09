@@ -285,7 +285,7 @@ public static class ClaudeSessionEndpoints
 
         // --- Job tracking ---
         if (sw != null) log($"[Claude] TIMING validation done at {sw.ElapsedMilliseconds}ms", null);
-        var inputSummary = JsonSerializer.Serialize(new { model, effort, maxTurns, container, timeout, promptLength = prompt!.Length });
+        var inputSummary = JsonSerializer.Serialize(new { prompt, model, effort, maxTurns, container, timeout });
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;

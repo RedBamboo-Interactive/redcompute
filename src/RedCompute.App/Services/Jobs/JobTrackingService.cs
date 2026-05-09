@@ -49,6 +49,10 @@ public class JobTrackingService
 
         job.Status = JobStatus.Running;
         job.StartedAt = DateTimeOffset.UtcNow;
+        job.CompletedAt = null;
+        job.Progress = 0;
+        job.ErrorMessage = null;
+        job.ErrorDetails = null;
         db.SaveChanges();
         JobUpdated?.Invoke(job);
     }

@@ -181,7 +181,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
             outputTokens: r.outputTokens as number | undefined,
             effort,
           })
-          setEvents(streamEvents)
+          setEvents(aggregateDeltas(streamEvents))
           isExecute.current = true
         }
       } catch { /* malformed resultJson */ }
@@ -277,10 +277,30 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
         return
       }
 
+      if (evt.type === "tool_result") {
+        setEvents(prev => {
+          const last = prev[prev.length - 1]
+          if (last && last.eventType === "tool_use") {
+            return [...prev.slice(0, -1), { ...last, toolResult: evt.toolResult || evt.content }]
+          }
+          return [...prev, {
+            id: nextLocalId.current++,
+            sessionId,
+            role: "user" as const,
+            eventType: "tool_result",
+            content: evt.content,
+            toolResult: evt.toolResult,
+            messageId: evt.messageId,
+            timestamp: new Date().toISOString(),
+          }]
+        })
+        return
+      }
+
       const record: ClaudeMessageRecord = {
         id: nextLocalId.current++,
         sessionId,
-        role: evt.type === "tool_result" ? "user" : "assistant",
+        role: "assistant",
         eventType: evt.type,
         content: evt.content,
         toolName: evt.toolName,

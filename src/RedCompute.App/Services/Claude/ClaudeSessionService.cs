@@ -241,6 +241,31 @@ public class ClaudeSessionService
         var root = doc.RootElement;
         var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
 
+        if (type == "stream_event")
+        {
+            if (root.TryGetProperty("event", out var evt))
+            {
+                var evtType = evt.TryGetProperty("type", out var et) ? et.GetString() : null;
+                if (evtType == "content_block_delta" && evt.TryGetProperty("delta", out var delta))
+                {
+                    var deltaType = delta.TryGetProperty("type", out var dt) ? dt.GetString() : null;
+                    if (deltaType == "text_delta")
+                    {
+                        var text = delta.TryGetProperty("text", out var txt) ? txt.GetString() : null;
+                        if (text != null)
+                            events.Add(new ClaudeStreamEvent { Type = "text", Content = text, IsPartial = true });
+                    }
+                    else if (deltaType == "thinking_delta")
+                    {
+                        var thinking = delta.TryGetProperty("thinking", out var th) ? th.GetString() : null;
+                        if (thinking != null)
+                            events.Add(new ClaudeStreamEvent { Type = "thinking", Content = thinking, IsPartial = true });
+                    }
+                }
+            }
+            return events;
+        }
+
         if (type == "user")
         {
             if (root.TryGetProperty("message", out var userMsg)
@@ -275,8 +300,8 @@ public class ClaudeSessionService
             var bt = block.TryGetProperty("type", out var btp) ? btp.GetString() : null;
             switch (bt)
             {
-                // text/thinking arrive as repeated verbose snapshots — skip during live streaming;
-                // complete content is shown via parseStreamOutput when the job finishes
+                // text/thinking are streamed via stream_event deltas above — skip the
+                // complete assistant-message snapshots to avoid duplicates
                 case "thinking":
                 case "text":
                     continue;
@@ -671,15 +696,23 @@ public class ClaudeSessionService
 
         info.Status = SessionStatus.Idle;
 
-        var job = _jobTracker.CreateJob("ai-session", "Claude Code",
-            System.Text.Json.JsonSerializer.Serialize(new { projectPath = record.ProjectPath, projectName = record.ProjectName, resumed = true }),
-            name: record.ProjectName);
-        _jobTracker.MarkRunning(job.Id);
-        info.JobId = job.Id;
+        if (record.JobId.HasValue)
+        {
+            info.JobId = record.JobId.Value;
+            _jobTracker.MarkRunning(record.JobId.Value);
+        }
+        else
+        {
+            var job = _jobTracker.CreateJob("ai-session", "Claude Code",
+                System.Text.Json.JsonSerializer.Serialize(new { projectPath = record.ProjectPath, projectName = record.ProjectName, resumed = true }),
+                name: record.ProjectName);
+            _jobTracker.MarkRunning(job.Id);
+            info.JobId = job.Id;
+        }
 
         PersistSessionRecord(info);
 
-        _log($"[Claude] Session {sessionId} resumed for {info.ProjectName} (PID {process.Id}, Job {job.Id})", null);
+        _log($"[Claude] Session {sessionId} resumed for {info.ProjectName} (PID {process.Id}, Job {info.JobId})", null);
         SessionCreated?.Invoke(info);
 
         return info;
