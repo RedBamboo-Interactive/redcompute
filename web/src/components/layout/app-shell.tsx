@@ -10,7 +10,7 @@ interface Props {
   settings: Settings | null
   saving: boolean
   onUpdateGeneral: (updates: Record<string, unknown>) => void
-  onUpdateCapability: (slug: string, updates: { enabled?: boolean; activeProvider?: string }) => void
+  onUpdateCapability: (slug: string, updates: { activeProvider?: string }) => void
   onUpdateProvider: (slug: string, providerName: string, updates: Record<string, unknown>) => Promise<void>
   logEntries: LogEntry[]
   logTags: TagInfo[]

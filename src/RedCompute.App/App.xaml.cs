@@ -101,7 +101,6 @@ public partial class App : Application
         {
             var definition = CapabilityDefinitionFactory.Create(slug);
             if (definition == null) continue;
-            definition.Enabled = capConfig.Enabled;
 
             var providers = new Dictionary<string, IBackendProvider>();
             foreach (var (providerName, providerConfig) in capConfig.Providers)
@@ -124,7 +123,6 @@ public partial class App : Application
         {
             ConfigManager.Config.Capabilities["ai-session"] = new RedCompute.Core.Configuration.CapabilityConfig
             {
-                Enabled = true,
                 ActiveProvider = "claude-code",
                 Providers = new Dictionary<string, RedCompute.Core.Configuration.ProviderConfig>
                 {
@@ -144,7 +142,6 @@ public partial class App : Application
 
         var capConfig = ConfigManager.Config.Capabilities["ai-session"];
         var definition = CapabilityDefinitionFactory.Create("ai-session")!;
-        definition.Enabled = capConfig.Enabled;
         var provider = new Services.Claude.ClaudeCodeProvider(ClaudeService);
         var providers = new Dictionary<string, IBackendProvider> { ["claude-code"] = provider };
         Registry.Register("ai-session", definition, capConfig, providers, capConfig.ActiveProvider);
@@ -157,7 +154,6 @@ public partial class App : Application
         foreach (var (slug, entry) in Registry.Capabilities)
         {
             if (entry.ActiveProvider == null) continue;
-            if (!entry.Definition.Enabled) continue;
             tasks.Add(StartCapability(slug, entry));
         }
         await Task.WhenAll(tasks);
@@ -189,7 +185,6 @@ public partial class App : Application
             foreach (var (slug, entry) in Registry.Capabilities)
             {
                 if (entry.ActiveProvider == null) continue;
-                if (!entry.Definition.Enabled) continue;
 
                 var status = await entry.ActiveProvider.GetStatusAsync();
                 if (status is not (BackendStatus.Error or BackendStatus.Stopped)) continue;

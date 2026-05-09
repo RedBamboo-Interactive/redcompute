@@ -100,7 +100,6 @@ public class ConfigManager
             {
                 ["tts"] = new()
                 {
-                    Enabled = true,
                     ActiveProvider = "local-wsl",
                     Providers = new Dictionary<string, ProviderConfig>
                     {
@@ -120,7 +119,6 @@ public class ConfigManager
                 },
                 ["stt"] = new()
                 {
-                    Enabled = false,
                     ActiveProvider = "local-wsl",
                     Providers = new Dictionary<string, ProviderConfig>
                     {
@@ -139,7 +137,6 @@ public class ConfigManager
                 },
                 ["music-gen"] = new()
                 {
-                    Enabled = false,
                     ActiveProvider = "suno",
                     Providers = new Dictionary<string, ProviderConfig>
                     {
@@ -157,7 +154,6 @@ public class ConfigManager
                 },
                 ["image-gen"] = new()
                 {
-                    Enabled = false,
                     ActiveProvider = "comfyui",
                     Providers = new Dictionary<string, ProviderConfig>
                     {

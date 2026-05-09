@@ -32,7 +32,6 @@ public class TunnelConfig
 
 public class CapabilityConfig
 {
-    public bool Enabled { get; set; } = true;
     public string? ActiveProvider { get; set; }
     public Dictionary<string, ProviderConfig> Providers { get; set; } = new();
 }

@@ -39,7 +39,6 @@ public static class GlobalEndpoints
                     provider = entry.ActiveProvider?.Name,
                     defaultProvider = entry.DefaultProviderName,
                     providers = providerStatuses,
-                    enabled = entry.Definition.Enabled,
                     sleeping = entry.IsSleeping
                 });
             }

@@ -164,14 +164,13 @@ public static class OpenApiEndpoints
                 ["put"] = new Dictionary<string, object>
                 {
                     ["operationId"] = "UpdateCapabilitySettings",
-                    ["summary"] = "Update capability config (enabled, activeProvider)",
+                    ["summary"] = "Update capability config (activeProvider)",
                     ["parameters"] = new object[] { PathParam("slug", "string", "Capability slug") },
                     ["requestBody"] = RequestBody(new Dictionary<string, object>
                     {
                         ["type"] = "object",
                         ["properties"] = new Dictionary<string, object>
                         {
-                            ["enabled"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Enable or disable this capability" },
                             ["activeProvider"] = Prop("string", "Provider key to activate (must exist in providers dict)")
                         }
                     }),

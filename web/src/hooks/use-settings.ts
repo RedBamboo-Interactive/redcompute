@@ -25,7 +25,7 @@ export function useSettings() {
     }
   }, [refresh])
 
-  const updateCapability = useCallback(async (slug: string, updates: { enabled?: boolean; activeProvider?: string }) => {
+  const updateCapability = useCallback(async (slug: string, updates: { activeProvider?: string }) => {
     setSaving(true)
     try {
       await api.put(`/settings/capability/${slug}`, updates)

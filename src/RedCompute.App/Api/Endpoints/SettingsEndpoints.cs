@@ -41,7 +41,6 @@ public static class SettingsEndpoints
                     kvp => kvp.Key,
                     kvp => new
                     {
-                        kvp.Value.Enabled,
                         kvp.Value.ActiveProvider,
                         providers = kvp.Value.Providers.ToDictionary(
                             p => p.Key,
@@ -87,7 +86,6 @@ public static class SettingsEndpoints
                 return Results.BadRequest(new { error = "invalid_body", message = "Expected JSON body" });
 
             var cap = config.Capabilities[slug];
-            if (body.Enabled.HasValue) cap.Enabled = body.Enabled.Value;
             if (body.ActiveProvider != null)
             {
                 cap.ActiveProvider = body.ActiveProvider;
@@ -97,7 +95,7 @@ public static class SettingsEndpoints
             }
 
             configManager.Save();
-            return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.Enabled, cap.ActiveProvider });
+            return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.ActiveProvider });
         });
 
         app.MapPut("/settings/capability/{slug}/provider/{providerName}", async (HttpContext ctx, string slug, string providerName) =>
@@ -197,7 +195,6 @@ public static class SettingsEndpoints
 
     private class CapabilitySettingsUpdate
     {
-        public bool? Enabled { get; set; }
         public string? ActiveProvider { get; set; }
     }
 

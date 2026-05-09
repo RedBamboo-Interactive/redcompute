@@ -97,7 +97,6 @@ export interface Settings {
   configPath: string
   tunnel: TunnelSettings
   capabilities: Record<string, {
-    enabled: boolean
     activeProvider?: string
     providers: Record<string, Record<string, unknown>>
   }>

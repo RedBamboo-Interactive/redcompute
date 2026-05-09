@@ -18,7 +18,7 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
   settings: Settings | null
   saving: boolean
   onUpdateGeneral: (updates: Record<string, unknown>) => void
-  onUpdateCapability: (slug: string, updates: { enabled?: boolean; activeProvider?: string }) => void
+  onUpdateCapability: (slug: string, updates: { activeProvider?: string }) => void
   onUpdateProvider: (slug: string, providerName: string, updates: Record<string, unknown>) => Promise<void>
 }) {
   const [endpoints, setEndpoints] = useState<DiscoverEndpoint[]>([])
@@ -210,7 +210,7 @@ function CapabilitySettingsCard({ slug, cap, saving, onUpdateCapability, onUpdat
   slug: string
   cap: CapabilityEntry
   saving: boolean
-  onUpdateCapability: (slug: string, updates: { enabled?: boolean; activeProvider?: string }) => void
+  onUpdateCapability: (slug: string, updates: { activeProvider?: string }) => void
   onUpdateProvider: (slug: string, providerName: string, updates: Record<string, unknown>) => Promise<void>
 }) {
   const [edits, setEdits] = useState<Record<string, string>>({})
@@ -234,11 +234,9 @@ function CapabilitySettingsCard({ slug, cap, saving, onUpdateCapability, onUpdat
   }
 
   return (
-    <div className={`bg-surface-deep rounded-lg p-4 mb-3 ${!cap.enabled ? "opacity-50" : ""}`}>
+    <div className="bg-surface-deep rounded-lg p-4 mb-3">
       <div className="flex items-center justify-between mb-2">
         <span className="text-[13px] font-semibold text-white">{slug}</span>
-        <Toggle enabled={cap.enabled} disabled={saving}
-          onToggle={() => onUpdateCapability(slug, { enabled: !cap.enabled })} />
       </div>
 
       {providerNames.length > 1 ? (
