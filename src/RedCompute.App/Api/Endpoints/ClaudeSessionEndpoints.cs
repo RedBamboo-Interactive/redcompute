@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Jobs;
+using RedCompute.Core.Claude;
 using RedCompute.Core.Discovery;
 
 namespace RedCompute.App.Api.Endpoints;
@@ -315,6 +316,7 @@ public static class ClaudeSessionEndpoints
                         streamKey: job.Id.ToString(),
                         env: env);
 
+                    var streamKey = job.Id.ToString();
                     if (result.Success)
                     {
                         var rj = JsonSerializer.Serialize(new
@@ -325,17 +327,20 @@ public static class ClaudeSessionEndpoints
                             error = (string?)null
                         });
                         jobTracker.MarkCompleted(job.Id, resultJson: rj, contentType: "application/json");
+                        claude.EmitStreamEvent(streamKey, new ClaudeStreamEvent { Type = "status", Content = "completed" });
                         log($"[Claude] Execute job {job.Id} completed ({result.InputTokens}in/{result.OutputTokens}out)", job.Id);
                     }
                     else
                     {
                         jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
+                        claude.EmitStreamEvent(streamKey, new ClaudeStreamEvent { Type = "status", Content = "failed" });
                         log($"[Claude] Execute job {job.Id} failed: {result.Error}", job.Id);
                     }
                 }
                 catch (Exception ex)
                 {
                     jobTracker.MarkFailed(job.Id, ex.Message);
+                    claude.EmitStreamEvent(job.Id.ToString(), new ClaudeStreamEvent { Type = "status", Content = "failed" });
                     log($"[Claude] Execute job {job.Id} exception: {ex.Message}", job.Id);
                 }
             });

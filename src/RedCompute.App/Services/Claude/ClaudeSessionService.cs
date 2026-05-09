@@ -24,6 +24,8 @@ public class ClaudeSessionService
     public event Action<string, string>? SessionEnded;
     public event Action<string, ClaudeStreamEvent>? StreamEvent;
 
+    public void EmitStreamEvent(string key, ClaudeStreamEvent evt) => StreamEvent?.Invoke(key, evt);
+
     public ClaudeSessionService(ClaudeConfig config, JobTrackingService jobTracker, Action<string, Guid?> log)
     {
         _config = config;
