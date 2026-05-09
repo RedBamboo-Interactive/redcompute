@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react"
-import { Badge } from "@/components/ui/badge"
-import { Card, CardContent } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
+import { Badge, Card, CardContent, Separator } from "@redbamboo/ui"
 import { api } from "@/api/client"
 import { authUrl } from "@/api/auth"
 import type { JobRecord, LogEntry } from "@/api/types"

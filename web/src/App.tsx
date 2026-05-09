@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { HashRouter, Routes, Route } from "react-router-dom"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import { TooltipProvider } from "@redbamboo/ui"
 import { AppShell } from "@/components/layout/app-shell"
 import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"

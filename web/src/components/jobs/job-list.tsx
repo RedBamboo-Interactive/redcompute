@@ -1,4 +1,4 @@
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { ScrollArea } from "@redbamboo/ui"
 import type { JobRecord } from "@/api/types"
 
 const statusColor: Record<string, string> = {

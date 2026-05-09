@@ -15,6 +15,7 @@
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/lora": "^5.2.8",
     "@fortawesome/fontawesome-pro": "^7.2.0",
+    "@redbamboo/ui": "link:..\\..\\redbamboo-packages\\packages\\ui",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/react-virtual": "^3.13.24",
     "class-variance-authority": "^0.7.1",

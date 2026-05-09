@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@redbamboo/ui"
 import type { HardwareSnapshot, GpuInfo } from "@/api/types"
 
 const capabilityNames: Record<string, string> = {

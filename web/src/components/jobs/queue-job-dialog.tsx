@@ -1,9 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose, Button, Input, Switch } from "@redbamboo/ui"
 import { api } from "@/api/client"
 import type { CapabilityStatus, ParameterSchema } from "@/api/types"
 
