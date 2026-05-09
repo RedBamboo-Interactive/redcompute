@@ -116,8 +116,39 @@ export interface TagCount {
 
 export interface WsEvent {
   type: "job.created" | "job.updated" | "log.entry" | "capability.status" | "tunnel.status"
+    | "hardware.snapshot"
     | "claude.session.created" | "claude.session.updated" | "claude.session.ended" | "claude.stream"
   data: unknown
+}
+
+// Hardware monitoring
+
+export interface HardwareSnapshot {
+  available: boolean
+  timestamp: string
+  cpu: { usagePercent: number; coreCount: number }
+  ram: { totalBytes: number; usedBytes: number; availableBytes: number; usagePercent: number }
+  gpus: GpuInfo[]
+}
+
+export interface GpuInfo {
+  index: number
+  name: string
+  memory: { totalBytes: number; usedBytes: number; freeBytes: number }
+  utilizationPercent: number
+  memoryUtilizationPercent: number
+  powerWatts: number
+  powerLimitWatts: number
+  temperatureCelsius: number
+  graphicsClockMHz: number
+  memoryClockMHz: number
+  processes: GpuProcessInfo[]
+}
+
+export interface GpuProcessInfo {
+  pid: number
+  processName: string
+  usedMemoryBytes: number
 }
 
 // Claude Code Sessions

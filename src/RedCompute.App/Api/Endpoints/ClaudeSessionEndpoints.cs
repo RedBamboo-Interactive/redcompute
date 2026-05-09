@@ -283,9 +283,13 @@ public static class ClaudeSessionEndpoints
         if (body.TryGetProperty("addDirs", out var ad) && ad.ValueKind == JsonValueKind.Array)
             addDirs = ad.EnumerateArray().Select(x => x.GetString()!).Where(x => x != null).ToArray();
 
+        Dictionary<string, string>? env = null;
+        if (body.TryGetProperty("env", out var envProp) && envProp.ValueKind == JsonValueKind.Object)
+            env = envProp.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+
         // --- Job tracking ---
         if (sw != null) log($"[Claude] TIMING validation done at {sw.ElapsedMilliseconds}ms", null);
-        var inputSummary = JsonSerializer.Serialize(new { prompt, model, effort, maxTurns, container, timeout });
+        var inputSummary = JsonSerializer.Serialize(new { prompt, model, effort, maxTurns, container, timeout, env });
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
@@ -295,6 +299,51 @@ public static class ClaudeSessionEndpoints
         jobTracker.MarkRunning(job.Id);
         log($"[Claude] Execute job {job.Id} started (container={container ?? "local"}, model={model ?? "default"}, maxTurns={maxTurns}) [TIMING {sw?.ElapsedMilliseconds}ms since request]", job.Id);
 
+        var asyncMode = ctx.Request.Query.ContainsKey("async");
+
+        if (asyncMode)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var result = await claude.ExecuteAgentAsync(
+                        prompt, container, workingDir,
+                        model, effort, maxTurns,
+                        allowedTools, addDirs, timeout,
+                        CancellationToken.None,
+                        streamKey: job.Id.ToString(),
+                        env: env);
+
+                    if (result.Success)
+                    {
+                        var rj = JsonSerializer.Serialize(new
+                        {
+                            success = true, text = result.Text, streamOutput = result.StreamOutput,
+                            model = result.Model, inputTokens = result.InputTokens,
+                            outputTokens = result.OutputTokens, costUsd = result.CostUsd,
+                            error = (string?)null
+                        });
+                        jobTracker.MarkCompleted(job.Id, resultJson: rj, contentType: "application/json");
+                        log($"[Claude] Execute job {job.Id} completed ({result.InputTokens}in/{result.OutputTokens}out)", job.Id);
+                    }
+                    else
+                    {
+                        jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
+                        log($"[Claude] Execute job {job.Id} failed: {result.Error}", job.Id);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    jobTracker.MarkFailed(job.Id, ex.Message);
+                    log($"[Claude] Execute job {job.Id} exception: {ex.Message}", job.Id);
+                }
+            });
+
+            ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+            return Results.Json(new { ok = true, job_id = job.Id, status = "running" }, statusCode: 202);
+        }
+
         try
         {
             var result = await claude.ExecuteAgentAsync(
@@ -302,7 +351,8 @@ public static class ClaudeSessionEndpoints
                 model, effort, maxTurns,
                 allowedTools, addDirs, timeout,
                 ctx.RequestAborted,
-                streamKey: job.Id.ToString());
+                streamKey: job.Id.ToString(),
+                env: env);
 
             if (!result.Success)
             {

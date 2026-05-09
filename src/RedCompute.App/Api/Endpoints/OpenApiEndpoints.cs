@@ -182,6 +182,87 @@ public static class OpenApiEndpoints
             {
                 ["get"] = Op("GetWebSocketSchema", "WebSocket event schema — lists all event types, their data shapes, and field names. Connect at ws://host:port/ws", "application/json",
                     Schema("object", "WebSocketSchema"))
+            },
+            ["/hardware"] = new Dictionary<string, object>
+            {
+                ["get"] = Op("GetHardwareMetrics",
+                    "Live system hardware metrics: GPU utilization, VRAM, power draw, temperature, clock speeds, per-process GPU memory, CPU usage, RAM. Updates every 2 seconds via WebSocket 'hardware.snapshot' events.",
+                    "application/json",
+                    new Dictionary<string, object>
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new Dictionary<string, object>
+                        {
+                            ["available"] = new Dictionary<string, object> { ["type"] = "boolean", ["description"] = "Whether hardware monitoring is active" },
+                            ["timestamp"] = Prop("string", "ISO 8601 timestamp of the snapshot"),
+                            ["cpu"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "object",
+                                ["properties"] = new Dictionary<string, object>
+                                {
+                                    ["usagePercent"] = PropNum("CPU utilization percentage (0-100)", 0, 0, 100),
+                                    ["coreCount"] = Prop("integer", "Number of logical CPU cores")
+                                }
+                            },
+                            ["ram"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "object",
+                                ["properties"] = new Dictionary<string, object>
+                                {
+                                    ["totalBytes"] = Prop("integer", "Total physical memory in bytes"),
+                                    ["usedBytes"] = Prop("integer", "Used physical memory in bytes"),
+                                    ["availableBytes"] = Prop("integer", "Available physical memory in bytes"),
+                                    ["usagePercent"] = PropNum("RAM utilization percentage (0-100)", 0, 0, 100)
+                                }
+                            },
+                            ["gpus"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "array",
+                                ["description"] = "GPU devices (empty if no NVIDIA GPU detected)",
+                                ["items"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "object",
+                                    ["properties"] = new Dictionary<string, object>
+                                    {
+                                        ["index"] = Prop("integer", "GPU device index"),
+                                        ["name"] = Prop("string", "GPU device name (e.g. NVIDIA GeForce RTX 4090)"),
+                                        ["memory"] = new Dictionary<string, object>
+                                        {
+                                            ["type"] = "object",
+                                            ["properties"] = new Dictionary<string, object>
+                                            {
+                                                ["totalBytes"] = Prop("integer", "Total VRAM in bytes"),
+                                                ["usedBytes"] = Prop("integer", "Used VRAM in bytes"),
+                                                ["freeBytes"] = Prop("integer", "Free VRAM in bytes")
+                                            }
+                                        },
+                                        ["utilizationPercent"] = PropNum("GPU core utilization (0-100)", 0, 0, 100),
+                                        ["memoryUtilizationPercent"] = PropNum("Memory controller utilization (0-100)", 0, 0, 100),
+                                        ["powerWatts"] = Prop("number", "Current power draw in watts"),
+                                        ["powerLimitWatts"] = Prop("number", "Enforced power limit in watts"),
+                                        ["temperatureCelsius"] = Prop("number", "GPU temperature in Celsius"),
+                                        ["graphicsClockMHz"] = Prop("integer", "Graphics clock speed in MHz"),
+                                        ["memoryClockMHz"] = Prop("integer", "Memory clock speed in MHz"),
+                                        ["processes"] = new Dictionary<string, object>
+                                        {
+                                            ["type"] = "array",
+                                            ["description"] = "Processes currently using GPU memory, sorted by usage descending",
+                                            ["items"] = new Dictionary<string, object>
+                                            {
+                                                ["type"] = "object",
+                                                ["properties"] = new Dictionary<string, object>
+                                                {
+                                                    ["pid"] = Prop("integer", "Process ID"),
+                                                    ["processName"] = Prop("string", "Process name"),
+                                                    ["usedMemoryBytes"] = Prop("integer", "VRAM used by this process in bytes")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    })
             }
         };
 

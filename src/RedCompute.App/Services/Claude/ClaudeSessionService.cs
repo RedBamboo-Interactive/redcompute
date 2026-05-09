@@ -14,6 +14,7 @@ namespace RedCompute.App.Services.Claude;
 public class ClaudeSessionService
 {
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
+    private readonly ConcurrentDictionary<string, Process> _runningProcesses = new();
     private readonly ClaudeConfig _config;
     private readonly JobTrackingService _jobTracker;
     private readonly Action<string, Guid?> _log;
@@ -219,7 +220,8 @@ public class ClaudeSessionService
         string? model, string? effort, int maxTurns,
         string[]? allowedTools, string[]? addDirs, int timeout,
         CancellationToken ct,
-        string? streamKey = null)
+        string? streamKey = null,
+        Dictionary<string, string>? env = null)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
 
@@ -251,6 +253,12 @@ public class ClaudeSessionService
                 args.Add("-w");
                 args.Add(workingDir);
             }
+            if (env is not null)
+                foreach (var (k, v) in env)
+                {
+                    args.Add("-e");
+                    args.Add($"{k}={v}");
+                }
             args.Add(container!);
             args.Add("claude");
             AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
@@ -261,6 +269,9 @@ public class ClaudeSessionService
             startInfo.FileName = ResolveClaudePath()!;
             if (!string.IsNullOrWhiteSpace(workingDir))
                 startInfo.WorkingDirectory = workingDir;
+            if (env is not null)
+                foreach (var (k, v) in env)
+                    startInfo.EnvironmentVariables[k] = v;
             var args = new List<string>();
             AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
             foreach (var a in args) startInfo.ArgumentList.Add(a);
@@ -270,6 +281,8 @@ public class ClaudeSessionService
         using var process = Process.Start(startInfo);
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start process");
+        if (streamKey != null)
+            _runningProcesses[streamKey] = process;
         _log($"[Claude] TIMING Process.Start took {sw.ElapsedMilliseconds}ms (docker={useDocker})", null);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -318,24 +331,37 @@ public class ClaudeSessionService
 
             if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
             {
+                if (streamKey != null) _runningProcesses.TryRemove(streamKey, out _);
                 var errMsg = stderr.Length > 500 ? stderr[..500] : stderr;
                 _log($"[Claude] Execute exited {process.ExitCode}: {errMsg}", null);
                 return new ExecuteResult(false, null, null, null, 0, 0, null,
                     $"claude exited with code {process.ExitCode}: {errMsg}");
             }
 
+            if (streamKey != null) _runningProcesses.TryRemove(streamKey, out _);
             return ParseStreamJsonOutput(stdout, model);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
+            if (streamKey != null) _runningProcesses.TryRemove(streamKey, out _);
             try { process.Kill(entireProcessTree: true); } catch { }
             return new ExecuteResult(false, null, null, null, 0, 0, null,
                 $"Execution timed out after {timeout}s");
         }
         catch (OperationCanceledException)
         {
+            if (streamKey != null) _runningProcesses.TryRemove(streamKey, out _);
             try { process.Kill(entireProcessTree: true); } catch { }
             throw;
+        }
+    }
+
+    public void CancelExecution(string key)
+    {
+        if (_runningProcesses.TryRemove(key, out var process))
+        {
+            try { process.Kill(entireProcessTree: true); }
+            catch { /* process may have already exited */ }
         }
     }
 
@@ -376,6 +402,14 @@ public class ClaudeSessionService
         using var doc = JsonDocument.Parse(line);
         var root = doc.RootElement;
         var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+        if (type == "system")
+        {
+            var sessionId = root.TryGetProperty("session_id", out var sid) ? sid.GetString() : null;
+            if (sessionId is not null)
+                events.Add(new ClaudeStreamEvent { Type = "system", Content = sessionId });
+            return events;
+        }
 
         if (type == "stream_event")
         {

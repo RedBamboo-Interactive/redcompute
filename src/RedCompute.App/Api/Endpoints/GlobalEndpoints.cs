@@ -132,6 +132,7 @@ public static class GlobalEndpoints
                 return Results.BadRequest(new { error = "invalid_state", message = "Job already finished" });
 
             jobTracker.MarkCancelled(id);
+            claudeService?.CancelExecution(id.ToString());
             return Results.Ok(new { id, status = "Cancelled" });
         });
 

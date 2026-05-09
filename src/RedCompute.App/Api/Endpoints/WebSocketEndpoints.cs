@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
+using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Logging;
@@ -25,7 +26,7 @@ public static class WebSocketEndpoints
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, CloudflareTunnelService tunnelService, ClaudeSessionService claudeService)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, CloudflareTunnelService tunnelService, ClaudeSessionService claudeService, HardwareMonitorService hardwareMonitor)
     {
         jobTracker.JobCreated += job => Broadcast("job.created", job);
         jobTracker.JobUpdated += job => Broadcast("job.updated", job);
@@ -41,6 +42,7 @@ public static class WebSocketEndpoints
         claudeService.SessionUpdated += session => Broadcast("claude.session.updated", session);
         claudeService.SessionEnded += (id, reason) => Broadcast("claude.session.ended", new { id, reason });
         claudeService.StreamEvent += (sessionId, evt) => Broadcast("claude.stream", new { sessionId, @event = evt });
+        hardwareMonitor.SnapshotUpdated += snapshot => Broadcast("hardware.snapshot", snapshot);
 
         _ = PollCapabilityStatus(registry);
 
@@ -144,6 +146,12 @@ public static class WebSocketEndpoints
                         types = new[] { "text", "thinking", "tool_use", "tool_result", "error", "status" },
                         fields = new[] { "type", "content", "toolName", "toolInput", "toolResult", "isPartial", "messageId" }
                     }
+                },
+                new
+                {
+                    type = "hardware.snapshot",
+                    description = "Fired every 2 seconds with live system hardware metrics (GPU utilization, VRAM, power, temperature, CPU, RAM, per-process GPU memory)",
+                    fields = new[] { "timestamp", "cpu", "ram", "gpus" }
                 }
             }
         }));

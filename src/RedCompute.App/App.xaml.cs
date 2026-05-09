@@ -2,6 +2,7 @@ using System.Windows;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
+using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
 using RedCompute.App.TrayIcon;
@@ -22,6 +23,7 @@ public partial class App : Application
     public static CapabilityRegistry Registry { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
     public static CloudflareTunnelService TunnelService { get; } = new();
+    public static HardwareMonitorService HardwareMonitor { get; } = new();
     public static ClaudeSessionService ClaudeService { get; private set; } = null!;
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -49,6 +51,8 @@ public partial class App : Application
 
         ClaudeService = new ClaudeSessionService(ConfigManager.Config.Claude, JobTracker, (msg, jobId) => Log(msg, jobId));
 
+        HardwareMonitor.Start();
+
         InitializeCapabilities();
         RegisterClaudeCodeCapability();
         await StartRelayServer();
@@ -61,6 +65,7 @@ public partial class App : Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
+        HardwareMonitor.Dispose();
         await ClaudeService.StopAllAsync();
         await TunnelService.DisposeAsync();
         _relayCts?.Cancel();
@@ -199,7 +204,7 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, ClaudeService, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, ClaudeService, HardwareMonitor, (msg, jobId) => Log(msg, jobId));
 
         try
         {

@@ -11,6 +11,7 @@ using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Api.Middleware;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
+using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Configuration;
 
@@ -26,11 +27,12 @@ public class RelayServer
     private readonly ConfigManager _configManager;
     private readonly CloudflareTunnelService _tunnelService;
     private readonly ClaudeSessionService _claudeService;
+    private readonly HardwareMonitorService _hardwareMonitor;
     private readonly Action<string, Guid?> _log;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager, CloudflareTunnelService tunnelService,
-        ClaudeSessionService claudeService, Action<string, Guid?> log)
+        ClaudeSessionService claudeService, HardwareMonitorService hardwareMonitor, Action<string, Guid?> log)
     {
         _config = config;
         _registry = registry;
@@ -39,6 +41,7 @@ public class RelayServer
         _configManager = configManager;
         _tunnelService = tunnelService;
         _claudeService = claudeService;
+        _hardwareMonitor = hardwareMonitor;
         _log = log;
     }
 
@@ -93,7 +96,8 @@ public class RelayServer
         MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
         SttEndpoints.Map(_app, _registry, _jobTracker, _log);
         CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
-        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService);
+        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService, _hardwareMonitor);
+        HardwareEndpoints.Map(_app, _hardwareMonitor);
         ClaudeSessionEndpoints.Map(_app, _claudeService, _jobTracker, _log);
         TunnelEndpoints.Map(_app, _tunnelService);
         SettingsEndpoints.Map(_app, _configManager, _tunnelService, _registry);

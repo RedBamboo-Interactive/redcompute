@@ -94,12 +94,13 @@ public static class DiscoverEndpoints
                         new { method = "GET", path = "/tunnel/status", description = "Cloudflare tunnel status, hostname, and error" },
                         new { method = "POST", path = "/tunnel/start", description = "Start the Cloudflare tunnel" },
                         new { method = "POST", path = "/tunnel/stop", description = "Stop the Cloudflare tunnel" },
-                        new { method = "GET", path = "/ws/schema", description = "WebSocket event schema — discover event types and data shapes" }
+                        new { method = "GET", path = "/ws/schema", description = "WebSocket event schema — discover event types and data shapes" },
+                        new { method = "GET", path = "/hardware", description = "Live hardware metrics: GPU utilization, VRAM, power, temperature, CPU, RAM, per-process GPU memory. Polled every 2s via WebSocket hardware.snapshot events." }
                     },
                     websocket = new
                     {
                         url = $"ws://localhost:{config.ApiPort}/ws",
-                        description = "Real-time event stream. Events: job.created, job.updated, log.entry, capability.status, claude.session.created, claude.session.updated, claude.session.ended, claude.stream",
+                        description = "Real-time event stream. Events: job.created, job.updated, log.entry, capability.status, hardware.snapshot, claude.session.created, claude.session.updated, claude.session.ended, claude.stream",
                         schemaEndpoint = "/ws/schema"
                     },
                     dashboard = new
@@ -315,7 +316,7 @@ public static class DiscoverEndpoints
                 {
                     Method = "POST",
                     Path = "/ai-session/execute",
-                    Description = "Execute a prompt with full agent capabilities (tools, multi-turn reasoning) in a local or Docker-sandboxed environment. Returns extracted response text plus raw stream-json output for logging.",
+                    Description = "Execute a prompt with full agent capabilities (tools, multi-turn reasoning) in a local or Docker-sandboxed environment. Returns extracted response text plus raw stream-json output for logging. Pass ?async to return 202 with job_id immediately; poll GET /jobs/{id} for result or subscribe to WebSocket claude.stream events.",
                     Parameters = new Dictionary<string, ParameterSchema>
                     {
                         ["prompt"] = new() { Type = "string", Required = true, Description = "Full prompt text sent to Claude via stdin" },
@@ -326,7 +327,8 @@ public static class DiscoverEndpoints
                         ["maxTurns"] = new() { Type = "integer", Required = false, Default = 1, Min = 1, Max = 200, Description = "Maximum tool-use turns for multi-step agent reasoning" },
                         ["allowedTools"] = new() { Type = "array", Required = false, Description = "Tool whitelist passed via --allowed-tools. Common: Read, Write, Edit, Glob, Bash, WebFetch, WebSearch" },
                         ["addDirs"] = new() { Type = "array", Required = false, Description = "Additional directories to expose to Claude via --add-dir (e.g. skill directories)" },
-                        ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Execution timeout in seconds" }
+                        ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Execution timeout in seconds" },
+                        ["env"] = new() { Type = "object", Required = false, Description = "Key-value environment variables to inject into the Claude process. Each entry becomes a process environment variable." }
                     },
                     Returns = new ReturnSchema { ContentType = "application/json", Streaming = false }
                 },

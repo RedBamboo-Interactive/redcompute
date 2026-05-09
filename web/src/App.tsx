@@ -6,6 +6,7 @@ import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"
 import { TokenPrompt } from "@/components/auth/token-prompt"
 import { useCapabilities } from "@/hooks/use-capabilities"
+import { useHardware } from "@/hooks/use-hardware"
 import { useJobs, type JobFilters } from "@/hooks/use-jobs"
 import { useLogs } from "@/hooks/use-logs"
 import { useSettings } from "@/hooks/use-settings"
@@ -29,6 +30,7 @@ export default function App() {
     return !isRemoteAccess() || !!getToken()
   })
   const caps = useCapabilities()
+  const hardware = useHardware()
   const [jobFilters, setJobFilters] = useState<JobFilters>({})
   const jobs = useJobs(jobFilters)
   const logs = useLogs()
@@ -46,10 +48,12 @@ export default function App() {
   }), [])
 
   const capsRef = useRef(caps)
+  const hardwareRef = useRef(hardware)
   const jobsRef = useRef(jobs)
   const logsRef = useRef(logs)
   const settingsRef = useRef(settings)
   capsRef.current = caps
+  hardwareRef.current = hardware
   jobsRef.current = jobs
   logsRef.current = logs
   settingsRef.current = settings
@@ -59,6 +63,7 @@ export default function App() {
     const ws = createWebSocket((event: WsEvent) => {
       wsContext.dispatch(event)
       capsRef.current.handleWsEvent(event)
+      hardwareRef.current.handleWsEvent(event)
       jobsRef.current.handleWsEvent(event)
       logsRef.current.handleWsEvent(event)
       settingsRef.current.handleWsEvent(event)
@@ -102,7 +107,7 @@ export default function App() {
               logAutoScrollRef={logs.autoScrollRef}
             />
           }>
-            <Route index element={<DashboardPage capabilities={caps.capabilities} onRefresh={caps.refresh} />} />
+            <Route index element={<DashboardPage capabilities={caps.capabilities} onRefresh={caps.refresh} hardware={hardware.hardware} />} />
             <Route path="jobs" element={
               <JobsPage
                 jobs={jobs.jobs} total={jobs.total} hasMore={jobs.hasMore} loading={jobs.loading}
