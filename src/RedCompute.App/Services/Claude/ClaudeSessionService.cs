@@ -1385,7 +1385,7 @@ public class ClaudeSessionService
             session.Info.Status = SessionStatus.Idle;
 
             if (root.TryGetProperty("total_cost_usd", out var cost))
-                session.Info.CostUsd = (session.Info.CostUsd ?? 0) + cost.GetDouble();
+                session.Info.CostUsd = cost.GetDouble();
             ParseTokenUsage(root, session);
 
             SyncTitleFromClaudeSession(session);
@@ -1408,7 +1408,7 @@ public class ClaudeSessionService
                 session.Info.Status = SessionStatus.Idle;
 
                 if (root.TryGetProperty("total_cost_usd", out var intCost))
-                    session.Info.CostUsd = (session.Info.CostUsd ?? 0) + intCost.GetDouble();
+                    session.Info.CostUsd = intCost.GetDouble();
                 ParseTokenUsage(root, session);
 
                 PersistSessionRecord(session.Info);
@@ -1418,7 +1418,7 @@ public class ClaudeSessionService
 
             session.Info.Status = SessionStatus.Idle;
             if (root.TryGetProperty("total_cost_usd", out var errCost))
-                session.Info.CostUsd = (session.Info.CostUsd ?? 0) + errCost.GetDouble();
+                session.Info.CostUsd = errCost.GetDouble();
             ParseTokenUsage(root, session);
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);

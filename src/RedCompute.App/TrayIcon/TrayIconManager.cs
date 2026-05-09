@@ -1,10 +1,9 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Reflection;
 using System.Windows;
-using System.Windows.Threading;
 using H.NotifyIcon;
 using H.NotifyIcon.Core;
-using RedCompute.App.Helpers;
 using RedCompute.Core.Providers;
 
 namespace RedCompute.App.TrayIcon;
@@ -12,24 +11,25 @@ namespace RedCompute.App.TrayIcon;
 public class TrayIconManager : IDisposable
 {
     private TaskbarIcon? _trayIcon;
-    private DispatcherTimer? _statusTimer;
 
     public void Initialize()
     {
         _trayIcon = new TaskbarIcon
         {
             ToolTipText = "RedCompute",
-            Icon = IconHelper.CreateTrayIcon(StatusColors.Gray),
+            Icon = LoadEmbeddedIcon(),
             ContextMenu = BuildContextMenu(),
             MenuActivation = PopupActivationMode.RightClick
         };
         _trayIcon.ForceCreate();
 
         _trayIcon.TrayMouseDoubleClick += (_, _) => OpenDashboard();
+    }
 
-        _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-        _statusTimer.Tick += async (_, _) => await UpdateIconStatus();
-        _statusTimer.Start();
+    private static Icon LoadEmbeddedIcon()
+    {
+        var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("redcompute.ico")!;
+        return new Icon(stream);
     }
 
     private static void OpenDashboard()
@@ -88,46 +88,8 @@ public class TrayIconManager : IDisposable
         }
     }
 
-    private Color _lastIconColor;
-
-    private async Task UpdateIconStatus()
-    {
-        var anyRunning = false;
-        var anyError = false;
-
-        foreach (var (_, entry) in App.Registry.Capabilities)
-        {
-            if (entry.ActiveProvider == null) continue;
-            var status = await entry.ActiveProvider.GetStatusAsync();
-            if (status == BackendStatus.Running) anyRunning = true;
-            if (status == BackendStatus.Error) anyError = true;
-        }
-
-        var color = anyError ? StatusColors.Red : anyRunning ? StatusColors.Green : StatusColors.Gray;
-        if (_trayIcon == null || color == _lastIconColor) return;
-
-        try
-        {
-            var oldIcon = _trayIcon.Icon;
-            _trayIcon.Icon = IconHelper.CreateTrayIcon(color);
-            _lastIconColor = color;
-            oldIcon?.Dispose();
-        }
-        catch (System.Runtime.InteropServices.ExternalException)
-        {
-        }
-    }
-
     public void Dispose()
     {
-        _statusTimer?.Stop();
         _trayIcon?.Dispose();
     }
-}
-
-internal static class StatusColors
-{
-    public static Color Gray => Color.FromArgb(0x72, 0x76, 0x7D);
-    public static Color Green => Color.FromArgb(0x43, 0xA2, 0x5A);
-    public static Color Red => Color.FromArgb(0xFF, 0x52, 0x52);
 }
