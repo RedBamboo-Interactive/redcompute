@@ -1,6 +1,7 @@
 @echo off
 echo === Stopping RedCompute ===
 taskkill /IM RedCompute.exe /F 2>nul
+wsl -d Ubuntu-24.04 -- pkill -f "uvicorn|server\.py" 2>nul
 timeout /t 1 /nobreak >nul
 
 echo === Building frontend ===

@@ -14,6 +14,7 @@ public class LocalWslProvider : IBackendProvider
     private readonly Action<string> _log;
     private Process? _process;
     private BackendStatus _status = BackendStatus.Stopped;
+    private string? _backendHost;
     private static readonly HttpClient HealthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
 
     public string Name => "Local WSL";
@@ -31,6 +32,9 @@ public class LocalWslProvider : IBackendProvider
     {
         if (_status == BackendStatus.Running) return true;
         _status = BackendStatus.Starting;
+
+        _backendHost = _config.WslDistro != null ? ResolveWslHost(_config.WslDistro) : "127.0.0.1";
+        _log($"[LocalWsl] Backend host: {_backendHost}");
 
         // Check if already running externally
         if (await CheckHealthAsync())
@@ -60,6 +64,12 @@ public class LocalWslProvider : IBackendProvider
 
             while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
             {
+                if (_process.HasExited)
+                {
+                    _status = BackendStatus.Error;
+                    _log($"[LocalWsl] Backend process exited with code {_process.ExitCode}");
+                    return false;
+                }
                 if (await CheckHealthAsync())
                 {
                     _status = BackendStatus.Running;
@@ -122,7 +132,7 @@ public class LocalWslProvider : IBackendProvider
     public string? GetProxyTargetUrl()
     {
         if (_status != BackendStatus.Running) return null;
-        return $"http://127.0.0.1:{_config.BackendPort}";
+        return $"http://{_backendHost ?? "127.0.0.1"}:{_config.BackendPort}";
     }
 
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
@@ -166,13 +176,38 @@ public class LocalWslProvider : IBackendProvider
     {
         try
         {
+            var host = _backendHost ?? "127.0.0.1";
             var endpoint = _config.HealthEndpoint ?? "/health";
-            var response = await HealthClient.GetAsync($"http://127.0.0.1:{_config.BackendPort}{endpoint}");
+            var response = await HealthClient.GetAsync($"http://{host}:{_config.BackendPort}{endpoint}");
             return response.IsSuccessStatusCode;
         }
         catch
         {
             return false;
+        }
+    }
+
+    private static string? ResolveWslHost(string distro)
+    {
+        try
+        {
+            var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = "wsl.exe",
+                Arguments = $"-d {distro} hostname -I",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true
+            });
+            if (proc == null) return null;
+            var output = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit(5000);
+            var ip = output.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            return string.IsNullOrEmpty(ip) ? null : ip;
+        }
+        catch
+        {
+            return null;
         }
     }
 

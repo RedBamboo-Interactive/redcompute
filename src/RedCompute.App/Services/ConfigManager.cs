@@ -57,12 +57,30 @@ public class ConfigManager
     {
         var defaults = CreateDefault();
         var dirty = false;
-        foreach (var (slug, capConfig) in defaults.Capabilities)
+        foreach (var (slug, defaultCap) in defaults.Capabilities)
         {
-            if (!Config.Capabilities.ContainsKey(slug))
+            if (!Config.Capabilities.TryGetValue(slug, out var existingCap))
             {
-                Config.Capabilities[slug] = capConfig;
+                Config.Capabilities[slug] = defaultCap;
                 dirty = true;
+                continue;
+            }
+
+            foreach (var (providerName, defaultProvider) in defaultCap.Providers)
+            {
+                if (!existingCap.Providers.TryGetValue(providerName, out var existingProvider))
+                    continue;
+
+                if (existingProvider.WslDistro == null && defaultProvider.WslDistro != null)
+                { existingProvider.WslDistro = defaultProvider.WslDistro; dirty = true; }
+                if (existingProvider.VenvPath == null && defaultProvider.VenvPath != null)
+                { existingProvider.VenvPath = defaultProvider.VenvPath; dirty = true; }
+                if (existingProvider.ServerPath == null && defaultProvider.ServerPath != null)
+                { existingProvider.ServerPath = defaultProvider.ServerPath; dirty = true; }
+                if (existingProvider.BackendPort == null && defaultProvider.BackendPort != null)
+                { existingProvider.BackendPort = defaultProvider.BackendPort; dirty = true; }
+                if (existingProvider.HealthEndpoint == null && defaultProvider.HealthEndpoint != null)
+                { existingProvider.HealthEndpoint = defaultProvider.HealthEndpoint; dirty = true; }
             }
         }
         foreach (var slug in RemovedCapabilities)
@@ -110,6 +128,7 @@ public class ConfigManager
                         {
                             Type = "LocalWsl",
                             WslDistro = "Ubuntu-24.04",
+                            VenvPath = "~/stt-env",
                             ServerPath = @"T:\Projects\faster-whisper-server",
                             BackendPort = 8766,
                             HealthEndpoint = "/health",

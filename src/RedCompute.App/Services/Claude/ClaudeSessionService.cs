@@ -110,6 +110,11 @@ public class ClaudeSessionService
         {
             startInfo.FileName = "docker";
             var args = new List<string> { "exec", "-i" };
+            if (!string.IsNullOrWhiteSpace(workingDir))
+            {
+                args.Add("-w");
+                args.Add(workingDir);
+            }
             args.Add(container!);
             args.Add("claude");
             AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);

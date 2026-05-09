@@ -149,19 +149,49 @@ public partial class App : Application
 
     private async Task ProbeRunningBackends()
     {
+        var tasks = new List<Task>();
         foreach (var (slug, entry) in Registry.Capabilities)
         {
             if (entry.ActiveProvider == null) continue;
             if (!entry.Definition.Enabled) continue;
-            try
+            tasks.Add(StartCapability(slug, entry));
+        }
+        await Task.WhenAll(tasks);
+
+        _ = RetryFailedBackends();
+    }
+
+    private async Task StartCapability(string slug, CapabilityEntry entry)
+    {
+        try
+        {
+            var started = await entry.ActiveProvider!.StartAsync();
+            if (started)
+                Log($"[App] Backend started for: {slug}");
+        }
+        catch (Exception ex)
+        {
+            Log($"[App] Start failed for {slug}: {ex.Message}");
+        }
+    }
+
+    private async Task RetryFailedBackends()
+    {
+        var retryInterval = TimeSpan.FromSeconds(60);
+        while (true)
+        {
+            await Task.Delay(retryInterval);
+
+            foreach (var (slug, entry) in Registry.Capabilities)
             {
-                var started = await entry.ActiveProvider.StartAsync();
-                if (started)
-                    Log($"[App] Auto-detected running backend for: {slug}");
-            }
-            catch (Exception ex)
-            {
-                Log($"[App] Probe failed for {slug}: {ex.Message}");
+                if (entry.ActiveProvider == null) continue;
+                if (!entry.Definition.Enabled) continue;
+
+                var status = await entry.ActiveProvider.GetStatusAsync();
+                if (status is not (BackendStatus.Error or BackendStatus.Stopped)) continue;
+
+                Log($"[App] Retrying failed backend: {slug}");
+                await StartCapability(slug, entry);
             }
         }
     }
