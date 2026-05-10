@@ -590,6 +590,10 @@ public class ClaudeSessionService
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add(resolvedModel);
         startInfo.ArgumentList.Add("--no-session-persistence");
+        startInfo.ArgumentList.Add("--max-turns");
+        startInfo.ArgumentList.Add("1");
+        startInfo.ArgumentList.Add("--allowedTools");
+        startInfo.ArgumentList.Add("Read,Glob,Grep");
         if (!string.IsNullOrEmpty(system))
         {
             startInfo.ArgumentList.Add("--system-prompt");
