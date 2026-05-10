@@ -82,7 +82,7 @@ export function CapabilityCard({ cap, onRefresh }: {
           {/* Action buttons — top right */}
           <div className="flex justify-end gap-0 -mt-1 -mr-1 mb-0">
             <button onClick={toggleSleep} title="Sleep/Wake (freeze requests)"
-              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
+              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-contrast/10 transition-colors">
               <i className="fa-solid fa-moon text-xs"
                 style={{
                   color: cap.sleeping ? "#7C4DFF" : "#ADAEB3",
@@ -91,7 +91,7 @@ export function CapabilityCard({ cap, onRefresh }: {
             </button>
             {!hasMultipleProviders && (
               <button onClick={() => togglePower()} title={cap.status}
-                className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
+                className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-contrast/10 transition-colors">
                 <i className="fa-solid fa-power-off text-sm"
                   style={{
                     color: isRunning ? "#26A69A" : "#6B6F77",
@@ -106,17 +106,17 @@ export function CapabilityCard({ cap, onRefresh }: {
             <button
               onClick={() => setQueueOpen(true)}
               title="Queue a new job"
-              className="group relative w-14 h-14 rounded-full border border-[#3A3A3F] flex items-center justify-center hover:border-white/20 hover:bg-white/[0.04] hover:scale-110 active:scale-95 transition-all duration-300 ease-out cursor-pointer"
+              className="group relative w-14 h-14 rounded-full border border-[#3A3A3F] flex items-center justify-center hover:border-contrast/20 hover:bg-contrast/[0.04] hover:scale-110 active:scale-95 transition-all duration-300 ease-out cursor-pointer"
             >
               <i className={`${capabilityIcons[cap.slug] || "fa-solid fa-cube"} text-[22px] group-hover:opacity-0 group-hover:scale-75 transition-all duration-300`}
                 style={{ color: iconColor }} />
-              <i className="fa-solid fa-plus text-white/80 text-lg absolute opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300" />
+              <i className="fa-solid fa-plus text-contrast/80 text-lg absolute opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300" />
             </button>
           </div>
 
           {/* Title + provider(s) */}
           <div className="text-center mb-3.5">
-            <div className="text-[15px] font-semibold text-white">{cap.displayName}</div>
+            <div className="text-[15px] font-semibold text-contrast">{cap.displayName}</div>
             {hasMultipleProviders ? (
               <div className="mt-1.5 space-y-1">
                 {cap.providers!.map(p => {
@@ -125,7 +125,7 @@ export function CapabilityCard({ cap, onRefresh }: {
                   return (
                     <div key={p.name} className="flex items-center justify-center gap-1.5 text-[11px]">
                       <button onClick={() => togglePower(p.name)} title={`${pRunning ? "Stop" : "Start"} ${p.name}`}
-                        className="w-[18px] h-[18px] flex items-center justify-center rounded hover:bg-white/10 transition-colors">
+                        className="w-[18px] h-[18px] flex items-center justify-center rounded hover:bg-contrast/10 transition-colors">
                         <i className="fa-solid fa-power-off text-[9px]"
                           style={{ color: pRunning ? "#26A69A" : "#6B6F77", opacity: pRunning ? 1 : 0.4 }} />
                       </button>
@@ -175,19 +175,20 @@ const jobStatusColor: Record<string, string> = {
 
 function JobFrieze({ jobs, count, onSelectJob }: { jobs: JobRecord[]; count: number; onSelectJob: (id: string) => void }) {
   const recent = jobs.slice(0, count).reverse()
-  const segments: { color: string; tooltip: string; jobId?: string }[] = []
+  const segments: { color: string; className?: string; tooltip: string; jobId?: string }[] = []
 
   for (let i = 0; i < count - recent.length; i++) {
-    segments.push({ color: "#2A2A2A", tooltip: "" })
+    segments.push({ color: "", className: "activity-idle", tooltip: "" })
   }
   for (const job of recent) {
-    const color = jobStatusColor[job.status] || "#2A2A2A"
+    const color = jobStatusColor[job.status] || ""
+    const className = color ? undefined : "activity-idle"
     const tooltip = job.status === "Completed" && job.durationMs
       ? `Completed (${job.durationMs}ms)`
       : job.status === "Failed"
         ? `Failed: ${job.errorMessage || "unknown"}`
         : job.status
-    segments.push({ color, tooltip, jobId: job.id })
+    segments.push({ color, className, tooltip, jobId: job.id })
   }
 
   return (
@@ -201,8 +202,8 @@ function JobFrieze({ jobs, count, onSelectJob }: { jobs: JobRecord[]; count: num
           onClick={seg.jobId ? () => onSelectJob(seg.jobId!) : undefined}
         >
           <div
-            className={`w-full h-full rounded-[1px] transition-transform duration-200 ${seg.jobId ? "hover:scale-150" : ""}`}
-            style={{ backgroundColor: seg.color, transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1)" }}
+            className={`w-full h-full rounded-[1px] transition-transform duration-200 ${seg.jobId ? "hover:scale-150" : ""} ${seg.className || ""}`}
+            style={seg.color ? { backgroundColor: seg.color, transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1)" } : { transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1)" }}
           />
         </div>
       ))}

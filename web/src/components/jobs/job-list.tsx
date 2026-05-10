@@ -43,8 +43,8 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
           <button
             key={job.id}
             onClick={() => onSelect(job)}
-            className={`flex items-center gap-3 px-4 py-3 text-left transition-colors border-b border-white/[0.06] ${
-              selectedId === job.id ? "bg-white/[0.08]" : "hover:bg-white/[0.04]"
+            className={`flex items-center gap-3 px-4 py-3 text-left transition-colors border-b border-contrast/[0.06] ${
+              selectedId === job.id ? "bg-contrast/[0.08]" : "hover:bg-contrast/[0.04]"
             }`}
           >
             {/* Capability icon — color = status */}
@@ -56,7 +56,7 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
             {/* Name + meta stacked */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-[13px] font-medium truncate text-white">
+                <span className="text-[13px] font-medium truncate text-contrast">
                   {job.name || job.capabilitySlug}
                 </span>
                 {job.status === "Running" && (
@@ -81,7 +81,7 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
           <button
             onClick={onLoadMore}
             disabled={loading}
-            className="flex items-center justify-center gap-2 px-4 py-3 text-[12px] text-accent-teal hover:text-white transition-colors border-b border-white/[0.06] hover:bg-white/[0.04]"
+            className="flex items-center justify-center gap-2 px-4 py-3 text-[12px] text-accent-teal hover:text-contrast transition-colors border-b border-contrast/[0.06] hover:bg-contrast/[0.04]"
           >
             {loading ? (
               <i className="fa-solid fa-spinner fa-spin text-xs" />

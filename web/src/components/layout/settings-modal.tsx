@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useSyncExternalStore } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@redbamboo/ui"
 import { api } from "@/api/client"
 import type { Settings } from "@/api/types"
+import { getTheme, setTheme, subscribeTheme } from "@/lib/theme-store"
 
 interface DiscoverEndpoint { method: string; path: string; description: string }
 interface DiscoverResponse {
@@ -9,8 +10,8 @@ interface DiscoverResponse {
   management: { endpoints: DiscoverEndpoint[] }
 }
 
-const inputClass = "bg-surface-deep border border-white/10 rounded px-2 py-1 outline-none text-white text-[13px] font-mono focus:border-white/30"
-const inputSmClass = "bg-surface-deep border border-white/10 rounded px-2 py-1 outline-none text-white text-[11px] font-mono min-w-0 focus:border-white/30"
+const inputClass = "bg-surface-deep border border-contrast/10 rounded px-2 py-1 outline-none text-contrast text-[13px] font-mono focus:border-contrast/30"
+const inputSmClass = "bg-surface-deep border border-contrast/10 rounded px-2 py-1 outline-none text-contrast text-[11px] font-mono min-w-0 focus:border-contrast/30"
 
 export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider }: {
   open: boolean
@@ -58,6 +59,12 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
 
+        {/* APPEARANCE */}
+        <SectionLabel>APPEARANCE</SectionLabel>
+        <div className="bg-surface-deep rounded-lg p-4 mb-4">
+          <ThemeToggle />
+        </div>
+
         {/* GENERAL */}
         <SectionLabel>GENERAL</SectionLabel>
         <div className="bg-surface-deep rounded-lg p-4 mb-4">
@@ -75,10 +82,10 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
           <FieldRow label="Status">
             <div className="flex items-center gap-2">
               <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: statusColor }} />
-              <span className="text-white text-[11px]">{tunnel.status}</span>
+              <span className="text-contrast text-[11px]">{tunnel.status}</span>
               {tunnel.status === "Running" && tunnel.hostname && (
                 <button
-                  className="text-[11px] text-text-muted hover:text-white font-mono ml-1 transition-colors"
+                  className="text-[11px] text-text-muted hover:text-contrast font-mono ml-1 transition-colors"
                   onClick={() => navigator.clipboard.writeText(`https://${tunnel.hostname}`)}
                   title="Copy URL"
                 >
@@ -106,7 +113,7 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
                 onChange={e => setTunnelToken(e.target.value)}
                 onBlur={() => { if (tunnelToken) { onUpdateGeneral({ tunnelToken }); setTunnelToken("") } }}
               />
-              <button className="text-[10px] text-text-muted hover:text-white shrink-0 transition-colors"
+              <button className="text-[10px] text-text-muted hover:text-contrast shrink-0 transition-colors"
                 onClick={() => setShowTunnelToken(!showTunnelToken)}>{showTunnelToken ? "hide" : "show"}</button>
             </div>
           </FieldRow>
@@ -120,7 +127,7 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
                 onChange={e => setAccessToken(e.target.value)}
                 onBlur={() => { if (accessToken) { onUpdateGeneral({ tunnelAccessToken: accessToken }); setAccessToken("") } }}
               />
-              <button className="text-[10px] text-text-muted hover:text-white shrink-0 transition-colors"
+              <button className="text-[10px] text-text-muted hover:text-contrast shrink-0 transition-colors"
                 onClick={() => setShowAccessToken(!showAccessToken)}>{showAccessToken ? "hide" : "show"}</button>
             </div>
           </FieldRow>
@@ -180,10 +187,19 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
   )
 }
 
+function ThemeToggle() {
+  const theme = useSyncExternalStore(subscribeTheme, getTheme)
+  return (
+    <FieldRow label="Light mode">
+      <Toggle enabled={theme === "light"} onToggle={() => setTheme(theme === "light" ? "dark" : "light")} />
+    </FieldRow>
+  )
+}
+
 function Toggle({ enabled, disabled, onToggle }: { enabled: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button
-      className={`w-8 h-[18px] rounded-full relative transition-colors ${enabled ? "bg-[#43A25A]" : "bg-white/15"}`}
+      className={`w-8 h-[18px] rounded-full relative transition-colors ${enabled ? "bg-[#43A25A]" : "bg-contrast/15"}`}
       disabled={disabled}
       onClick={onToggle}
     >
@@ -236,7 +252,7 @@ function CapabilitySettingsCard({ slug, cap, saving, onUpdateCapability, onUpdat
   return (
     <div className="bg-surface-deep rounded-lg p-4 mb-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[13px] font-semibold text-white">{slug}</span>
+        <span className="text-[13px] font-semibold text-contrast">{slug}</span>
       </div>
 
       {providerNames.length > 1 ? (
@@ -252,12 +268,12 @@ function CapabilitySettingsCard({ slug, cap, saving, onUpdateCapability, onUpdat
         </FieldRow>
       ) : (
         <FieldRow label="Provider">
-          <span className="text-white text-[11px]">{activeProvider}</span>
+          <span className="text-contrast text-[11px]">{activeProvider}</span>
         </FieldRow>
       )}
       {provider?.type != null && (
         <FieldRow label="Type">
-          <span className="text-white text-[11px] font-mono">{String(provider.type)}</span>
+          <span className="text-contrast text-[11px] font-mono">{String(provider.type)}</span>
         </FieldRow>
       )}
 
@@ -283,7 +299,7 @@ function CapabilitySettingsCard({ slug, cap, saving, onUpdateCapability, onUpdat
                 onKeyDown={e => { if (e.key === "Enter" && editing) { e.currentTarget.blur() } }}
               />
               {isPassword && (
-                <button className="text-[10px] text-text-muted hover:text-white shrink-0 transition-colors"
+                <button className="text-[10px] text-text-muted hover:text-contrast shrink-0 transition-colors"
                   onClick={() => setShowApiKey(!showApiKey)}>{showApiKey ? "hide" : "show"}</button>
               )}
             </div>

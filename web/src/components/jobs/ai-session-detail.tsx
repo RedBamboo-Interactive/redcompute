@@ -149,10 +149,10 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
             }}
             className={`ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors ${
               codeRedStatus === "sent"
-                ? "bg-white/[0.08] text-accent-teal"
+                ? "bg-contrast/[0.08] text-accent-teal"
                 : codeRedStatus === "error"
-                ? "bg-white/[0.08] text-accent-red"
-                : "bg-white/[0.06] text-text-muted hover:bg-white/[0.10] hover:text-text-primary"
+                ? "bg-contrast/[0.08] text-accent-red"
+                : "bg-contrast/[0.06] text-text-muted hover:bg-contrast/[0.10] hover:text-text-primary"
             }`}
           >
             <i className={`${
@@ -210,7 +210,7 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
             placeholder="Search events..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="w-full bg-white/[0.08] rounded-lg pl-8 pr-3 py-1.5 text-sm text-text-primary placeholder-text-disabled outline-none focus:ring-1 focus:ring-accent-teal/50"
+            className="w-full bg-contrast/[0.08] rounded-lg pl-8 pr-3 py-1.5 text-sm text-text-primary placeholder-text-disabled outline-none focus:ring-1 focus:ring-accent-teal/50"
           />
         </div>
         {Object.entries(eventTypeConfig).map(([type, cfg]) => {
@@ -222,7 +222,7 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
               className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors border ${
                 active
                   ? `${cfg.bg} ${cfg.color} border-current`
-                  : "bg-white/[0.04] text-text-disabled border-transparent hover:bg-white/[0.08]"
+                  : "bg-contrast/[0.04] text-text-disabled border-transparent hover:bg-contrast/[0.08]"
               }`}
             >
               {cfg.label}
@@ -253,7 +253,7 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
               {events.length === 0 ? "No events yet" : "No matching events"}
             </div>
           ) : (
-            <div className="divide-y divide-white/[0.04]">
+            <div className="divide-y divide-contrast/[0.04]">
               {filteredEvents.map((event, idx) => (
                 <EventLogRow
                   key={event.id}
@@ -270,7 +270,7 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
         {showScrollBtn && (
           <button
             onClick={scrollToBottom}
-            className="absolute bottom-3 right-3 w-8 h-8 rounded-full bg-surface-elevated border border-white/10 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors shadow-lg"
+            className="absolute bottom-3 right-3 w-8 h-8 rounded-full bg-surface-elevated border border-contrast/10 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors shadow-lg"
           >
             <i className="fa-solid fa-arrow-down text-xs" />
           </button>
@@ -297,10 +297,10 @@ function EventLogRow({ event, index, expanded, onToggle }: { event: ClaudeMessag
       <button
         onClick={onToggle}
         className={`flex items-start gap-2 w-full text-left px-2.5 py-1.5 transition-colors ${
-          expanded ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"
+          expanded ? "bg-contrast/[0.06]" : "hover:bg-contrast/[0.03]"
         }`}
       >
-        <span className="font-mono text-[11px] text-white/40 w-[28px] shrink-0 pt-px text-right">
+        <span className="font-mono text-[11px] text-contrast/40 w-[28px] shrink-0 pt-px text-right">
           {index}
         </span>
 

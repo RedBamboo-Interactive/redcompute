@@ -69,7 +69,7 @@ export function AudioPlayer({ src, label }: Props) {
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
 
   return (
-    <div className="rounded-lg bg-white/[0.06] px-3.5 py-3">
+    <div className="rounded-lg bg-contrast/[0.06] px-3.5 py-3">
       {label && <p className="text-[11px] text-text-muted opacity-70 mb-2">{label}</p>}
       <audio ref={audioRef} src={src} preload="metadata" />
 
@@ -95,7 +95,7 @@ export function AudioPlayer({ src, label }: Props) {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
         >
-          <div className="w-full h-1 rounded-full bg-white/10 relative">
+          <div className="w-full h-1 rounded-full bg-contrast/10 relative">
             <div
               className="absolute inset-y-0 left-0 rounded-full bg-accent-teal/60 group-hover:bg-accent-teal/80 transition-colors"
               style={{ width: `${progress}%` }}

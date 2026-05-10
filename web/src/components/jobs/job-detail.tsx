@@ -243,7 +243,7 @@ function MediaJobDetail({ job }: { job: JobRecord }) {
             <span>Progress</span>
             <span>{Math.round(job.progress * 100)}%</span>
           </div>
-          <div className="h-1.5 rounded-full bg-white/10">
+          <div className="h-1.5 rounded-full bg-contrast/10">
             <div
               className="h-full rounded-full bg-accent-gold transition-all duration-500"
               style={{ width: `${Math.round(job.progress * 100)}%` }}
@@ -303,7 +303,7 @@ function MediaJobDetail({ job }: { job: JobRecord }) {
             <div className="bg-surface-base rounded-lg p-2 max-h-48 overflow-auto space-y-px">
               {logs.map((log, i) => (
                 <div key={i} className="flex gap-2 text-xs font-mono px-1 py-0.5">
-                  <span className="text-white/40 w-[82px] shrink-0">
+                  <span className="text-contrast/40 w-[82px] shrink-0">
                     {new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false, fractionalSecondDigits: 3 })}
                   </span>
                   <span className={log.isError ? "text-accent-red" : "text-text-muted"}>{log.message}</span>
@@ -328,7 +328,7 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
 
 function ParamChip({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-[11px] bg-white/[0.06] rounded-md px-2 py-1">
+    <span className="inline-flex items-center gap-1.5 text-[11px] bg-contrast/[0.06] rounded-md px-2 py-1">
       <span className="text-text-disabled">{label}</span>
       <span className="text-text-primary">{value}</span>
     </span>

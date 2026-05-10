@@ -9,8 +9,8 @@ const statusColor: Record<string, string> = {
   Cancelled: "#727C7D",
 }
 
-const IDLE = "#2A2A2A"
-const SESSION_IDLE = "#1A3A36"
+const IDLE = "idle"
+const SESSION_IDLE = "session-idle"
 
 const statusPriority: Record<string, number> = {
   Failed: 6, Running: 5, Queued: 4, Completed: 3, Cancelled: 2,
@@ -67,7 +67,8 @@ export function MiniFrieze({ jobs, count = 32 }: { jobs: JobRecord[]; count?: nu
     <div className="flex flex-wrap justify-center">
       {segments.map((seg, i) => (
         <div key={i} style={{ width: 8, height: 8 }} className="p-px" title={seg.tooltip || undefined}>
-          <div className="w-full h-full rounded-[1px]" style={{ backgroundColor: seg.color }} />
+          <div className={`w-full h-full rounded-[1px] ${seg.color === IDLE ? "activity-idle" : seg.color === SESSION_IDLE ? "activity-session-idle" : ""}`}
+            style={seg.color !== IDLE && seg.color !== SESSION_IDLE ? { backgroundColor: seg.color } : undefined} />
         </div>
       ))}
     </div>

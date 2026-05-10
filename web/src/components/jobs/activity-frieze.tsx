@@ -9,8 +9,8 @@ const statusColor: Record<string, string> = {
   Cancelled: "#727C7D",
 }
 
-const IDLE = "#2A2A2A"
-const SESSION_IDLE = "#1A3A36"
+const IDLE = "idle"
+const SESSION_IDLE = "session-idle"
 const QUANTUM_MS = 5000
 const SQUARE_PX = 10
 const ROWS = 3
@@ -45,7 +45,7 @@ export function ActivityFrieze({ jobs }: { jobs: JobRecord[] }) {
     const windowMs = totalQuanta * QUANTUM_MS
     const now = Date.now()
     const start = now - windowMs
-    const result: { color: string; tooltip: string }[] = []
+    const result: { color: string; className?: string; tooltip: string }[] = []
 
     for (let i = 0; i < totalQuanta; i++) {
       const qStart = start + i * QUANTUM_MS
@@ -65,12 +65,12 @@ export function ActivityFrieze({ jobs }: { jobs: JobRecord[] }) {
       }
 
       if (overlapping.length === 0) {
-        result.push({ color: IDLE, tooltip: "" })
+        result.push({ color: "", className: "activity-idle", tooltip: "" })
       } else {
-        result.push({
-          color: overlapping[0].color,
-          tooltip: overlapping.map(o => o.name).join(", "),
-        })
+        const c = overlapping[0].color
+        if (c === IDLE) result.push({ color: "", className: "activity-idle", tooltip: overlapping.map(o => o.name).join(", ") })
+        else if (c === SESSION_IDLE) result.push({ color: "", className: "activity-session-idle", tooltip: overlapping.map(o => o.name).join(", ") })
+        else result.push({ color: c, tooltip: overlapping.map(o => o.name).join(", ") })
       }
     }
 
@@ -84,16 +84,16 @@ export function ActivityFrieze({ jobs }: { jobs: JobRecord[] }) {
     <div className="bg-surface-elevated rounded-lg p-3">
       <div className="flex items-center justify-between mb-1 px-0.5">
         <div className="flex items-center gap-1.5">
-          <i className="fa-solid fa-wave-square text-white opacity-50 text-xs" />
-          <span className="text-[11px] font-semibold text-white opacity-40 tracking-wide">ACTIVITY</span>
+          <i className="fa-solid fa-wave-square text-contrast opacity-50 text-xs" />
+          <span className="text-[11px] font-semibold text-contrast opacity-40 tracking-wide">ACTIVITY</span>
         </div>
-        <span className="text-[11px] font-mono text-white opacity-40">{durationText}</span>
+        <span className="text-[11px] font-mono text-contrast opacity-40">{durationText}</span>
       </div>
       <div ref={containerRef} className="flex flex-wrap">
         {quanta.map((q, i) => (
           <div key={i} style={{ width: SQUARE_PX, height: SQUARE_PX }} className="p-px" title={q.tooltip || undefined}>
-            <div className="w-full h-full rounded-[2px] transition-all duration-100 hover:opacity-70 hover:scale-[1.3]"
-              style={{ backgroundColor: q.color }} />
+            <div className={`w-full h-full rounded-[2px] transition-all duration-100 hover:opacity-70 hover:scale-[1.3] ${q.className || ""}`}
+              style={q.color ? { backgroundColor: q.color } : undefined} />
           </div>
         ))}
       </div>

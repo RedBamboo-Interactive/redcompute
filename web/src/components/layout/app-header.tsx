@@ -29,11 +29,11 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
     `flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors ${
       isActive
         ? "text-accent-teal bg-accent-teal/15"
-        : "text-text-muted hover:text-white hover:bg-white/10"
+        : "text-text-muted hover:text-contrast hover:bg-contrast/10"
     }`
 
   return (
-    <header className="shrink-0 flex items-center gap-3 px-4 py-2 border-b border-white/[0.06]">
+    <header className="shrink-0 flex items-center gap-3 px-4 py-2 border-b border-contrast/[0.06]">
       {/* Logo */}
       <div className="flex items-center gap-2">
         <div className="w-6 h-6 rounded bg-accent-teal/20 flex items-center justify-center">
@@ -61,24 +61,24 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
       <div className="relative" ref={menuRef}>
         <button
           onClick={() => setMenuOpen(v => !v)}
-          className="text-text-muted hover:text-white text-xs transition-colors p-2 rounded hover:bg-white/10"
+          className="text-text-muted hover:text-contrast text-xs transition-colors p-2 rounded hover:bg-contrast/10"
           title="Menu"
         >
           <i className="fa-solid fa-bars text-sm" />
         </button>
 
         {menuOpen && (
-          <div className="absolute right-0 top-full mt-1 w-44 bg-surface-elevated border border-white/[0.08] rounded-lg shadow-lg shadow-black/40 py-1 z-50">
+          <div className="absolute right-0 top-full mt-1 w-44 bg-surface-elevated border border-contrast/[0.08] rounded-lg shadow-lg shadow-black/40 py-1 z-50">
             <button
               onClick={() => { onOpenConsole(); setMenuOpen(false) }}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-white/[0.07] transition-colors"
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-contrast/[0.07] transition-colors"
             >
               <i className="fa-solid fa-terminal w-4 text-center text-text-muted" />
               Console
             </button>
             <button
               onClick={() => { onOpenSettings(); setMenuOpen(false) }}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-white/[0.07] transition-colors"
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-contrast/[0.07] transition-colors"
             >
               <i className="fa-solid fa-gear w-4 text-center text-text-muted" />
               Settings
@@ -86,7 +86,7 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
             {canShare && (
               <button
                 onClick={() => { onOpenShare(); setMenuOpen(false) }}
-                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-white/[0.07] transition-colors"
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-contrast/[0.07] transition-colors"
               >
                 <i className="fa-solid fa-qrcode w-4 text-center text-text-muted" />
                 Share
@@ -95,7 +95,7 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
             {canInstall && (
               <button
                 onClick={() => { install(); setMenuOpen(false) }}
-                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-white/[0.07] transition-colors"
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-contrast/[0.07] transition-colors"
               >
                 <i className="fa-solid fa-download w-4 text-center text-text-muted" />
                 Install

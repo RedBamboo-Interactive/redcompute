@@ -143,7 +143,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
           {Object.entries(params).map(([key, schema]) => (
             <div key={key}>
               <div className="mb-1.5">
-                <span className="text-[13px] font-medium text-white">
+                <span className="text-[13px] font-medium text-contrast">
                   {formatLabel(key)}
                   {schema.required && <span className="text-accent-red ml-0.5">*</span>}
                 </span>
@@ -184,7 +184,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
                       className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                         recording
                           ? "bg-accent-red/20 text-accent-red border border-accent-red/40"
-                          : "bg-surface-base border border-border-subtle text-text-secondary hover:text-white"
+                          : "bg-surface-base border border-border-subtle text-text-secondary hover:text-contrast"
                       }`}
                     >
                       <i className={`fa-solid ${recording ? "fa-stop" : "fa-microphone"} text-xs`} />
@@ -193,7 +193,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
                         : "Record"}
                     </button>
                     <span className="text-text-muted text-xs">or</span>
-                    <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-surface-base border border-border-subtle text-text-secondary hover:text-white cursor-pointer transition-colors">
+                    <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-surface-base border border-border-subtle text-text-secondary hover:text-contrast cursor-pointer transition-colors">
                       <i className="fa-solid fa-file-audio text-xs" />
                       Upload file
                       <input

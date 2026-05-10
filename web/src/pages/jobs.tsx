@@ -123,14 +123,14 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
   const hasActiveFilters = !!search || !!capFilter || !!sourceFilter || !!statusFilter
 
   const listHeader = (
-    <div className="flex flex-col border-b border-white/[0.06]">
+    <div className="flex flex-col border-b border-contrast/[0.06]">
       <div className="flex items-center justify-between px-4 py-3">
-        <span className="text-[14px] font-medium text-white">Recent Jobs</span>
+        <span className="text-[14px] font-medium text-contrast">Recent Jobs</span>
         <div className="flex items-center gap-1">
           {hasActiveFilters && (
             <button
               onClick={() => onFiltersChange({})}
-              className="text-accent-teal text-[11px] hover:text-white transition-colors px-1.5 py-0.5 rounded hover:bg-white/10"
+              className="text-accent-teal text-[11px] hover:text-contrast transition-colors px-1.5 py-0.5 rounded hover:bg-contrast/10"
               title="Clear filters"
             >
               Clear filters
@@ -140,7 +140,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
       </div>
 
       <div className="px-3 pb-2 flex flex-col gap-2">
-        <div className="flex items-center gap-1.5 bg-white/[0.08] rounded px-2 py-1.5">
+        <div className="flex items-center gap-1.5 bg-contrast/[0.08] rounded px-2 py-1.5">
           <i className="fa-solid fa-magnifying-glass text-[11px] text-text-disabled" />
           <input
             type="text"
@@ -150,7 +150,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
             className="bg-transparent border-none outline-none text-[12px] text-[#DCDDDE] placeholder-text-disabled w-full"
           />
           {search && (
-            <button onClick={() => setSearch("")} className="text-text-disabled hover:text-white transition-colors">
+            <button onClick={() => setSearch("")} className="text-text-disabled hover:text-contrast transition-colors">
               <i className="fa-solid fa-xmark text-[10px]" />
             </button>
           )}

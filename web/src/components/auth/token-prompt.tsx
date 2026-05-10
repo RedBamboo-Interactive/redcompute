@@ -33,12 +33,12 @@ export function TokenPrompt({ onAuthenticated }: { onAuthenticated: () => void }
   return (
     <div className="fixed inset-0 bg-[#1e2028] flex items-center justify-center z-50">
       <form onSubmit={handleSubmit} className="bg-surface-elevated rounded-lg p-6 w-[360px]">
-        <h2 className="text-[16px] font-semibold text-white mb-1">RedCompute</h2>
+        <h2 className="text-[16px] font-semibold text-contrast mb-1">RedCompute</h2>
         <p className="text-[12px] text-text-muted mb-4">Enter your access token to continue</p>
 
         <input
           type="password"
-          className="w-full bg-surface-deep border border-white/10 rounded px-3 py-2 text-[13px] text-white font-mono outline-none focus:border-white/30 mb-2"
+          className="w-full bg-surface-deep border border-contrast/10 rounded px-3 py-2 text-[13px] text-contrast font-mono outline-none focus:border-contrast/30 mb-2"
           placeholder="Access token"
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -50,7 +50,7 @@ export function TokenPrompt({ onAuthenticated }: { onAuthenticated: () => void }
         <button
           type="submit"
           disabled={checking || !value.trim()}
-          className="w-full bg-white/10 hover:bg-white/15 disabled:opacity-40 text-white text-[13px] rounded px-3 py-2 transition-colors"
+          className="w-full bg-contrast/10 hover:bg-contrast/15 disabled:opacity-40 text-contrast text-[13px] rounded px-3 py-2 transition-colors"
         >
           {checking ? "Checking..." : "Connect"}
         </button>

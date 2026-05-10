@@ -26,7 +26,7 @@ function tempColor(c: number): string {
 function Bar({ value, max, color = "#26A69A" }: { value: number; max: number; color?: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0
   return (
-    <div className="h-[3px] rounded-full bg-white/10 overflow-hidden">
+    <div className="h-[3px] rounded-full bg-contrast/10 overflow-hidden">
       <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
     </div>
   )
@@ -36,11 +36,11 @@ function MetricRow({ label, value, sub, bar }: { label: string; value: string; s
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-white/40 text-[11px]">{label}</span>
-        <span className="text-white text-[13px] font-mono">{value}</span>
+        <span className="text-contrast/40 text-[11px]">{label}</span>
+        <span className="text-contrast text-[13px] font-mono">{value}</span>
       </div>
       {bar && <Bar {...bar} />}
-      {sub && <span className="text-white/30 text-[10px]">{sub}</span>}
+      {sub && <span className="text-contrast/30 text-[10px]">{sub}</span>}
     </div>
   )
 }
@@ -53,14 +53,14 @@ function CapabilityVramSection({ gpu }: { gpu: GpuInfo }) {
   const other = gpu.memory.usedBytes - attributed
 
   return (
-    <div className="pt-2 border-t border-white/[0.06]">
-      <span className="text-white/40 text-[11px]">VRAM by Capability</span>
+    <div className="pt-2 border-t border-contrast/[0.06]">
+      <span className="text-contrast/40 text-[11px]">VRAM by Capability</span>
       <div className="mt-1.5 space-y-1.5">
         {entries.map(([slug, bytes]) => (
           <div key={slug}>
             <div className="flex items-baseline justify-between text-[11px] font-mono mb-0.5">
-              <span className="text-white/70">{capabilityNames[slug] || slug}</span>
-              <span className="text-white">{formatBytes(bytes)}</span>
+              <span className="text-contrast/70">{capabilityNames[slug] || slug}</span>
+              <span className="text-contrast">{formatBytes(bytes)}</span>
             </div>
             <Bar value={bytes} max={gpu.memory.totalBytes} color="#7C4DFF" />
           </div>
@@ -68,8 +68,8 @@ function CapabilityVramSection({ gpu }: { gpu: GpuInfo }) {
         {other > 0 && (
           <div>
             <div className="flex items-baseline justify-between text-[11px] font-mono mb-0.5">
-              <span className="text-white/40">Other</span>
-              <span className="text-white/50">{formatBytes(other)}</span>
+              <span className="text-contrast/40">Other</span>
+              <span className="text-contrast/50">{formatBytes(other)}</span>
             </div>
             <Bar value={other} max={gpu.memory.totalBytes} color="#9098A0" />
           </div>
@@ -83,7 +83,7 @@ function GpuDetail({ gpu }: { gpu: GpuInfo }) {
   const shortName = gpu.name.replace(/^NVIDIA\s+/, "").replace(/GeForce\s+/, "")
   return (
     <div className="space-y-3">
-      <h3 className="text-white/60 text-[12px] font-medium">{shortName}</h3>
+      <h3 className="text-contrast/60 text-[12px] font-medium">{shortName}</h3>
       <div className="grid grid-cols-2 gap-x-6 gap-y-3">
         <MetricRow label="GPU" value={`${gpu.utilizationPercent}%`} bar={{ value: gpu.utilizationPercent, max: 100 }} />
         <MetricRow label="VRAM" value={`${formatBytes(gpu.memory.usedBytes)} / ${formatBytes(gpu.memory.totalBytes)}`} bar={{ value: gpu.memory.usedBytes, max: gpu.memory.totalBytes }} />
@@ -94,17 +94,17 @@ function GpuDetail({ gpu }: { gpu: GpuInfo }) {
       </div>
       <CapabilityVramSection gpu={gpu} />
       {gpu.processes.length > 0 && (
-        <div className="pt-2 border-t border-white/[0.06]">
-          <span className="text-white/40 text-[11px]">GPU Processes</span>
+        <div className="pt-2 border-t border-contrast/[0.06]">
+          <span className="text-contrast/40 text-[11px]">GPU Processes</span>
           <div className="mt-1.5 space-y-0.5">
             {gpu.processes.slice(0, 15).map(p => (
               <div key={p.pid} className="flex items-center gap-2 text-[11px] font-mono">
-                <span className="text-white/60 truncate flex-1">
+                <span className="text-contrast/60 truncate flex-1">
                   {p.processName}
                   {p.capabilitySlug && <span className="text-[#7C4DFF] ml-1.5">{capabilityNames[p.capabilitySlug] || p.capabilitySlug}</span>}
                 </span>
-                <span className="text-white/25">{p.pid}</span>
-                <span className="text-white/50 w-16 text-right">{p.usedMemoryBytes > 0 ? formatBytes(p.usedMemoryBytes) : "—"}</span>
+                <span className="text-contrast/25">{p.pid}</span>
+                <span className="text-contrast/50 w-16 text-right">{p.usedMemoryBytes > 0 ? formatBytes(p.usedMemoryBytes) : "—"}</span>
               </div>
             ))}
           </div>
@@ -121,16 +121,16 @@ export function HardwareFooter({ hardware }: { hardware: HardwareSnapshot }) {
   return (
     <>
       <div
-        className="border-t border-white/[0.06] px-4 py-1.5 flex items-center gap-3 text-[11px] text-text-muted font-mono cursor-pointer select-none hover:bg-white/[0.02] transition-colors"
+        className="border-t border-contrast/[0.06] px-4 py-1.5 flex items-center gap-3 text-[11px] text-text-muted font-mono cursor-pointer select-none hover:bg-contrast/[0.02] transition-colors"
         onClick={() => setOpen(true)}
       >
         {gpu && (
           <>
-            <span className="text-white/30 hidden sm:inline">{gpu.name.replace(/^NVIDIA\s+/, "").replace(/GeForce\s+/, "")}</span>
+            <span className="text-contrast/30 hidden sm:inline">{gpu.name.replace(/^NVIDIA\s+/, "").replace(/GeForce\s+/, "")}</span>
             <span>GPU {gpu.utilizationPercent}%</span>
             <span className="hidden sm:inline">VRAM {formatBytes(gpu.memory.usedBytes)}/{formatBytes(gpu.memory.totalBytes)}</span>
             <span style={{ color: tempColor(gpu.temperatureCelsius) }}>{gpu.temperatureCelsius}°C</span>
-            <span className="text-white/10 hidden sm:inline">|</span>
+            <span className="text-contrast/10 hidden sm:inline">|</span>
           </>
         )}
         <span>CPU {hardware.cpu.usagePercent}%</span>
@@ -148,7 +148,7 @@ export function HardwareFooter({ hardware }: { hardware: HardwareSnapshot }) {
             ))}
 
             <div className="space-y-3">
-              <h3 className="text-white/60 text-[12px] font-medium">System</h3>
+              <h3 className="text-contrast/60 text-[12px] font-medium">System</h3>
               <div className="grid grid-cols-2 gap-x-6 gap-y-3">
                 <MetricRow
                   label="CPU"

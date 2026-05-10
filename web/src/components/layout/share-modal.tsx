@@ -43,11 +43,11 @@ export function ShareModal({ open, onClose, tunnel }: Props) {
           <input
             readOnly
             value={shareUrl}
-            className="flex-1 bg-surface-deep border border-white/10 rounded px-2 py-1.5 text-[10px] text-text-muted font-mono truncate outline-none"
+            className="flex-1 bg-surface-deep border border-contrast/10 rounded px-2 py-1.5 text-[10px] text-text-muted font-mono truncate outline-none"
           />
           <button
             onClick={() => navigator.clipboard.writeText(shareUrl)}
-            className="shrink-0 px-3 py-1.5 rounded bg-white/10 hover:bg-white/15 text-xs transition-colors"
+            className="shrink-0 px-3 py-1.5 rounded bg-contrast/10 hover:bg-contrast/15 text-xs transition-colors"
           >
             <i className="fa-solid fa-copy mr-1" />
             Copy

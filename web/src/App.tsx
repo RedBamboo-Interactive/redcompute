@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { HashRouter, Routes, Route } from "react-router-dom"
 import { TooltipProvider } from "@redbamboo/ui"
 import { AppShell } from "@/components/layout/app-shell"
@@ -14,6 +14,7 @@ import { WsEventContext, type WsEventContextValue } from "@/contexts/ws-events"
 import { createWebSocket } from "@/api/websocket"
 import { isRemoteAccess, getToken, setToken } from "@/api/auth"
 import type { WsEvent } from "@/api/types"
+import { getTheme, subscribeTheme } from "@/lib/theme-store"
 
 function extractTokenFromHash(): string | null {
   const hash = window.location.hash
@@ -29,6 +30,14 @@ export default function App() {
     if (hashToken) { setToken(hashToken); return true }
     return !isRemoteAccess() || !!getToken()
   })
+  const theme = useSyncExternalStore(subscribeTheme, getTheme)
+
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === "light") root.classList.remove("dark")
+    else root.classList.add("dark")
+  }, [theme])
+
   const caps = useCapabilities()
   const hardware = useHardware()
   const [jobFilters, setJobFilters] = useState<JobFilters>({})
