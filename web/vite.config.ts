@@ -8,10 +8,13 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      react: path.resolve(__dirname, "./node_modules/react"),
-      "react-dom": path.resolve(__dirname, "./node_modules/react-dom"),
+      "react": path.resolve(__dirname, "node_modules/react"),
+      "react-dom": path.resolve(__dirname, "node_modules/react-dom"),
+      "react/jsx-runtime": path.resolve(__dirname, "node_modules/react/jsx-runtime"),
+      "react/jsx-dev-runtime": path.resolve(__dirname, "node_modules/react/jsx-dev-runtime"),
+      "lucide-react": path.resolve(__dirname, "node_modules/lucide-react"),
     },
-    dedupe: ["@base-ui/react"],
+    dedupe: ["react", "react-dom", "@base-ui/react", "lucide-react"],
   },
   server: {
     proxy: {
