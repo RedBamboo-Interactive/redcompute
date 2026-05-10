@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react"
 import { NavLink } from "react-router-dom"
 import { useInstallPrompt } from "@/hooks/use-install-prompt"
+import { AppHeader as AppHeaderBase } from "@redbamboo/ui"
 
 interface Props {
   onOpenConsole: () => void
@@ -33,21 +34,7 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
     }`
 
   return (
-    <header className="shrink-0 flex items-center gap-3 px-4 py-2 border-b border-contrast/[0.06]">
-      {/* Logo */}
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded bg-accent-teal/20 flex items-center justify-center">
-          <i className="fa-solid fa-microchip text-accent-teal text-xs" />
-        </div>
-        <span className="text-sm font-semibold">
-          <span className="text-accent-teal">Red</span>
-          <span className="text-text-muted">Compute</span>
-        </span>
-      </div>
-
-      <span className="flex-1" />
-
-      {/* Nav buttons */}
+    <AppHeaderBase brand={{ icon: "fa-solid fa-microchip", nameParts: ["Red", "Compute"], accentClass: "text-accent-teal" }}>
       <NavLink to="/" end className={navLinkClass}>
         <i className="fa-solid fa-grid-2 text-xs" />
         <span>Capabilities</span>
@@ -57,7 +44,6 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
         <span>Jobs</span>
       </NavLink>
 
-      {/* Hamburger menu */}
       <div className="relative" ref={menuRef}>
         <button
           onClick={() => setMenuOpen(v => !v)}
@@ -104,6 +90,6 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
           </div>
         )}
       </div>
-    </header>
+    </AppHeaderBase>
   )
 }
