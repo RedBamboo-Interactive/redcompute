@@ -109,12 +109,12 @@ public static class ClaudeSessionEndpoints
             }
         });
 
-        app.MapPost("/claude/sessions/{id}/message", (string id, SendMessageRequest req) =>
+        app.MapPost("/claude/sessions/{id}/message", async (string id, SendMessageRequest req) =>
         {
             if (string.IsNullOrWhiteSpace(req.Content) && (req.Images == null || req.Images.Length == 0))
                 return Results.UnprocessableEntity(new { error = "validation", message = "content or images required" });
 
-            var sent = claude.SendMessage(id, req.Content ?? "", req.Images);
+            var sent = await claude.SendMessage(id, req.Content ?? "", req.Images);
             if (!sent)
                 return Results.NotFound(new { error = "send_failed", message = "Session not found or not active" });
 
@@ -493,7 +493,7 @@ public static class ClaudeSessionEndpoints
         if (!string.IsNullOrWhiteSpace(prompt))
         {
             await Task.Delay(2000);
-            claude.SendMessage(session.Id, prompt);
+            await claude.SendMessage(session.Id, prompt);
         }
 
         return Results.Accepted($"/claude/sessions/{session.Id}", new { jobId = session.JobId, sessionId = session.Id });

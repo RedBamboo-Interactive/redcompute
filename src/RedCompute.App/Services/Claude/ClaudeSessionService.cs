@@ -892,13 +892,31 @@ public class ClaudeSessionService
         return info;
     }
 
-    public bool SendMessage(string sessionId, string content, ImageAttachment[]? images = null)
+    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
 
         if (session.Info.Status is SessionStatus.Stopped or SessionStatus.Error)
             return false;
+
+        if (session.Info.Status == SessionStatus.Active)
+        {
+            _log($"[Claude] Session {sessionId} is active, restarting for new message", null);
+            session.RestartPending = true;
+
+            StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "interrupted" });
+
+            try { session.Process.Kill(entireProcessTree: true); } catch { }
+            try { await session.Process.WaitForExitAsync(); } catch { }
+
+            var resumed = ResumeSession(sessionId);
+            if (resumed == null)
+                return false;
+
+            if (!_sessions.TryGetValue(sessionId, out session))
+                return false;
+        }
 
         try
         {
@@ -1004,7 +1022,7 @@ public class ClaudeSessionService
             });
 
             // CLI often acknowledges but doesn't actually abort — kill after timeout
-            _ = ForceInterruptAfterTimeout(sessionId, session, TimeSpan.FromSeconds(3));
+            _ = ForceInterruptAfterTimeout(sessionId, session, TimeSpan.FromMilliseconds(500));
 
             return InterruptResult.Interrupted;
         }
@@ -1027,6 +1045,8 @@ public class ClaudeSessionService
             return;
 
         _log($"[Claude] Interrupt not honored after {timeout.TotalSeconds}s, killing session {sessionId}", null);
+
+        session.RestartPending = true;
 
         // Emit interrupted status so the frontend stops streaming immediately
         StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "interrupted" });
@@ -1712,6 +1732,12 @@ public class ClaudeSessionService
         var exitCode = session.Process.ExitCode;
         session.Cts.Cancel();
 
+        if (session.RestartPending)
+        {
+            _log($"[Claude] Session {sessionId} process exited for restart (code {exitCode})", null);
+            return;
+        }
+
         if (session.Info.Status != SessionStatus.Stopped)
         {
             session.Info.Status = SessionStatus.Error;
@@ -1916,6 +1942,7 @@ public class ClaudeSessionService
         public CancellationTokenSource Cts { get; }
         public List<object> MessageHistory { get; } = new();
         public bool InterruptPending { get; set; }
+        public bool RestartPending { get; set; }
         public int ControlRequestCounter { get; set; }
 
         public ManagedSession(ClaudeSessionInfo info, Process process, CancellationTokenSource cts)
