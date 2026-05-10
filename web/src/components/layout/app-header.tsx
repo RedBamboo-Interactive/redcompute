@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react"
 import { NavLink } from "react-router-dom"
 import { useInstallPrompt } from "@/hooks/use-install-prompt"
-import { AppHeader as AppHeaderBase } from "@redbamboo/ui"
+import { AboutDialog, AppHeader as AppHeaderBase } from "@redbamboo/ui"
 
 interface Props {
   onOpenConsole: () => void
@@ -12,6 +12,7 @@ interface Props {
 
 export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare }: Props) {
   const { canInstall, install } = useInstallPrompt()
+  const [aboutOpen, setAboutOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -87,9 +88,30 @@ export function AppHeader({ onOpenConsole, onOpenSettings, onOpenShare, canShare
                 Install
               </button>
             )}
+            <div className="my-1 h-px bg-contrast/[0.06]" />
+            <button
+              onClick={() => { setAboutOpen(true); setMenuOpen(false) }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-primary hover:bg-contrast/[0.07] transition-colors"
+            >
+              <i className="fa-solid fa-circle-info w-4 text-center text-text-muted" />
+              About
+            </button>
           </div>
         )}
       </div>
+
+      <AboutDialog
+        open={aboutOpen}
+        onOpenChange={setAboutOpen}
+        app={{
+          name: "RedCompute",
+          version: __APP_VERSION__,
+          description: "AI compute service dashboard",
+          icon: "fa-solid fa-microchip",
+        }}
+        appGitHub="https://github.com/RedBamboo-Interactive/redcompute"
+        companyGitHub="https://github.com/RedBamboo-Interactive"
+      />
     </AppHeaderBase>
   )
 }
