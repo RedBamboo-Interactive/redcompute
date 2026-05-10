@@ -605,6 +605,7 @@ public static class OpenApiEndpoints
                                     ["type"] = "object",
                                     ["properties"] = new Dictionary<string, object>
                                     {
+                                        ["success"] = Prop("boolean", "(oneshot) Whether the generation completed successfully"),
                                         ["text"] = Prop("string", "(oneshot) Generated text"),
                                         ["model"] = Prop("string", "(oneshot) Model used for generation"),
                                         ["inputTokens"] = Prop("integer", "(oneshot) Input tokens consumed"),

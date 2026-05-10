@@ -18,6 +18,7 @@ const eventTypeConfig: Record<string, { label: string; color: string; bg: string
   tool_use: { label: "tool", color: "text-accent-gold", bg: "bg-accent-gold/20" },
   tool_result: { label: "result", color: "text-accent-teal", bg: "bg-accent-teal/20" },
   error: { label: "error", color: "text-accent-red", bg: "bg-accent-red/20" },
+  system: { label: "system", color: "text-text-disabled", bg: "bg-contrast/[0.06]" },
   prompt: { label: "prompt", color: "text-blue-400", bg: "bg-blue-400/20" },
 }
 

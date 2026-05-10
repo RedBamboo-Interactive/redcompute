@@ -152,12 +152,24 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
           const streamEvents = typeof r.streamOutput === "string"
             ? parseStreamOutput(r.streamOutput, job.startedAt || job.queuedAt)
             : []
+          const hasStreamContent = streamEvents.length > 0
 
-          // Inject the user prompt as the first event
+          // Inject system prompt + user prompt before stream events
           try {
             const input = JSON.parse(job.inputJson) as Record<string, unknown>
+            const prefix: typeof streamEvents = []
+            if (typeof input.system === "string" && input.system) {
+              prefix.push({
+                id: -1,
+                sessionId: "",
+                role: "assistant",
+                eventType: "system",
+                content: input.system,
+                timestamp: job.startedAt || job.queuedAt,
+              })
+            }
             if (typeof input.prompt === "string" && input.prompt) {
-              streamEvents.unshift({
+              prefix.push({
                 id: 0,
                 sessionId: "",
                 role: "user",
@@ -166,13 +178,35 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
                 timestamp: job.startedAt || job.queuedAt,
               })
             }
+            streamEvents.unshift(...prefix)
           } catch { /* ignore */ }
+
+          // Synthesize assistant text event when no stream output (e.g. oneshot results)
+          if (!hasStreamContent && typeof r.text === "string" && r.text) {
+            streamEvents.push({
+              id: 1,
+              sessionId: "",
+              role: "assistant",
+              eventType: "text",
+              content: r.text,
+              timestamp: job.completedAt || job.startedAt || job.queuedAt,
+            })
+          }
+
+          let execTitle = job.name
+          if (!execTitle) {
+            try {
+              const inp = JSON.parse(job.inputJson) as Record<string, unknown>
+              if (typeof inp.prompt === "string" && inp.prompt)
+                execTitle = inp.prompt.length > 60 ? inp.prompt.slice(0, 57) + "..." : inp.prompt
+            } catch { /* ignore */ }
+          }
 
           setSession({
             id: job.id,
-            projectName: job.name || "Execute",
+            projectName: execTitle || "Execute",
             projectPath: "",
-            status: r.success ? "Stopped" : "Error",
+            status: job.status === "Failed" ? "Error" : "Stopped",
             startedAt: job.startedAt || job.queuedAt,
             model: (r.model as string) || undefined,
             messageCount: streamEvents.length,
@@ -192,15 +226,18 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
       resolvedSessionId.current = jobId
       let effort: string | undefined
       let inputModel: string | undefined
+      let runTitle = job.name
       try {
         const input = JSON.parse(job.inputJson) as Record<string, unknown>
         if (typeof input.effort === "string") effort = input.effort
         if (typeof input.model === "string") inputModel = input.model
+        if (!runTitle && typeof input.prompt === "string" && input.prompt)
+          runTitle = input.prompt.length > 60 ? input.prompt.slice(0, 57) + "..." : input.prompt
       } catch { /* ignore */ }
 
       setSession({
         id: jobId,
-        projectName: job.name || "Execute",
+        projectName: runTitle || "Execute",
         projectPath: "",
         status: "Active",
         startedAt: job.startedAt || job.queuedAt,

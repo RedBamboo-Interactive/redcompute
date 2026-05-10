@@ -296,7 +296,11 @@ public static class ClaudeSessionEndpoints
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         var rationale = ctx.Request.Headers.TryGetValue("X-Job-Rationale", out var jr) ? jr.ToString() : null;
 
-        var job = jobTracker.CreateJob("ai-session", "Claude Code", inputSummary, callerInfo, idempotencyKey, jobName, rationale);
+        if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
+            jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
+
+        var providerLabel = model switch { "haiku" => "Haiku", "sonnet" => "Sonnet", "opus" => "Opus", _ => "Claude Code" };
+        var job = jobTracker.CreateJob("ai-session", providerLabel, inputSummary, callerInfo, idempotencyKey, jobName, rationale);
         jobTracker.MarkRunning(job.Id);
         log($"[Claude] Execute job {job.Id} started (container={container ?? "local"}, model={model ?? "default"}, maxTurns={maxTurns}) [TIMING {sw?.ElapsedMilliseconds}ms since request]", job.Id);
 
@@ -412,13 +416,27 @@ public static class ClaudeSessionEndpoints
         var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
         var system = body.TryGetProperty("system", out var sys) ? sys.GetString() : null;
 
-        var inputSummary = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens });
+        string? prompt = null;
+        foreach (var msg in messages.EnumerateArray())
+        {
+            if (msg.TryGetProperty("role", out var role) && role.GetString() == "user" &&
+                msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String)
+            {
+                prompt = content.GetString();
+            }
+        }
+
+        var inputSummary = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, prompt, system });
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         var rationale = ctx.Request.Headers.TryGetValue("X-Job-Rationale", out var jr) ? jr.ToString() : null;
 
-        var job = jobTracker.CreateJob("ai-session", "Claude Code", inputSummary, callerInfo, idempotencyKey, jobName, rationale);
+        if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
+            jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
+
+        var providerLabel = model switch { "haiku" => "Haiku", "sonnet" => "Sonnet", "opus" => "Opus", _ => "Claude Code" };
+        var job = jobTracker.CreateJob("ai-session", providerLabel, inputSummary, callerInfo, idempotencyKey, jobName, rationale);
         jobTracker.MarkRunning(job.Id);
         log($"[Claude] Oneshot job {job.Id} started", job.Id);
 
@@ -433,7 +451,7 @@ public static class ClaudeSessionEndpoints
                 return Results.Json(new ErrorResponse { Error = "execution_failed", Message = result.Error ?? "Unknown error" }, statusCode: 502);
             }
 
-            var resultJson = JsonSerializer.Serialize(new { text = result.Text, model = result.Model, inputTokens = result.InputTokens, outputTokens = result.OutputTokens });
+            var resultJson = JsonSerializer.Serialize(new { success = true, text = result.Text, model = result.Model, inputTokens = result.InputTokens, outputTokens = result.OutputTokens });
             jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json");
             log($"[Claude] Oneshot job {job.Id} completed", job.Id);
 
