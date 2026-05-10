@@ -11,6 +11,18 @@
   --brand: #26A69A;
 }
 
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+}
+
 /* ── App-specific tokens ─────────────────────────────────────────────── */
 
 :root {
