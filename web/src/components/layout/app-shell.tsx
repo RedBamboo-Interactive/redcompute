@@ -1,9 +1,9 @@
 import { useState } from "react"
-import { Outlet } from "react-router-dom"
-import { AppHeader } from "./app-header"
+import { NavLink, Outlet } from "react-router-dom"
+import { AppShell as UtilityAppShell } from "@redbamboo/utility"
+import { DropdownMenuItem } from "@redbamboo/ui"
 import { SettingsModal } from "./settings-modal"
 import { ConsolePanel } from "./console-panel"
-import { ShareModal } from "./share-modal"
 import type { Settings, LogEntry, TagInfo } from "@/api/types"
 
 interface Props {
@@ -30,20 +30,67 @@ export function AppShell({
 }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [consoleOpen, setConsoleOpen] = useState(false)
-  const [shareOpen, setShareOpen] = useState(false)
 
   const tunnel = settings?.tunnel
   const canShare = tunnel?.status === "Running" && !!tunnel.hostname && !!tunnel.accessToken
 
-  return (
-    <div className="flex flex-col h-dvh w-full">
-      <AppHeader
-        onOpenConsole={() => setConsoleOpen(true)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenShare={() => setShareOpen(true)}
-        canShare={canShare}
-      />
+  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+    `flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors ${
+      isActive
+        ? "text-accent-teal bg-accent-teal/15"
+        : "text-text-muted hover:text-contrast hover:bg-contrast/10"
+    }`
 
+  return (
+    <UtilityAppShell
+      config={{
+        name: "RedCompute",
+        version: __APP_VERSION__,
+        description: "AI compute service dashboard",
+        icon: "fa-solid fa-microchip",
+        brand: {
+          icon: "fa-solid fa-microchip",
+          nameParts: ["Red", "Compute"],
+          accentClass: "text-accent-teal",
+        },
+        github: {
+          app: "https://github.com/RedBamboo-Interactive/redcompute",
+          company: "https://github.com/RedBamboo-Interactive",
+        },
+        share: canShare
+          ? {
+              url: () => `https://${tunnel!.hostname}/#/?token=${encodeURIComponent(tunnel!.accessToken!)}`,
+              title: "Share Connection",
+              description: "Scan this QR code to open RedCompute on another device.",
+            }
+          : undefined,
+      }}
+      headerContent={
+        <>
+          <NavLink to="/" end className={navLinkClass}>
+            <i className="fa-solid fa-grid-2 text-xs" />
+            <span>Capabilities</span>
+          </NavLink>
+          <NavLink to="/jobs" className={navLinkClass}>
+            <i className="fa-solid fa-list text-xs" />
+            <span>Jobs</span>
+          </NavLink>
+        </>
+      }
+      menuItems={
+        <>
+          <DropdownMenuItem onClick={() => setConsoleOpen(true)}>
+            <i className="fa-solid fa-terminal size-4 text-center" />
+            Console
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+            <i className="fa-solid fa-gear size-4 text-center" />
+            Settings
+          </DropdownMenuItem>
+        </>
+      }
+      className="flex flex-col h-dvh w-full"
+    >
       <main className="flex-1 min-h-0 overflow-auto">
         <Outlet />
       </main>
@@ -71,14 +118,6 @@ export function AppShell({
         setSelectedEntry={setLogSelectedEntry}
         autoScrollRef={logAutoScrollRef}
       />
-
-      {tunnel && (
-        <ShareModal
-          open={shareOpen}
-          onClose={() => setShareOpen(false)}
-          tunnel={tunnel}
-        />
-      )}
-    </div>
+    </UtilityAppShell>
   )
 }
