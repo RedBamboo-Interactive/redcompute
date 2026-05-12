@@ -20,7 +20,7 @@ public class ComfyUIProvider : IBackendProvider
     private readonly string _host;
     private readonly int _port;
     private readonly string _defaultWorkflow;
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(30) };
     private readonly HttpClient _healthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
     private Process? _process;
     private BackendStatus _status = BackendStatus.Stopped;
@@ -28,7 +28,7 @@ public class ComfyUIProvider : IBackendProvider
 
     public int? ProcessId => _process is { HasExited: false } ? _process.Id : null;
 
-    private const double PollTimeoutSeconds = 300.0;
+    private readonly double _pollTimeoutSeconds;
 
     public string Name => "ComfyUI";
     public CapabilityType Capability { get; }
@@ -49,6 +49,7 @@ public class ComfyUIProvider : IBackendProvider
         _defaultWorkflow = GetExtra("DefaultWorkflow", "z_turbo");
 
         var workflowsDir = GetExtra("WorkflowsDir", "workflows");
+        _pollTimeoutSeconds = double.TryParse(GetExtra("_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
         WorkflowLoader = new WorkflowLoader(workflowsDir, log);
     }
 
@@ -410,7 +411,7 @@ public class ComfyUIProvider : IBackendProvider
             return Math.Min((nodesFinished + currentNodeFrac) / nonCachedTotal, 0.95);
         }
 
-        var deadline = DateTime.UtcNow.AddSeconds(PollTimeoutSeconds);
+        var deadline = DateTime.UtcNow.AddSeconds(_pollTimeoutSeconds);
         var buffer = new byte[8192];
 
         while (ws.State == WebSocketState.Open && DateTime.UtcNow < deadline)
@@ -420,7 +421,7 @@ public class ComfyUIProvider : IBackendProvider
             do
             {
                 using var recvCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                recvCts.CancelAfter(TimeSpan.FromSeconds(60));
+                recvCts.CancelAfter(TimeSpan.FromSeconds(_pollTimeoutSeconds));
                 result = await ws.ReceiveAsync(buffer, recvCts.Token);
                 msgStream.Write(buffer, 0, result.Count);
             } while (!result.EndOfMessage);
@@ -485,7 +486,7 @@ public class ComfyUIProvider : IBackendProvider
         if (DateTime.UtcNow >= deadline)
         {
             _log("[ComfyUI] Generation timed out");
-            return (null, null, $"Generation timed out after {PollTimeoutSeconds}s");
+            return (null, null, $"Generation timed out after {_pollTimeoutSeconds}s");
         }
 
         return (null, null, "WebSocket closed unexpectedly");
