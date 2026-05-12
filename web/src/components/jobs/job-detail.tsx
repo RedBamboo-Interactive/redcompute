@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useCallback } from "react"
 import { Badge, Card, CardContent, Separator } from "@redbamboo/ui"
 import { api } from "@/api/client"
 import { authUrl } from "@/api/auth"
@@ -6,6 +6,9 @@ import type { JobRecord, LogEntry } from "@/api/types"
 import { AudioPlayer } from "./audio-player"
 import { ImageLightbox } from "./image-lightbox"
 import { AiSessionDetail } from "./ai-session-detail"
+
+const rerunnableCapabilities = new Set(["tts", "image-gen", "music-gen"])
+const terminalStatuses = new Set(["Completed", "Failed", "Cancelled"])
 
 const statusBadgeColor: Record<string, string> = {
   Queued: "bg-accent-gold/20 text-accent-gold border-accent-gold/30",
@@ -67,18 +70,33 @@ function parseClipTitles(resultJson?: string): string[] {
   }
 }
 
-export function JobDetail({ job }: { job: JobRecord }) {
+export function JobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId: string) => void }) {
   if (job.capabilitySlug === "ai-session") {
     return <AiSessionDetail job={job} />
   }
-  return <MediaJobDetail job={job} />
+  return <MediaJobDetail job={job} onRerun={onRerun} />
 }
 
-function MediaJobDetail({ job }: { job: JobRecord }) {
+function MediaJobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId: string) => void }) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [clipCount, setClipCount] = useState(1)
   const [lightbox, setLightbox] = useState(false)
   const [showParams, setShowParams] = useState(false)
+  const [rerunning, setRerunning] = useState(false)
+
+  const canRerun = rerunnableCapabilities.has(job.capabilitySlug) && terminalStatuses.has(job.status)
+
+  const handleRerun = useCallback(async () => {
+    setRerunning(true)
+    try {
+      const data = await api.post<{ jobId: string }>(`/jobs/${job.id}/rerun`)
+      if (data?.jobId) onRerun?.(data.jobId)
+    } catch (err) {
+      console.error("Rerun failed:", err)
+    } finally {
+      setRerunning(false)
+    }
+  }, [job.id, onRerun])
 
   useEffect(() => {
     api.get<{ entries: { id: number; timestamp: string; tag: string; message: string; isError: boolean }[] }>(`/jobs/${job.id}/logs?limit=50`)
@@ -128,8 +146,19 @@ function MediaJobDetail({ job }: { job: JobRecord }) {
       <div className="flex items-center gap-3">
         <h2 className="text-lg font-medium">{job.name || capLabels[job.capabilitySlug] || job.capabilitySlug}</h2>
         <Badge variant="outline" className={statusBadgeColor[job.status]}>{job.status}</Badge>
+        <span className="ml-auto" />
+        {canRerun && (
+          <button
+            onClick={handleRerun}
+            disabled={rerunning}
+            className="inline-flex items-center gap-1.5 text-xs text-accent-teal hover:text-accent-teal/80 transition-colors disabled:opacity-50"
+          >
+            <i className={`fa-solid ${rerunning ? "fa-spinner fa-spin" : "fa-rotate-right"}`} />
+            {rerunning ? "Rerunning..." : "Rerun"}
+          </button>
+        )}
         {job.durationMs != null && (
-          <span className="text-xs text-text-muted ml-auto">{formatDuration(job.durationMs)}</span>
+          <span className="text-xs text-text-muted">{formatDuration(job.durationMs)}</span>
         )}
       </div>
 

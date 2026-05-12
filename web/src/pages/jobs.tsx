@@ -227,8 +227,16 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
     </div>
   )
 
+  function handleRerun(newJobId: string) {
+    const stub: JobRecord = {
+      id: newJobId, capabilitySlug: selectedJob!.capabilitySlug, providerName: selectedJob!.providerName,
+      status: "Running", queuedAt: new Date().toISOString(), inputJson: "{}",
+    }
+    onSelectJob(stub)
+  }
+
   const detailContent = selectedJob ? (
-    <JobDetail job={selectedJob} />
+    <JobDetail job={selectedJob} onRerun={handleRerun} />
   ) : (
     <div className="flex items-center justify-center h-full text-text-muted text-sm">
       Select a job to view details
