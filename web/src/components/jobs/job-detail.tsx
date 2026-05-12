@@ -1,10 +1,8 @@
 import { useEffect, useState, useCallback } from "react"
-import { Badge, Card, CardContent, Separator } from "@redbamboo/ui"
+import { AudioPlayer, Badge, Card, CardContent, ImageLightbox, Separator } from "@redbamboo/ui"
 import { api } from "@/api/client"
 import { authUrl } from "@/api/auth"
 import type { JobRecord, LogEntry } from "@/api/types"
-import { AudioPlayer } from "./audio-player"
-import { ImageLightbox } from "./image-lightbox"
 import { AiSessionDetail } from "./ai-session-detail"
 
 const rerunnableCapabilities = new Set(["tts", "image-gen", "music-gen"])
