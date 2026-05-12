@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react"
-import { Badge, Separator, JsonHighlight } from "@redbamboo/ui"
+import { Badge, Separator } from "@redbamboo/ui"
+import { JsonHighlight } from "@redbamboo/utility"
 import { api } from "@/api/client"
 import { useSessionEvents } from "@/hooks/use-session-events"
 import type { JobRecord, ClaudeMessageRecord } from "@/api/types"
