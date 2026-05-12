@@ -1,3 +1,5 @@
+using System.Net.Http;
+using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Helpers;
@@ -134,6 +136,46 @@ public static class GlobalEndpoints
             jobTracker.MarkCancelled(id);
             claudeService?.CancelExecution(id.ToString());
             return Results.Ok(new { id, status = "Cancelled" });
+        });
+
+        app.MapPost("/jobs/{id:guid}/rerun", async (Guid id, HttpContext ctx) =>
+        {
+            var job = jobTracker.GetJob(id);
+            if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+
+            var generatePath = job.CapabilitySlug switch
+            {
+                "tts" => "/tts/generate",
+                "image-gen" => "/image-gen/generate",
+                "music-gen" => "/music-gen/generate",
+                _ => (string?)null
+            };
+            if (generatePath == null)
+                return Results.BadRequest(new { error = "not_rerunnable", message = $"Cannot rerun '{job.CapabilitySlug}' jobs" });
+
+            var inputDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(job.InputJson) ?? new();
+            inputDict["name"] = $"Rerun: {job.Name ?? job.CapabilitySlug}";
+            inputDict["rationale"] = $"Rerun of job {id}";
+            var rerunBody = System.Text.Json.JsonSerializer.Serialize(inputDict);
+
+            var port = ctx.Connection.LocalPort;
+            using var client = new HttpClient();
+            var request = new HttpRequestMessage(HttpMethod.Post, $"http://localhost:{port}{generatePath}?async")
+            {
+                Content = new StringContent(rerunBody, Encoding.UTF8, "application/json")
+            };
+            request.Headers.Add("X-Caller-Info", $"rerun:{id}");
+
+            try
+            {
+                var response = await client.SendAsync(request);
+                var body = await response.Content.ReadAsStringAsync();
+                return Results.Text(body, "application/json", statusCode: (int)response.StatusCode);
+            }
+            catch (HttpRequestException ex)
+            {
+                return Results.Json(new { error = "rerun_failed", message = ex.Message }, statusCode: 502);
+            }
         });
 
         app.MapDelete("/jobs/cleanup", (int? olderThanDays) =>

@@ -87,6 +87,39 @@ public static class OpenApiEndpoints
                     ["responses"] = Responses("application/json", Schema("object", "CancelResult"))
                 }
             },
+            ["/jobs/{id}/rerun"] = new Dictionary<string, object>
+            {
+                ["post"] = new Dictionary<string, object>
+                {
+                    ["operationId"] = "RerunJob",
+                    ["summary"] = "Rerun a job with the same input parameters but a new ID. Works for tts, image-gen, and music-gen capabilities.",
+                    ["parameters"] = new object[] { PathParam("id", "string", "Job UUID of the original job to rerun") },
+                    ["responses"] = new Dictionary<string, object>
+                    {
+                        ["202"] = new Dictionary<string, object>
+                        {
+                            ["description"] = "Rerun accepted — new job created asynchronously",
+                            ["content"] = new Dictionary<string, object>
+                            {
+                                ["application/json"] = new Dictionary<string, object>
+                                {
+                                    ["schema"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "object",
+                                        ["properties"] = new Dictionary<string, object>
+                                        {
+                                            ["jobId"] = new { type = "string", format = "uuid", description = "New job ID" },
+                                            ["status"] = new { type = "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ["400"] = ErrorResponse("Capability does not support rerun (e.g. stt, ai-session)"),
+                        ["404"] = ErrorResponse("Original job not found")
+                    }
+                }
+            },
             ["/control/start/{slug}"] = new Dictionary<string, object>
             {
                 ["post"] = new Dictionary<string, object>
