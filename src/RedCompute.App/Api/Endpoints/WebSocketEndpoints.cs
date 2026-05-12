@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Hardware;

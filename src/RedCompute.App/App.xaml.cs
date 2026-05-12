@@ -1,12 +1,14 @@
 using System.Windows;
+using RedBamboo.AppHost.Tray;
+using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
-using RedCompute.App.TrayIcon;
 using RedCompute.Core.Providers;
+using RedCompute.Plugin.ClaudeCode;
 
 namespace RedCompute.App;
 
@@ -15,14 +17,16 @@ public partial class App : Application
     private static Mutex? _mutex;
     private CancellationTokenSource? _relayCts;
     private RelayServer? _relayServer;
-    private TrayIconManager? _trayIcon;
+    private RedBamboo.AppHost.Tray.TrayIconManager? _trayIcon;
 
     public static FileLoggerService FileLogger { get; } = new();
     public static LoggingService Logger { get; private set; } = null!;
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();
+    public static ProviderDiscovery ProviderDiscovery { get; private set; } = null!;
+    public static CapabilityManifestLoader ManifestLoader { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
-    public static CloudflareTunnelService TunnelService { get; } = new();
+    public static CloudflareTunnelService TunnelService { get; } = new(logger: null);
     public static HardwareMonitorService HardwareMonitor { get; } = new();
     public static ClaudeSessionService ClaudeService { get; private set; } = null!;
 
@@ -51,14 +55,37 @@ public partial class App : Application
 
         ClaudeService = new ClaudeSessionService(ConfigManager.Config.Claude, JobTracker, (msg, jobId) => Log(msg, jobId));
 
+        ProviderDiscovery = new ProviderDiscovery(s => Log(s));
+        ProviderDiscovery.ScanAssemblies();
         InitializeCapabilities();
-        RegisterClaudeCodeCapability();
         HardwareMonitor.Start(Registry);
         await StartRelayServer();
         _ = ProbeRunningBackends();
         _ = StartTunnelIfEnabled();
 
-        _trayIcon = new TrayIconManager();
+        _trayIcon = new RedBamboo.AppHost.Tray.TrayIconManager(new TrayIconConfig
+        {
+            AppName = "RedCompute",
+            Port = ConfigManager.Config.ApiPort,
+            LoadIcon = () =>
+            {
+                var stream = System.Reflection.Assembly.GetExecutingAssembly()
+                    .GetManifestResourceStream("redcompute.ico")!;
+                return new System.Drawing.Icon(stream);
+            },
+            GetStatusLines = async () =>
+            {
+                var lines = new List<string>();
+                foreach (var (slug, entry) in Registry.Capabilities)
+                {
+                    var status = entry.ActiveProvider != null
+                        ? await entry.ActiveProvider.GetStatusAsync()
+                        : BackendStatus.Stopped;
+                    lines.Add($"{entry.Definition.DisplayName}: {status}");
+                }
+                return lines;
+            },
+        });
         _trayIcon.Initialize();
     }
 
@@ -97,31 +124,11 @@ public partial class App : Application
     private void InitializeCapabilities()
     {
         var config = ConfigManager.Config;
-        foreach (var (slug, capConfig) in config.Capabilities)
+
+        // Ensure ai-session exists in config
+        if (!config.Capabilities.ContainsKey("ai-session"))
         {
-            var definition = CapabilityDefinitionFactory.Create(slug);
-            if (definition == null) continue;
-
-            var providers = new Dictionary<string, IBackendProvider>();
-            foreach (var (providerName, providerConfig) in capConfig.Providers)
-            {
-                var provider = ProviderFactory.Create(definition.Type, providerConfig, s => Log(s));
-                if (provider != null)
-                    providers[providerName] = provider;
-            }
-
-            Registry.Register(slug, definition, capConfig, providers, capConfig.ActiveProvider);
-            var names = providers.Count > 0 ? string.Join(", ", providers.Keys) : "none";
-            Log($"[App] Registered capability: {slug} (providers: {names}, default: {capConfig.ActiveProvider ?? "none"})");
-        }
-    }
-
-    private void RegisterClaudeCodeCapability()
-    {
-        // Ensure ai-session exists in persisted config
-        if (!ConfigManager.Config.Capabilities.ContainsKey("ai-session"))
-        {
-            ConfigManager.Config.Capabilities["ai-session"] = new RedCompute.Core.Configuration.CapabilityConfig
+            config.Capabilities["ai-session"] = new RedCompute.Core.Configuration.CapabilityConfig
             {
                 ActiveProvider = "claude-code",
                 Providers = new Dictionary<string, RedCompute.Core.Configuration.ProviderConfig>
@@ -131,8 +138,8 @@ public partial class App : Application
                         Type = "ClaudeCode",
                         Extra = new Dictionary<string, object?>
                         {
-                            ["ProjectsRoot"] = ConfigManager.Config.Claude.ProjectsRoot,
-                            ["MaxSessions"] = ConfigManager.Config.Claude.MaxSessions,
+                            ["ProjectsRoot"] = config.Claude.ProjectsRoot,
+                            ["MaxSessions"] = config.Claude.MaxSessions,
                         }
                     }
                 }
@@ -140,12 +147,28 @@ public partial class App : Application
             ConfigManager.Save();
         }
 
-        var capConfig = ConfigManager.Config.Capabilities["ai-session"];
-        var definition = CapabilityDefinitionFactory.Create("ai-session")!;
-        var provider = new Services.Claude.ClaudeCodeProvider(ClaudeService);
-        var providers = new Dictionary<string, IBackendProvider> { ["claude-code"] = provider };
-        Registry.Register("ai-session", definition, capConfig, providers, capConfig.ActiveProvider);
-        Log("[App] Registered capability: ai-session (provider: Claude Code)");
+        // Extra services that some providers may need via constructor injection
+        Func<Task> stopAllSessions = () => ClaudeService.StopAllAsync();
+        var extraServices = new object?[] { stopAllSessions };
+
+        foreach (var (slug, capConfig) in config.Capabilities)
+        {
+            var definition = ManifestLoader.Load(slug, capConfig);
+
+            var providers = new Dictionary<string, IBackendProvider>();
+            foreach (var (providerName, providerConfig) in capConfig.Providers)
+            {
+                var provider = ProviderDiscovery.Create(providerConfig.Type, providerConfig, slug, s => Log(s), extraServices);
+                if (provider != null)
+                    providers[providerName] = provider;
+                else
+                    Log($"[App] Warning: provider type '{providerConfig.Type}' not found for {slug}/{providerName}");
+            }
+
+            Registry.Register(slug, definition, capConfig, providers, capConfig.ActiveProvider);
+            var names = providers.Count > 0 ? string.Join(", ", providers.Keys) : "none";
+            Log($"[App] Registered capability: {slug} (providers: {names}, default: {capConfig.ActiveProvider ?? "none"})");
+        }
     }
 
     private async Task ProbeRunningBackends()
@@ -218,7 +241,14 @@ public partial class App : Application
 
         try
         {
-            await TunnelService.StartAsync(ConfigManager.Config.ApiPort, tunnel);
+            await TunnelService.StartAsync(new TunnelConfig
+            {
+                Enabled = true,
+                TunnelToken = tunnel.TunnelToken,
+                Hostname = tunnel.Hostname,
+                CloudflaredPath = tunnel.CloudflaredPath,
+                AccessToken = tunnel.AccessToken,
+            });
             Log($"[Tunnel] Started (hostname: {tunnel.Hostname ?? "unknown"})");
         }
         catch (Exception ex)

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 
@@ -172,7 +173,14 @@ public static class SettingsEndpoints
                 config.Tunnel.AccessToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
             config.Tunnel.Enabled = true;
-            await tunnelService.StartAsync(config.ApiPort, config.Tunnel);
+            await tunnelService.StartAsync(new RedBamboo.AppHost.Tunnel.TunnelConfig
+            {
+                Enabled = true,
+                TunnelToken = config.Tunnel.TunnelToken,
+                Hostname = config.Tunnel.Hostname,
+                CloudflaredPath = config.Tunnel.CloudflaredPath,
+                AccessToken = config.Tunnel.AccessToken,
+            });
         }
         else if (!enabled && config.Tunnel.Enabled)
         {

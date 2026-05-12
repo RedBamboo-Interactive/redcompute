@@ -7,8 +7,12 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using RedBamboo.AppHost.Auth;
+using RedBamboo.AppHost.Discovery;
+using RedBamboo.AppHost.Extensions;
+using RedBamboo.AppHost.RemoteAccess;
+using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Api.Endpoints;
-using RedCompute.App.Api.Middleware;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Hardware;
@@ -74,7 +78,12 @@ public class RelayServer
             ctx.Response.Headers["X-RedCompute-Version"] = "0.2.0";
             await next();
         });
-        _app.UseMiddleware<BearerAuthMiddleware>((Func<string?>)(() => _config.Tunnel.AccessToken));
+        _app.UseAppHostAuth(new BearerAuthOptions
+        {
+            GetAccessToken = () => _config.Tunnel.AccessToken,
+            CookieName = "redcompute_token",
+            BypassPaths = ["/ping", "/api/remote/status"],
+        });
 
         // Prefer web/dist in the repo root for dev (live Vite rebuilds), fall back to wwwroot for production
         var repoWebDist = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "web", "dist");
@@ -92,14 +101,19 @@ public class RelayServer
         GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger, _claudeService);
         DiscoverEndpoints.Map(_app, _config, _registry, _claudeService);
         OpenApiEndpoints.Map(_app, _config, _registry);
-        ImageGenEndpoints.Map(_app, _registry, _jobTracker, _log);
-        MusicGenEndpoints.Map(_app, _registry, _jobTracker, _log);
-        SttEndpoints.Map(_app, _registry, _jobTracker, _log);
-        CapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
+        GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
         WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService, _hardwareMonitor);
         HardwareEndpoints.Map(_app, _hardwareMonitor);
         ClaudeSessionEndpoints.Map(_app, _claudeService, _jobTracker, _log);
-        TunnelEndpoints.Map(_app, _tunnelService);
+        var descriptor = new RedComputeServiceDescriptor(_config, _registry, _claudeService);
+        _app.MapAppHostEndpoints(descriptor, _tunnelService, "RedCompute", () => new RedBamboo.AppHost.Tunnel.TunnelConfig
+        {
+            Enabled = _config.Tunnel.Enabled,
+            TunnelToken = _config.Tunnel.TunnelToken,
+            Hostname = _config.Tunnel.Hostname,
+            CloudflaredPath = _config.Tunnel.CloudflaredPath,
+            AccessToken = _config.Tunnel.AccessToken,
+        });
         SettingsEndpoints.Map(_app, _configManager, _tunnelService, _registry);
 
         if (Directory.Exists(webRoot))

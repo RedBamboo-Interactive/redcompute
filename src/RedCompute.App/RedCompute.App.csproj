@@ -32,8 +32,25 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\RedCompute.Core\RedCompute.Core.csproj" />
-    <ProjectReference Include="..\RedCompute.Providers\RedCompute.Providers.csproj" />
+    <ProjectReference Include="..\RedCompute.PluginSdk\RedCompute.PluginSdk.csproj" />
+    <ProjectReference Include="..\..\..\redbamboo-packages\dotnet\RedBamboo.AppHost\RedBamboo.AppHost.csproj" />
+    <!-- Plugin projects: referenced so they build and copy to output. Not a hard dependency. -->
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ComfyUI\RedCompute.Plugin.ComfyUI.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Suno\RedCompute.Plugin.Suno.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.LocalWsl\RedCompute.Plugin.LocalWsl.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.TtsLocal\RedCompute.Plugin.TtsLocal.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.SttLocal\RedCompute.Plugin.SttLocal.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ClaudeCode\RedCompute.Plugin.ClaudeCode.csproj" />
   </ItemGroup>
 
   <Target Name="CopyFrontend" AfterTargets="Build" Condition="Exists('..\..\web\dist\index.html')">
@@ -42,6 +59,22 @@
       <WebDistFiles Include="..\..\web\dist\**\*" />
     </ItemGroup>
     <Copy SourceFiles="@(WebDistFiles)" DestinationFolder="$(OutputPath)wwwroot\%(RecursiveDir)" />
+  </Target>
+
+  <Target Name="CopyPlugins" AfterTargets="Build">
+    <ItemGroup>
+      <PluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\RedCompute.Plugin.*.dll" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutputPath)plugins" />
+    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(OutputPath)plugins" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyCapabilities" AfterTargets="Build">
+    <ItemGroup>
+      <CapabilityFiles Include="..\..\capabilities\*.json" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutputPath)capabilities" />
+    <Copy SourceFiles="@(CapabilityFiles)" DestinationFolder="$(OutputPath)capabilities" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>
