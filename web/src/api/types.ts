@@ -55,6 +55,11 @@ export interface CapabilityStatus {
   sleeping: boolean
   disabled: boolean
   endpoints?: EndpointManifest[]
+  icon?: string
+  color?: string
+  description?: string
+  category?: string
+  rerunnable?: boolean
 }
 
 export interface EndpointManifest {

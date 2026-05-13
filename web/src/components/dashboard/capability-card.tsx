@@ -6,7 +6,7 @@ import { QueueJobDialog } from "@/components/jobs/queue-job-dialog"
 import { useCapabilityJobs } from "@/hooks/use-capability-jobs"
 import type { CapabilityStatus, JobRecord } from "@/api/types"
 
-const capabilityIcons: Record<string, string> = {
+const fallbackIcons: Record<string, string> = {
   tts: "fa-solid fa-volume-high",
   stt: "fa-solid fa-microphone",
   "image-gen": "fa-solid fa-image",
@@ -14,6 +14,10 @@ const capabilityIcons: Record<string, string> = {
   llm: "fa-solid fa-brain",
   "video-gen": "fa-solid fa-video",
   "ai-session": "fa-regular fa-square-terminal",
+}
+
+function getCapIcon(cap: CapabilityStatus): string {
+  return cap.icon || fallbackIcons[cap.slug] || "fa-solid fa-cube"
 }
 
 function statusIconColor(status: string, sleeping: boolean): string {
@@ -108,7 +112,7 @@ export function CapabilityCard({ cap, onRefresh }: {
               title="Queue a new job"
               className="group relative w-14 h-14 rounded-full border border-[#3A3A3F] flex items-center justify-center hover:border-contrast/20 hover:bg-contrast/[0.04] hover:scale-110 active:scale-95 transition-all duration-300 ease-out cursor-pointer"
             >
-              <i className={`${capabilityIcons[cap.slug] || "fa-solid fa-cube"} text-[22px] group-hover:opacity-0 group-hover:scale-75 transition-all duration-300`}
+              <i className={`${getCapIcon(cap)} text-[22px] group-hover:opacity-0 group-hover:scale-75 transition-all duration-300`}
                 style={{ color: iconColor }} />
               <i className="fa-solid fa-plus text-contrast/80 text-lg absolute opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300" />
             </button>

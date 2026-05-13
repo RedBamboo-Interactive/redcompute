@@ -5,17 +5,20 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using RedCompute.Core.Capabilities;
-using RedCompute.Core.ComfyUI;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
-namespace RedCompute.Providers.ComfyUI;
+namespace RedCompute.Plugin.ComfyUI;
 
-public class ComfyUIProvider : IBackendProvider
+public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 {
     private readonly ProviderConfig _config;
+    private readonly string _capabilitySlug;
     private readonly Action<string> _log;
     private readonly string _host;
     private readonly int _port;
@@ -31,27 +34,88 @@ public class ComfyUIProvider : IBackendProvider
     private readonly double _pollTimeoutSeconds;
 
     public string Name => "ComfyUI";
-    public CapabilityType Capability { get; }
+    public string CapabilitySlug => _capabilitySlug;
+    public string DisplayName => "ComfyUI";
+    public string ProviderType => "ComfyUI";
+    public bool IsProxy => false;
+    public bool SupportsProgress => true;
+    public bool SupportsRerun => true;
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(10);
     public WorkflowLoader WorkflowLoader { get; }
     public Action<double>? ProgressCallback { get; set; }
 
     private string BaseUrl => $"http://{_host}:{_port}";
 
-    public ComfyUIProvider(ProviderConfig config, CapabilityType capability, Action<string> log)
+    public Dictionary<string, ParameterSchema> InputParameters => new()
+    {
+        ["prompt"] = new ParameterSchema { Type = "string", Required = true, Description = "Text prompt for image generation" },
+        ["workflow"] = new ParameterSchema { Type = "string", Required = false, Default = "z_turbo", Description = "Workflow name to use" },
+        ["negative"] = new ParameterSchema { Type = "string", Required = false, Description = "Negative prompt" },
+        ["seed"] = new ParameterSchema { Type = "integer", Required = false, Description = "Random seed for reproducibility" },
+        ["width"] = new ParameterSchema { Type = "integer", Required = false, Description = "Output image width" },
+        ["height"] = new ParameterSchema { Type = "integer", Required = false, Description = "Output image height" },
+        ["image_url"] = new ParameterSchema { Type = "string", Required = false, Description = "Source image URL for img2img workflows" }
+    };
+
+    public ReturnSchema OutputSchema => new()
+    {
+        ContentType = "image/png",
+        Streaming = false,
+        MediaCategory = "image",
+        OutputEndpoint = "/image-gen/jobs/{id}/output"
+    };
+
+    public ComfyUIProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
     {
         _config = config;
-        Capability = capability;
+        _capabilitySlug = capabilitySlug;
         _log = log;
 
-        _host = GetExtra("Host", "127.0.0.1");
+        _host = ProviderHelpers.GetExtra(config, "Host", "127.0.0.1");
         _port = config.BackendPort ?? 8188;
-        _defaultWorkflow = GetExtra("DefaultWorkflow", "z_turbo");
+        _defaultWorkflow = ProviderHelpers.GetExtra(config, "DefaultWorkflow", "z_turbo");
 
-        var workflowsDir = GetExtra("WorkflowsDir", "workflows");
-        _pollTimeoutSeconds = double.TryParse(GetExtra("_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
+        var workflowsDir = ProviderHelpers.GetExtra(config, "WorkflowsDir", "workflows");
+        _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
         WorkflowLoader = new WorkflowLoader(workflowsDir, log);
     }
+
+    public void SetProgressCallback(Action<double>? callback)
+    {
+        ProgressCallback = callback;
+    }
+
+    public void MapCustomEndpoints(WebApplication app)
+    {
+        app.MapGet($"/{CapabilitySlug}/workflows", () =>
+            Results.Json(WorkflowLoader.Workflows));
+
+        app.MapGet($"/{CapabilitySlug}/workflows/{{name}}", (string name) =>
+        {
+            var wf = WorkflowLoader.Get(name);
+            return wf != null ? Results.Json(wf) : Results.NotFound(new { error = $"Workflow '{name}' not found" });
+        });
+    }
+
+    public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() =>
+    [
+        new EndpointManifest
+        {
+            Method = "GET",
+            Path = $"/{CapabilitySlug}/workflows",
+            Description = "List available ComfyUI workflows"
+        },
+        new EndpointManifest
+        {
+            Method = "GET",
+            Path = $"/{CapabilitySlug}/workflows/{{name}}",
+            Description = "Get details of a specific ComfyUI workflow",
+            Parameters = new Dictionary<string, ParameterSchema>
+            {
+                ["name"] = new ParameterSchema { Type = "string", Required = true, Description = "Workflow name" }
+            }
+        }
+    ];
 
     public async Task<bool> StartAsync(CancellationToken ct = default)
     {
@@ -176,10 +240,10 @@ public class ComfyUIProvider : IBackendProvider
     {
         var progressCallback = ProgressCallback;
         var p = request.Parameters;
-        var workflowName = GetParam<string>(p, "workflow") ?? _defaultWorkflow;
-        var prompt = GetParam<string>(p, "prompt");
-        var negative = GetParam<string>(p, "negative") ?? "";
-        var seedParam = GetParam<long?>(p, "seed");
+        var workflowName = ProviderHelpers.GetParam<string>(p, "workflow") ?? _defaultWorkflow;
+        var prompt = ProviderHelpers.GetParam<string>(p, "prompt");
+        var negative = ProviderHelpers.GetParam<string>(p, "negative") ?? "";
+        var seedParam = ProviderHelpers.GetParam<long?>(p, "seed");
 
         if (string.IsNullOrWhiteSpace(prompt))
             return new JobResult { Success = false, ErrorMessage = "prompt is required" };
@@ -204,7 +268,7 @@ public class ComfyUIProvider : IBackendProvider
         extraParams.Remove("seed");
 
         // Handle image upload for img2img/video workflows
-        var imageUrl = GetParam<string>(extraParams, "image_url");
+        var imageUrl = ProviderHelpers.GetParam<string>(extraParams, "image_url");
         if (!string.IsNullOrEmpty(imageUrl))
         {
             var uploadedName = await UploadImageAsync(imageUrl, ct);
@@ -259,7 +323,7 @@ public class ComfyUIProvider : IBackendProvider
         if (_config.WslDistro != null)
         {
             var venvActivate = _config.VenvPath != null ? $"source {_config.VenvPath}/bin/activate && " : "";
-            var serverPath = ConvertToWslPath(_config.ServerPath ?? ".");
+            var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
             var command = $"{venvActivate}cd {serverPath} && python main.py {listenArgs}";
 
             return new ProcessStartInfo
@@ -605,40 +669,5 @@ public class ComfyUIProvider : IBackendProvider
             _log($"[ComfyUI] Image upload error: {ex.Message}");
             return null;
         }
-    }
-
-    private string GetExtra(string key, string defaultValue)
-    {
-        if (_config.Extra != null && _config.Extra.TryGetValue(key, out var val) && val != null)
-            return val.ToString()!;
-        return defaultValue;
-    }
-
-    private static T? GetParam<T>(Dictionary<string, object?> p, string key)
-    {
-        if (!p.TryGetValue(key, out var val) || val == null) return default;
-        if (val is T t) return t;
-        if (val is JsonElement je)
-        {
-            if (typeof(T) == typeof(string)) return (T)(object)(je.GetString() ?? "");
-            if (typeof(T) == typeof(long?) || typeof(T) == typeof(long))
-                return je.TryGetInt64(out var l) ? (T)(object)l : default;
-            if (typeof(T) == typeof(int?) || typeof(T) == typeof(int))
-                return je.TryGetInt32(out var i) ? (T)(object)i : default;
-        }
-        try { return (T)Convert.ChangeType(val, typeof(T)); }
-        catch { return default; }
-    }
-
-    private static string ConvertToWslPath(string windowsPath)
-    {
-        if (string.IsNullOrEmpty(windowsPath)) return windowsPath;
-        if (windowsPath.Length >= 2 && windowsPath[1] == ':')
-        {
-            var drive = char.ToLower(windowsPath[0]);
-            var rest = windowsPath[2..].Replace('\\', '/');
-            return $"/mnt/{drive}{rest}";
-        }
-        return windowsPath.Replace('\\', '/');
     }
 }

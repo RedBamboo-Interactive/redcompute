@@ -4,16 +4,18 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
-namespace RedCompute.Providers.Suno;
+namespace RedCompute.Plugin.Suno;
 
-public class SunoProvider : IBackendProvider
+public class SunoProvider : IPluginProvider
 {
     private readonly ProviderConfig _config;
+    private readonly string _capabilitySlug;
     private readonly Action<string> _log;
     private readonly string _baseUrl;
     private readonly string _model;
@@ -26,23 +28,51 @@ public class SunoProvider : IBackendProvider
     private const string CallbackPlaceholder = "https://example.com";
 
     public string Name => "Suno";
-    public CapabilityType Capability { get; }
+    public string CapabilitySlug => _capabilitySlug;
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(30);
     public Action<double>? ProgressCallback { get; set; }
     public List<SunoClipResult>? LastClipResults { get; private set; }
 
-    public SunoProvider(ProviderConfig config, CapabilityType capability, Action<string> log)
+    // IPluginProvider properties
+    public string DisplayName => "Suno AI";
+    public string ProviderType => "Suno";
+    public bool IsProxy => false;
+    public bool SupportsProgress => true;
+    public bool SupportsRerun => true;
+
+    public Dictionary<string, ParameterSchema> InputParameters => new()
+    {
+        ["prompt"] = new ParameterSchema { Type = "string", Required = true, Description = "Musical description" },
+        ["style"] = new ParameterSchema { Type = "string", Required = false, Description = "Genre/style tags" },
+        ["title"] = new ParameterSchema { Type = "string", Required = false, Description = "Song title" },
+        ["instrumental"] = new ParameterSchema { Type = "boolean", Required = false, Description = "Instrumental only", Default = true }
+    };
+
+    public ReturnSchema OutputSchema => new()
+    {
+        ContentType = "audio/mpeg",
+        Streaming = false,
+        MediaCategory = "audio",
+        OutputEndpoint = "/music-gen/jobs/{id}/output"
+    };
+
+    public SunoProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
     {
         _config = config;
-        Capability = capability;
+        _capabilitySlug = capabilitySlug;
         _log = log;
 
-        _baseUrl = GetExtra("BaseUrl", "https://api.sunoapi.org").TrimEnd('/');
-        _model = GetExtra("Model", "V4_5");
+        _baseUrl = ProviderHelpers.GetExtra(config, "BaseUrl", "https://api.sunoapi.org").TrimEnd('/');
+        _model = ProviderHelpers.GetExtra(config, "Model", "V4_5");
 
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         if (!string.IsNullOrEmpty(config.ApiKey))
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.ApiKey);
+    }
+
+    public void SetProgressCallback(Action<double>? callback)
+    {
+        ProgressCallback = callback;
     }
 
     public Task<bool> StartAsync(CancellationToken ct = default)
@@ -75,10 +105,10 @@ public class SunoProvider : IBackendProvider
     {
         var progressCallback = ProgressCallback;
         var p = request.Parameters;
-        var prompt = GetParam<string>(p, "prompt");
-        var style = GetParam<string>(p, "style") ?? "";
-        var title = GetParam<string>(p, "title") ?? "";
-        var instrumental = GetParam<bool?>(p, "instrumental") ?? true;
+        var prompt = ProviderHelpers.GetParam<string>(p, "prompt");
+        var style = ProviderHelpers.GetParam<string>(p, "style") ?? "";
+        var title = ProviderHelpers.GetParam<string>(p, "title") ?? "";
+        var instrumental = ProviderHelpers.GetParam<bool?>(p, "instrumental") ?? true;
 
         if (string.IsNullOrWhiteSpace(prompt))
             return new JobResult { Success = false, ErrorMessage = "prompt is required" };
@@ -324,32 +354,6 @@ public class SunoProvider : IBackendProvider
         text = Regex.Replace(text, @"[\s_-]+", "-");
         text = text.Trim('-');
         return text.Length > 50 ? text[..50] : (text.Length > 0 ? text : "music");
-    }
-
-    private string GetExtra(string key, string defaultValue)
-    {
-        if (_config.Extra != null && _config.Extra.TryGetValue(key, out var val) && val != null)
-            return val.ToString()!;
-        return defaultValue;
-    }
-
-    private static T? GetParam<T>(Dictionary<string, object?> p, string key)
-    {
-        if (!p.TryGetValue(key, out var val) || val == null) return default;
-        if (val is T t) return t;
-        if (val is JsonElement je)
-        {
-            if (typeof(T) == typeof(string)) return (T)(object)(je.GetString() ?? "");
-            if (typeof(T) == typeof(bool?) || typeof(T) == typeof(bool))
-            {
-                if (je.ValueKind == JsonValueKind.True) return (T)(object)true;
-                if (je.ValueKind == JsonValueKind.False) return (T)(object)false;
-            }
-            if (typeof(T) == typeof(long?) || typeof(T) == typeof(long))
-                return je.TryGetInt64(out var l) ? (T)(object)l : default;
-        }
-        try { return (T)Convert.ChangeType(val, Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T)); }
-        catch { return default; }
     }
 }
 

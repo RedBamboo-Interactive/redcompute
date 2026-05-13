@@ -1,0 +1,8 @@
+{
+  "slug": "tts",
+  "displayName": "Text-to-Speech",
+  "description": "Generate speech audio from text",
+  "icon": "fa-solid fa-volume-high",
+  "color": "#F59E0B",
+  "category": "audio"
+}

@@ -1,0 +1,8 @@
+{
+  "slug": "ai-session",
+  "displayName": "AI Session",
+  "description": "AI coding sessions and inference",
+  "icon": "fa-regular fa-square-terminal",
+  "color": "#EC4899",
+  "category": "ai"
+}

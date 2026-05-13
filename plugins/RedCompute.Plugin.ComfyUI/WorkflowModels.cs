@@ -1,8 +1,26 @@
 using System.IO;
 using System.Text.Json;
-using RedCompute.Core.ComfyUI;
 
-namespace RedCompute.Providers.ComfyUI;
+namespace RedCompute.Plugin.ComfyUI;
+
+public class WorkflowParameter
+{
+    public required string Name { get; init; }
+    public required string NodeId { get; init; }
+    public required string Field { get; init; }
+    public object? Default { get; init; }
+}
+
+public class WorkflowDefinition
+{
+    public required string Name { get; init; }
+    public required string FileName { get; init; }
+    public required string FilePath { get; init; }
+    public string Description { get; init; } = "";
+    public string MediaType { get; init; } = "image";
+    public required string OutputNode { get; init; }
+    public required List<WorkflowParameter> Parameters { get; init; }
+}
 
 public class WorkflowLoader
 {

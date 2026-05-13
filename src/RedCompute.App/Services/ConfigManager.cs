@@ -83,6 +83,25 @@ public class ConfigManager
                 { existingProvider.HealthEndpoint = defaultProvider.HealthEndpoint; dirty = true; }
             }
         }
+        // Migrate LocalWsl → specialized provider types for TTS/STT
+        var typeMigrations = new Dictionary<string, Dictionary<string, string>>
+        {
+            ["tts"] = new() { ["LocalWsl"] = "TtsLocal", ["LocalNative"] = "TtsLocal" },
+            ["stt"] = new() { ["LocalWsl"] = "SttLocal", ["LocalNative"] = "SttLocal" }
+        };
+        foreach (var (slug, migrations) in typeMigrations)
+        {
+            if (!Config.Capabilities.TryGetValue(slug, out var cap)) continue;
+            foreach (var (_, provider) in cap.Providers)
+            {
+                if (migrations.TryGetValue(provider.Type, out var newType))
+                {
+                    provider.Type = newType;
+                    dirty = true;
+                }
+            }
+        }
+
         foreach (var slug in RemovedCapabilities)
         {
             if (Config.Capabilities.Remove(slug))
@@ -105,7 +124,7 @@ public class ConfigManager
                     {
                         ["local-wsl"] = new()
                         {
-                            Type = "LocalWsl",
+                            Type = "TtsLocal",
                             WslDistro = "Ubuntu-24.04",
                             VenvPath = "~/tts-env",
                             ServerPath = @"T:\Projects\Qwen3-TTS\qwen3-tts-server",
@@ -124,7 +143,7 @@ public class ConfigManager
                     {
                         ["local-wsl"] = new()
                         {
-                            Type = "LocalWsl",
+                            Type = "SttLocal",
                             WslDistro = "Ubuntu-24.04",
                             VenvPath = "~/stt-env",
                             ServerPath = @"T:\Projects\faster-whisper-server",

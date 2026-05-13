@@ -5,7 +5,9 @@ import { authUrl } from "@/api/auth"
 import type { JobRecord, LogEntry } from "@/api/types"
 import { AiSessionDetail } from "./ai-session-detail"
 
-const rerunnableCapabilities = new Set(["tts", "image-gen", "music-gen"])
+// Rerunnable is now driven by backend `rerunnable` field on CapabilityStatus.
+// This fallback set is used when viewing job detail without capability context.
+const fallbackRerunnableCapabilities = new Set(["tts", "image-gen", "music-gen"])
 const terminalStatuses = new Set(["Completed", "Failed", "Cancelled"])
 
 const statusBadgeColor: Record<string, string> = {
@@ -16,7 +18,7 @@ const statusBadgeColor: Record<string, string> = {
   Cancelled: "bg-text-disabled/20 text-text-disabled border-text-disabled/30",
 }
 
-const capLabels: Record<string, string> = {
+const fallbackCapLabels: Record<string, string> = {
   tts: "Text-to-Speech",
   stt: "Speech-to-Text",
   "image-gen": "Image Generation",
@@ -82,7 +84,7 @@ function MediaJobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId:
   const [showParams, setShowParams] = useState(false)
   const [rerunning, setRerunning] = useState(false)
 
-  const canRerun = rerunnableCapabilities.has(job.capabilitySlug) && terminalStatuses.has(job.status)
+  const canRerun = fallbackRerunnableCapabilities.has(job.capabilitySlug) && terminalStatuses.has(job.status)
 
   const handleRerun = useCallback(async () => {
     setRerunning(true)
@@ -142,7 +144,7 @@ function MediaJobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId:
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <h2 className="text-lg font-medium">{job.name || capLabels[job.capabilitySlug] || job.capabilitySlug}</h2>
+        <h2 className="text-lg font-medium">{job.name || fallbackCapLabels[job.capabilitySlug] || job.capabilitySlug}</h2>
         <Badge variant="outline" className={statusBadgeColor[job.status]}>{job.status}</Badge>
         <span className="ml-auto" />
         {canRerun && (
@@ -298,7 +300,7 @@ function MediaJobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId:
           <Card className="bg-surface-base border-border-subtle mt-2">
             <CardContent className="p-4 space-y-2 text-sm">
               <Row label="ID" value={job.id} mono />
-              <Row label="Capability" value={capLabels[job.capabilitySlug] || job.capabilitySlug} />
+              <Row label="Capability" value={fallbackCapLabels[job.capabilitySlug] || job.capabilitySlug} />
               <Row label="Provider" value={job.providerName} />
               <Row label="Queued" value={new Date(job.queuedAt).toLocaleString()} />
               {job.startedAt && <Row label="Started" value={new Date(job.startedAt).toLocaleString()} />}

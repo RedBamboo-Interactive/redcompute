@@ -32,6 +32,9 @@ public class TunnelConfig
 
 public class CapabilityConfig
 {
+    public string? DisplayName { get; set; }
+    public string? Icon { get; set; }
+    public string? Color { get; set; }
     public string? ActiveProvider { get; set; }
     public Dictionary<string, ProviderConfig> Providers { get; set; } = new();
 }

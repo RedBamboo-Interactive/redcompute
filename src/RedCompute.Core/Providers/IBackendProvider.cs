@@ -1,4 +1,3 @@
-using RedCompute.Core.Capabilities;
 using RedCompute.Core.Jobs;
 
 namespace RedCompute.Core.Providers;
@@ -6,7 +5,7 @@ namespace RedCompute.Core.Providers;
 public interface IBackendProvider : IAsyncDisposable
 {
     string Name { get; }
-    CapabilityType Capability { get; }
+    string CapabilitySlug { get; }
     Task<bool> StartAsync(CancellationToken ct = default);
     Task StopAsync(CancellationToken ct = default);
     Task<BackendStatus> GetStatusAsync(CancellationToken ct = default);

@@ -1,0 +1,8 @@
+{
+  "slug": "image-gen",
+  "displayName": "Image Generation",
+  "description": "Generate images and videos from text prompts",
+  "icon": "fa-solid fa-image",
+  "color": "#26A69A",
+  "category": "generation"
+}

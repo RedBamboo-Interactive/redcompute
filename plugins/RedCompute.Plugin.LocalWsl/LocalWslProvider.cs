@@ -1,16 +1,18 @@
 using System.Diagnostics;
 using System.Net.Http;
-using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
-namespace RedCompute.Providers.Local;
+namespace RedCompute.Plugin.LocalWsl;
 
-public class LocalWslProvider : IBackendProvider
+public class LocalWslProvider : IPluginProvider
 {
     private readonly ProviderConfig _config;
-    private readonly CapabilityType _capability;
+    private readonly string _capabilitySlug;
+    private readonly string _providerType;
     private readonly Action<string> _log;
     private Process? _process;
     private BackendStatus _status = BackendStatus.Stopped;
@@ -19,14 +21,23 @@ public class LocalWslProvider : IBackendProvider
     private string? _backendHost;
     private static readonly HttpClient HealthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
 
+    public static string ProviderTypeName => "LocalWsl";
     public string Name => "Local WSL";
-    public CapabilityType Capability => _capability;
+    public string DisplayName => "Local WSL";
+    public string ProviderType => _providerType;
+    public string CapabilitySlug => _capabilitySlug;
+    public bool IsProxy => true;
+    public bool SupportsProgress => false;
+    public bool SupportsRerun => true;
+    public Dictionary<string, ParameterSchema> InputParameters => new();
+    public ReturnSchema OutputSchema => new ReturnSchema { ContentType = "application/octet-stream", Streaming = false };
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(5);
 
-    public LocalWslProvider(ProviderConfig config, CapabilityType capability, Action<string> log)
+    public LocalWslProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
     {
         _config = config;
-        _capability = capability;
+        _capabilitySlug = capabilitySlug;
+        _providerType = config.Type; // "LocalWsl" or "LocalNative"
         _log = log;
     }
 
@@ -149,7 +160,7 @@ public class LocalWslProvider : IBackendProvider
         if (_config.WslDistro != null)
         {
             var venvActivate = _config.VenvPath != null ? $"source {_config.VenvPath}/bin/activate && " : "";
-            var serverPath = ConvertToWslPath(_config.ServerPath ?? ".");
+            var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
             var command = $"{venvActivate}cd {serverPath} && python3 server.py";
 
             return new ProcessStartInfo
@@ -211,18 +222,5 @@ public class LocalWslProvider : IBackendProvider
         {
             return null;
         }
-    }
-
-    private static string ConvertToWslPath(string windowsPath)
-    {
-        if (string.IsNullOrEmpty(windowsPath)) return windowsPath;
-        // T:\Projects\Foo → /mnt/t/Projects/Foo
-        if (windowsPath.Length >= 2 && windowsPath[1] == ':')
-        {
-            var drive = char.ToLower(windowsPath[0]);
-            var rest = windowsPath[2..].Replace('\\', '/');
-            return $"/mnt/{drive}{rest}";
-        }
-        return windowsPath.Replace('\\', '/');
     }
 }

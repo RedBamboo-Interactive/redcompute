@@ -1,0 +1,8 @@
+{
+  "slug": "music-gen",
+  "displayName": "Music Generation",
+  "description": "Generate music from text descriptions",
+  "icon": "fa-solid fa-music",
+  "color": "#8B5CF6",
+  "category": "audio"
+}

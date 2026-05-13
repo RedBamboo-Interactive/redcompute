@@ -310,7 +310,7 @@ public static class OpenApiEndpoints
                     ["requestBody"] = RequestBody(BuildGenerateBody(registry, "tts", new Dictionary<string, object>
                     {
                         ["text"] = Prop("string", "Text to synthesize"),
-                        ["voice"] = PropEnum("Speaker voice name", "Serena", TtsVoiceDiscovery.AllVoices(registry).ToArray()),
+                        ["voice"] = PropEnum("Speaker voice name", "Serena", "Serena", "Aiden", "Ryan", "Vivian"),
                         ["language"] = PropEnum("Language for synthesis", "English", "English", "Chinese", "French", "Japanese", "Korean"),
                         ["emotion"] = PropEnum("Emotional tone", "neutral", "neutral", "excited", "happy", "sad", "angry", "sarcastic", "curious", "confident"),
                         ["instruct"] = Prop("string", "Natural language instruction for voice style (overrides emotion)"),

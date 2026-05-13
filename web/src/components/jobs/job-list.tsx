@@ -9,7 +9,7 @@ const statusColor: Record<string, string> = {
   Cancelled: "#727C7D",
 }
 
-const capIcons: Record<string, string> = {
+const fallbackCapIcons: Record<string, string> = {
   tts: "fa-solid fa-volume-high",
   stt: "fa-solid fa-microphone",
   "image-gen": "fa-solid fa-image",
@@ -49,7 +49,7 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
           >
             {/* Capability icon — color = status */}
             <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0">
-              <i className={`${capIcons[job.capabilitySlug] || "fa-solid fa-cog"} text-xs`}
+              <i className={`${fallbackCapIcons[job.capabilitySlug] || "fa-solid fa-cube"} text-xs`}
                 style={{ color: statusColor[job.status] || "#6B6F77" }} />
             </div>
 
