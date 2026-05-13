@@ -1,4 +1,5 @@
 using System.Windows;
+using RedBamboo.AppHost.Logging;
 using RedBamboo.AppHost.Tray;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Data;
@@ -19,7 +20,14 @@ public partial class App : Application
     private RelayServer? _relayServer;
     private RedBamboo.AppHost.Tray.TrayIconManager? _trayIcon;
 
-    public static FileLoggerService FileLogger { get; } = new();
+    public static SqliteLogPersistence LogPersistence { get; } = new();
+    public static LogService LogService { get; } = new(new LogServiceOptions
+    {
+        Source = "redcompute",
+        BufferCapacity = 4096,
+        Persistence = LogPersistence,
+    });
+    public static FileLogger FileLogger { get; } = new("RedCompute");
     public static LoggingService Logger { get; private set; } = null!;
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();
@@ -44,7 +52,8 @@ public partial class App : Application
 
         InitializeDatabase();
 
-        Logger = new LoggingService(FileLogger);
+        FileLogger.AttachTo(LogService);
+        Logger = new LoggingService(LogService);
 
         ConfigManager.Load();
         Log("[App] Configuration loaded");
@@ -99,7 +108,8 @@ public partial class App : Application
             await _relayServer.StopAsync();
         await Registry.StopAll();
         Logger.Dispose();
-        FileLogger.Dispose();
+        LogPersistence.Dispose();
+        await FileLogger.DisposeAsync();
         _trayIcon?.Dispose();
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();
@@ -266,9 +276,7 @@ public partial class App : Application
         }
         else
         {
-            var timestamped = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
-            Console.WriteLine(timestamped);
-            FileLogger.Write(timestamped);
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {message}");
         }
     }
 }

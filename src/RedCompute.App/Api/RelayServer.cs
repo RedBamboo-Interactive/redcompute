@@ -10,6 +10,7 @@ using Microsoft.Extensions.Hosting;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Extensions;
+using RedBamboo.AppHost.Logging;
 using RedBamboo.AppHost.RemoteAccess;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Api.Endpoints;
@@ -105,7 +106,7 @@ public class RelayServer
         WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService, _hardwareMonitor);
         HardwareEndpoints.Map(_app, _hardwareMonitor);
         ClaudeSessionEndpoints.Map(_app, _claudeService, _jobTracker, _log);
-        var descriptor = new RedComputeServiceDescriptor(_config, _registry, _claudeService);
+        var descriptor = new RedComputeServiceDescriptor(_config, _registry, _claudeService, App.LogService);
         _app.MapAppHostEndpoints(descriptor, _tunnelService, "RedCompute", () => new RedBamboo.AppHost.Tunnel.TunnelConfig
         {
             Enabled = _config.Tunnel.Enabled,
@@ -113,7 +114,7 @@ public class RelayServer
             Hostname = _config.Tunnel.Hostname,
             CloudflaredPath = _config.Tunnel.CloudflaredPath,
             AccessToken = _config.Tunnel.AccessToken,
-        });
+        }, App.LogService);
         SettingsEndpoints.Map(_app, _configManager, _tunnelService, _registry);
 
         if (Directory.Exists(webRoot))

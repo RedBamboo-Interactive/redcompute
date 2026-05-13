@@ -36,13 +36,18 @@ public static class GlobalEndpoints
                 {
                     slug,
                     entry.Definition.DisplayName,
-                    entry.Definition.Type,
+                    type = slug,
                     status = defaultStatus.ToString(),
                     provider = entry.ActiveProvider?.Name,
                     defaultProvider = entry.DefaultProviderName,
                     providers = providerStatuses,
                     sleeping = entry.IsSleeping,
-                    disabled = entry.IsManuallyDisabled
+                    disabled = entry.IsManuallyDisabled,
+                    icon = entry.Definition.Icon,
+                    color = entry.Definition.Color,
+                    description = entry.Definition.Description,
+                    category = entry.Definition.Category,
+                    rerunnable = entry.ActiveProvider is IPluginProvider pp && pp.SupportsRerun
                 });
             }
 
@@ -143,15 +148,11 @@ public static class GlobalEndpoints
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
 
-            var generatePath = job.CapabilitySlug switch
-            {
-                "tts" => "/tts/generate",
-                "image-gen" => "/image-gen/generate",
-                "music-gen" => "/music-gen/generate",
-                _ => (string?)null
-            };
-            if (generatePath == null)
+            var entry = registry.Get(job.CapabilitySlug);
+            var canRerun = entry?.ActiveProvider is IPluginProvider pp && pp.SupportsRerun;
+            if (!canRerun)
                 return Results.BadRequest(new { error = "not_rerunnable", message = $"Cannot rerun '{job.CapabilitySlug}' jobs" });
+            var generatePath = $"/{job.CapabilitySlug}/generate";
 
             var inputDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(job.InputJson) ?? new();
             inputDict["name"] = $"Rerun: {job.Name ?? job.CapabilitySlug}";
@@ -218,7 +219,7 @@ public static class GlobalEndpoints
                 {
                     slug,
                     entry.Definition.DisplayName,
-                    type = entry.Definition.Type.ToString(),
+                    type = slug,
                     activeJobs = active.Count,
                     queuedJobs = queued.Count,
                     completedInWindow = completed.Count,
@@ -349,34 +350,6 @@ public static class GlobalEndpoints
             });
         });
 
-        app.MapGet("/logs", (string? tag, string? search, string? since, string? until, Guid? jobId, string? level, int? limit, int? offset) =>
-        {
-            DateTime? sinceDate = since != null ? DateTime.Parse(since).ToUniversalTime() : null;
-            DateTime? untilDate = until != null ? DateTime.Parse(until).ToUniversalTime() : null;
-            bool? errorsOnly = level == "error" ? true : null;
-
-            var (entries, totalCount) = App.Logger.QueryLogs(tag, search, sinceDate, untilDate, jobId, errorsOnly, limit ?? 100, offset ?? 0);
-
-            return Results.Ok(new
-            {
-                totalCount,
-                returnedCount = entries.Count,
-                offset = offset ?? 0,
-                entries = entries.Select(l => new
-                {
-                    l.Id,
-                    timestamp = l.Timestamp.ToString("O"),
-                    l.Tag,
-                    l.TagCategory,
-                    l.Message,
-                    fullMessage = l.FullMessage,
-                    l.IsMultiline,
-                    l.IsError,
-                    l.JobId
-                })
-            });
-        });
-
         app.MapGet("/logs/tags", () =>
         {
             var tagDefs = LogEntryParser.GetTagDefinitions();
@@ -393,30 +366,6 @@ public static class GlobalEndpoints
             return Results.Ok(new { tags });
         });
 
-        app.MapGet("/logs/summary", () =>
-        {
-            var since = DateTime.Now.Date;
-            var (entries, totalCount) = App.Logger.QueryLogs(since: since, limit: 10000);
-            var errorCount = entries.Count(e => e.IsError);
-            var byTag = entries.Where(e => e.Tag != "").GroupBy(e => e.Tag)
-                .ToDictionary(g => g.Key, g => g.Count());
-            var recentErrors = entries.Where(e => e.IsError).Take(10).Select(e => new
-            {
-                timestamp = e.Timestamp.ToString("O"),
-                e.Tag,
-                e.Message,
-                e.JobId
-            });
-
-            return Results.Ok(new
-            {
-                since = since.ToString("O"),
-                totalEntries = totalCount,
-                errorCount,
-                byTag,
-                recentErrors
-            });
-        });
     }
 
     private static DateTimeOffset _startTime;

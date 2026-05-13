@@ -1,4 +1,5 @@
 using RedBamboo.AppHost.Discovery;
+using RedBamboo.AppHost.Logging;
 using RedCompute.App.Services.Claude;
 using RedCompute.Core.Configuration;
 
@@ -9,12 +10,14 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
     private readonly RedComputeConfig _config;
     private readonly CapabilityRegistry _registry;
     private readonly ClaudeSessionService _claude;
+    private readonly LogService? _logService;
 
-    public RedComputeServiceDescriptor(RedComputeConfig config, CapabilityRegistry registry, ClaudeSessionService claude)
+    public RedComputeServiceDescriptor(RedComputeConfig config, CapabilityRegistry registry, ClaudeSessionService claude, LogService? logService = null)
     {
         _config = config;
         _registry = registry;
         _claude = claude;
+        _logService = logService;
     }
 
     public string ServiceName => "RedCompute";
@@ -32,6 +35,8 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
                 : "Stopped";
             caps.Add(new CapabilityDescriptor(slug, entry.Definition.DisplayName, status));
         }
+        if (_logService is not null)
+            caps.Add(LogEndpoints.GetLogCapabilityDescriptor(_logService));
         return caps;
     }
 
