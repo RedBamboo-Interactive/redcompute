@@ -7,7 +7,6 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
-using RedCompute.Core.Claude;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
 
@@ -129,7 +128,6 @@ public partial class App : Application
         var extraServices = new object?[]
         {
             (IJobTracker)JobTracker,
-            (IClaudeSessionStore)new ClaudeSessionStore(),
             (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),
         };
 

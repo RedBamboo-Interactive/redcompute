@@ -1,33 +1,31 @@
-using RedCompute.Core.Claude;
-
-namespace RedCompute.App.Data;
+namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeSessionStore : IClaudeSessionStore
 {
     public ClaudeSessionRecord? FindSession(string sessionId)
     {
-        using var db = new RedComputeDbContext();
-        return db.ClaudeSessions.Find(sessionId);
+        using var db = new ClaudeDbContext();
+        return db.Sessions.Find(sessionId);
     }
 
     public ClaudeSessionRecord? FindSessionByJobId(Guid jobId)
     {
-        using var db = new RedComputeDbContext();
-        return db.ClaudeSessions.FirstOrDefault(s => s.JobId == jobId);
+        using var db = new ClaudeDbContext();
+        return db.Sessions.FirstOrDefault(s => s.JobId == jobId);
     }
 
     public List<ClaudeSessionRecord> GetActiveSessions()
     {
-        using var db = new RedComputeDbContext();
-        return db.ClaudeSessions
+        using var db = new ClaudeDbContext();
+        return db.Sessions
             .Where(s => s.Status == "Active" || s.Status == "Idle" || s.Status == "Starting")
             .ToList();
     }
 
     public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20)
     {
-        using var db = new RedComputeDbContext();
-        return db.ClaudeSessions
+        using var db = new ClaudeDbContext();
+        return db.Sessions
             .Where(s => !excludeIds.Contains(s.Id) && !s.Dismissed)
             .OrderByDescending(s => s.StartedAt)
             .Take(limit)
@@ -36,8 +34,8 @@ public class ClaudeSessionStore : IClaudeSessionStore
 
     public void SaveSession(ClaudeSessionRecord record)
     {
-        using var db = new RedComputeDbContext();
-        var existing = db.ClaudeSessions.Find(record.Id);
+        using var db = new ClaudeDbContext();
+        var existing = db.Sessions.Find(record.Id);
         if (existing != null)
         {
             existing.ProjectName = record.ProjectName;
@@ -61,15 +59,15 @@ public class ClaudeSessionStore : IClaudeSessionStore
         }
         else
         {
-            db.ClaudeSessions.Add(record);
+            db.Sessions.Add(record);
         }
         db.SaveChanges();
     }
 
     public void DismissSession(string sessionId)
     {
-        using var db = new RedComputeDbContext();
-        var record = db.ClaudeSessions.Find(sessionId);
+        using var db = new ClaudeDbContext();
+        var record = db.Sessions.Find(sessionId);
         if (record != null)
         {
             record.Dismissed = true;
@@ -79,23 +77,23 @@ public class ClaudeSessionStore : IClaudeSessionStore
 
     public void AddMessage(ClaudeMessageRecord message)
     {
-        using var db = new RedComputeDbContext();
-        db.ClaudeMessages.Add(message);
+        using var db = new ClaudeDbContext();
+        db.Messages.Add(message);
         db.SaveChanges();
     }
 
     public void AddMessages(List<ClaudeMessageRecord> messages)
     {
         if (messages.Count == 0) return;
-        using var db = new RedComputeDbContext();
-        db.ClaudeMessages.AddRange(messages);
+        using var db = new ClaudeDbContext();
+        db.Messages.AddRange(messages);
         db.SaveChanges();
     }
 
     public List<ClaudeMessageRecord> GetMessages(string sessionId, int limit = 50_000)
     {
-        using var db = new RedComputeDbContext();
-        return db.ClaudeMessages
+        using var db = new ClaudeDbContext();
+        return db.Messages
             .Where(m => m.SessionId == sessionId)
             .OrderByDescending(m => m.Id)
             .Take(limit)
@@ -106,8 +104,8 @@ public class ClaudeSessionStore : IClaudeSessionStore
 
     public DateTimeOffset GetLastMessageTimestamp(string sessionId)
     {
-        using var db = new RedComputeDbContext();
-        return db.ClaudeMessages
+        using var db = new ClaudeDbContext();
+        return db.Messages
             .Where(m => m.SessionId == sessionId)
             .OrderByDescending(m => m.Timestamp)
             .Select(m => m.Timestamp)
@@ -117,8 +115,8 @@ public class ClaudeSessionStore : IClaudeSessionStore
     public Dictionary<Guid, string> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds)
     {
         var jobIdSet = new HashSet<Guid>(jobIds);
-        using var db = new RedComputeDbContext();
-        return db.ClaudeSessions
+        using var db = new ClaudeDbContext();
+        return db.Sessions
             .Where(s => s.JobId != null && jobIdSet.Contains(s.JobId.Value))
             .Select(s => new { s.JobId, s.Status })
             .ToList()

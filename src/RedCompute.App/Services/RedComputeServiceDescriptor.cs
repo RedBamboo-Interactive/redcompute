@@ -61,7 +61,6 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
             new("POST", "/jobs/{id}/rerun", "Rerun a completed job"),
             new("GET", "/hardware", "GPU/CPU hardware metrics"),
             new("GET", "/settings", "Current settings including tunnel config"),
-            new("GET", "/claude/sessions", "List Claude Code sessions"),
         };
     }
 

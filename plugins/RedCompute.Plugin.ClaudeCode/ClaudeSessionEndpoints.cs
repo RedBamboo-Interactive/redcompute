@@ -2,7 +2,6 @@ using System.Net.Http;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using RedCompute.Core.Claude;
 using RedCompute.Core.Discovery;
 using RedCompute.PluginSdk;
 

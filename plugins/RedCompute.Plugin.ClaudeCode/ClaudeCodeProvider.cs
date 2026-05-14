@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
-using RedCompute.Core.Claude;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
@@ -28,15 +27,16 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
     public bool SupportsRerun => false;
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
-        IJobTracker jobTracker, IClaudeSessionStore sessionStore,
-        Action<string, Guid?> log)
+        IJobTracker jobTracker, Action<string, Guid?> log)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
         _jobTracker = jobTracker;
 
+        using (var db = new ClaudeDbContext()) { db.Initialize(); }
+        var store = new ClaudeSessionStore();
         var claudeConfig = BuildConfig(config);
-        _claude = new ClaudeSessionService(claudeConfig, jobTracker, sessionStore, log);
+        _claude = new ClaudeSessionService(claudeConfig, jobTracker, store, log);
 
         _claude.SessionCreated += session => PluginEvent?.Invoke("claude.session.created", session);
         _claude.SessionUpdated += session => PluginEvent?.Invoke("claude.session.updated", session);
