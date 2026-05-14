@@ -4,17 +4,17 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Helpers;
 using RedCompute.App.Services;
-using RedCompute.Plugin.ClaudeCode;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Claude;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
 
 public static class GlobalEndpoints
 {
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, ClaudeSessionService? claudeService = null)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
     {
         app.MapGet("/status", async () =>
         {
@@ -67,15 +67,18 @@ public static class GlobalEndpoints
 
             var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, caller, search, limit ?? 50, offset ?? 0);
 
-            var sessionStatuses = new Dictionary<Guid, SessionStatus>();
-            if (claudeService != null)
+            var sessionStatuses = new Dictionary<Guid, string>();
+            var aiSessionJobIds = jobs
+                .Where(j => j.CapabilitySlug == "ai-session" && j.Status == JobStatus.Running)
+                .Select(j => j.Id)
+                .ToList();
+            if (aiSessionJobIds.Count > 0)
             {
-                var aiSessionJobIds = jobs
-                    .Where(j => j.CapabilitySlug == "ai-session" && j.Status == JobStatus.Running)
-                    .Select(j => j.Id)
-                    .ToList();
-                if (aiSessionJobIds.Count > 0)
-                    sessionStatuses = claudeService.GetSessionStatusesByJobIds(aiSessionJobIds);
+                foreach (var ext in registry.FindProviders<IJobExtendedProvider>())
+                {
+                    foreach (var (k, v) in ext.GetJobSubStatuses(aiSessionJobIds))
+                        sessionStatuses[k] = v;
+                }
             }
 
             return Results.Ok(new
@@ -94,7 +97,7 @@ public static class GlobalEndpoints
                     j.CallerInfo,
                     j.Name,
                     j.Rationale,
-                    sessionStatus = sessionStatuses.TryGetValue(j.Id, out var ss) ? ss.ToString() : (string?)null
+                    sessionStatus = sessionStatuses.TryGetValue(j.Id, out var ss) ? ss : (string?)null
                 }),
                 total = totalCount
             });
@@ -137,7 +140,8 @@ public static class GlobalEndpoints
                 return Results.BadRequest(new { error = "invalid_state", message = "Job already finished" });
 
             jobTracker.MarkCancelled(id);
-            claudeService?.CancelExecution(id.ToString());
+            foreach (var ext in registry.FindProviders<IJobExtendedProvider>())
+                ext.CancelJob(id.ToString());
             return Results.Ok(new { id, status = "Cancelled" });
         });
 

@@ -1,5 +1,4 @@
 using RedCompute.Core.Claude;
-using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Data;
 
@@ -123,7 +122,6 @@ public class ClaudeSessionStore : IClaudeSessionStore
             .Where(s => s.JobId != null && jobIdSet.Contains(s.JobId.Value))
             .Select(s => new { s.JobId, s.Status })
             .ToList()
-            .Where(r => r.JobId.HasValue)
             .ToDictionary(r => r.JobId!.Value, r => r.Status);
     }
 }

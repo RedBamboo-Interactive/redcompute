@@ -1,6 +1,5 @@
 using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Logging;
-using RedCompute.Plugin.ClaudeCode;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 
@@ -10,14 +9,12 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
 {
     private readonly RedComputeConfig _config;
     private readonly CapabilityRegistry _registry;
-    private readonly ClaudeSessionService _claude;
     private readonly LogService? _logService;
 
-    public RedComputeServiceDescriptor(RedComputeConfig config, CapabilityRegistry registry, ClaudeSessionService claude, LogService? logService = null)
+    public RedComputeServiceDescriptor(RedComputeConfig config, CapabilityRegistry registry, LogService? logService = null)
     {
         _config = config;
         _registry = registry;
-        _claude = claude;
         _logService = logService;
     }
 

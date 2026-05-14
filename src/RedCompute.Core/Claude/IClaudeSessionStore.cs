@@ -1,6 +1,4 @@
-using RedCompute.Core.Claude;
-
-namespace RedCompute.PluginSdk;
+namespace RedCompute.Core.Claude;
 
 public interface IClaudeSessionStore
 {

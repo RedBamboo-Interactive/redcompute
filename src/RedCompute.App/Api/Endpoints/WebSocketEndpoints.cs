@@ -7,12 +7,12 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Services;
-using RedCompute.Plugin.ClaudeCode;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Logging;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
 
@@ -27,7 +27,7 @@ public static class WebSocketEndpoints
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, CloudflareTunnelService tunnelService, ClaudeSessionService claudeService, HardwareMonitorService hardwareMonitor)
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger, CloudflareTunnelService tunnelService, HardwareMonitorService hardwareMonitor)
     {
         jobTracker.JobCreated += job => Broadcast("job.created", job);
         jobTracker.JobUpdated += job => Broadcast("job.updated", job);
@@ -39,10 +39,9 @@ public static class WebSocketEndpoints
             error
         });
 
-        claudeService.SessionCreated += session => Broadcast("claude.session.created", session);
-        claudeService.SessionUpdated += session => Broadcast("claude.session.updated", session);
-        claudeService.SessionEnded += (id, reason) => Broadcast("claude.session.ended", new { id, reason });
-        claudeService.StreamEvent += (sessionId, evt) => Broadcast("claude.stream", new { sessionId, @event = evt });
+        foreach (var source in registry.FindProviders<IPluginEventSource>())
+            source.PluginEvent += (type, data) => Broadcast(type, data);
+
         hardwareMonitor.SnapshotUpdated += snapshot => Broadcast("hardware.snapshot", snapshot);
 
         _ = PollCapabilityStatus(registry);

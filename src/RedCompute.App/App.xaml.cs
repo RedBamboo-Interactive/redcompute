@@ -7,8 +7,8 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
+using RedCompute.Core.Claude;
 using RedCompute.Core.Providers;
-using RedCompute.Plugin.ClaudeCode;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App;
@@ -36,7 +36,6 @@ public partial class App : Application
     public static JobTrackingService JobTracker { get; } = new();
     public static CloudflareTunnelService TunnelService { get; } = new(logger: null);
     public static HardwareMonitorService HardwareMonitor { get; } = new();
-    public static ClaudeSessionService ClaudeService { get; private set; } = null!;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -61,9 +60,6 @@ public partial class App : Application
         var recovered = JobTracker.RecoverOrphanedJobs();
         if (recovered > 0)
             Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");
-
-        var sessionStore = new ClaudeSessionStore();
-        ClaudeService = new ClaudeSessionService(ConfigManager.Config.Claude, JobTracker, sessionStore, (msg, jobId) => Log(msg, jobId));
 
         ProviderDiscovery = new ProviderDiscovery(s => Log(s));
         ProviderDiscovery.ScanAssemblies();
@@ -97,7 +93,6 @@ public partial class App : Application
     protected override async void OnExit(ExitEventArgs e)
     {
         HardwareMonitor.Dispose();
-        await ClaudeService.StopAllAsync();
         await TunnelService.DisposeAsync();
         _relayCts?.Cancel();
         if (_relayServer != null)
@@ -153,7 +148,13 @@ public partial class App : Application
             ConfigManager.Save();
         }
 
-        var extraServices = new object?[] { ClaudeService, (IJobTracker)JobTracker };
+        var extraServices = new object?[]
+        {
+            ConfigManager.Config.Claude,
+            (IJobTracker)JobTracker,
+            (IClaudeSessionStore)new ClaudeSessionStore(),
+            (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),
+        };
 
         foreach (var (slug, capConfig) in config.Capabilities)
         {
@@ -226,7 +227,7 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, ClaudeService, HardwareMonitor, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, HardwareMonitor, (msg, jobId) => Log(msg, jobId));
 
         try
         {

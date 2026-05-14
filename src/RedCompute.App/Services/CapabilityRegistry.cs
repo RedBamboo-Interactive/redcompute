@@ -54,6 +54,14 @@ public class CapabilityRegistry
         return await entry.ActiveProvider.GetStatusAsync();
     }
 
+    public IEnumerable<T> FindProviders<T>() where T : class
+    {
+        foreach (var entry in _capabilities.Values)
+            foreach (var provider in entry.Providers.Values)
+                if (provider is T t)
+                    yield return t;
+    }
+
     public async Task StopAll()
     {
         foreach (var entry in _capabilities.Values)

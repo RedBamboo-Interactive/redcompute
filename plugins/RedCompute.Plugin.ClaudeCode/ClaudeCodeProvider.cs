@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Builder;
+using RedCompute.Core.Claude;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
@@ -7,12 +8,14 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
-public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider
+public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
     private readonly IJobTracker _jobTracker;
-    private readonly Action<string> _log;
+    private readonly Action<string, Guid?> _log;
+
+    public event Action<string, object>? PluginEvent;
 
     public string Name => "Claude Code";
     public string CapabilitySlug => _capabilitySlug;
@@ -23,15 +26,19 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider
     public bool SupportsProgress => false;
     public bool SupportsRerun => false;
 
-    public ClaudeSessionService Claude => _claude;
-
-    public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
-        ClaudeSessionService claudeService, IJobTracker jobTracker)
+    public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
+        ClaudeConfig claudeConfig, IJobTracker jobTracker, IClaudeSessionStore sessionStore,
+        Action<string, Guid?> log)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
-        _claude = claudeService;
         _jobTracker = jobTracker;
+        _claude = new ClaudeSessionService(claudeConfig, jobTracker, sessionStore, log);
+
+        _claude.SessionCreated += session => PluginEvent?.Invoke("claude.session.created", session);
+        _claude.SessionUpdated += session => PluginEvent?.Invoke("claude.session.updated", session);
+        _claude.SessionEnded += (id, reason) => PluginEvent?.Invoke("claude.session.ended", new { id, reason });
+        _claude.StreamEvent += (sessionId, evt) => PluginEvent?.Invoke("claude.stream", new { sessionId, @event = evt });
     }
 
     public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
@@ -43,7 +50,15 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider
 
     public void MapCustomEndpoints(WebApplication app)
     {
-        ClaudeSessionEndpoints.Map(app, _claude, _jobTracker, (msg, _) => _log(msg));
+        ClaudeSessionEndpoints.Map(app, _claude, _jobTracker, _log);
+    }
+
+    public void CancelJob(string jobKey) => _claude.CancelExecution(jobKey);
+
+    public Dictionary<Guid, string> GetJobSubStatuses(IEnumerable<Guid> jobIds)
+    {
+        var statuses = _claude.GetSessionStatusesByJobIds(jobIds);
+        return statuses.ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
     }
 
     public Dictionary<string, ParameterSchema> InputParameters => new()

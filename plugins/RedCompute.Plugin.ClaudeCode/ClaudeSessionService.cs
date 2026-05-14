@@ -699,12 +699,9 @@ public class ClaudeSessionService
             return null;
         }
 
-        var args = BuildArgs();
-
         var startInfo = new ProcessStartInfo
         {
             FileName = claudePath,
-            Arguments = args,
             WorkingDirectory = projectPath,
             CreateNoWindow = true,
             UseShellExecute = false,
@@ -714,6 +711,7 @@ public class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+        PopulateSessionArgs(startInfo);
 
         Process process;
         try
@@ -818,11 +816,9 @@ public class ClaudeSessionService
             Effort = sessionRecord.Effort,
         };
 
-        var args = BuildArgs(sessionRecord.ClaudeSessionId, sessionRecord.Model, sessionRecord.Effort);
         var startInfo = new ProcessStartInfo
         {
             FileName = claudePath,
-            Arguments = args,
             WorkingDirectory = sessionRecord.ProjectPath,
             CreateNoWindow = true,
             UseShellExecute = false,
@@ -832,6 +828,7 @@ public class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+        PopulateSessionArgs(startInfo, sessionRecord.ClaudeSessionId, sessionRecord.Model, sessionRecord.Effort);
 
         Process process;
         try
@@ -1285,17 +1282,29 @@ public class ClaudeSessionService
         return null;
     }
 
-    private string BuildArgs(string? resumeClaudeSessionId = null, string? model = null, string? effort = null)
+    private void PopulateSessionArgs(ProcessStartInfo startInfo, string? resumeClaudeSessionId = null, string? model = null, string? effort = null)
     {
-        var sb = new StringBuilder("--output-format stream-json --verbose --input-format stream-json --include-partial-messages --permission-mode bypassPermissions");
+        foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
+            "--input-format", "stream-json", "--include-partial-messages",
+            "--permission-mode", "bypassPermissions" })
+            startInfo.ArgumentList.Add(arg);
+
         var m = model ?? _config.Model;
         if (m != null)
-            sb.Append($" --model {m}");
+        {
+            startInfo.ArgumentList.Add("--model");
+            startInfo.ArgumentList.Add(m);
+        }
         if (effort != null)
-            sb.Append($" --effort {effort}");
+        {
+            startInfo.ArgumentList.Add("--effort");
+            startInfo.ArgumentList.Add(effort);
+        }
         if (resumeClaudeSessionId != null)
-            sb.Append($" --resume {resumeClaudeSessionId}");
-        return sb.ToString();
+        {
+            startInfo.ArgumentList.Add("--resume");
+            startInfo.ArgumentList.Add(resumeClaudeSessionId);
+        }
     }
 
     private async Task ReadStdout(ManagedSession session)
@@ -1750,7 +1759,8 @@ public class ClaudeSessionService
     {
         try
         {
-            await process.WaitForExitAsync(new CancellationTokenSource(timeout).Token);
+            using var cts = new CancellationTokenSource(timeout);
+            await process.WaitForExitAsync(cts.Token);
             return true;
         }
         catch { return false; }
@@ -1792,28 +1802,6 @@ public class ClaudeSessionService
         {
             _log($"[Claude] Failed to persist session record: {ex.Message}", null);
         }
-    }
-
-    private void PersistCompleteAssistantBlocks(string line, string sessionId)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("type", out var t) && t.GetString() != "assistant") return;
-            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) return;
-
-            var msgId = msg.TryGetProperty("id", out var mid) ? mid.GetString() : null;
-            foreach (var block in content.EnumerateArray())
-            {
-                var bt = block.TryGetProperty("type", out var btp) ? btp.GetString() : null;
-                if (bt == "thinking" && block.TryGetProperty("thinking", out var th) && !string.IsNullOrEmpty(th.GetString()))
-                    PersistMessage(sessionId, "assistant", "thinking", th.GetString(), null, null, null, msgId);
-                else if (bt == "text" && block.TryGetProperty("text", out var txt) && !string.IsNullOrEmpty(txt.GetString()))
-                    PersistMessage(sessionId, "assistant", "text", txt.GetString(), null, null, null, msgId);
-            }
-        }
-        catch { }
     }
 
     private void PersistMessage(string sessionId, string role, string eventType, string? content,
@@ -1875,7 +1863,7 @@ public class ClaudeSessionService
         public ClaudeSessionInfo Info { get; }
         public Process Process { get; }
         public CancellationTokenSource Cts { get; }
-        public List<object> MessageHistory { get; } = new();
+        public List<ClaudeStreamEvent> MessageHistory { get; } = new();
         public bool InterruptPending { get; set; }
         public bool RestartPending { get; set; }
         public int ControlRequestCounter { get; set; }
