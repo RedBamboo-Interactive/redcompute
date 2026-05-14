@@ -24,6 +24,8 @@ public static class GenericCapabilityEndpoints
 
         foreach (var (capSlug, _) in registry.Capabilities)
         {
+            if (capSlug == "ai-session") continue;
+
             var slug = capSlug;
 
             // POST /{slug}/generate — universal work endpoint
@@ -98,7 +100,12 @@ public static class GenericCapabilityEndpoints
 
                 if (isProxy && proxyUrl != null)
                 {
-                    var backendPath = provider is IPluginProvider proxyPlugin ? proxyPlugin.ProxyGeneratePath : "/generate";
+                    var backendPath = "/generate";
+                    if (provider is IPluginProvider proxyPlugin)
+                    {
+                        backendPath = proxyPlugin.ProxyGeneratePath;
+                        body = proxyPlugin.TransformParameters(body);
+                    }
                     try
                     {
                         await StreamingProxy.ForwardToPathAsync(ctx, proxyUrl, backendPath, body, log);
@@ -246,6 +253,8 @@ public static class GenericCapabilityEndpoints
         // Proxy catch-all: /{slug}/{**path} for providers with GetProxyTargetUrl
         foreach (var (capSlug, _) in registry.Capabilities)
         {
+            if (capSlug == "ai-session") continue;
+
             var slug = capSlug;
             app.Map($"/{slug}/{{**path}}", async (HttpContext ctx, string? path) =>
             {
