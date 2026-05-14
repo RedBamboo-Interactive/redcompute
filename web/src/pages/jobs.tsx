@@ -104,15 +104,21 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
 
   const listHeader = (
     <>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-contrast/[0.06]">
+      <div className="flex items-center justify-between px-4 py-3">
         <span className="text-[14px] font-medium text-contrast">Recent Jobs</span>
+        {hasActiveFilters && (
+          <button
+            onClick={() => onFiltersChange({})}
+            className="text-accent-teal text-[11px] hover:text-contrast transition-colors px-1.5 py-0.5 rounded hover:bg-contrast/10"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
       <FilterBar
         search={search}
         onSearch={setSearch}
         placeholder="Search jobs..."
-        hasActiveFilters={hasActiveFilters}
-        onClear={() => onFiltersChange({})}
         summary={hasActiveFilters ? `${jobs.length} of ${total} jobs` : undefined}
       >
         <FilterPillGroup
@@ -150,7 +156,6 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
 
   return (
     <MasterDetailLayout
-      sidebarWidth="w-80"
       mobileLabels={["Jobs", "Detail"]}
       mobileTab={mobileTab}
       onMobileTabChange={setMobileTab}
