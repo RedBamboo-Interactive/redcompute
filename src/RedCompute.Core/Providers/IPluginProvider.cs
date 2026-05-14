@@ -15,5 +15,6 @@ public interface IPluginProvider : IBackendProvider
 
     IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => [];
     Dictionary<string, string> ValidateParameters(Dictionary<string, object?> parameters) => new();
+    Dictionary<string, object?> TransformParameters(Dictionary<string, object?> parameters) => parameters;
     void SetProgressCallback(Action<double>? callback) { }
 }

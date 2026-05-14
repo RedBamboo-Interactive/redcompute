@@ -59,8 +59,6 @@ public static class GlobalEndpoints
             });
         });
 
-        app.MapGet("/ping", () => Results.Ok(new { ok = true, version = "0.2.0" }));
-
         app.MapGet("/jobs", (string? capability, string? status, string? caller, string? search, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;

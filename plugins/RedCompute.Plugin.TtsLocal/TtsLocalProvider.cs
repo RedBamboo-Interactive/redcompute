@@ -143,4 +143,15 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
             Description = "List available TTS voices (built-in and custom)"
         }
     ];
+
+    public Dictionary<string, object?> TransformParameters(Dictionary<string, object?> parameters)
+    {
+        // Backend expects 'speaker' not 'voice'
+        if (parameters.TryGetValue("voice", out var voice))
+        {
+            parameters["speaker"] = voice;
+            parameters.Remove("voice");
+        }
+        return parameters;
+    }
 }

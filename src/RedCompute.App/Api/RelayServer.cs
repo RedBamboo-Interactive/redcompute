@@ -100,8 +100,6 @@ public class RelayServer
 
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger, _claudeService);
-        DiscoverEndpoints.Map(_app, _config, _registry, _claudeService);
-        OpenApiEndpoints.Map(_app, _config, _registry);
         GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
         WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService, _hardwareMonitor);
         HardwareEndpoints.Map(_app, _hardwareMonitor);

@@ -2,6 +2,7 @@ using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Logging;
 using RedCompute.App.Services.Claude;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Providers;
 
 namespace RedCompute.App.Services;
 
@@ -30,10 +31,23 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
         var caps = new List<CapabilityDescriptor>();
         foreach (var (slug, entry) in _registry.Capabilities)
         {
-            var status = entry.ActiveProvider != null
-                ? (await entry.ActiveProvider.GetStatusAsync()).ToString()
-                : "Stopped";
-            caps.Add(new CapabilityDescriptor(slug, entry.Definition.DisplayName, status));
+            string status;
+            try
+            {
+                status = entry.ActiveProvider != null
+                    ? (await entry.ActiveProvider.GetStatusAsync()).ToString()
+                    : "Stopped";
+            }
+            catch { status = "Error"; }
+
+            var endpoints = BuildEndpoints(slug, entry);
+
+            caps.Add(new CapabilityDescriptor(
+                slug,
+                entry.Definition.DisplayName,
+                status,
+                Description: entry.Definition.Description,
+                Endpoints: endpoints.Count > 0 ? endpoints : null));
         }
         if (_logService is not null)
             caps.Add(LogEndpoints.GetLogCapabilityDescriptor(_logService));
@@ -45,8 +59,6 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
         return new List<EndpointDescriptor>
         {
             new("GET", "/status", "Service status with uptime and capability states"),
-            new("GET", "/discover", "Detailed service manifest with capability parameters (legacy format)"),
-            new("GET", "/openapi.json", "OpenAPI 3.1 spec (legacy detailed version)"),
             new("GET", "/jobs", "List jobs with optional filters"),
             new("GET", "/jobs/{id}", "Get job details"),
             new("POST", "/jobs/{id}/rerun", "Rerun a completed job"),
@@ -62,5 +74,57 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
         {
             capabilities = _registry.Capabilities.Count,
         });
+    }
+
+    private static List<EndpointDescriptor> BuildEndpoints(string slug, CapabilityEntry entry)
+    {
+        var endpoints = new List<EndpointDescriptor>();
+        if (entry.ActiveProvider is not IPluginProvider plugin) return endpoints;
+
+        var generateParams = plugin.InputParameters
+            .Select(kv => new ParameterDescriptor(
+                kv.Key, kv.Value.Type, kv.Value.Required,
+                kv.Value.Description, kv.Value.Default, kv.Value.Enum))
+            .ToList();
+
+        if (entry.Providers.Count > 1)
+        {
+            generateParams.Add(new ParameterDescriptor(
+                "provider", "string", false,
+                "Provider to use for this request",
+                entry.DefaultProviderName,
+                entry.Providers.Keys.ToList()));
+        }
+
+        endpoints.Add(new EndpointDescriptor(
+            "POST", $"/{slug}/generate",
+            $"Generate via {plugin.DisplayName}",
+            generateParams.Count > 0 ? generateParams : null));
+
+        endpoints.Add(new EndpointDescriptor(
+            "GET", $"/{slug}/jobs/{{id}}/output",
+            "Download the output for a completed job"));
+
+        if (plugin.SupportsProgress)
+        {
+            endpoints.Add(new EndpointDescriptor(
+                "GET", $"/{slug}/jobs/{{id}}/progress",
+                "Get real-time progress of a job"));
+        }
+
+        foreach (var custom in plugin.GetCustomEndpointManifests())
+        {
+            var customParams = custom.Parameters?
+                .Select(kv => new ParameterDescriptor(
+                    kv.Key, kv.Value.Type, kv.Value.Required,
+                    kv.Value.Description, kv.Value.Default, kv.Value.Enum))
+                .ToList();
+
+            endpoints.Add(new EndpointDescriptor(
+                custom.Method, custom.Path, custom.Description,
+                customParams is { Count: > 0 } ? customParams : null));
+        }
+
+        return endpoints;
     }
 }
