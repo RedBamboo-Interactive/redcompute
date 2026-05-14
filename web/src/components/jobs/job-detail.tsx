@@ -2,12 +2,9 @@ import { useEffect, useState, useCallback } from "react"
 import { AudioPlayer, Badge, Card, CardContent, ImageLightbox, Separator } from "@redbamboo/ui"
 import { api } from "@/api/client"
 import { authUrl } from "@/api/auth"
-import type { JobRecord, LogEntry } from "@/api/types"
+import type { CapabilityStatus, JobRecord, LogEntry } from "@/api/types"
 import { AiSessionDetail } from "./ai-session-detail"
 
-// Rerunnable is now driven by backend `rerunnable` field on CapabilityStatus.
-// This fallback set is used when viewing job detail without capability context.
-const fallbackRerunnableCapabilities = new Set(["tts", "image-gen", "music-gen"])
 const terminalStatuses = new Set(["Completed", "Failed", "Cancelled"])
 
 const statusBadgeColor: Record<string, string> = {
@@ -16,16 +13,6 @@ const statusBadgeColor: Record<string, string> = {
   Completed: "bg-accent-teal/20 text-accent-teal border-accent-teal/30",
   Failed: "bg-accent-red/20 text-accent-red border-accent-red/30",
   Cancelled: "bg-text-disabled/20 text-text-disabled border-text-disabled/30",
-}
-
-const fallbackCapLabels: Record<string, string> = {
-  tts: "Text-to-Speech",
-  stt: "Speech-to-Text",
-  "image-gen": "Image Generation",
-  "music-gen": "Music Generation",
-  "video-gen": "Video Generation",
-  llm: "LLM",
-  "ai-session": "AI Session",
 }
 
 function formatDuration(ms: number): string {
@@ -70,21 +57,21 @@ function parseClipTitles(resultJson?: string): string[] {
   }
 }
 
-export function JobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId: string) => void }) {
+export function JobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?: (newJobId: string) => void; capability?: CapabilityStatus }) {
   if (job.capabilitySlug === "ai-session") {
     return <AiSessionDetail job={job} />
   }
-  return <MediaJobDetail job={job} onRerun={onRerun} />
+  return <MediaJobDetail job={job} onRerun={onRerun} capability={capability} />
 }
 
-function MediaJobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId: string) => void }) {
+function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?: (newJobId: string) => void; capability?: CapabilityStatus }) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [clipCount, setClipCount] = useState(1)
   const [lightbox, setLightbox] = useState(false)
   const [showParams, setShowParams] = useState(false)
   const [rerunning, setRerunning] = useState(false)
 
-  const canRerun = fallbackRerunnableCapabilities.has(job.capabilitySlug) && terminalStatuses.has(job.status)
+  const canRerun = !!capability?.rerunnable && terminalStatuses.has(job.status)
 
   const handleRerun = useCallback(async () => {
     setRerunning(true)
@@ -144,7 +131,7 @@ function MediaJobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId:
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <h2 className="text-lg font-medium">{job.name || fallbackCapLabels[job.capabilitySlug] || job.capabilitySlug}</h2>
+        <h2 className="text-lg font-medium">{job.name || capability?.displayName || job.capabilitySlug}</h2>
         <Badge variant="outline" className={statusBadgeColor[job.status]}>{job.status}</Badge>
         <span className="ml-auto" />
         {canRerun && (
@@ -300,7 +287,7 @@ function MediaJobDetail({ job, onRerun }: { job: JobRecord; onRerun?: (newJobId:
           <Card className="bg-surface-base border-border-subtle mt-2">
             <CardContent className="p-4 space-y-2 text-sm">
               <Row label="ID" value={job.id} mono />
-              <Row label="Capability" value={fallbackCapLabels[job.capabilitySlug] || job.capabilitySlug} />
+              <Row label="Capability" value={capability?.displayName || job.capabilitySlug} />
               <Row label="Provider" value={job.providerName} />
               <Row label="Queued" value={new Date(job.queuedAt).toLocaleString()} />
               {job.startedAt && <Row label="Started" value={new Date(job.startedAt).toLocaleString()} />}

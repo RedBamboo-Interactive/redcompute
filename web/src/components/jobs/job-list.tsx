@@ -1,5 +1,5 @@
 import { ScrollArea } from "@redbamboo/ui"
-import type { JobRecord } from "@/api/types"
+import type { CapabilityStatus, JobRecord } from "@/api/types"
 
 const statusColor: Record<string, string> = {
   Queued: "#D4AA4F",
@@ -7,16 +7,6 @@ const statusColor: Record<string, string> = {
   Completed: "#26A69A",
   Failed: "#E55B5B",
   Cancelled: "#727C7D",
-}
-
-const fallbackCapIcons: Record<string, string> = {
-  tts: "fa-solid fa-volume-high",
-  stt: "fa-solid fa-microphone",
-  "image-gen": "fa-solid fa-image",
-  "music-gen": "fa-solid fa-music",
-  llm: "fa-solid fa-brain",
-  "video-gen": "fa-solid fa-video",
-  "ai-session": "fa-regular fa-square-terminal",
 }
 
 function timeAgo(dateStr: string): string {
@@ -27,7 +17,7 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(seconds / 86400)}d ago`
 }
 
-export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore, loading, onLoadMore }: {
+export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore, loading, onLoadMore, capMap }: {
   jobs: JobRecord[]
   selectedId: string | null
   onSelect: (job: JobRecord) => void
@@ -35,6 +25,7 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
   hasMore?: boolean
   loading?: boolean
   onLoadMore?: () => void
+  capMap?: Map<string, CapabilityStatus>
 }) {
   return (
     <ScrollArea className="h-full">
@@ -49,7 +40,7 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
           >
             {/* Capability icon — color = status */}
             <div className="w-8 h-8 rounded-lg bg-surface-base flex items-center justify-center shrink-0">
-              <i className={`${fallbackCapIcons[job.capabilitySlug] || "fa-solid fa-cube"} text-xs`}
+              <i className={`${capMap?.get(job.capabilitySlug)?.icon || "fa-solid fa-cube"} text-xs`}
                 style={{ color: statusColor[job.status] || "#6B6F77" }} />
             </div>
 

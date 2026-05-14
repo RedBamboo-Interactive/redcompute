@@ -1,15 +1,6 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@redbamboo/ui"
-import type { HardwareSnapshot, GpuInfo } from "@/api/types"
-
-const fallbackCapNames: Record<string, string> = {
-  tts: "Text to Speech",
-  stt: "Speech to Text",
-  "image-gen": "Image Generation",
-  "music-gen": "Music Generation",
-  "ai-session": "AI Session",
-  llm: "LLM",
-}
+import type { CapabilityStatus, HardwareSnapshot, GpuInfo } from "@/api/types"
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + " GB"
@@ -45,7 +36,7 @@ function MetricRow({ label, value, sub, bar }: { label: string; value: string; s
   )
 }
 
-function CapabilityVramSection({ gpu }: { gpu: GpuInfo }) {
+function CapabilityVramSection({ gpu, capNames }: { gpu: GpuInfo; capNames: Map<string, string> }) {
   const entries = Object.entries(gpu.capabilityVram || {}).sort((a, b) => b[1] - a[1])
   if (entries.length === 0) return null
 
@@ -59,7 +50,7 @@ function CapabilityVramSection({ gpu }: { gpu: GpuInfo }) {
         {entries.map(([slug, bytes]) => (
           <div key={slug}>
             <div className="flex items-baseline justify-between text-[11px] font-mono mb-0.5">
-              <span className="text-contrast/70">{fallbackCapNames[slug] || slug}</span>
+              <span className="text-contrast/70">{capNames.get(slug) || slug}</span>
               <span className="text-contrast">{formatBytes(bytes)}</span>
             </div>
             <Bar value={bytes} max={gpu.memory.totalBytes} color="#7C4DFF" />
@@ -79,7 +70,7 @@ function CapabilityVramSection({ gpu }: { gpu: GpuInfo }) {
   )
 }
 
-function GpuDetail({ gpu }: { gpu: GpuInfo }) {
+function GpuDetail({ gpu, capNames }: { gpu: GpuInfo; capNames: Map<string, string> }) {
   const shortName = gpu.name.replace(/^NVIDIA\s+/, "").replace(/GeForce\s+/, "")
   return (
     <div className="space-y-3">
@@ -92,7 +83,7 @@ function GpuDetail({ gpu }: { gpu: GpuInfo }) {
         <MetricRow label="Graphics Clock" value={`${gpu.graphicsClockMHz} MHz`} />
         <MetricRow label="Memory Clock" value={`${gpu.memoryClockMHz} MHz`} />
       </div>
-      <CapabilityVramSection gpu={gpu} />
+      <CapabilityVramSection gpu={gpu} capNames={capNames} />
       {gpu.processes.length > 0 && (
         <div className="pt-2 border-t border-contrast/[0.06]">
           <span className="text-contrast/40 text-[11px]">GPU Processes</span>
@@ -101,7 +92,7 @@ function GpuDetail({ gpu }: { gpu: GpuInfo }) {
               <div key={p.pid} className="flex items-center gap-2 text-[11px] font-mono">
                 <span className="text-contrast/60 truncate flex-1">
                   {p.processName}
-                  {p.capabilitySlug && <span className="text-[#7C4DFF] ml-1.5">{fallbackCapNames[p.capabilitySlug] || p.capabilitySlug}</span>}
+                  {p.capabilitySlug && <span className="text-[#7C4DFF] ml-1.5">{capNames.get(p.capabilitySlug) || p.capabilitySlug}</span>}
                 </span>
                 <span className="text-contrast/25">{p.pid}</span>
                 <span className="text-contrast/50 w-16 text-right">{p.usedMemoryBytes > 0 ? formatBytes(p.usedMemoryBytes) : "—"}</span>
@@ -114,9 +105,15 @@ function GpuDetail({ gpu }: { gpu: GpuInfo }) {
   )
 }
 
-export function HardwareFooter({ hardware }: { hardware: HardwareSnapshot }) {
+export function HardwareFooter({ hardware, capabilities }: { hardware: HardwareSnapshot; capabilities: CapabilityStatus[] }) {
   const [open, setOpen] = useState(false)
   const gpu = hardware.gpus[0]
+
+  const capNames = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of capabilities) m.set(c.slug, c.displayName)
+    return m
+  }, [capabilities])
 
   return (
     <>
@@ -144,7 +141,7 @@ export function HardwareFooter({ hardware }: { hardware: HardwareSnapshot }) {
           </DialogHeader>
           <div className="space-y-6 py-2">
             {hardware.gpus.map(g => (
-              <GpuDetail key={g.index} gpu={g} />
+              <GpuDetail key={g.index} gpu={g} capNames={capNames} />
             ))}
 
             <div className="space-y-3">

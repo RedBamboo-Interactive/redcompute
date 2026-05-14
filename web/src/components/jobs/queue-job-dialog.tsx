@@ -4,16 +4,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { api } from "@/api/client"
 import type { CapabilityStatus, ParameterSchema } from "@/api/types"
 
-const fallbackIcons: Record<string, string> = {
-  tts: "fa-solid fa-volume-high",
-  stt: "fa-solid fa-microphone",
-  "image-gen": "fa-solid fa-image",
-  "music-gen": "fa-solid fa-music",
-  llm: "fa-solid fa-brain",
-  "video-gen": "fa-solid fa-video",
-  "ai-session": "fa-regular fa-square-terminal",
-}
-
 interface DiscoverResponse {
   capabilities: {
     slug: string
@@ -133,7 +123,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
       <DialogContent className="bg-surface-elevated border-border-subtle max-w-lg w-[calc(100vw-2rem)]">
         <DialogHeader>
           <DialogTitle className="text-lg flex items-center gap-2.5">
-            <i className={`${fallbackIcons[selectedSlug] || "fa-solid fa-cube"} text-base text-text-muted`} />
+            <i className={`${selectedCap?.icon || "fa-solid fa-cube"} text-base text-text-muted`} />
             {title}
           </DialogTitle>
           <DialogDescription className="sr-only">Configure and submit a job</DialogDescription>

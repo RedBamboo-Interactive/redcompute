@@ -6,18 +6,8 @@ import { QueueJobDialog } from "@/components/jobs/queue-job-dialog"
 import { useCapabilityJobs } from "@/hooks/use-capability-jobs"
 import type { CapabilityStatus, JobRecord } from "@/api/types"
 
-const fallbackIcons: Record<string, string> = {
-  tts: "fa-solid fa-volume-high",
-  stt: "fa-solid fa-microphone",
-  "image-gen": "fa-solid fa-image",
-  "music-gen": "fa-solid fa-music",
-  llm: "fa-solid fa-brain",
-  "video-gen": "fa-solid fa-video",
-  "ai-session": "fa-regular fa-square-terminal",
-}
-
 function getCapIcon(cap: CapabilityStatus): string {
-  return cap.icon || fallbackIcons[cap.slug] || "fa-solid fa-cube"
+  return cap.icon || "fa-solid fa-cube"
 }
 
 function statusIconColor(status: string, sleeping: boolean): string {

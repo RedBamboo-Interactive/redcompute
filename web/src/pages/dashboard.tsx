@@ -20,7 +20,7 @@ export function DashboardPage({ capabilities, onRefresh, hardware }: {
           </div>
         )}
       </div>
-      {hardware?.available && <HardwareFooter hardware={hardware} />}
+      {hardware?.available && <HardwareFooter hardware={hardware} capabilities={capabilities} />}
     </div>
   )
 }

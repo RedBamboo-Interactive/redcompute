@@ -122,6 +122,7 @@ export default function App() {
                 jobs={jobs.jobs} total={jobs.total} hasMore={jobs.hasMore} loading={jobs.loading}
                 selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} onLoadMore={jobs.loadMore}
                 filters={jobFilters} onFiltersChange={setJobFilters}
+                capabilities={caps.capabilities}
               />
             } />
           </Route>

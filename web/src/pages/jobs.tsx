@@ -5,7 +5,7 @@ import { JobDetail } from "@/components/jobs/job-detail"
 import { ActivityFrieze } from "@/components/jobs/activity-frieze"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@redbamboo/ui"
 import { api } from "@/api/client"
-import type { JobRecord } from "@/api/types"
+import type { CapabilityStatus, JobRecord } from "@/api/types"
 import type { JobFilters } from "@/hooks/use-jobs"
 
 const statusColors: Record<string, string> = {
@@ -43,7 +43,7 @@ function mapApiJob(j: ApiJob): JobRecord {
   }
 }
 
-export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJob, onLoadMore, filters, onFiltersChange }: {
+export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJob, onLoadMore, filters, onFiltersChange, capabilities: capsList }: {
   jobs: JobRecord[]
   total: number
   hasMore: boolean
@@ -53,7 +53,14 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
   onLoadMore: () => void
   filters: JobFilters
   onFiltersChange: (f: JobFilters) => void
+  capabilities: CapabilityStatus[]
 }) {
+  const capMap = useMemo(() => {
+    const m = new Map<string, CapabilityStatus>()
+    for (const c of capsList) m.set(c.slug, c)
+    return m
+  }, [capsList])
+
   const [searchParams, setSearchParams] = useSearchParams()
   const [activityJobs, setActivityJobs] = useState<JobRecord[]>([])
   const [mobileTab, setMobileTab] = useState(0)
@@ -236,7 +243,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
   }
 
   const detailContent = selectedJob ? (
-    <JobDetail job={selectedJob} onRerun={handleRerun} />
+    <JobDetail job={selectedJob} onRerun={handleRerun} capability={capMap.get(selectedJob.capabilitySlug)} />
   ) : (
     <div className="flex items-center justify-center h-full text-text-muted text-sm">
       Select a job to view details
@@ -254,7 +261,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
           {listHeader}
           <div className="flex-1 overflow-hidden">
             <JobList jobs={jobs} selectedId={selectedJob?.id || null} onSelect={handleSelectJob}
-              hasActiveFilters={hasActiveFilters} hasMore={hasMore} loading={loading} onLoadMore={onLoadMore} />
+              hasActiveFilters={hasActiveFilters} hasMore={hasMore} loading={loading} onLoadMore={onLoadMore} capMap={capMap} />
           </div>
         </div>
         <div className={`flex-1 ${selectedJob?.capabilitySlug === "ai-session" ? "overflow-hidden" : "overflow-auto"}`}>
