@@ -2,17 +2,15 @@ using System.Net.Http;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using RedCompute.App.Services;
-using RedCompute.App.Services.Claude;
-using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Claude;
 using RedCompute.Core.Discovery;
+using RedCompute.PluginSdk;
 
-namespace RedCompute.App.Api.Endpoints;
+namespace RedCompute.Plugin.ClaudeCode;
 
 public static class ClaudeSessionEndpoints
 {
-    public static void Map(WebApplication app, ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log)
+    public static void Map(WebApplication app, ClaudeSessionService claude, IJobTracker jobTracker, Action<string, Guid?> log)
     {
         app.MapGet("/claude/projects", () =>
         {
@@ -213,7 +211,7 @@ public static class ClaudeSessionEndpoints
     private static readonly string[] ValidEfforts = ["low", "medium", "high", "xhigh", "max"];
 
     private static async Task<IResult> HandleExecute(HttpContext ctx, JsonElement body,
-        ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log,
+        ClaudeSessionService claude, IJobTracker jobTracker, Action<string, Guid?> log,
         System.Diagnostics.Stopwatch? sw = null)
     {
         // --- Validation ---
@@ -400,7 +398,7 @@ public static class ClaudeSessionEndpoints
         }
     }
 
-    private static async Task<IResult> HandleOneshot(HttpContext ctx, JsonElement body, ClaudeSessionService claude, JobTrackingService jobTracker, Action<string, Guid?> log)
+    private static async Task<IResult> HandleOneshot(HttpContext ctx, JsonElement body, ClaudeSessionService claude, IJobTracker jobTracker, Action<string, Guid?> log)
     {
         if (!body.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array || messages.GetArrayLength() == 0)
             return Results.Json(new ErrorResponse { Error = "validation_failed", Message = "messages is required and must be a non-empty array" }, statusCode: 422);

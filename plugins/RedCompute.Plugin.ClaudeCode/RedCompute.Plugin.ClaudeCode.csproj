@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\RedCompute.PluginSdk\RedCompute.PluginSdk.csproj" />
   </ItemGroup>
 </Project>

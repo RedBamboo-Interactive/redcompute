@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Helpers;
 using RedCompute.App.Services;
-using RedCompute.App.Services.Claude;
+using RedCompute.Plugin.ClaudeCode;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Claude;
 using RedCompute.Core.Jobs;

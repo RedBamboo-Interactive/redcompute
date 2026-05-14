@@ -1,13 +1,18 @@
+using Microsoft.AspNetCore.Builder;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
-public class ClaudeCodeProvider : IPluginProvider
+public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider
 {
     private readonly string _capabilitySlug;
+    private readonly ClaudeSessionService _claude;
+    private readonly IJobTracker _jobTracker;
+    private readonly Action<string> _log;
 
     public string Name => "Claude Code";
     public string CapabilitySlug => _capabilitySlug;
@@ -18,21 +23,28 @@ public class ClaudeCodeProvider : IPluginProvider
     public bool SupportsProgress => false;
     public bool SupportsRerun => false;
 
-    // The IStopAllAsync delegate allows the App layer to inject session shutdown
-    private readonly Func<Task>? _stopAll;
+    public ClaudeSessionService Claude => _claude;
 
-    public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug, Action<string> log, Func<Task>? stopAll = null)
+    public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
+        ClaudeSessionService claudeService, IJobTracker jobTracker)
     {
         _capabilitySlug = capabilitySlug;
-        _stopAll = stopAll;
+        _log = log;
+        _claude = claudeService;
+        _jobTracker = jobTracker;
     }
 
     public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
-    public Task StopAsync(CancellationToken ct = default) => _stopAll?.Invoke() ?? Task.CompletedTask;
+    public Task StopAsync(CancellationToken ct = default) => _claude.StopAllAsync();
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
     public string? GetProxyTargetUrl() => null;
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    public void MapCustomEndpoints(WebApplication app)
+    {
+        ClaudeSessionEndpoints.Map(app, _claude, _jobTracker, (msg, _) => _log(msg));
+    }
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
@@ -47,9 +59,6 @@ public class ClaudeCodeProvider : IPluginProvider
 
     public ReturnSchema OutputSchema => new() { ContentType = "application/json", Streaming = true };
 
-    // Claude session endpoints are complex (~15 routes) and stay in the App layer.
-    // They are registered by the App's ClaudeSessionEndpoints, not here.
-    // GetCustomEndpointManifests provides the discovery metadata.
     public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => new List<EndpointManifest>
     {
         new() { Method = "POST", Path = "/ai-session/execute", Description = "Execute a prompt with full agent capabilities", Parameters = new() { ["prompt"] = new() { Type = "string", Required = true, Description = "Full prompt text" }, ["model"] = new() { Type = "string", Required = false, Default = "sonnet", Enum = ["haiku", "sonnet", "opus"] }, ["maxTurns"] = new() { Type = "integer", Required = false, Default = 1 } }, Returns = new() { ContentType = "application/json", Streaming = false } },

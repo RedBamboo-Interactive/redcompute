@@ -4,12 +4,12 @@ using RedBamboo.AppHost.Tray;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
-using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.ClaudeCode;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App;
 
@@ -62,7 +62,8 @@ public partial class App : Application
         if (recovered > 0)
             Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");
 
-        ClaudeService = new ClaudeSessionService(ConfigManager.Config.Claude, JobTracker, (msg, jobId) => Log(msg, jobId));
+        var sessionStore = new ClaudeSessionStore();
+        ClaudeService = new ClaudeSessionService(ConfigManager.Config.Claude, JobTracker, sessionStore, (msg, jobId) => Log(msg, jobId));
 
         ProviderDiscovery = new ProviderDiscovery(s => Log(s));
         ProviderDiscovery.ScanAssemblies();
@@ -152,9 +153,7 @@ public partial class App : Application
             ConfigManager.Save();
         }
 
-        // Extra services that some providers may need via constructor injection
-        Func<Task> stopAllSessions = () => ClaudeService.StopAllAsync();
-        var extraServices = new object?[] { stopAllSessions };
+        var extraServices = new object?[] { ClaudeService, (IJobTracker)JobTracker };
 
         foreach (var (slug, capConfig) in config.Capabilities)
         {

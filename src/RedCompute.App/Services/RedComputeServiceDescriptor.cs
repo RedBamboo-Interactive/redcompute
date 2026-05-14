@@ -1,6 +1,6 @@
 using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Logging;
-using RedCompute.App.Services.Claude;
+using RedCompute.Plugin.ClaudeCode;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 

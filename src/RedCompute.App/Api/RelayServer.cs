@@ -15,8 +15,8 @@ using RedBamboo.AppHost.RemoteAccess;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
-using RedCompute.App.Services.Claude;
 using RedCompute.App.Services.Hardware;
+using RedCompute.Plugin.ClaudeCode;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Configuration;
 
@@ -103,7 +103,6 @@ public class RelayServer
         GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
         WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _claudeService, _hardwareMonitor);
         HardwareEndpoints.Map(_app, _hardwareMonitor);
-        ClaudeSessionEndpoints.Map(_app, _claudeService, _jobTracker, _log);
         var descriptor = new RedComputeServiceDescriptor(_config, _registry, _claudeService, App.LogService);
         _app.MapAppHostEndpoints(descriptor, _tunnelService, "RedCompute", () => new RedBamboo.AppHost.Tunnel.TunnelConfig
         {

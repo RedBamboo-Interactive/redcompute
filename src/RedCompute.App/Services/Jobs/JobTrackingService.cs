@@ -1,10 +1,11 @@
 using System.IO;
 using RedCompute.App.Data;
 using RedCompute.Core.Jobs;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services.Jobs;
 
-public class JobTrackingService
+public class JobTrackingService : IJobTracker
 {
     private readonly object _lock = new();
 

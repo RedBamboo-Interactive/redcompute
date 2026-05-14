@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Services;
-using RedCompute.App.Services.Claude;
+using RedCompute.Plugin.ClaudeCode;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Jobs;

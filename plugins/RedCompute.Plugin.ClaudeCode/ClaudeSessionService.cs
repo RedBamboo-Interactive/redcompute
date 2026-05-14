@@ -4,19 +4,19 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using RedCompute.App.Data;
-using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Claude;
 using RedCompute.Core.Configuration;
+using RedCompute.PluginSdk;
 
-namespace RedCompute.App.Services.Claude;
+namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeSessionService
 {
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     private readonly ConcurrentDictionary<string, Process> _runningProcesses = new();
     private readonly ClaudeConfig _config;
-    private readonly JobTrackingService _jobTracker;
+    private readonly IJobTracker _jobTracker;
+    private readonly IClaudeSessionStore _sessionStore;
     private readonly Action<string, Guid?> _log;
 
     public event Action<ClaudeSessionInfo>? SessionCreated;
@@ -26,10 +26,11 @@ public class ClaudeSessionService
 
     public void EmitStreamEvent(string key, ClaudeStreamEvent evt) => StreamEvent?.Invoke(key, evt);
 
-    public ClaudeSessionService(ClaudeConfig config, JobTrackingService jobTracker, Action<string, Guid?> log)
+    public ClaudeSessionService(ClaudeConfig config, IJobTracker jobTracker, IClaudeSessionStore sessionStore, Action<string, Guid?> log)
     {
         _config = config;
         _jobTracker = jobTracker;
+        _sessionStore = sessionStore;
         _log = log;
         RecoverSessions();
     }
@@ -38,18 +39,14 @@ public class ClaudeSessionService
     {
         try
         {
-            using var db = new RedComputeDbContext();
-            var active = db.ClaudeSessions
-                .Where(s => s.Status == "Active" || s.Status == "Idle" || s.Status == "Starting")
-                .ToList();
+            var active = _sessionStore.GetActiveSessions();
             foreach (var s in active)
             {
                 s.Status = "Stopped";
                 _log($"[Claude] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
                 BackfillFromJsonl(s);
+                _sessionStore.SaveSession(s);
             }
-            if (active.Count > 0)
-                db.SaveChanges();
         }
         catch (Exception ex)
         {
@@ -72,14 +69,9 @@ public class ClaudeSessionService
 
             if (!File.Exists(jsonlPath)) return;
 
-            using var db = new RedComputeDbContext();
-            var lastTimestamp = db.ClaudeMessages
-                .Where(m => m.SessionId == session.Id)
-                .OrderByDescending(m => m.Timestamp)
-                .Select(m => m.Timestamp)
-                .FirstOrDefault();
+            var lastTimestamp = _sessionStore.GetLastMessageTimestamp(session.Id);
 
-            var inserted = 0;
+            var newMessages = new List<ClaudeMessageRecord>();
             foreach (var line in File.ReadLines(jsonlPath))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
@@ -104,12 +96,11 @@ public class ClaudeSessionService
                     {
                         if (type == "user")
                         {
-                            db.ClaudeMessages.Add(new ClaudeMessageRecord
+                            newMessages.Add(new ClaudeMessageRecord
                             {
                                 SessionId = session.Id, Role = "user", EventType = "text",
                                 Content = content.GetString(), Timestamp = ts
                             });
-                            inserted++;
                         }
                         continue;
                     }
@@ -126,24 +117,22 @@ public class ClaudeSessionService
                             {
                                 var text = block.TryGetProperty("thinking", out var th) ? th.GetString() : null;
                                 if (string.IsNullOrEmpty(text)) continue;
-                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                newMessages.Add(new ClaudeMessageRecord
                                 {
                                     SessionId = session.Id, Role = "assistant", EventType = "thinking",
                                     Content = text, MessageId = msgId, Timestamp = ts
                                 });
-                                inserted++;
                                 break;
                             }
                             case "text" when type == "assistant":
                             {
                                 var text = block.TryGetProperty("text", out var txt) ? txt.GetString() : null;
                                 if (string.IsNullOrEmpty(text)) continue;
-                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                newMessages.Add(new ClaudeMessageRecord
                                 {
                                     SessionId = session.Id, Role = "assistant", EventType = "text",
                                     Content = text, MessageId = msgId, Timestamp = ts
                                 });
-                                inserted++;
                                 break;
                             }
                             case "tool_use" when type == "assistant":
@@ -151,12 +140,11 @@ public class ClaudeSessionService
                                 var toolName = block.TryGetProperty("name", out var n) ? n.GetString() : null;
                                 var toolInput = block.TryGetProperty("input", out var inp) ? inp.ToString() : null;
                                 var toolId = block.TryGetProperty("id", out var tid) ? tid.GetString() : null;
-                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                newMessages.Add(new ClaudeMessageRecord
                                 {
                                     SessionId = session.Id, Role = "assistant", EventType = "tool_use",
                                     ToolName = toolName, ToolInput = toolInput, MessageId = toolId, Timestamp = ts
                                 });
-                                inserted++;
                                 break;
                             }
                             case "tool_result" when type == "user":
@@ -165,13 +153,12 @@ public class ClaudeSessionService
                                     ? ExtractTextFromContent(c) : null;
                                 var toolUseId = block.TryGetProperty("tool_use_id", out var tuid)
                                     ? tuid.GetString() : null;
-                                db.ClaudeMessages.Add(new ClaudeMessageRecord
+                                newMessages.Add(new ClaudeMessageRecord
                                 {
                                     SessionId = session.Id, Role = "assistant", EventType = "tool_result",
                                     Content = resultContent, ToolResult = resultContent,
                                     MessageId = toolUseId, Timestamp = ts
                                 });
-                                inserted++;
                                 break;
                             }
                         }
@@ -180,10 +167,10 @@ public class ClaudeSessionService
                 catch (JsonException) { }
             }
 
-            if (inserted > 0)
+            if (newMessages.Count > 0)
             {
-                db.SaveChanges();
-                _log($"[Claude] Backfilled {inserted} messages for session {session.Id} ({session.ProjectName}) from JSONL", null);
+                _sessionStore.AddMessages(newMessages);
+                _log($"[Claude] Backfilled {newMessages.Count} messages for session {session.Id} ({session.ProjectName}) from JSONL", null);
             }
         }
         catch (Exception ex)
@@ -781,28 +768,27 @@ public class ClaudeSessionService
             return null;
         }
 
-        using var db = new RedComputeDbContext();
-        var record = db.ClaudeSessions.Find(sessionId);
-        if (record == null)
+        var sessionRecord = _sessionStore.FindSession(sessionId);
+        if (sessionRecord == null)
         {
             LastStartError = "Session not found";
             return null;
         }
 
-        if (string.IsNullOrEmpty(record.ClaudeSessionId))
+        if (string.IsNullOrEmpty(sessionRecord.ClaudeSessionId))
         {
             LastStartError = "Session has no Claude session ID to resume";
             return null;
         }
 
-        if (!Directory.Exists(record.ProjectPath))
+        if (!Directory.Exists(sessionRecord.ProjectPath))
         {
-            LastStartError = $"Project path not found: {record.ProjectPath}";
+            LastStartError = $"Project path not found: {sessionRecord.ProjectPath}";
             return null;
         }
 
-        record.Dismissed = false;
-        db.SaveChanges();
+        sessionRecord.Dismissed = false;
+        _sessionStore.SaveSession(sessionRecord);
 
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
@@ -813,31 +799,31 @@ public class ClaudeSessionService
 
         var info = new ClaudeSessionInfo
         {
-            Id = record.Id,
-            ProjectName = record.ProjectName,
-            ProjectPath = record.ProjectPath,
+            Id = sessionRecord.Id,
+            ProjectName = sessionRecord.ProjectName,
+            ProjectPath = sessionRecord.ProjectPath,
             Status = SessionStatus.Starting,
-            StartedAt = record.StartedAt,
-            Model = record.Model,
-            ClaudeSessionId = record.ClaudeSessionId,
-            Title = record.Title,
-            MessageCount = record.MessageCount,
-            CostUsd = record.CostUsd,
-            InputTokens = record.InputTokens,
-            OutputTokens = record.OutputTokens,
-            CacheReadInputTokens = record.CacheReadInputTokens,
-            CacheCreationInputTokens = record.CacheCreationInputTokens,
-            ContextTokens = record.ContextTokens,
-            ContextWindow = record.ContextWindow,
-            Effort = record.Effort,
+            StartedAt = sessionRecord.StartedAt,
+            Model = sessionRecord.Model,
+            ClaudeSessionId = sessionRecord.ClaudeSessionId,
+            Title = sessionRecord.Title,
+            MessageCount = sessionRecord.MessageCount,
+            CostUsd = sessionRecord.CostUsd,
+            InputTokens = sessionRecord.InputTokens,
+            OutputTokens = sessionRecord.OutputTokens,
+            CacheReadInputTokens = sessionRecord.CacheReadInputTokens,
+            CacheCreationInputTokens = sessionRecord.CacheCreationInputTokens,
+            ContextTokens = sessionRecord.ContextTokens,
+            ContextWindow = sessionRecord.ContextWindow,
+            Effort = sessionRecord.Effort,
         };
 
-        var args = BuildArgs(record.ClaudeSessionId, record.Model, record.Effort);
+        var args = BuildArgs(sessionRecord.ClaudeSessionId, sessionRecord.Model, sessionRecord.Effort);
         var startInfo = new ProcessStartInfo
         {
             FileName = claudePath,
             Arguments = args,
-            WorkingDirectory = record.ProjectPath,
+            WorkingDirectory = sessionRecord.ProjectPath,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -870,16 +856,16 @@ public class ClaudeSessionService
 
         info.Status = SessionStatus.Idle;
 
-        if (record.JobId.HasValue)
+        if (sessionRecord.JobId.HasValue)
         {
-            info.JobId = record.JobId.Value;
-            _jobTracker.MarkRunning(record.JobId.Value);
+            info.JobId = sessionRecord.JobId.Value;
+            _jobTracker.MarkRunning(sessionRecord.JobId.Value);
         }
         else
         {
             var job = _jobTracker.CreateJob("ai-session", "Claude Code",
-                System.Text.Json.JsonSerializer.Serialize(new { projectPath = record.ProjectPath, projectName = record.ProjectName, resumed = true }),
-                name: record.ProjectName);
+                System.Text.Json.JsonSerializer.Serialize(new { projectPath = sessionRecord.ProjectPath, projectName = sessionRecord.ProjectName, resumed = true }),
+                name: sessionRecord.ProjectName);
             _jobTracker.MarkRunning(job.Id);
             info.JobId = job.Id;
         }
@@ -1155,13 +1141,12 @@ public class ClaudeSessionService
         if (_sessions.ContainsKey(sessionId))
             await StopSession(sessionId);
 
-        using var db = new RedComputeDbContext();
-        var record = db.ClaudeSessions.Find(sessionId);
+        var record = _sessionStore.FindSession(sessionId);
         if (record == null) return null;
 
         if (model != null) record.Model = model;
         if (effort != null) record.Effort = effort;
-        db.SaveChanges();
+        _sessionStore.SaveSession(record);
 
         if (!string.IsNullOrEmpty(record.ClaudeSessionId))
             return ResumeSession(sessionId);
@@ -1175,13 +1160,7 @@ public class ClaudeSessionService
     {
         try
         {
-            using var db = new RedComputeDbContext();
-            var record = db.ClaudeSessions.Find(sessionId);
-            if (record != null)
-            {
-                record.Dismissed = true;
-                db.SaveChanges();
-            }
+            _sessionStore.DismissSession(sessionId);
         }
         catch (Exception ex)
         {
@@ -1192,16 +1171,10 @@ public class ClaudeSessionService
     public List<ClaudeSessionInfo> GetSessions()
     {
         var live = _sessions.Values.Select(s => s.Info).ToList();
-        var liveIds = live.Select(s => s.Id).ToHashSet();
+        var activeIds = _sessions.Keys.ToHashSet();
 
-        using var db = new RedComputeDbContext();
-        var dbSessions = db.ClaudeSessions
-            .Where(s => !liveIds.Contains(s.Id) && !s.Dismissed)
-            .OrderByDescending(s => s.StartedAt)
-            .Take(20)
-            .ToList()
-            .Select(ToSessionInfo)
-            .ToList();
+        var recent = _sessionStore.GetRecentSessions(activeIds);
+        var dbSessions = recent.Select(ToSessionInfo).ToList();
 
         return [.. live, .. dbSessions];
     }
@@ -1211,8 +1184,7 @@ public class ClaudeSessionService
         if (_sessions.TryGetValue(sessionId, out var session))
             return (session.Info, GetHistory(sessionId));
 
-        using var db = new RedComputeDbContext();
-        var record = db.ClaudeSessions.Find(sessionId);
+        var record = _sessionStore.FindSession(sessionId);
         if (record == null) return (null, []);
         return (ToSessionInfo(record), GetHistory(sessionId));
     }
@@ -1230,15 +1202,11 @@ public class ClaudeSessionService
 
         if (remaining.Count > 0)
         {
-            using var db = new RedComputeDbContext();
-            var records = db.ClaudeSessions
-                .Where(s => s.JobId != null && remaining.Contains(s.JobId.Value))
-                .Select(s => new { s.JobId, s.Status })
-                .ToList();
-            foreach (var r in records)
+            var dbStatuses = _sessionStore.GetSessionStatusesByJobIds(remaining);
+            foreach (var (jobId, statusStr) in dbStatuses)
             {
-                if (r.JobId is { } jid && Enum.TryParse<SessionStatus>(r.Status, out var status))
-                    result[jid] = status;
+                if (Enum.TryParse<SessionStatus>(statusStr, out var status))
+                    result[jobId] = status;
             }
         }
 
@@ -1251,8 +1219,7 @@ public class ClaudeSessionService
         if (live != null)
             return (live.Info, GetHistory(live.Info.Id));
 
-        using var db = new RedComputeDbContext();
-        var record = db.ClaudeSessions.FirstOrDefault(s => s.JobId == jobId);
+        var record = _sessionStore.FindSessionByJobId(jobId);
         if (record == null) return (null, []);
         return (ToSessionInfo(record), GetHistory(record.Id));
     }
@@ -1281,14 +1248,7 @@ public class ClaudeSessionService
 
     public List<ClaudeMessageRecord> GetHistory(string sessionId, int limit = 50_000)
     {
-        using var db = new RedComputeDbContext();
-        return db.ClaudeMessages
-            .Where(m => m.SessionId == sessionId)
-            .OrderByDescending(m => m.Id)
-            .Take(limit)
-            .ToList()
-            .OrderBy(m => m.Id)
-            .ToList();
+        return _sessionStore.GetMessages(sessionId, limit);
     }
 
     public async Task StopAllAsync()
@@ -1806,50 +1766,27 @@ public class ClaudeSessionService
     {
         try
         {
-            using var db = new RedComputeDbContext();
-            var existing = db.ClaudeSessions.Find(info.Id);
-            if (existing != null)
+            _sessionStore.SaveSession(new ClaudeSessionRecord
             {
-                existing.Status = info.Status.ToString();
-                existing.Model = info.Model;
-                existing.ClaudeSessionId = info.ClaudeSessionId;
-                existing.Title = info.Title;
-                existing.MessageCount = info.MessageCount;
-                existing.CostUsd = info.CostUsd;
-                existing.InputTokens = info.InputTokens;
-                existing.OutputTokens = info.OutputTokens;
-                existing.CacheReadInputTokens = info.CacheReadInputTokens;
-                existing.CacheCreationInputTokens = info.CacheCreationInputTokens;
-                existing.ContextTokens = info.ContextTokens;
-                existing.ContextWindow = info.ContextWindow;
-                existing.Effort = info.Effort;
-                existing.JobId = info.JobId;
-            }
-            else
-            {
-                db.ClaudeSessions.Add(new ClaudeSessionRecord
-                {
-                    Id = info.Id,
-                    ProjectName = info.ProjectName,
-                    ProjectPath = info.ProjectPath,
-                    Status = info.Status.ToString(),
-                    StartedAt = info.StartedAt,
-                    Model = info.Model,
-                    ClaudeSessionId = info.ClaudeSessionId,
-                    Title = info.Title,
-                    MessageCount = info.MessageCount,
-                    CostUsd = info.CostUsd,
-                    InputTokens = info.InputTokens,
-                    OutputTokens = info.OutputTokens,
-                    CacheReadInputTokens = info.CacheReadInputTokens,
-                    CacheCreationInputTokens = info.CacheCreationInputTokens,
-                    ContextTokens = info.ContextTokens,
-                    ContextWindow = info.ContextWindow,
-                    Effort = info.Effort,
-                    JobId = info.JobId
-                });
-            }
-            db.SaveChanges();
+                Id = info.Id,
+                ProjectName = info.ProjectName,
+                ProjectPath = info.ProjectPath,
+                Status = info.Status.ToString(),
+                StartedAt = info.StartedAt,
+                Model = info.Model,
+                ClaudeSessionId = info.ClaudeSessionId,
+                Title = info.Title,
+                MessageCount = info.MessageCount,
+                CostUsd = info.CostUsd,
+                InputTokens = info.InputTokens,
+                OutputTokens = info.OutputTokens,
+                CacheReadInputTokens = info.CacheReadInputTokens,
+                CacheCreationInputTokens = info.CacheCreationInputTokens,
+                ContextTokens = info.ContextTokens,
+                ContextWindow = info.ContextWindow,
+                Effort = info.Effort,
+                JobId = info.JobId
+            });
         }
         catch (Exception ex)
         {
@@ -1884,8 +1821,7 @@ public class ClaudeSessionService
     {
         try
         {
-            using var db = new RedComputeDbContext();
-            db.ClaudeMessages.Add(new ClaudeMessageRecord
+            _sessionStore.AddMessage(new ClaudeMessageRecord
             {
                 SessionId = sessionId,
                 Role = role,
@@ -1897,7 +1833,6 @@ public class ClaudeSessionService
                 MessageId = messageId,
                 Timestamp = DateTimeOffset.UtcNow
             });
-            db.SaveChanges();
         }
         catch (Exception ex)
         {
