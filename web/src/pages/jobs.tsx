@@ -104,7 +104,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
 
   const listHeader = (
     <>
-      <div className="flex items-center justify-between px-4 py-3">
+      <div className="flex items-center justify-between h-12 px-4">
         <span className="text-[14px] font-medium text-contrast">Recent Jobs</span>
         {hasActiveFilters && (
           <button
@@ -156,6 +156,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
 
   return (
     <MasterDetailLayout
+      layoutKey="redcompute-jobs"
       mobileLabels={["Jobs", "Detail"]}
       mobileTab={mobileTab}
       onMobileTabChange={setMobileTab}
