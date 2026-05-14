@@ -126,31 +126,8 @@ public partial class App : Application
     {
         var config = ConfigManager.Config;
 
-        // Ensure ai-session exists in config
-        if (!config.Capabilities.ContainsKey("ai-session"))
-        {
-            config.Capabilities["ai-session"] = new RedCompute.Core.Configuration.CapabilityConfig
-            {
-                ActiveProvider = "claude-code",
-                Providers = new Dictionary<string, RedCompute.Core.Configuration.ProviderConfig>
-                {
-                    ["claude-code"] = new()
-                    {
-                        Type = "ClaudeCode",
-                        Extra = new Dictionary<string, object?>
-                        {
-                            ["ProjectsRoot"] = config.Claude.ProjectsRoot,
-                            ["MaxSessions"] = config.Claude.MaxSessions,
-                        }
-                    }
-                }
-            };
-            ConfigManager.Save();
-        }
-
         var extraServices = new object?[]
         {
-            ConfigManager.Config.Claude,
             (IJobTracker)JobTracker,
             (IClaudeSessionStore)new ClaudeSessionStore(),
             (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),

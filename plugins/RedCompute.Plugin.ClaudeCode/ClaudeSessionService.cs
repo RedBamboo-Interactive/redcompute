@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using RedCompute.Core.Claude;
-using RedCompute.Core.Configuration;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;

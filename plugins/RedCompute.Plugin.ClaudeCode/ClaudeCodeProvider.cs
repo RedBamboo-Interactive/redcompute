@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using RedCompute.Core.Claude;
 using RedCompute.Core.Configuration;
@@ -27,12 +28,14 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
     public bool SupportsRerun => false;
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
-        ClaudeConfig claudeConfig, IJobTracker jobTracker, IClaudeSessionStore sessionStore,
+        IJobTracker jobTracker, IClaudeSessionStore sessionStore,
         Action<string, Guid?> log)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
         _jobTracker = jobTracker;
+
+        var claudeConfig = BuildConfig(config);
         _claude = new ClaudeSessionService(claudeConfig, jobTracker, sessionStore, log);
 
         _claude.SessionCreated += session => PluginEvent?.Invoke("claude.session.created", session);
@@ -59,6 +62,19 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
     {
         var statuses = _claude.GetSessionStatusesByJobIds(jobIds);
         return statuses.ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
+    }
+
+    private static ClaudeConfig BuildConfig(ProviderConfig config)
+    {
+        var claudePath = ProviderHelpers.GetExtra(config, "ClaudePath", "");
+        return new ClaudeConfig
+        {
+            ProjectsRoot = ProviderHelpers.GetExtra(config, "ProjectsRoot", @"T:\Projects"),
+            ClaudePath = string.IsNullOrEmpty(claudePath) ? null : claudePath,
+            MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "5"), out var ms) ? ms : 5,
+            Model = config.Model,
+            DefaultOneshotModel = ProviderHelpers.GetExtra(config, "DefaultOneshotModel", "haiku"),
+        };
     }
 
     public Dictionary<string, ParameterSchema> InputParameters => new()

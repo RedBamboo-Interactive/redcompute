@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using RedCompute.Core.Configuration;
 
@@ -34,6 +35,7 @@ public class ConfigManager
         try
         {
             var json = File.ReadAllText(ConfigPath);
+            json = MigrateClaudeConfig(json);
             Config = JsonSerializer.Deserialize<RedComputeConfig>(json, JsonOptions) ?? CreateDefault();
         }
         catch
@@ -49,6 +51,46 @@ public class ConfigManager
         Directory.CreateDirectory(ConfigDir);
         var json = JsonSerializer.Serialize(Config, JsonOptions);
         File.WriteAllText(ConfigPath, json);
+    }
+
+    private string MigrateClaudeConfig(string json)
+    {
+        try
+        {
+            var node = JsonNode.Parse(json);
+            if (node is not JsonObject root || !root.ContainsKey("Claude"))
+                return json;
+
+            var claude = root["Claude"]?.AsObject();
+            if (claude == null) { root.Remove("Claude"); return root.ToJsonString(JsonOptions); }
+
+            var caps = root["Capabilities"]?.AsObject();
+            if (caps == null) { caps = new JsonObject(); root["Capabilities"] = caps; }
+
+            var aiSession = caps["ai-session"]?.AsObject();
+            if (aiSession == null) { aiSession = new JsonObject { ["ActiveProvider"] = "claude-code" }; caps["ai-session"] = aiSession; }
+
+            var providers = aiSession["Providers"]?.AsObject();
+            if (providers == null) { providers = new JsonObject(); aiSession["Providers"] = providers; }
+
+            var provider = providers["claude-code"]?.AsObject();
+            if (provider == null) { provider = new JsonObject { ["Type"] = "ClaudeCode" }; providers["claude-code"] = provider; }
+
+            foreach (var prop in claude)
+            {
+                if (!provider.ContainsKey(prop.Key) && prop.Value != null)
+                    provider[prop.Key] = prop.Value.DeepClone();
+            }
+
+            root.Remove("Claude");
+            var migrated = root.ToJsonString(JsonOptions);
+            File.WriteAllText(ConfigPath, migrated);
+            return migrated;
+        }
+        catch
+        {
+            return json;
+        }
     }
 
     private static readonly HashSet<string> RemovedCapabilities = ["ai-prompt"];
@@ -188,6 +230,23 @@ public class ConfigManager
                                 ["Host"] = "127.0.0.1",
                                 ["WorkflowsDir"] = @"T:\Projects\Roaster\Roaster.GuildBot\axl-workspace\workflows",
                                 ["DefaultWorkflow"] = "z_turbo"
+                            }
+                        }
+                    }
+                },
+                ["ai-session"] = new()
+                {
+                    ActiveProvider = "claude-code",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["claude-code"] = new()
+                        {
+                            Type = "ClaudeCode",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["ProjectsRoot"] = @"T:\Projects",
+                                ["MaxSessions"] = 5,
+                                ["DefaultOneshotModel"] = "haiku"
                             }
                         }
                     }

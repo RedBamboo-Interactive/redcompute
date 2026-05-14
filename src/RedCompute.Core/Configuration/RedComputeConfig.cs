@@ -8,17 +8,7 @@ public class RedComputeConfig
     public string LogLevel { get; set; } = "Info";
     public bool AutoStartWithWindows { get; set; }
     public TunnelConfig Tunnel { get; set; } = new();
-    public ClaudeConfig Claude { get; set; } = new();
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
-}
-
-public class ClaudeConfig
-{
-    public string ProjectsRoot { get; set; } = @"T:\Projects";
-    public string? ClaudePath { get; set; }
-    public int MaxSessions { get; set; } = 5;
-    public string? Model { get; set; }
-    public string DefaultOneshotModel { get; set; } = "haiku";
 }
 
 public class TunnelConfig
