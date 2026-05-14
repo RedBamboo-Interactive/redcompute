@@ -37,8 +37,8 @@ export function AppShell({
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors ${
       isActive
-        ? "text-accent-teal bg-accent-teal/15"
-        : "text-text-muted hover:text-contrast hover:bg-contrast/10"
+        ? "text-accent-teal bg-accent-teal-a15"
+        : "text-text-muted hover:text-contrast hover:bg-overlay-10"
     }`
 
   return (

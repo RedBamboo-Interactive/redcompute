@@ -11,16 +11,16 @@ const statusIconColor: Record<string, string> = {
 }
 
 const statusBadgeColor: Record<string, string> = {
-  Queued: "bg-accent-gold/20 text-accent-gold border-accent-gold/30",
-  Running: "bg-accent-gold/20 text-accent-gold border-accent-gold/30",
-  Starting: "bg-accent-gold/20 text-accent-gold border-accent-gold/30",
-  Completed: "bg-accent-teal/20 text-accent-teal border-accent-teal/30",
-  Active: "bg-accent-teal/20 text-accent-teal border-accent-teal/30",
-  Idle: "bg-accent-teal/20 text-accent-teal border-accent-teal/30",
-  Failed: "bg-accent-red/20 text-accent-red border-accent-red/30",
-  Error: "bg-accent-red/20 text-accent-red border-accent-red/30",
-  Cancelled: "bg-text-disabled/20 text-text-disabled border-text-disabled/30",
-  Stopped: "bg-text-disabled/20 text-text-disabled border-text-disabled/30",
+  Queued: "bg-accent-gold-a20 text-accent-gold border-accent-gold-a30",
+  Running: "bg-accent-gold-a20 text-accent-gold border-accent-gold-a30",
+  Starting: "bg-accent-gold-a20 text-accent-gold border-accent-gold-a30",
+  Completed: "bg-accent-teal-a20 text-accent-teal border-accent-teal-a30",
+  Active: "bg-accent-teal-a20 text-accent-teal border-accent-teal-a30",
+  Idle: "bg-accent-teal-a20 text-accent-teal border-accent-teal-a30",
+  Failed: "bg-accent-red-a20 text-accent-red border-accent-red-a30",
+  Error: "bg-accent-red-a20 text-accent-red border-accent-red-a30",
+  Cancelled: "bg-text-disabled-a20 text-text-disabled border-text-disabled-a30",
+  Stopped: "bg-text-disabled-a20 text-text-disabled border-text-disabled-a30",
 }
 
 export function formatDuration(ms: number): string {
@@ -69,7 +69,7 @@ export function parseInput(json: string): ParsedInput {
 
 export function ParamChip({ label, value, icon }: { label?: string; value: string; icon?: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs bg-contrast/[0.06] rounded-lg px-2.5 py-1">
+    <span className="inline-flex items-center gap-1.5 text-xs bg-overlay-6 rounded-lg px-2.5 py-1">
       {icon && <i className={`${icon} text-text-disabled`} />}
       {label && <span className="text-text-disabled">{label}</span>}
       <span className="text-text-primary">{value}</span>
@@ -134,7 +134,7 @@ export function JobDetailShell({
           <button
             onClick={() => navigator.clipboard.writeText(job.id)}
             title={job.id}
-            className="inline-flex items-center gap-1.5 font-mono text-xs text-text-disabled hover:text-text-muted bg-contrast/[0.06] hover:bg-contrast/[0.10] rounded-lg px-2.5 py-1 transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 font-mono text-xs text-text-disabled hover:text-text-muted bg-overlay-6 hover:bg-overlay-10 rounded-lg px-2.5 py-1 transition-colors cursor-pointer"
           >
             #{job.id.slice(0, 8)}
           </button>
@@ -153,35 +153,35 @@ export function JobDetailShell({
           <i className="fa-solid fa-clock text-[10px]" />
           {job.startedAt && <span>{formatTime(job.startedAt)}</span>}
           {job.startedAt && job.completedAt && (
-            <span className="text-text-disabled/50">&rarr;</span>
+            <span className="text-text-disabled-a50">&rarr;</span>
           )}
           {job.completedAt && <span>{formatTime(job.completedAt)}</span>}
           {job.durationMs != null && (
             <>
-              <span className="text-text-disabled/50">&middot;</span>
+              <span className="text-text-disabled-a50">&middot;</span>
               <span>{formatDuration(job.durationMs)}</span>
             </>
           )}
-          <span className="text-text-disabled/50">&middot;</span>
+          <span className="text-text-disabled-a50">&middot;</span>
           <span>{timeAgo(job.queuedAt)}</span>
         </div>
       </div>
 
       {/* Prompt */}
       {prompt && (
-        <div className="border-l-2 border-accent-teal/40 pl-4 py-2">
+        <div className="border-l-2 border-accent-teal-a40 pl-4 py-2">
           <p className="text-sm font-serif leading-relaxed text-text-primary">{prompt}</p>
         </div>
       )}
 
       {/* Error */}
       {job.errorMessage && (
-        <Card className="bg-accent-red/10 border-accent-red/30">
+        <Card className="bg-accent-red-a10 border-accent-red-a30">
           <CardContent className="p-5">
             <p className="text-sm font-medium text-accent-red mb-1.5">Error</p>
-            <p className="text-sm text-accent-red/80">{job.errorMessage}</p>
+            <p className="text-sm text-accent-red-a80">{job.errorMessage}</p>
             {job.errorDetails && (
-              <pre className="mt-2 text-xs font-mono text-accent-red/60 whitespace-pre-wrap max-h-40 overflow-auto">{job.errorDetails}</pre>
+              <pre className="mt-2 text-xs font-mono text-accent-red-a60 whitespace-pre-wrap max-h-40 overflow-auto">{job.errorDetails}</pre>
             )}
           </CardContent>
         </Card>
@@ -203,7 +203,7 @@ export function JobDetailShell({
             <div className="bg-surface-base rounded-lg p-3.5 max-h-56 overflow-auto space-y-0.5">
               {logs.map((log, i) => (
                 <div key={i} className="flex gap-3 text-xs font-mono px-1.5 py-1">
-                  <span className="text-contrast/40 w-[82px] shrink-0">
+                  <span className="text-overlay-40 w-[82px] shrink-0">
                     {new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false, fractionalSecondDigits: 3 })}
                   </span>
                   <span className={log.isError ? "text-accent-red" : "text-text-muted"}>{log.message}</span>

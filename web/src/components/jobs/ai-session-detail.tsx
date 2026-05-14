@@ -14,13 +14,13 @@ const readOnlyTools = new Set([
 ])
 
 const eventTypeConfig: Record<string, { label: string; color: string; bg: string }> = {
-  text: { label: "text", color: "text-accent-teal", bg: "bg-accent-teal/20" },
-  thinking: { label: "thinking", color: "text-accent-purple", bg: "bg-accent-purple/20" },
-  tool_use: { label: "tool", color: "text-accent-gold", bg: "bg-accent-gold/20" },
-  tool_result: { label: "result", color: "text-accent-teal", bg: "bg-accent-teal/20" },
-  error: { label: "error", color: "text-accent-red", bg: "bg-accent-red/20" },
-  system: { label: "system", color: "text-text-disabled", bg: "bg-contrast/[0.06]" },
-  prompt: { label: "prompt", color: "text-blue-400", bg: "bg-blue-400/20" },
+  text: { label: "text", color: "text-accent-teal", bg: "bg-accent-teal-a20" },
+  thinking: { label: "thinking", color: "text-accent-purple", bg: "bg-accent-purple-a20" },
+  tool_use: { label: "tool", color: "text-accent-gold", bg: "bg-accent-gold-a20" },
+  tool_result: { label: "result", color: "text-accent-teal", bg: "bg-accent-teal-a20" },
+  error: { label: "error", color: "text-accent-red", bg: "bg-accent-red-a20" },
+  system: { label: "system", color: "text-text-disabled", bg: "bg-overlay-6" },
+  prompt: { label: "prompt", color: "text-blue-400", bg: "bg-blue-400-a20" },
 }
 
 function toolColor(toolName?: string): string {
@@ -29,8 +29,8 @@ function toolColor(toolName?: string): string {
 }
 
 function toolBg(toolName?: string): string {
-  if (!toolName) return "bg-accent-teal/20"
-  return readOnlyTools.has(toolName) ? "bg-accent-teal/20" : "bg-accent-gold/20"
+  if (!toolName) return "bg-accent-teal-a20"
+  return readOnlyTools.has(toolName) ? "bg-accent-teal-a20" : "bg-accent-gold-a20"
 }
 
 function formatTokens(n?: number): string {
@@ -162,10 +162,10 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
       }}
       className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors ${
         codeRedStatus === "sent"
-          ? "bg-contrast/[0.08] text-accent-teal"
+          ? "bg-overlay-8 text-accent-teal"
           : codeRedStatus === "error"
-          ? "bg-contrast/[0.08] text-accent-red"
-          : "bg-contrast/[0.06] text-text-muted hover:bg-contrast/[0.10] hover:text-text-primary"
+          ? "bg-overlay-8 text-accent-red"
+          : "bg-overlay-6 text-text-muted hover:bg-overlay-10 hover:text-text-primary"
       }`}
     >
       <i className={`${
@@ -196,7 +196,7 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
             placeholder="Search events..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="w-full bg-contrast/[0.08] rounded-lg pl-8 pr-3 py-1.5 text-sm text-text-primary placeholder-text-disabled outline-none focus:ring-1 focus:ring-accent-teal/50"
+            className="w-full bg-overlay-8 rounded-lg pl-8 pr-3 py-1.5 text-sm text-text-primary placeholder-text-disabled outline-none focus:ring-1 focus:ring-accent-teal-a50"
           />
         </div>
         {Object.entries(eventTypeConfig).map(([type, cfg]) => {
@@ -208,7 +208,7 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
               className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors border ${
                 active
                   ? `${cfg.bg} ${cfg.color} border-current`
-                  : "bg-contrast/[0.04] text-text-disabled border-transparent hover:bg-contrast/[0.08]"
+                  : "bg-overlay-4 text-text-disabled border-transparent hover:bg-overlay-8"
               }`}
             >
               {cfg.label}
@@ -239,7 +239,7 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
               {events.length === 0 ? "No events yet" : "No matching events"}
             </div>
           ) : (
-            <div className="divide-y divide-contrast/[0.04]">
+            <div className="divide-y divide-overlay-4">
               {filteredEvents.map((event, idx) => (
                 <EventLogRow
                   key={event.id}
@@ -256,7 +256,7 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
         {showScrollBtn && (
           <button
             onClick={scrollToBottom}
-            className="absolute bottom-3 right-3 w-8 h-8 rounded-full bg-surface-elevated border border-contrast/10 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors shadow-lg"
+            className="absolute bottom-3 right-3 w-8 h-8 rounded-full bg-surface-elevated border border-overlay-10 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors shadow-lg"
           >
             <i className="fa-solid fa-arrow-down text-xs" />
           </button>
@@ -283,10 +283,10 @@ function EventLogRow({ event, index, expanded, onToggle }: { event: ClaudeMessag
       <button
         onClick={onToggle}
         className={`flex items-start gap-2 w-full text-left px-2.5 py-1.5 transition-colors ${
-          expanded ? "bg-contrast/[0.06]" : "hover:bg-contrast/[0.03]"
+          expanded ? "bg-overlay-6" : "hover:bg-overlay-3"
         }`}
       >
-        <span className="font-mono text-[11px] text-contrast/40 w-[28px] shrink-0 pt-px text-right">
+        <span className="font-mono text-[11px] text-overlay-40 w-[28px] shrink-0 pt-px text-right">
           {index}
         </span>
 
@@ -375,7 +375,7 @@ function ExpandedContent({ event, isThinking, isToolUse, isToolResult, isError }
           <JsonHighlight json={content} />
         ) : (
           <pre className={`text-xs font-mono whitespace-pre-wrap break-all ${
-            isError || content.startsWith("Error") ? "text-accent-red/80" : "text-text-muted"
+            isError || content.startsWith("Error") ? "text-accent-red-a80" : "text-text-muted"
           }`}>
             {content}
           </pre>
@@ -386,7 +386,7 @@ function ExpandedContent({ event, isThinking, isToolUse, isToolResult, isError }
 
   if (isThinking) {
     return (
-      <pre className="text-xs font-mono whitespace-pre-wrap break-all text-accent-purple/60 bg-surface-deep rounded-lg p-3 overflow-auto max-h-96">
+      <pre className="text-xs font-mono whitespace-pre-wrap break-all text-accent-purple-a60 bg-surface-deep rounded-lg p-3 overflow-auto max-h-96">
         {event.content}
       </pre>
     )
@@ -394,7 +394,7 @@ function ExpandedContent({ event, isThinking, isToolUse, isToolResult, isError }
 
   if (isError) {
     return (
-      <pre className="text-xs font-mono whitespace-pre-wrap break-all text-accent-red/80 bg-surface-deep rounded-lg p-3 overflow-auto max-h-96">
+      <pre className="text-xs font-mono whitespace-pre-wrap break-all text-accent-red-a80 bg-surface-deep rounded-lg p-3 overflow-auto max-h-96">
         {event.content}
       </pre>
     )

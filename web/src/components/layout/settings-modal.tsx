@@ -11,8 +11,8 @@ interface DiscoverResponse {
   management: { endpoints: DiscoverEndpoint[] }
 }
 
-const inputClass = "bg-surface-deep border border-contrast/10 rounded px-2 py-1 outline-none text-contrast text-[13px] font-mono focus:border-contrast/30"
-const inputSmClass = "bg-surface-deep border border-contrast/10 rounded px-2 py-1 outline-none text-contrast text-[11px] font-mono min-w-0 focus:border-contrast/30"
+const inputClass = "bg-surface-deep border border-overlay-10 rounded px-2 py-1 outline-none text-contrast text-[13px] font-mono focus:border-overlay-30"
+const inputSmClass = "bg-surface-deep border border-overlay-10 rounded px-2 py-1 outline-none text-contrast text-[11px] font-mono min-w-0 focus:border-overlay-30"
 
 export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider }: {
   open: boolean
@@ -115,7 +115,7 @@ function ThemeToggle() {
 function Toggle({ enabled, disabled, onToggle }: { enabled: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button
-      className={`w-8 h-[18px] rounded-full relative transition-colors ${enabled ? "bg-[#43A25A]" : "bg-contrast/15"}`}
+      className={`w-8 h-[18px] rounded-full relative transition-colors ${enabled ? "bg-[#43A25A]" : "bg-overlay-15"}`}
       disabled={disabled}
       onClick={onToggle}
     >

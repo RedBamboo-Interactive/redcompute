@@ -109,7 +109,7 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
         <button
           onClick={handleRerun}
           disabled={rerunning}
-          className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors bg-contrast/[0.06] text-text-muted hover:bg-contrast/[0.10] hover:text-text-primary disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors bg-overlay-6 text-text-muted hover:bg-overlay-10 hover:text-text-primary disabled:opacity-50"
         >
           <i className={`fa-solid ${rerunning ? "fa-spinner fa-spin" : "fa-rotate-right"} text-[11px]`} />
           {rerunning ? "Rerunning..." : "Rerun"}
@@ -151,7 +151,7 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
           )}
 
           <div className="flex items-center gap-3 mt-2.5">
-            <a href={authUrl(outputUrl)} download className="inline-flex items-center gap-1.5 text-xs text-accent-teal hover:text-accent-teal/80 transition-colors">
+            <a href={authUrl(outputUrl)} download className="inline-flex items-center gap-1.5 text-xs text-accent-teal hover:text-accent-teal-a80 transition-colors">
               <i className="fa-solid fa-download" />Download
             </a>
             <a href={authUrl(outputUrl)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary transition-colors">
@@ -177,7 +177,7 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
             <span>Progress</span>
             <span>{Math.round(job.progress * 100)}%</span>
           </div>
-          <div className="h-1.5 rounded-full bg-contrast/10">
+          <div className="h-1.5 rounded-full bg-overlay-10">
             <div
               className="h-full rounded-full bg-accent-gold transition-all duration-500"
               style={{ width: `${Math.round(job.progress * 100)}%` }}

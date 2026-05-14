@@ -109,7 +109,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
         {hasActiveFilters && (
           <button
             onClick={() => onFiltersChange({})}
-            className="text-accent-teal text-[11px] hover:text-contrast transition-colors px-1.5 py-0.5 rounded hover:bg-contrast/10"
+            className="text-accent-teal text-[11px] hover:text-contrast transition-colors px-1.5 py-0.5 rounded hover:bg-overlay-10"
           >
             Clear filters
           </button>

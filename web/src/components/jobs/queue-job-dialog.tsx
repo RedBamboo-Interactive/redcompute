@@ -174,7 +174,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
                       }}
                       className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                         recording
-                          ? "bg-accent-red/20 text-accent-red border border-accent-red/40"
+                          ? "bg-accent-red-a20 text-accent-red border border-accent-red-a40"
                           : "bg-surface-base border border-border-subtle text-text-secondary hover:text-contrast"
                       }`}
                     >
@@ -235,7 +235,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
           ))}
 
           {error && (
-            <div className="bg-accent-red/10 border border-accent-red/30 rounded-lg p-3">
+            <div className="bg-accent-red-a10 border border-accent-red-a30 rounded-lg p-3">
               <p className="text-sm text-accent-red">{error}</p>
             </div>
           )}

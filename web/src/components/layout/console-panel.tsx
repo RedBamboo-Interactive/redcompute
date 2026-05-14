@@ -30,11 +30,11 @@ export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSea
 
       <div className="relative w-full max-w-2xl bg-surface-deep border-l border-border-subtle flex flex-col h-full">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-contrast/[0.06] shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-overlay-6 shrink-0">
           <span className="text-sm font-semibold text-contrast">Console</span>
           <button
             onClick={() => onOpenChange(false)}
-            className="text-text-muted hover:text-contrast p-1.5 rounded hover:bg-contrast/10 transition-colors"
+            className="text-text-muted hover:text-contrast p-1.5 rounded hover:bg-overlay-10 transition-colors"
             title="Close console"
           >
             <i className="fa-solid fa-xmark text-sm" />
@@ -43,7 +43,7 @@ export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSea
 
         {/* Toolbar */}
         <div className="flex flex-col gap-2 px-3 py-2 border-b border-[#3F4147] shrink-0 md:flex-row md:items-center md:gap-3 md:flex-wrap">
-          <div className="flex items-center gap-1.5 bg-contrast/[0.08] rounded px-2 py-1.5 w-full md:max-w-[250px] md:w-auto md:py-1">
+          <div className="flex items-center gap-1.5 bg-overlay-8 rounded px-2 py-1.5 w-full md:max-w-[250px] md:w-auto md:py-1">
             <i className="fa-solid fa-magnifying-glass text-[11px] text-text-disabled" />
             <input
               type="text"
@@ -74,7 +74,7 @@ export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSea
             <span className="text-[11px] text-text-disabled">
               {entries.length}/{entries.length}
             </span>
-            <button className="flex items-center gap-1 text-text-muted text-[12px] hover:text-contrast transition-colors px-2 py-1 rounded hover:bg-contrast/10">
+            <button className="flex items-center gap-1 text-text-muted text-[12px] hover:text-contrast transition-colors px-2 py-1 rounded hover:bg-overlay-10">
               <i className="fa-solid fa-trash-can text-xs" />
               <span>Clear</span>
             </button>
@@ -88,10 +88,10 @@ export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSea
               key={entry.id}
               onClick={() => setSelectedEntry(selectedEntry?.id === entry.id ? null : entry)}
               className={`flex items-start gap-2 w-full text-left px-2 py-1 transition-colors ${
-                selectedEntry?.id === entry.id ? "bg-contrast/[0.08]" : "hover:bg-contrast/[0.03]"
+                selectedEntry?.id === entry.id ? "bg-overlay-8" : "hover:bg-overlay-3"
               }`}
             >
-              <span className="font-mono text-[11px] text-contrast/40 w-[82px] shrink-0 hidden md:inline">
+              <span className="font-mono text-[11px] text-overlay-40 w-[82px] shrink-0 hidden md:inline">
                 {formatTimestamp(entry.timestamp)}
               </span>
 
@@ -114,7 +114,7 @@ export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSea
               </span>
 
               {entry.isMultiline && (
-                <i className="fa-solid fa-chevron-down text-[10px] text-contrast/30 mt-1 shrink-0" />
+                <i className="fa-solid fa-chevron-down text-[10px] text-overlay-30 mt-1 shrink-0" />
               )}
             </button>
           ))}
@@ -125,9 +125,9 @@ export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSea
         {selectedEntry && (
           <>
             <div className="h-px bg-border-subtle shrink-0" />
-            <div className="bg-contrast/[0.08] px-3 py-2 min-h-[120px] max-h-[400px] overflow-auto shrink-0">
+            <div className="bg-overlay-8 px-3 py-2 min-h-[120px] max-h-[400px] overflow-auto shrink-0">
               <div className="flex items-center gap-2 mb-2">
-                <span className="font-mono text-[11px] text-contrast/40">
+                <span className="font-mono text-[11px] text-overlay-40">
                   {formatTimestamp(selectedEntry.timestamp)}
                 </span>
                 {selectedEntry.tag && (
@@ -143,7 +143,7 @@ export function ConsolePanel({ open, onOpenChange, entries, tags, search, setSea
                 )}
                 <div className="flex-1" />
                 <button onClick={() => setSelectedEntry(null)}
-                  className="text-text-disabled hover:text-contrast p-1 rounded hover:bg-contrast/10 transition-colors"
+                  className="text-text-disabled hover:text-contrast p-1 rounded hover:bg-overlay-10 transition-colors"
                   title="Close detail panel">
                   <i className="fa-solid fa-xmark text-xs" />
                 </button>

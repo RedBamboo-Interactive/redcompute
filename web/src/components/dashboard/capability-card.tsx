@@ -76,7 +76,7 @@ export function CapabilityCard({ cap, onRefresh }: {
           {/* Action buttons — top right */}
           <div className="flex justify-end gap-0 -mt-1 -mr-1 mb-0">
             <button onClick={toggleSleep} title="Sleep/Wake (freeze requests)"
-              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-contrast/10 transition-colors">
+              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-overlay-10 transition-colors">
               <i className="fa-solid fa-moon text-xs"
                 style={{
                   color: cap.sleeping ? "#7C4DFF" : "#ADAEB3",
@@ -85,7 +85,7 @@ export function CapabilityCard({ cap, onRefresh }: {
             </button>
             {!hasMultipleProviders && (
               <button onClick={() => togglePower()} title={cap.status}
-                className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-contrast/10 transition-colors">
+                className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-overlay-10 transition-colors">
                 <i className="fa-solid fa-power-off text-sm"
                   style={{
                     color: isRunning ? "#26A69A" : "#6B6F77",
@@ -100,11 +100,11 @@ export function CapabilityCard({ cap, onRefresh }: {
             <button
               onClick={() => setQueueOpen(true)}
               title="Queue a new job"
-              className="group relative w-14 h-14 rounded-full border border-[#3A3A3F] flex items-center justify-center hover:border-contrast/20 hover:bg-contrast/[0.04] hover:scale-110 active:scale-95 transition-all duration-300 ease-out cursor-pointer"
+              className="group relative w-14 h-14 rounded-full border border-[#3A3A3F] flex items-center justify-center hover:border-overlay-20 hover:bg-overlay-4 hover:scale-110 active:scale-95 transition-all duration-300 ease-out cursor-pointer"
             >
               <i className={`${getCapIcon(cap)} text-[22px] group-hover:opacity-0 group-hover:scale-75 transition-all duration-300`}
                 style={{ color: iconColor }} />
-              <i className="fa-solid fa-plus text-contrast/80 text-lg absolute opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300" />
+              <i className="fa-solid fa-plus text-overlay-80 text-lg absolute opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all duration-300" />
             </button>
           </div>
 
@@ -119,7 +119,7 @@ export function CapabilityCard({ cap, onRefresh }: {
                   return (
                     <div key={p.name} className="flex items-center justify-center gap-1.5 text-[11px]">
                       <button onClick={() => togglePower(p.name)} title={`${pRunning ? "Stop" : "Start"} ${p.name}`}
-                        className="w-[18px] h-[18px] flex items-center justify-center rounded hover:bg-contrast/10 transition-colors">
+                        className="w-[18px] h-[18px] flex items-center justify-center rounded hover:bg-overlay-10 transition-colors">
                         <i className="fa-solid fa-power-off text-[9px]"
                           style={{ color: pRunning ? "#26A69A" : "#6B6F77", opacity: pRunning ? 1 : 0.4 }} />
                       </button>

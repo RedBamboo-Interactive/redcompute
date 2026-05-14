@@ -38,7 +38,7 @@ export function TokenPrompt({ onAuthenticated }: { onAuthenticated: () => void }
 
         <input
           type="password"
-          className="w-full bg-surface-deep border border-contrast/10 rounded px-3 py-2 text-[13px] text-contrast font-mono outline-none focus:border-contrast/30 mb-2"
+          className="w-full bg-surface-deep border border-overlay-10 rounded px-3 py-2 text-[13px] text-contrast font-mono outline-none focus:border-overlay-30 mb-2"
           placeholder="Access token"
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -50,7 +50,7 @@ export function TokenPrompt({ onAuthenticated }: { onAuthenticated: () => void }
         <button
           type="submit"
           disabled={checking || !value.trim()}
-          className="w-full bg-contrast/10 hover:bg-contrast/15 disabled:opacity-40 text-contrast text-[13px] rounded px-3 py-2 transition-colors"
+          className="w-full bg-overlay-10 hover:bg-overlay-15 disabled:opacity-40 text-contrast text-[13px] rounded px-3 py-2 transition-colors"
         >
           {checking ? "Checking..." : "Connect"}
         </button>
