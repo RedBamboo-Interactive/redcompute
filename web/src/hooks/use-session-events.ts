@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { api } from "@/api/client"
-import type { JobRecord, ClaudeSessionInfo, ClaudeMessageRecord, ClaudeStreamEvent, WsEvent } from "@/api/types"
-import { useWsSubscribe } from "@/contexts/ws-events"
+import type { JobRecord, ClaudeSessionInfo, ClaudeMessageRecord, ClaudeStreamEvent } from "@/api/types"
+import { useWsSubscribe } from "@redbamboo/utility"
 
 interface SessionEventsResult {
   session: ClaudeSessionInfo | null
@@ -260,7 +260,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
     resolveAndFetch()
   }, [resolveAndFetch])
 
-  useWsSubscribe(useCallback((event: WsEvent) => {
+  useWsSubscribe(useCallback((event) => {
     if (event.type === "claude.session.created" || event.type === "claude.session.updated") {
       const s = event.data as ClaudeSessionInfo
       if (s.jobId === jobId) {

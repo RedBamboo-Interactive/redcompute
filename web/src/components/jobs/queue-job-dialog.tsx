@@ -97,6 +97,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
           body[key] = val
         }
       }
+      body.rationale = "Queued from dashboard"
       const result = await api.post<{ jobId?: string; sessionId?: string }>(endpointPath + "?async=true", body)
       onOpenChange(false)
       if (selectedSlug === "ai-session") {

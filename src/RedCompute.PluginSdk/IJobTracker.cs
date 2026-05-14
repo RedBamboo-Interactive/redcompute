@@ -12,4 +12,5 @@ public interface IJobTracker
         string? contentType = null, string? resultJson = null);
     void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null);
     void MarkCancelled(Guid jobId);
+    void UpdateName(Guid jobId, string name);
 }

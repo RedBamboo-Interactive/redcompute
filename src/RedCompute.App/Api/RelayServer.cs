@@ -13,11 +13,13 @@ using RedBamboo.AppHost.Extensions;
 using RedBamboo.AppHost.Logging;
 using RedBamboo.AppHost.RemoteAccess;
 using RedBamboo.AppHost.Tunnel;
+using RedBamboo.AppHost.WebSockets;
 using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Configuration;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api;
 
@@ -66,6 +68,7 @@ public class RelayServer
                       .AllowAnyMethod();
             });
         });
+        builder.Services.AddAppHostWebSocket();
 
         _app = builder.Build();
 
@@ -98,8 +101,11 @@ public class RelayServer
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger);
         GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
-        WebSocketEndpoints.Map(_app, _registry, _jobTracker, _logger, _tunnelService, _hardwareMonitor);
         HardwareEndpoints.Map(_app, _hardwareMonitor);
+
+        var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
+        RegisterWsEvents(broadcaster);
+
         var descriptor = new RedComputeServiceDescriptor(_config, _registry, App.LogService);
         _app.MapAppHostEndpoints(descriptor, _tunnelService, "RedCompute", () => new RedBamboo.AppHost.Tunnel.TunnelConfig
         {
@@ -133,6 +139,100 @@ public class RelayServer
         _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);
         _log($"[Relay] Listening at http://localhost:{_config.ApiPort}", null);
+    }
+
+    private void RegisterWsEvents(WebSocketBroadcaster broadcaster)
+    {
+        broadcaster.RegisterEvent(new WsEventSchema("job.created",
+            "Fired when a new job is queued", "JobRecord",
+            ["id", "capabilitySlug", "providerName", "status", "queuedAt", "inputJson", "callerInfo", "name", "rationale"]));
+        broadcaster.RegisterEvent(new WsEventSchema("job.updated",
+            "Fired when a job's status, progress, or output changes", "JobRecord",
+            ["id", "capabilitySlug", "status", "progress", "startedAt", "completedAt", "errorMessage", "outputSizeBytes", "durationMs"]));
+        broadcaster.RegisterEvent(new WsEventSchema("log.entry",
+            "Fired for every new log entry", "LogEntry",
+            ["id", "timestamp", "tag", "tagCategory", "message", "tagColor", "isError", "jobId"]));
+        broadcaster.RegisterEvent(new WsEventSchema("capability.status",
+            "Fired when a capability's backend status changes (polled every 5s)",
+            Fields: ["slug", "displayName", "status", "sleeping", "provider"]));
+        broadcaster.RegisterEvent(new WsEventSchema("tunnel.status",
+            "Fired when the Cloudflare tunnel status changes",
+            Fields: ["status", "hostname", "error"]));
+        broadcaster.RegisterEvent(new WsEventSchema("claude.session.created",
+            "Fired when a new AI session is started", "ClaudeSessionInfo",
+            ["id", "projectName", "projectPath", "status", "startedAt", "model", "claudeSessionId", "title", "messageCount", "permissionMode"]));
+        broadcaster.RegisterEvent(new WsEventSchema("claude.session.updated",
+            "Fired when a session's status, tokens, cost, or title changes", "ClaudeSessionInfo",
+            ["id", "projectName", "status", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens"]));
+        broadcaster.RegisterEvent(new WsEventSchema("claude.session.ended",
+            "Fired when a session stops or errors out",
+            Fields: ["id", "reason"]));
+        broadcaster.RegisterEvent(new WsEventSchema("claude.stream",
+            "Fired for each streaming event from an active session (text, tool calls, thinking, errors)",
+            Fields: ["sessionId", "event"]));
+        broadcaster.RegisterEvent(new WsEventSchema("hardware.snapshot",
+            "Fired every 2 seconds with live system hardware metrics",
+            Fields: ["timestamp", "cpu", "ram", "gpus"]));
+
+        _jobTracker.JobCreated += job => broadcaster.Broadcast("job.created", job);
+        _jobTracker.JobUpdated += job => broadcaster.Broadcast("job.updated", job);
+        _logger.LogEntryCreated += entry => broadcaster.Broadcast("log.entry", entry);
+        _tunnelService.StatusChanged += (status, error) => broadcaster.Broadcast("tunnel.status", new
+        {
+            status = status.ToString(),
+            hostname = App.ConfigManager.Config.Tunnel.Hostname,
+            error
+        });
+
+        foreach (var source in _registry.FindProviders<IPluginEventSource>())
+            source.PluginEvent += (type, data) => broadcaster.Broadcast(type, data);
+
+        _hardwareMonitor.SnapshotUpdated += snapshot => broadcaster.Broadcast("hardware.snapshot", snapshot);
+
+        _ = PollCapabilityStatus(broadcaster);
+    }
+
+    private async Task PollCapabilityStatus(WebSocketBroadcaster broadcaster)
+    {
+        var lastStatuses = new Dictionary<string, string>();
+        while (true)
+        {
+            await Task.Delay(5000);
+            foreach (var (slug, entry) in _registry.Capabilities)
+            {
+                try
+                {
+                    var defaultStatus = entry.ActiveProvider != null
+                        ? (await entry.ActiveProvider.GetStatusAsync()).ToString()
+                        : "Stopped";
+
+                    var provStatuses = new List<object>();
+                    foreach (var (name, prov) in entry.Providers)
+                    {
+                        var ps = (await prov.GetStatusAsync()).ToString();
+                        provStatuses.Add(new { name, status = ps });
+                    }
+
+                    var key = $"{slug}:{defaultStatus}:{entry.IsSleeping}:{entry.IsManuallyDisabled}:{string.Join(",", provStatuses.Select(p => p.ToString()))}";
+                    if (lastStatuses.TryGetValue(slug, out var prev) && prev == key)
+                        continue;
+
+                    lastStatuses[slug] = key;
+                    broadcaster.Broadcast("capability.status", new
+                    {
+                        slug,
+                        displayName = entry.Definition.DisplayName,
+                        status = defaultStatus,
+                        sleeping = entry.IsSleeping,
+                        disabled = entry.IsManuallyDisabled,
+                        provider = entry.ActiveProvider?.Name,
+                        defaultProvider = entry.DefaultProviderName,
+                        providers = provStatuses
+                    });
+                }
+                catch { }
+            }
+        }
     }
 
     public async Task StopAsync()

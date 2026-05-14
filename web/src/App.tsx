@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { HashRouter, Routes, Route } from "react-router-dom"
 import { TooltipProvider } from "@redbamboo/ui"
+import { WsEventProvider, useWsSubscribe } from "@redbamboo/utility"
 import { AppShell } from "@/components/layout/app-shell"
 import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"
@@ -10,11 +11,27 @@ import { useHardware } from "@/hooks/use-hardware"
 import { useJobs, type JobFilters } from "@/hooks/use-jobs"
 import { useLogs } from "@/hooks/use-logs"
 import { useSettings } from "@/hooks/use-settings"
-import { WsEventContext, type WsEventContextValue } from "@/contexts/ws-events"
-import { createWebSocket } from "@/api/websocket"
 import { isRemoteAccess, getToken, setToken } from "@/api/auth"
 import type { WsEvent } from "@/api/types"
 import { getTheme, subscribeTheme } from "@/lib/theme-store"
+
+function WsHookBridge({ capsRef, hardwareRef, jobsRef, logsRef, settingsRef }: {
+  capsRef: React.RefObject<ReturnType<typeof useCapabilities>>
+  hardwareRef: React.RefObject<ReturnType<typeof useHardware>>
+  jobsRef: React.RefObject<ReturnType<typeof useJobs>>
+  logsRef: React.RefObject<ReturnType<typeof useLogs>>
+  settingsRef: React.RefObject<ReturnType<typeof useSettings>>
+}) {
+  useWsSubscribe((event) => {
+    const e = event as WsEvent
+    capsRef.current.handleWsEvent(e)
+    hardwareRef.current.handleWsEvent(e)
+    jobsRef.current.handleWsEvent(e)
+    logsRef.current.handleWsEvent(e)
+    settingsRef.current.handleWsEvent(e)
+  })
+  return null
+}
 
 function extractTokenFromHash(): string | null {
   const hash = window.location.hash
@@ -45,17 +62,6 @@ export default function App() {
   const logs = useLogs()
   const settings = useSettings()
 
-  const wsHandlers = useRef(new Set<(e: WsEvent) => void>())
-  const wsContext = useMemo<WsEventContextValue>(() => ({
-    subscribe: (handler) => {
-      wsHandlers.current.add(handler)
-      return () => { wsHandlers.current.delete(handler) }
-    },
-    dispatch: (event) => {
-      wsHandlers.current.forEach(h => h(event))
-    },
-  }), [])
-
   const capsRef = useRef(caps)
   const hardwareRef = useRef(hardware)
   const jobsRef = useRef(jobs)
@@ -67,21 +73,17 @@ export default function App() {
   logsRef.current = logs
   settingsRef.current = settings
 
-  useEffect(() => {
-    if (!authed) return
-    const ws = createWebSocket((event: WsEvent) => {
-      wsContext.dispatch(event)
-      capsRef.current.handleWsEvent(event)
-      hardwareRef.current.handleWsEvent(event)
-      jobsRef.current.handleWsEvent(event)
-      logsRef.current.handleWsEvent(event)
-      settingsRef.current.handleWsEvent(event)
-    }, () => {
-      capsRef.current.refresh()
-      jobsRef.current.refresh()
-    })
-    return () => ws.close()
-  }, [authed])
+  const wsUrl = useCallback(() => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+    const token = getToken()
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ""
+    return `${protocol}//${window.location.host}/ws${tokenParam}`
+  }, [])
+
+  const onReconnect = useCallback(() => {
+    capsRef.current.refresh()
+    jobsRef.current.refresh()
+  }, [])
 
   useEffect(() => {
     const handler = () => setAuthed(false)
@@ -94,7 +96,8 @@ export default function App() {
   }
 
   return (
-    <WsEventContext.Provider value={wsContext}>
+    <WsEventProvider url={wsUrl} onReconnect={onReconnect}>
+    <WsHookBridge capsRef={capsRef} hardwareRef={hardwareRef} jobsRef={jobsRef} logsRef={logsRef} settingsRef={settingsRef} />
     <HashRouter>
       <TooltipProvider>
         <Routes>
@@ -129,6 +132,6 @@ export default function App() {
         </Routes>
       </TooltipProvider>
     </HashRouter>
-    </WsEventContext.Provider>
+    </WsEventProvider>
   )
 }

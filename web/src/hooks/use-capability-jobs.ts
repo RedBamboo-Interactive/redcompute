@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { api } from "@/api/client"
-import { useWsSubscribe } from "@/contexts/ws-events"
+import { useWsSubscribe } from "@redbamboo/utility"
 import { mapJob, type ApiJob } from "./use-jobs"
 import type { JobRecord } from "@/api/types"
 

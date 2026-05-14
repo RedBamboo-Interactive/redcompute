@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from "react"
-import { Badge, Separator } from "@redbamboo/ui"
 import { JsonHighlight } from "@redbamboo/utility"
 import { api } from "@/api/client"
 import { useSessionEvents } from "@/hooks/use-session-events"
-import type { JobRecord, ClaudeMessageRecord } from "@/api/types"
+import type { CapabilityStatus, JobRecord, ClaudeMessageRecord } from "@/api/types"
+import { JobDetailShell, ParamChip, parseInput } from "./job-detail-shell"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
@@ -21,14 +21,6 @@ const eventTypeConfig: Record<string, { label: string; color: string; bg: string
   error: { label: "error", color: "text-accent-red", bg: "bg-accent-red/20" },
   system: { label: "system", color: "text-text-disabled", bg: "bg-contrast/[0.06]" },
   prompt: { label: "prompt", color: "text-blue-400", bg: "bg-blue-400/20" },
-}
-
-const statusBadgeColor: Record<string, string> = {
-  Starting: "bg-accent-gold/20 text-accent-gold border-accent-gold/30",
-  Active: "bg-accent-teal/20 text-accent-teal border-accent-teal/30",
-  Idle: "bg-accent-teal/20 text-accent-teal border-accent-teal/30",
-  Stopped: "bg-text-disabled/20 text-text-disabled border-text-disabled/30",
-  Error: "bg-accent-red/20 text-accent-red border-accent-red/30",
 }
 
 function toolColor(toolName?: string): string {
@@ -61,7 +53,7 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max) + "..."
 }
 
-export function AiSessionDetail({ job }: { job: JobRecord }) {
+export function AiSessionDetail({ job, capability }: { job: JobRecord; capability?: CapabilityStatus }) {
   const { session, filteredEvents, loading, isLive, isExecuteResult, search, setSearch, typeFilter, toggleType, clearFilters, events } =
     useSessionEvents(job)
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
@@ -122,87 +114,79 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
   }
 
   const hasFilters = search || typeFilter
+  const { extras: inputExtras } = job.inputJson ? parseInput(job.inputJson) : { extras: {} as Record<string, unknown> }
+
+  const sessionChips = (
+    <>
+      <ParamChip icon="fa-solid fa-microchip" value={shortModel(session.model)} />
+      {session.costUsd != null && <ParamChip icon="fa-solid fa-dollar-sign" value={session.costUsd.toFixed(4)} />}
+      <ParamChip icon="fa-solid fa-arrow-down" value={formatTokens(session.inputTokens)} />
+      <ParamChip icon="fa-solid fa-arrow-up" value={formatTokens(session.outputTokens)} />
+      {session.cacheReadInputTokens != null && session.cacheReadInputTokens > 0 && (
+        <ParamChip icon="fa-solid fa-bolt" value={formatTokens(session.cacheReadInputTokens)} />
+      )}
+      {session.effort && <ParamChip icon="fa-solid fa-gauge" value={session.effort} />}
+      <ParamChip icon="fa-solid fa-messages" value={String(session.messageCount)} />
+      {typeof inputExtras.container === "string" && (
+        <ParamChip icon="fa-solid fa-cube" label="Docker" value={truncate(String(inputExtras.container), 20)} />
+      )}
+      {typeof inputExtras.workingDir === "string" && (
+        <ParamChip icon="fa-solid fa-folder" value={String(inputExtras.workingDir)} />
+      )}
+      {!inputExtras.workingDir && session.projectPath && (
+        <ParamChip icon="fa-solid fa-folder" value={session.projectPath} />
+      )}
+      {session.permissionMode && session.permissionMode !== "bypassPermissions" && (
+        <ParamChip icon="fa-solid fa-shield" value={session.permissionMode} />
+      )}
+      {typeof inputExtras.maxTurns === "number" && inputExtras.maxTurns > 1 && (
+        <ParamChip icon="fa-solid fa-repeat" label="Turns" value={String(inputExtras.maxTurns)} />
+      )}
+      {typeof inputExtras.timeout === "number" && (
+        <ParamChip icon="fa-solid fa-hourglass" label="Timeout" value={`${inputExtras.timeout}s`} />
+      )}
+    </>
+  )
+
+  const codeRedButton = !isExecuteResult ? (
+    <button
+      onClick={async () => {
+        try {
+          await api.post(`/claude/sessions/${session.id}/open-in-codered`)
+          setCodeRedStatus("sent")
+          setTimeout(() => setCodeRedStatus("idle"), 2000)
+        } catch {
+          setCodeRedStatus("error")
+          setTimeout(() => setCodeRedStatus("idle"), 3000)
+        }
+      }}
+      className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors ${
+        codeRedStatus === "sent"
+          ? "bg-contrast/[0.08] text-accent-teal"
+          : codeRedStatus === "error"
+          ? "bg-contrast/[0.08] text-accent-red"
+          : "bg-contrast/[0.06] text-text-muted hover:bg-contrast/[0.10] hover:text-text-primary"
+      }`}
+    >
+      <i className={`${
+        codeRedStatus === "sent" ? "fa-solid fa-check text-accent-teal" : codeRedStatus === "error" ? "fa-solid fa-xmark text-accent-red" : "fa-regular fa-square-terminal text-accent-red"
+      } text-[11px]`} />
+      {codeRedStatus === "sent" ? "Sent to CodeRed" : codeRedStatus === "error" ? "CodeRed unreachable" : isLive ? "Open in CodeRed" : "Resume in CodeRed"}
+    </button>
+  ) : undefined
 
   return (
-    <div className="flex flex-col h-full gap-3">
-      {/* Metadata header */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <h2 className="text-lg font-medium">{session.title || session.projectName}</h2>
-        <Badge variant="outline" className={statusBadgeColor[session.status] || ""}>
-          {session.status}
-        </Badge>
-        {isLive && (
-          <span className="flex items-center gap-1.5 text-xs text-accent-teal">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-teal animate-pulse" />
-            Live
-          </span>
-        )}
-        {!isExecuteResult && (
-          <button
-            onClick={async () => {
-              try {
-                await api.post(`/claude/sessions/${session.id}/open-in-codered`)
-                setCodeRedStatus("sent")
-                setTimeout(() => setCodeRedStatus("idle"), 2000)
-              } catch {
-                setCodeRedStatus("error")
-                setTimeout(() => setCodeRedStatus("idle"), 3000)
-              }
-            }}
-            className={`ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors ${
-              codeRedStatus === "sent"
-                ? "bg-contrast/[0.08] text-accent-teal"
-                : codeRedStatus === "error"
-                ? "bg-contrast/[0.08] text-accent-red"
-                : "bg-contrast/[0.06] text-text-muted hover:bg-contrast/[0.10] hover:text-text-primary"
-            }`}
-          >
-            <i className={`${
-              codeRedStatus === "sent" ? "fa-solid fa-check text-accent-teal" : codeRedStatus === "error" ? "fa-solid fa-xmark text-accent-red" : "fa-regular fa-square-terminal text-accent-red"
-            } text-[11px]`} />
-            {codeRedStatus === "sent" ? "Sent to CodeRed" : codeRedStatus === "error" ? "CodeRed unreachable" : isLive ? "Open in CodeRed" : "Resume in CodeRed"}
-          </button>
-        )}
-      </div>
-
-      <div className="flex items-center gap-3 flex-wrap text-xs text-text-muted">
-        <span className="inline-flex items-center gap-1">
-          <i className="fa-solid fa-microchip" />
-          {shortModel(session.model)}
-        </span>
-        {session.costUsd != null && (
-          <span className="inline-flex items-center gap-1">
-            <i className="fa-solid fa-dollar-sign" />
-            {session.costUsd.toFixed(4)}
-          </span>
-        )}
-        <span className="inline-flex items-center gap-1" title="Input / Output tokens">
-          <i className="fa-solid fa-arrow-down" />
-          {formatTokens(session.inputTokens)}
-          <span className="text-text-disabled">/</span>
-          <i className="fa-solid fa-arrow-up" />
-          {formatTokens(session.outputTokens)}
-        </span>
-        {session.cacheReadInputTokens != null && session.cacheReadInputTokens > 0 && (
-          <span className="inline-flex items-center gap-1" title="Cache read tokens">
-            <i className="fa-solid fa-bolt" />
-            {formatTokens(session.cacheReadInputTokens)}
-          </span>
-        )}
-        {session.effort && (
-          <span className="inline-flex items-center gap-1">
-            <i className="fa-solid fa-gauge" />
-            {session.effort}
-          </span>
-        )}
-        <span className="inline-flex items-center gap-1">
-          <i className="fa-solid fa-messages" />
-          {session.messageCount}
-        </span>
-      </div>
-
-      <Separator />
-
+    <JobDetailShell
+      job={job}
+      capability={capability}
+      title={session.title || session.projectName}
+      status={{ label: session.status }}
+      live={isLive}
+      actions={codeRedButton}
+      chips={sessionChips}
+      showLogs={false}
+      fillHeight
+    >
       {/* Toolbar */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
@@ -278,7 +262,7 @@ export function AiSessionDetail({ job }: { job: JobRecord }) {
           </button>
         )}
       </div>
-    </div>
+    </JobDetailShell>
   )
 }
 
@@ -416,7 +400,6 @@ function ExpandedContent({ event, isThinking, isToolUse, isToolResult, isError }
     )
   }
 
-  // text — render markdown
   return (
     <div className="markdown-body text-sm bg-surface-deep rounded-lg p-3 overflow-auto max-h-96">
       <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>

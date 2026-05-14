@@ -9,14 +9,6 @@ const statusColor: Record<string, string> = {
   Cancelled: "#727C7D",
 }
 
-function timeAgo(dateStr: string): string {
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
-  if (seconds < 60) return `${seconds}s ago`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
-  return `${Math.floor(seconds / 86400)}d ago`
-}
-
 export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore, loading, onLoadMore, capMap }: {
   jobs: JobRecord[]
   selectedId: string | null
@@ -56,8 +48,6 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
               </div>
               <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
                 <span>{job.providerName}</span>
-                <span className="opacity-50">·</span>
-                <span>{timeAgo(job.queuedAt)}</span>
                 {job.callerInfo && (
                   <>
                     <span className="opacity-50">·</span>

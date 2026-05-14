@@ -36,7 +36,8 @@ public static class ClaudeSessionEndpoints
             if (mode == "oneshot")
                 return await HandleOneshot(ctx, body, claude, jobTracker, log);
 
-            return await HandleSessionGenerate(body, claude);
+            var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var sci) ? sci.ToString() : null;
+            return await HandleSessionGenerate(body, claude, callerInfo);
         });
 
         app.MapGet("/ai-session/models", () =>
@@ -53,12 +54,13 @@ public static class ClaudeSessionEndpoints
             });
         });
 
-        app.MapPost("/claude/sessions", (StartSessionRequest req) =>
+        app.MapPost("/claude/sessions", (HttpContext ctx, StartSessionRequest req) =>
         {
             if (string.IsNullOrWhiteSpace(req.ProjectPath))
                 return Results.UnprocessableEntity(new { error = "validation", message = "projectPath is required" });
 
-            var session = claude.StartSession(req.ProjectPath);
+            var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
+            var session = claude.StartSession(req.ProjectPath, callerInfo);
             if (session == null)
                 return Results.Json(
                     new { error = "start_failed", message = claude.LastStartError ?? "Unknown error" },
@@ -468,7 +470,7 @@ public static class ClaudeSessionEndpoints
         }
     }
 
-    private static async Task<IResult> HandleSessionGenerate(JsonElement body, ClaudeSessionService claude)
+    private static async Task<IResult> HandleSessionGenerate(JsonElement body, ClaudeSessionService claude, string? callerInfo = null)
     {
         var project = body.TryGetProperty("project", out var p) ? p.GetString() : null;
         var prompt = body.TryGetProperty("prompt", out var pr) ? pr.GetString() : null;
@@ -481,7 +483,7 @@ public static class ClaudeSessionEndpoints
         if (resolved == null)
             return Results.UnprocessableEntity(new { error = "validation", message = $"Project '{project}' not found" });
 
-        var session = claude.StartSession(resolved.Path);
+        var session = claude.StartSession(resolved.Path, callerInfo);
         if (session == null)
             return Results.Json(
                 new { error = "start_failed", message = claude.LastStartError ?? "Unknown error" },

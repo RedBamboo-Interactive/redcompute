@@ -112,6 +112,17 @@ public class JobTrackingService : IJobTracker
         JobUpdated?.Invoke(job);
     }
 
+    public void UpdateName(Guid jobId, string name)
+    {
+        using var db = new RedComputeDbContext();
+        var job = db.Jobs.Find(jobId);
+        if (job == null) return;
+
+        job.Name = name;
+        db.SaveChanges();
+        JobUpdated?.Invoke(job);
+    }
+
     public int RecoverOrphanedJobs()
     {
         using var db = new RedComputeDbContext();

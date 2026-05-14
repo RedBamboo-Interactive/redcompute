@@ -665,7 +665,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -738,7 +738,7 @@ public class ClaudeSessionService
 
         // Create a job record for this session
         var inputJson = System.Text.Json.JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = info.Id });
-        var job = _jobTracker.CreateJob("ai-session", "Claude Code", inputJson, name: info.ProjectName);
+        var job = _jobTracker.CreateJob("ai-session", "Claude Code", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session");
         _jobTracker.MarkRunning(job.Id);
         info.JobId = job.Id;
 
@@ -860,7 +860,7 @@ public class ClaudeSessionService
         {
             var job = _jobTracker.CreateJob("ai-session", "Claude Code",
                 System.Text.Json.JsonSerializer.Serialize(new { projectPath = sessionRecord.ProjectPath, projectName = sessionRecord.ProjectName, resumed = true }),
-                name: sessionRecord.ProjectName);
+                callerInfo: "Dashboard", name: sessionRecord.ProjectName, rationale: "Resumed session");
             _jobTracker.MarkRunning(job.Id);
             info.JobId = job.Id;
         }
@@ -1336,6 +1336,8 @@ public class ClaudeSessionService
                         if (session.Info.Title != null)
                         {
                             PersistSessionRecord(session.Info);
+                            if (session.Info.JobId != null)
+                                _jobTracker.UpdateName(session.Info.JobId.Value, session.Info.Title);
                             SessionUpdated?.Invoke(session.Info);
                         }
                     }
