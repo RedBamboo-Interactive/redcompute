@@ -76,12 +76,7 @@ public partial class App : Application
         {
             AppName = "RedCompute",
             Port = ConfigManager.Config.ApiPort,
-            LoadIcon = () =>
-            {
-                var stream = System.Reflection.Assembly.GetExecutingAssembly()
-                    .GetManifestResourceStream("redcompute.ico")!;
-                return new System.Drawing.Icon(stream);
-            },
+            LoadIcon = () => IconHelper.CreateTrayIcon(StatusColors.Teal, TrayIcons.Microchip),
             GetStatusLines = async () =>
             {
                 var lines = new List<string>();
