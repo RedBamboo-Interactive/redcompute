@@ -38,11 +38,7 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
             />
           }
           title={job.name || job.capabilitySlug}
-          badge={
-            job.status === "Running" ? (
-              <span className="w-1.5 h-1.5 rounded-full bg-accent-gold animate-pulse shrink-0" />
-            ) : undefined
-          }
+          badge={undefined}
           subtitle={
             <div className="flex items-center gap-1.5">
               <span>{job.providerName}</span>
