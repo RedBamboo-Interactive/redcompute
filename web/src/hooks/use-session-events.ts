@@ -39,6 +39,19 @@ function aggregateDeltas(records: ClaudeMessageRecord[]): ClaudeMessageRecord[] 
   return result
 }
 
+function extractCodexText(item: Record<string, unknown>): string | null {
+  const content = item.content
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) {
+    const parts = (content as Array<Record<string, unknown>>)
+      .map(b => (b.text as string) || "")
+      .filter(Boolean)
+    return parts.length > 0 ? parts.join("") : null
+  }
+  if (typeof item.text === "string") return item.text as string
+  return null
+}
+
 function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessageRecord[] {
   const events: ClaudeMessageRecord[] = []
   let nextId = 1
@@ -51,6 +64,7 @@ function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessa
 
     const sessionId = (obj.session_id as string) || ""
 
+    // Claude format
     if (obj.type === "assistant") {
       const msg = obj.message as Record<string, unknown> | undefined
       const content = msg?.content as Array<Record<string, unknown>> | undefined
@@ -79,14 +93,48 @@ function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessa
         events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: rc, toolResult: rc, timestamp })
       }
     }
+
+    // Codex format
+    else if (obj.type === "item.completed") {
+      const item = (obj.item as Record<string, unknown>) || obj
+      const itemType = item.type as string
+      const timestamp = new Date(baseTime + nextId).toISOString()
+
+      if (itemType === "agentMessage") {
+        const text = extractCodexText(item)
+        if (text) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content: text, timestamp })
+      } else if (itemType === "reasoning") {
+        const summary = item.summary as Array<Record<string, unknown>> | undefined
+        const text = summary?.map(s => (s.text as string) || "").filter(Boolean).join("\n")
+        if (text) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content: text, timestamp })
+      } else if (itemType === "commandExecution") {
+        const cmd = item.command as string | undefined
+        const output = item.output as string | undefined
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: "Command", toolInput: cmd, timestamp })
+        if (output) events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: output, toolResult: output, timestamp: new Date(baseTime + nextId).toISOString() })
+      } else if (itemType === "fileChange") {
+        const filename = item.filename as string | undefined
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: "FileEdit", toolInput: filename, timestamp })
+      } else if (itemType === "mcpToolCall") {
+        const toolName = item.name as string | undefined
+        const args = item.arguments != null ? JSON.stringify(item.arguments) : undefined
+        const output = item.output as string | undefined
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: toolName, toolInput: args, timestamp })
+        if (output) events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: output, toolResult: output, timestamp: new Date(baseTime + nextId).toISOString() })
+      }
+    }
   }
 
   return events
 }
 
-function fetchSession(sessionId: string) {
+function providerPrefix(job: JobRecord): string {
+  return job.providerName === "Codex" ? "/codex" : "/claude"
+}
+
+function fetchSession(sessionId: string, prefix: string) {
   return api.get<{ session: ClaudeSessionInfo; messages: ClaudeMessageRecord[] }>(
-    `/claude/sessions/${sessionId}`
+    `${prefix}/sessions/${sessionId}`
   )
 }
 
@@ -110,12 +158,14 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
   const prevStatus = useRef<string | null>(null)
   const isExecute = useRef(false)
 
+  const prefix = providerPrefix(job)
+
   const resolveAndFetch = useCallback(async () => {
     // Try direct session ID from job input first (works for all sessions, even old/dismissed)
     const directId = extractSessionId(job)
     if (directId) {
       try {
-        const data = await fetchSession(directId)
+        const data = await fetchSession(directId, prefix)
         resolvedSessionId.current = directId
         setSession(data.session)
         setEvents(aggregateDeltas(data.messages))
@@ -128,7 +178,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
     // Fallback: DB lookup by jobId (handles old sessions without sessionId in inputJson)
     try {
       const data = await api.get<{ session: ClaudeSessionInfo; messages: ClaudeMessageRecord[] }>(
-        `/claude/sessions/by-job/${jobId}`
+        `${prefix}/sessions/by-job/${jobId}`
       )
       resolvedSessionId.current = data.session.id
       setSession(data.session)
@@ -249,7 +299,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
     }
 
     setLoading(false)
-  }, [job, jobId])
+  }, [job, jobId, prefix])
 
   useEffect(() => {
     resolvedSessionId.current = null
@@ -261,12 +311,14 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
   }, [resolveAndFetch])
 
   useWsSubscribe(useCallback((event) => {
-    if (event.type === "claude.session.created" || event.type === "claude.session.updated") {
+    const isSessionEvent = event.type === "claude.session.created" || event.type === "claude.session.updated"
+      || event.type === "codex.session.created" || event.type === "codex.session.updated"
+    if (isSessionEvent) {
       const s = event.data as ClaudeSessionInfo
       if (s.jobId === jobId) {
         if (!resolvedSessionId.current) {
           resolvedSessionId.current = s.id
-          fetchSession(s.id).then(data => {
+          fetchSession(s.id, prefix).then(data => {
             setSession(data.session)
             setEvents(aggregateDeltas(data.messages))
             prevStatus.current = data.session.status
@@ -280,7 +332,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
 
           // Re-fetch clean persisted messages when assistant turn completes
           if (wasActive && nowIdle) {
-            fetchSession(s.id).then(data => {
+            fetchSession(s.id, prefix).then(data => {
               setEvents(aggregateDeltas(data.messages))
             }).catch(() => {})
           }
@@ -288,7 +340,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
       }
     }
 
-    if (event.type === "claude.stream") {
+    if (event.type === "claude.stream" || event.type === "codex.stream") {
       const { sessionId, event: evt } = event.data as { sessionId: string; event: ClaudeStreamEvent }
       if (sessionId !== resolvedSessionId.current) return
       if (evt.type === "status") return
@@ -348,7 +400,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
       }
       setEvents(prev => [...prev, record])
     }
-  }, [jobId]))
+  }, [jobId, prefix]))
 
   const isLive = session?.status === "Active" || session?.status === "Starting"
 
