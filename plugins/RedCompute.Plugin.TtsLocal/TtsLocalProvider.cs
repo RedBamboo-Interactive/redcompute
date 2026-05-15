@@ -60,7 +60,8 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
             Type = "string",
             Required = false,
             Default = "Serena",
-            Description = "Voice name"
+            Description = "Voice name",
+            Enum = GetVoiceNames()
         },
         ["language"] = new ParameterSchema
         {
@@ -116,20 +117,7 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
         app.MapGet("/tts/voices", () =>
         {
             var builtin = new[] { "Serena", "Aiden", "Ryan", "Vivian" };
-            var custom = new List<string>();
-
-            if (!string.IsNullOrEmpty(_voicesBasePath) && Directory.Exists(_voicesBasePath))
-            {
-                foreach (var dir in Directory.GetDirectories(_voicesBasePath))
-                {
-                    var safetensorsPath = Path.Combine(dir, "model", "checkpoint", "model.safetensors");
-                    if (File.Exists(safetensorsPath))
-                    {
-                        custom.Add(Path.GetFileName(dir));
-                    }
-                }
-            }
-
+            var custom = GetVoiceNames().Skip(builtin.Length).ToList();
             return Results.Json(new { builtin, custom });
         });
     }
@@ -143,6 +131,21 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
             Description = "List available TTS voices (built-in and custom)"
         }
     ];
+
+    private List<string> GetVoiceNames()
+    {
+        var voices = new List<string> { "Serena", "Aiden", "Ryan", "Vivian" };
+        if (!string.IsNullOrEmpty(_voicesBasePath) && Directory.Exists(_voicesBasePath))
+        {
+            foreach (var dir in Directory.GetDirectories(_voicesBasePath))
+            {
+                var safetensorsPath = Path.Combine(dir, "model", "checkpoint", "model.safetensors");
+                if (File.Exists(safetensorsPath))
+                    voices.Add(Path.GetFileName(dir));
+            }
+        }
+        return voices;
+    }
 
     public Dictionary<string, object?> TransformParameters(Dictionary<string, object?> parameters)
     {

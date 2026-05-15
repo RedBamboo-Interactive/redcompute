@@ -64,8 +64,14 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
       const primaryEndpoint = cap?.endpoints.find(e => e.method === "POST" && e.parameters && Object.keys(e.parameters).length > 0)
       if (primaryEndpoint?.parameters) {
         setEndpointPath(primaryEndpoint.path)
+        // Backend sends parameters as an array of {name, type, ...} objects;
+        // convert to a keyed record if needed
+        const rawParams = primaryEndpoint.parameters
+        const paramEntries: [string, ParameterSchema][] = Array.isArray(rawParams)
+          ? (rawParams as unknown as Array<ParameterSchema & { name: string }>).map(p => [p.name, p])
+          : Object.entries(rawParams)
         const visible: Record<string, ParameterSchema> = {}
-        for (const [key, schema] of Object.entries(primaryEndpoint.parameters)) {
+        for (const [key, schema] of paramEntries) {
           if (key.endsWith("_base64") || key.endsWith("_content_type")) continue
           visible[key] = schema
         }
