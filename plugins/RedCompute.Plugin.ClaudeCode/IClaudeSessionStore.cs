@@ -5,7 +5,7 @@ public interface IClaudeSessionStore
     ClaudeSessionRecord? FindSession(string sessionId);
     ClaudeSessionRecord? FindSessionByJobId(Guid jobId);
     List<ClaudeSessionRecord> GetActiveSessions();
-    List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20);
+    List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false);
     void SaveSession(ClaudeSessionRecord record);
     void DismissSession(string sessionId);
     void AddMessage(ClaudeMessageRecord message);

@@ -75,6 +75,10 @@ export function CapabilityCard({ cap, onRefresh }: {
         <div className="bg-surface-elevated rounded-xl p-5">
           {/* Action buttons — top right */}
           <div className="flex justify-end gap-0 -mt-1 -mr-1 mb-0">
+            <button onClick={() => navigate(`/stats?capability=${cap.slug}`)} title="View stats"
+              className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-overlay-10 transition-colors">
+              <i className="fa-solid fa-chart-simple text-xs" style={{ color: "#9098A0", opacity: 0.5 }} />
+            </button>
             <button onClick={toggleSleep} title="Sleep/Wake (freeze requests)"
               className="w-[30px] h-[30px] flex items-center justify-center rounded hover:bg-overlay-10 transition-colors">
               <i className="fa-solid fa-moon text-xs"

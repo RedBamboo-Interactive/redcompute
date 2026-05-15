@@ -75,6 +75,10 @@ export function AppShell({
             <i className="fa-solid fa-list text-xs" />
             <span>Jobs</span>
           </NavLink>
+          <NavLink to="/stats" className={navLinkClass}>
+            <i className="fa-solid fa-chart-simple text-xs" />
+            <span>Stats</span>
+          </NavLink>
         </>
       }
       menuItems={

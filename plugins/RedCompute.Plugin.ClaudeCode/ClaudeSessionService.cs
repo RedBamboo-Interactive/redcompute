@@ -1163,12 +1163,12 @@ public class ClaudeSessionService
         }
     }
 
-    public List<ClaudeSessionInfo> GetSessions()
+    public List<ClaudeSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false)
     {
         var live = _sessions.Values.Select(s => s.Info).ToList();
         var activeIds = _sessions.Keys.ToHashSet();
 
-        var recent = _sessionStore.GetRecentSessions(activeIds);
+        var recent = _sessionStore.GetRecentSessions(activeIds, limit, includeDismissed);
         var dbSessions = recent.Select(ToSessionInfo).ToList();
 
         return [.. live, .. dbSessions];

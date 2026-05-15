@@ -22,11 +22,12 @@ public class ClaudeSessionStore : IClaudeSessionStore
             .ToList();
     }
 
-    public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20)
+    public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false)
     {
         using var db = new ClaudeDbContext();
-        return db.Sessions
-            .Where(s => !excludeIds.Contains(s.Id) && !s.Dismissed)
+        var query = db.Sessions.Where(s => !excludeIds.Contains(s.Id));
+        if (!includeDismissed) query = query.Where(s => !s.Dismissed);
+        return query
             .OrderByDescending(s => s.StartedAt)
             .Take(limit)
             .ToList();

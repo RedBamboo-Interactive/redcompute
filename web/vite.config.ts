@@ -36,6 +36,7 @@ export default defineConfig({
       "/tts": "http://localhost:18800",
       "/image-gen": "http://localhost:18800",
       "/music-gen": "http://localhost:18800",
+      "/claude": "http://localhost:18800",
       "/ws": { target: "ws://localhost:18800", ws: true },
     },
   },

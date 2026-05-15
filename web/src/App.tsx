@@ -5,6 +5,7 @@ import { WsEventProvider, useWsSubscribe } from "@redbamboo/utility"
 import { AppShell } from "@/components/layout/app-shell"
 import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"
+import { StatsPage } from "@/pages/stats"
 import { TokenPrompt } from "@/components/auth/token-prompt"
 import { useCapabilities } from "@/hooks/use-capabilities"
 import { useHardware } from "@/hooks/use-hardware"
@@ -128,6 +129,7 @@ export default function App() {
                 capabilities={caps.capabilities}
               />
             } />
+            <Route path="stats" element={<StatsPage capabilities={caps.capabilities} />} />
           </Route>
         </Routes>
       </TooltipProvider>
