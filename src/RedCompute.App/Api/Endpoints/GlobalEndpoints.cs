@@ -96,6 +96,7 @@ public static class GlobalEndpoints
                     j.CallerInfo,
                     j.Name,
                     j.Rationale,
+                    j.CostUsd,
                     sessionStatus = sessionStatuses.TryGetValue(j.Id, out var ss) ? ss : (string?)null
                 }),
                 total = totalCount
@@ -127,7 +128,8 @@ public static class GlobalEndpoints
                 job.ErrorDetails,
                 job.CallerInfo,
                 job.Name,
-                job.Rationale
+                job.Rationale,
+                job.CostUsd
             });
         });
 

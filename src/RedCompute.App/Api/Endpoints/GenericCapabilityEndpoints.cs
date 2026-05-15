@@ -4,7 +4,9 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
+using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
@@ -18,8 +20,16 @@ public static class GenericCapabilityEndpoints
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "RedCompute", "outputs");
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log)
+    private static HardwareMonitorService? _hardwareMonitor;
+    private static RedComputeConfig? _config;
+    private static CapabilityRegistry? _registry;
+
+    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log,
+        HardwareMonitorService? hardwareMonitor = null, RedComputeConfig? config = null)
     {
+        _hardwareMonitor = hardwareMonitor;
+        _config = config;
+        _registry = registry;
         Directory.CreateDirectory(OutputDir);
 
         foreach (var (capSlug, _) in registry.Capabilities)
@@ -110,6 +120,12 @@ public static class GenericCapabilityEndpoints
                     {
                         await StreamingProxy.ForwardToPathAsync(ctx, proxyUrl, backendPath, body, log);
                         jobTracker.MarkCompleted(job.Id);
+                        var proxyJob = jobTracker.GetJob(job.Id);
+                        if (proxyJob != null && _registry != null)
+                        {
+                            var proxyCost = EstimateJobCost(proxyJob, _registry);
+                            if (proxyCost.HasValue) jobTracker.SetJobCost(job.Id, proxyCost.Value);
+                        }
                         return Results.Empty;
                     }
                     catch (HttpRequestException ex)
@@ -161,6 +177,7 @@ public static class GenericCapabilityEndpoints
                         var path = SaveOutput(job.Id, outputStream, result.ContentType);
                         var size = new FileInfo(path).Length;
                         jobTracker.MarkCompleted(job.Id, path, size, result.ContentType, result.ResultJson);
+                        if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
                         log($"[{slug}] Job {job.Id} completed ({size / 1024}KB)", job.Id);
 
                         outputStream.Position = 0;
@@ -174,6 +191,7 @@ public static class GenericCapabilityEndpoints
                     else if (result is { Success: true, ResultJson: not null })
                     {
                         jobTracker.MarkCompleted(job.Id, resultJson: result.ResultJson);
+                        if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
                         ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
                         try { return Results.Json(JsonSerializer.Deserialize<object>(result.ResultJson)); }
                         catch { return Results.Text(result.ResultJson, "application/json"); }
@@ -303,6 +321,15 @@ public static class GenericCapabilityEndpoints
         {
             jobTracker.MarkFailed(jobId, result?.ErrorMessage ?? "Generation failed");
             log($"[{slug}] Job {jobId} failed: {result?.ErrorMessage}", jobId);
+            return;
+        }
+
+        // Estimate cost after completion (job now has CompletedAt and DurationMs)
+        var job = jobTracker.GetJob(jobId);
+        if (job != null && _registry != null)
+        {
+            var cost = EstimateJobCost(job, _registry);
+            if (cost.HasValue) jobTracker.SetJobCost(jobId, cost.Value);
         }
     }
 
@@ -366,4 +393,36 @@ public static class GenericCapabilityEndpoints
 
     private static string Truncate(string s, int maxLen) =>
         s.Length <= maxLen ? s : s[..maxLen] + "...";
+
+    private static double? EstimateJobCost(JobRecord job, CapabilityRegistry registry)
+    {
+        var entry = registry.Get(job.CapabilitySlug);
+        ProviderConfig? providerConfig = null;
+        entry?.Config.Providers.TryGetValue(job.ProviderName, out providerConfig);
+
+        // Check for fixed costPerJob in provider config (for cloud APIs like Suno)
+        if (providerConfig?.Extra != null &&
+            providerConfig.Extra.TryGetValue("costPerJob", out var costVal) && costVal != null)
+        {
+            if (costVal is JsonElement je && je.ValueKind == JsonValueKind.Number)
+                return je.GetDouble();
+            if (double.TryParse(costVal.ToString(), out var parsed))
+                return parsed;
+        }
+
+        // For local GPU providers: estimate from power draw × duration
+        if (job.DurationMs is not > 0 || _hardwareMonitor == null || _config == null)
+            return null;
+
+        var snapshot = _hardwareMonitor.GetSnapshot();
+        if (snapshot?.Gpus == null || snapshot.Gpus.Count == 0)
+            return null;
+
+        var gpu = snapshot.Gpus[0];
+        if (gpu.PowerWatts <= 0) return null;
+
+        var hours = job.DurationMs.Value / 3_600_000.0;
+        var kwh = (gpu.PowerWatts / 1000.0) * hours;
+        return Math.Round(kwh * _config.ElectricityRatePerKwh, 6);
+    }
 }

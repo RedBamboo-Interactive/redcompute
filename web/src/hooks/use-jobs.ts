@@ -11,6 +11,7 @@ export interface ApiJob {
   startedAt?: string
   completedAt?: string
   durationMs?: number
+  costUsd?: number
   errorMessage?: string
   callerInfo?: string
   name?: string
@@ -35,6 +36,7 @@ export function mapJob(j: ApiJob): JobRecord {
     startedAt: j.startedAt,
     completedAt: j.completedAt,
     durationMs: j.durationMs,
+    costUsd: j.costUsd,
     errorMessage: j.errorMessage,
     callerInfo: j.callerInfo,
     name: j.name,

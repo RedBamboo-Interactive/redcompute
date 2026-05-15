@@ -58,7 +58,7 @@ public class JobTrackingService : IJobTracker
         JobUpdated?.Invoke(job);
     }
 
-    public void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null, string? contentType = null, string? resultJson = null)
+    public void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null, string? contentType = null, string? resultJson = null, double? costUsd = null)
     {
         using var db = new RedComputeDbContext();
         var job = db.Jobs.Find(jobId);
@@ -71,6 +71,17 @@ public class JobTrackingService : IJobTracker
         job.OutputSizeBytes = outputSizeBytes;
         job.OutputContentType = contentType;
         job.ResultJson = resultJson;
+        job.CostUsd = costUsd;
+        db.SaveChanges();
+        JobUpdated?.Invoke(job);
+    }
+
+    public void SetJobCost(Guid jobId, double costUsd)
+    {
+        using var db = new RedComputeDbContext();
+        var job = db.Jobs.Find(jobId);
+        if (job == null) return;
+        job.CostUsd = costUsd;
         db.SaveChanges();
         JobUpdated?.Invoke(job);
     }

@@ -100,7 +100,7 @@ public class RelayServer
 
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger);
-        GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log);
+        GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log, _hardwareMonitor, _config);
         HardwareEndpoints.Map(_app, _hardwareMonitor);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();

@@ -6,7 +6,8 @@ import type { JobRecord, ClaudeSessionInfo } from "@/api/types"
 import {
   type TimeRange, type StatsMetrics, type SessionMetrics,
   filterJobsByTimeRange, computeMetrics, bucketJobs, durationTrend, groupByField,
-  filterSessionsByTimeRange, computeSessionMetrics, costTrend,
+  costTrendFromJobs,
+  filterSessionsByTimeRange, computeSessionMetrics,
 } from "@/lib/stats-utils"
 
 const FETCH_LIMIT = 5000
@@ -14,6 +15,7 @@ const FETCH_LIMIT = 5000
 const emptyMetrics: StatsMetrics = {
   totalJobs: 0, completedJobs: 0, failedJobs: 0, cancelledJobs: 0,
   successRate: 0, avgDurationMs: null, totalDurationMs: 0,
+  totalCost: 0, avgCost: null, jobsWithCost: 0,
 }
 
 const emptySessionMetrics: SessionMetrics = {
@@ -73,20 +75,21 @@ export function useStats(capability: string | null, timeRange: TimeRange) {
   const metrics = useMemo(() => filteredJobs.length > 0 ? computeMetrics(filteredJobs) : emptyMetrics, [filteredJobs])
   const timeBuckets = useMemo(() => bucketJobs(filteredJobs, timeRange), [filteredJobs, timeRange])
   const durationBuckets = useMemo(() => durationTrend(filteredJobs, timeRange), [filteredJobs, timeRange])
+  const costBuckets = useMemo(() => costTrendFromJobs(filteredJobs, timeRange), [filteredJobs, timeRange])
   const providers = useMemo(() => groupByField(filteredJobs, "providerName"), [filteredJobs])
   const callers = useMemo(() => groupByField(filteredJobs, "callerInfo"), [filteredJobs])
 
+  // Session-specific token metrics (ai-session only)
   const filteredSessions = useMemo(() => filterSessionsByTimeRange(allSessions, timeRange), [allSessions, timeRange])
   const sessionMetrics = useMemo(
     () => filteredSessions.length > 0 ? computeSessionMetrics(filteredSessions) : emptySessionMetrics,
     [filteredSessions],
   )
-  const costBuckets = useMemo(() => costTrend(filteredSessions, timeRange), [filteredSessions, timeRange])
-
   const hasSessionData = allSessions.length > 0
 
   return {
-    loading, allJobs, filteredJobs, metrics, timeBuckets, durationBuckets, providers, callers, totalOnServer,
-    hasSessionData, filteredSessions, sessionMetrics, costBuckets,
+    loading, allJobs, filteredJobs, metrics, timeBuckets, durationBuckets, costBuckets,
+    providers, callers, totalOnServer,
+    hasSessionData, sessionMetrics,
   }
 }

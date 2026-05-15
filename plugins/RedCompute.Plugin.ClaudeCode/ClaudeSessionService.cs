@@ -1109,7 +1109,7 @@ public class ClaudeSessionService
         PersistSessionRecord(session.Info);
 
         if (session.Info.JobId.HasValue)
-            _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}");
+            _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "stopped");
     }
@@ -1125,7 +1125,7 @@ public class ClaudeSessionService
         PersistSessionRecord(session.Info);
 
         if (session.Info.JobId.HasValue)
-            _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}");
+            _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "killed");
         await Task.CompletedTask;

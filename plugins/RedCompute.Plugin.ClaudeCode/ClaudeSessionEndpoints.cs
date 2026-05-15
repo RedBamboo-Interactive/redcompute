@@ -329,7 +329,7 @@ public static class ClaudeSessionEndpoints
                             outputTokens = result.OutputTokens, costUsd = result.CostUsd,
                             error = (string?)null
                         });
-                        jobTracker.MarkCompleted(job.Id, resultJson: rj, contentType: "application/json");
+                        jobTracker.MarkCompleted(job.Id, resultJson: rj, contentType: "application/json", costUsd: result.CostUsd);
                         claude.EmitStreamEvent(streamKey, new ClaudeStreamEvent { Type = "status", Content = "completed" });
                         log($"[Claude] Execute job {job.Id} completed ({result.InputTokens}in/{result.OutputTokens}out)", job.Id);
                     }
@@ -380,7 +380,7 @@ public static class ClaudeSessionEndpoints
                 costUsd = result.CostUsd,
                 error = (string?)null
             });
-            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json");
+            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json", costUsd: result.CostUsd);
             log($"[Claude] Execute job {job.Id} completed ({result.InputTokens}in/{result.OutputTokens}out)", job.Id);
 
             ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();

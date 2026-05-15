@@ -14,7 +14,7 @@ import { useLogs } from "@/hooks/use-logs"
 import { useSettings } from "@/hooks/use-settings"
 import { isRemoteAccess, getToken, setToken } from "@/api/auth"
 import type { WsEvent } from "@/api/types"
-import { getTheme, subscribeTheme } from "@/lib/theme-store"
+import { getTheme, subscribeTheme, getContrast, subscribeContrast } from "@/lib/theme-store"
 
 function WsHookBridge({ capsRef, hardwareRef, jobsRef, logsRef, settingsRef }: {
   capsRef: React.RefObject<ReturnType<typeof useCapabilities>>
@@ -49,12 +49,13 @@ export default function App() {
     return !isRemoteAccess() || !!getToken()
   })
   const theme = useSyncExternalStore(subscribeTheme, getTheme)
+  const contrast = useSyncExternalStore(subscribeContrast, getContrast)
 
   useEffect(() => {
     const root = document.documentElement
-    if (theme === "light") root.classList.remove("dark")
-    else root.classList.add("dark")
-  }, [theme])
+    root.classList.toggle("dark", theme === "dark")
+    root.dataset.contrast = contrast
+  }, [theme, contrast])
 
   const caps = useCapabilities()
   const hardware = useHardware()

@@ -10,6 +10,9 @@ export interface StatsMetrics {
   successRate: number
   avgDurationMs: number | null
   totalDurationMs: number
+  totalCost: number
+  avgCost: number | null
+  jobsWithCost: number
 }
 
 export interface TimeBucket {
@@ -48,8 +51,10 @@ export function filterJobsByTimeRange(jobs: JobRecord[], range: TimeRange): JobR
 
 export function computeMetrics(jobs: JobRecord[]): StatsMetrics {
   let completed = 0, failed = 0, cancelled = 0, totalDur = 0, durCount = 0
+  let totalCost = 0, costCount = 0
 
   for (const j of jobs) {
+    if (j.costUsd != null) { totalCost += j.costUsd; costCount++ }
     if (j.status === "Completed") {
       completed++
       if (j.durationMs != null) { totalDur += j.durationMs; durCount++ }
@@ -70,6 +75,9 @@ export function computeMetrics(jobs: JobRecord[]): StatsMetrics {
     successRate: decided > 0 ? (completed / decided) * 100 : 0,
     avgDurationMs: durCount > 0 ? totalDur / durCount : null,
     totalDurationMs: totalDur,
+    totalCost,
+    avgCost: costCount > 0 ? totalCost / costCount : null,
+    jobsWithCost: costCount,
   }
 }
 
@@ -242,6 +250,27 @@ export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+export function costTrendFromJobs(jobs: JobRecord[], range: TimeRange): CostBucket[] {
+  const { start, step, count, labelFn } = createBuckets(range)
+  const startMs = start.getTime()
+
+  const buckets: CostBucket[] = Array.from({ length: count }, (_, i) => {
+    const d = new Date(startMs + i * step)
+    return { date: d.toISOString(), label: labelFn(d), cost: 0, count: 0 }
+  })
+
+  for (const j of jobs) {
+    if (j.costUsd == null) continue
+    const ts = new Date(j.completedAt || j.queuedAt).getTime()
+    const idx = findBucketIndex(ts, startMs, step, count)
+    if (idx < 0) continue
+    buckets[idx].cost += j.costUsd
+    buckets[idx].count++
+  }
+
+  return buckets
 }
 
 export function formatDurationCompact(ms: number): string {

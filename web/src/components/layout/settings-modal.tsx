@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@redbamboo/ui"
 import { TunnelSettingsPanel } from "@redbamboo/utility"
 import { api } from "@/api/client"
 import type { Settings } from "@/api/types"
-import { getTheme, setTheme, subscribeTheme } from "@/lib/theme-store"
+import { getTheme, setTheme, subscribeTheme, getContrast, setContrast, subscribeContrast } from "@/lib/theme-store"
 
 interface DiscoverEndpoint { method: string; path: string; description: string }
 interface DiscoverResponse {
@@ -50,6 +50,7 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
         <SectionLabel>APPEARANCE</SectionLabel>
         <div className="bg-surface-deep rounded-lg p-4 mb-4">
           <ThemeToggle />
+          <ContrastToggle />
         </div>
 
         {/* GENERAL */}
@@ -108,6 +109,15 @@ function ThemeToggle() {
   return (
     <FieldRow label="Light mode">
       <Toggle enabled={theme === "light"} onToggle={() => setTheme(theme === "light" ? "dark" : "light")} />
+    </FieldRow>
+  )
+}
+
+function ContrastToggle() {
+  const contrast = useSyncExternalStore(subscribeContrast, getContrast)
+  return (
+    <FieldRow label="High contrast">
+      <Toggle enabled={contrast === "high"} onToggle={() => setContrast(contrast === "high" ? "low" : "high")} />
     </FieldRow>
   )
 }
