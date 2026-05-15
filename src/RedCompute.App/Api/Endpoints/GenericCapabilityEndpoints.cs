@@ -118,14 +118,23 @@ public static class GenericCapabilityEndpoints
                     }
                     try
                     {
-                        await StreamingProxy.ForwardToPathAsync(ctx, proxyUrl, backendPath, body, log);
-                        jobTracker.MarkCompleted(job.Id);
-                        var proxyJob = jobTracker.GetJob(job.Id);
-                        if (proxyJob != null && _registry != null)
+                        var (data, contentType) = await StreamingProxy.FetchFromPathAsync(ctx, proxyUrl, backendPath, body);
+                        var outputPath = SaveOutput(job.Id, data, contentType);
+                        var size = new FileInfo(outputPath).Length;
+                        jobTracker.MarkCompleted(job.Id, outputPath, size, contentType);
+                        if (_registry != null)
                         {
-                            var proxyCost = EstimateJobCost(proxyJob, _registry);
+                            var proxyCost = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry);
                             if (proxyCost.HasValue) jobTracker.SetJobCost(job.Id, proxyCost.Value);
                         }
+                        log($"[{slug}] Job {job.Id} completed ({size / 1024}KB)", job.Id);
+
+                        data.Position = 0;
+                        ctx.Response.ContentType = contentType;
+                        ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+                        ctx.Response.ContentLength = data.Length;
+                        await data.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+                        await data.DisposeAsync();
                         return Results.Empty;
                     }
                     catch (HttpRequestException ex)
@@ -339,7 +348,11 @@ public static class GenericCapabilityEndpoints
         var errors = new Dictionary<string, string>();
         foreach (var (name, param) in schema)
         {
-            if (param.Required && (!body.ContainsKey(name) || IsEmpty(body.GetValueOrDefault(name))))
+            if (!param.Required) continue;
+            var present = !IsEmpty(body.GetValueOrDefault(name));
+            if (!present && param.Type == "file")
+                present = !IsEmpty(body.GetValueOrDefault(name + "_base64"));
+            if (!present)
                 errors[name] = "required";
         }
         return errors;

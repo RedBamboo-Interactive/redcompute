@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -37,6 +38,16 @@ public static class StreamingProxy
 
     public static async Task ForwardToPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body, Action<string, Guid?> log)
     {
+        var (data, contentType) = await FetchFromPathAsync(ctx, baseUrl, path, body);
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = contentType;
+        ctx.Response.ContentLength = data.Length;
+        data.Position = 0;
+        await data.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+    }
+
+    public static async Task<(MemoryStream Data, string ContentType)> FetchFromPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body)
+    {
         var targetUrl = baseUrl.TrimEnd('/') + path;
         var json = JsonSerializer.Serialize(body);
         using var request = new HttpRequestMessage(HttpMethod.Post, targetUrl)
@@ -50,21 +61,15 @@ public static class StreamingProxy
 
         if (!response.IsSuccessStatusCode)
         {
-            ctx.Response.StatusCode = (int)response.StatusCode;
-            ctx.Response.ContentType = "application/json";
             var errorBody = await response.Content.ReadAsStringAsync(ctx.RequestAborted);
-            await ctx.Response.WriteAsync(errorBody, ctx.RequestAborted);
-            return;
+            throw new HttpRequestException($"Backend returned {(int)response.StatusCode}: {errorBody}");
         }
 
-        ctx.Response.StatusCode = (int)response.StatusCode;
-        ctx.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "audio/wav";
-
-        if (response.Content.Headers.ContentLength.HasValue)
-            ctx.Response.ContentLength = response.Content.Headers.ContentLength.Value;
-
+        var contentType = response.Content.Headers.ContentType?.ToString() ?? "audio/wav";
+        var ms = new MemoryStream();
         await using var stream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
-        await stream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+        await stream.CopyToAsync(ms, ctx.RequestAborted);
+        return (ms, contentType);
     }
 
     public static async Task ForwardRawAsync(HttpContext ctx, string baseUrl, string? path, Action<string, Guid?> log)
