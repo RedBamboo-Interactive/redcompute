@@ -89,7 +89,7 @@ public static class GenericCapabilityEndpoints
 
                 var job = jobTracker.CreateJob(slug, provider.Name,
                     JsonSerializer.Serialize(body),
-                    ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
+                    ctx.Request.Headers["X-Caller-Info"].FirstOrDefault() ?? "RedCompute",
                     idempotencyKey, name: jobName, rationale: jobRationale);
                 jobTracker.MarkRunning(job.Id);
 

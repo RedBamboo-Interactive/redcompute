@@ -64,7 +64,13 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
             Type = "string",
             Required = false,
             Default = "auto",
-            Description = "Language code or 'auto' for detection"
+            Description = "Language",
+            Enum = [
+                "auto", "en", "fr", "de", "es", "it", "pt", "nl", "pl", "ru",
+                "uk", "ja", "zh", "ko", "ar", "tr", "sv", "da", "no", "fi",
+                "cs", "el", "ro", "hu", "hi", "th", "vi", "id", "ms", "he",
+                "bg", "ca", "hr", "sk", "sl", "sr", "lt", "lv", "et"
+            ]
         },
         ["task"] = new ParameterSchema
         {
