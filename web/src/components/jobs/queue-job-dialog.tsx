@@ -104,7 +104,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
         }
       }
       body.rationale = "Queued from dashboard"
-      const result = await api.post<{ jobId?: string; sessionId?: string }>(endpointPath + "?async=true", body)
+      const result = await api.post<{ jobId?: string; sessionId?: string }>(endpointPath + "?async=true", body, { "X-Caller-Info": "RedCompute" })
       onOpenChange(false)
       if (selectedSlug === "ai-session") {
         navigate("/claude")

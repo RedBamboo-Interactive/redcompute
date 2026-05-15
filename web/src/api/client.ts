@@ -27,10 +27,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body?: unknown) =>
+  post: <T>(path: string, body?: unknown, extraHeaders?: Record<string, string>) =>
     request<T>(path, {
       method: "POST",
-      headers: body ? { "Content-Type": "application/json" } : {},
+      headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...extraHeaders },
       body: body ? JSON.stringify(body) : undefined,
     }),
   put: <T>(path: string, body?: unknown) =>
