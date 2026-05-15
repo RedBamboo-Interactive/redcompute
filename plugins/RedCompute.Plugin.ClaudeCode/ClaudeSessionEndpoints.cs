@@ -298,8 +298,7 @@ public static class ClaudeSessionEndpoints
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
 
-        var providerLabel = model switch { "haiku" => "Haiku", "sonnet" => "Sonnet", "opus" => "Opus", _ => "Claude Code" };
-        var job = jobTracker.CreateJob("ai-session", providerLabel, inputSummary, callerInfo, idempotencyKey, jobName, rationale);
+        var job = jobTracker.CreateJob("ai-session", "Claude Code", inputSummary, callerInfo, idempotencyKey, jobName, rationale);
         jobTracker.MarkRunning(job.Id);
         log($"[Claude] Execute job {job.Id} started (container={container ?? "local"}, model={model ?? "default"}, maxTurns={maxTurns}) [TIMING {sw?.ElapsedMilliseconds}ms since request]", job.Id);
 
@@ -434,8 +433,7 @@ public static class ClaudeSessionEndpoints
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
 
-        var providerLabel = model switch { "haiku" => "Haiku", "sonnet" => "Sonnet", "opus" => "Opus", _ => "Claude Code" };
-        var job = jobTracker.CreateJob("ai-session", providerLabel, inputSummary, callerInfo, idempotencyKey, jobName, rationale);
+        var job = jobTracker.CreateJob("ai-session", "Claude Code", inputSummary, callerInfo, idempotencyKey, jobName, rationale);
         jobTracker.MarkRunning(job.Id);
         log($"[Claude] Oneshot job {job.Id} started", job.Id);
 
