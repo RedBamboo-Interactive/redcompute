@@ -188,37 +188,35 @@ export function StatsPage({ capabilities }: { capabilities: CapabilityStatus[] }
               />
             </div>
 
-            {/* Cost metrics — shown when any jobs have cost data */}
-            {metrics.jobsWithCost > 0 && (
-              <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6 ${stats.hasSessionData ? "lg:grid-cols-4" : "lg:grid-cols-2"}`}>
-                <MetricCard
-                  label="Total Cost"
-                  value={formatCost(metrics.totalCost)}
-                  icon="fa-solid fa-dollar-sign"
-                  color="#D4AA4F"
-                />
-                <MetricCard
-                  label="Avg Cost / Job"
-                  value={metrics.avgCost != null ? formatCost(metrics.avgCost) : "—"}
-                  icon="fa-solid fa-receipt"
-                  color="#D4AA4F"
-                />
-                {stats.hasSessionData && (
-                  <>
-                    <MetricCard
-                      label="Input Tokens"
-                      value={stats.sessionMetrics.totalInputTokens > 0 ? formatTokens(stats.sessionMetrics.totalInputTokens) : "—"}
-                      icon="fa-solid fa-arrow-down"
-                    />
-                    <MetricCard
-                      label="Output Tokens"
-                      value={stats.sessionMetrics.totalOutputTokens > 0 ? formatTokens(stats.sessionMetrics.totalOutputTokens) : "—"}
-                      icon="fa-solid fa-arrow-up"
-                    />
-                  </>
-                )}
-              </div>
-            )}
+            {/* Cost metrics */}
+            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6 ${stats.hasSessionData ? "lg:grid-cols-4" : "lg:grid-cols-2"}`}>
+              <MetricCard
+                label="Total Cost"
+                value={metrics.totalCost > 0 ? formatCost(metrics.totalCost) : "—"}
+                icon="fa-solid fa-dollar-sign"
+                color="#D4AA4F"
+              />
+              <MetricCard
+                label="Avg Cost / Job"
+                value={metrics.avgCost != null ? formatCost(metrics.avgCost) : "—"}
+                icon="fa-solid fa-receipt"
+                color="#D4AA4F"
+              />
+              {stats.hasSessionData && (
+                <>
+                  <MetricCard
+                    label="Input Tokens"
+                    value={stats.sessionMetrics.totalInputTokens > 0 ? formatTokens(stats.sessionMetrics.totalInputTokens) : "—"}
+                    icon="fa-solid fa-arrow-down"
+                  />
+                  <MetricCard
+                    label="Output Tokens"
+                    value={stats.sessionMetrics.totalOutputTokens > 0 ? formatTokens(stats.sessionMetrics.totalOutputTokens) : "—"}
+                    icon="fa-solid fa-arrow-up"
+                  />
+                </>
+              )}
+            </div>
 
             {/* Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4 mb-4">
@@ -229,11 +227,9 @@ export function StatsPage({ capabilities }: { capabilities: CapabilityStatus[] }
               <DurationChart data={durationBuckets} />
               <SourceBarChart data={callers} label="Top Sources" />
             </div>
-            {metrics.jobsWithCost > 0 && (
-              <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
-                <CostChart data={stats.costBuckets} />
-              </div>
-            )}
+            <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
+              <CostChart data={stats.costBuckets} />
+            </div>
           </>
         )}
       </div>
