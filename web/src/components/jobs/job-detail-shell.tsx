@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from "react"
 import { Badge, Card, CardContent, Separator } from "@redbamboo/ui"
 import { api } from "@/api/client"
 import type { CapabilityStatus, JobRecord, LogEntry } from "@/api/types"
+import { formatCost } from "@/lib/stats-utils"
 
 const statusIconColor: Record<string, string> = {
   Queued: "#D4AA4F", Running: "#D4AA4F", Starting: "#D4AA4F",
@@ -160,6 +161,13 @@ export function JobDetailShell({
             <>
               <span className="text-text-disabled-a50">&middot;</span>
               <span>{formatDuration(job.durationMs)}</span>
+            </>
+          )}
+          {job.costUsd != null && job.costUsd > 0 && (
+            <>
+              <span className="text-text-disabled-a50">&middot;</span>
+              <i className="fa-solid fa-bolt text-[10px] text-accent-gold" />
+              <span>{formatCost(job.costUsd)}</span>
             </>
           )}
           <span className="text-text-disabled-a50">&middot;</span>

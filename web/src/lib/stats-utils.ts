@@ -241,8 +241,12 @@ export function costTrend(sessions: ClaudeSessionInfo[], range: TimeRange): Cost
 }
 
 export function formatCost(usd: number): string {
-  if (usd < 0.01) return `$${usd.toFixed(4)}`
-  if (usd < 1) return `$${usd.toFixed(2)}`
+  if (usd < 0.000001) return `$${usd.toExponential(1)}`
+  if (usd < 0.01) {
+    const s = usd.toFixed(8).replace(/0+$/, "")
+    return `$${s.endsWith(".") ? s + "0" : s}`
+  }
+  if (usd < 1) return `$${usd.toFixed(4)}`
   return `$${usd.toFixed(2)}`
 }
 
