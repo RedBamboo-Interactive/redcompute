@@ -150,7 +150,7 @@ public static class CodexSessionEndpoints
                             outputTokens = result.OutputTokens, costUsd = result.CostUsd,
                             error = (string?)null
                         });
-                        jobTracker.MarkCompleted(job.Id, resultJson: rj, contentType: "application/json");
+                        jobTracker.MarkCompleted(job.Id, resultJson: rj, contentType: "application/json", costUsd: result.CostUsd);
                         codex.EmitStreamEvent(streamKey, new CodexStreamEvent { Type = "status", Content = "completed" });
                         log($"[Codex] Execute job {job.Id} completed ({result.InputTokens}in/{result.OutputTokens}out)", job.Id);
                     }
@@ -199,7 +199,7 @@ public static class CodexSessionEndpoints
                 costUsd = result.CostUsd,
                 error = (string?)null
             });
-            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json");
+            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json", costUsd: result.CostUsd);
             log($"[Codex] Execute job {job.Id} completed ({result.InputTokens}in/{result.OutputTokens}out)", job.Id);
 
             ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();

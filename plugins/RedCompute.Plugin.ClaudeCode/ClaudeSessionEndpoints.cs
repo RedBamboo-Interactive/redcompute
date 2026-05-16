@@ -448,8 +448,8 @@ public static class ClaudeSessionEndpoints
                 return Results.Json(new ErrorResponse { Error = "execution_failed", Message = result.Error ?? "Unknown error" }, statusCode: 502);
             }
 
-            var resultJson = JsonSerializer.Serialize(new { success = true, text = result.Text, model = result.Model, inputTokens = result.InputTokens, outputTokens = result.OutputTokens });
-            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json");
+            var resultJson = JsonSerializer.Serialize(new { success = true, text = result.Text, model = result.Model, inputTokens = result.InputTokens, outputTokens = result.OutputTokens, costUsd = result.CostUsd });
+            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, contentType: "application/json", costUsd: result.CostUsd);
             log($"[Claude] Oneshot job {job.Id} completed", job.Id);
 
             ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();

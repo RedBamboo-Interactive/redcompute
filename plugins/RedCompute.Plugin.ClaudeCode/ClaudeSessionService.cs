@@ -197,7 +197,7 @@ public class ClaudeSessionService
 
     public string? LastStartError { get; private set; }
 
-    public record OneshotResult(bool Success, string? Text, string? Model, int InputTokens, int OutputTokens, string? Error);
+    public record OneshotResult(bool Success, string? Text, string? Model, int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
     public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error);
@@ -549,13 +549,13 @@ public class ClaudeSessionService
     {
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
-            return new OneshotResult(false, null, null, 0, 0, "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
+            return new OneshotResult(false, null, null, 0, 0, null, "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
 
         var resolvedModel = model ?? _config.DefaultOneshotModel;
 
         var prompt = BuildOneshotPrompt(messages);
         if (string.IsNullOrWhiteSpace(prompt))
-            return new OneshotResult(false, null, null, 0, 0, "messages produced empty prompt");
+            return new OneshotResult(false, null, null, 0, 0, null, "messages produced empty prompt");
 
         var startInfo = new ProcessStartInfo
         {
@@ -585,7 +585,7 @@ public class ClaudeSessionService
 
         using var process = Process.Start(startInfo);
         if (process == null)
-            return new OneshotResult(false, null, null, 0, 0, "Failed to start claude process");
+            return new OneshotResult(false, null, null, 0, 0, null, "Failed to start claude process");
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
@@ -602,12 +602,13 @@ public class ClaudeSessionService
         {
             var errMsg = stderr.Length > 300 ? stderr[..300] : stderr;
             _log($"[Claude] Oneshot exited {process.ExitCode}: {errMsg}", null);
-            return new OneshotResult(false, null, null, 0, 0, $"claude exited with code {process.ExitCode}: {errMsg}");
+            return new OneshotResult(false, null, null, 0, 0, null, $"claude exited with code {process.ExitCode}: {errMsg}");
         }
 
         var text = stdout.Trim();
         var inputTokens = 0;
         var outputTokens = 0;
+        double? costUsd = null;
         var actualModel = resolvedModel;
 
         try
@@ -632,7 +633,7 @@ public class ClaudeSessionService
                             if (usage.TryGetProperty("output_tokens", out var ot)) outputTokens = ot.GetInt32();
                         }
                         if (evt.TryGetProperty("total_cost_usd", out var cost))
-                            _log($"[Claude] Oneshot cost: ${cost.GetDouble():F6}", null);
+                            costUsd = cost.GetDouble();
                         break;
                     }
                     if (evtType == "system" && evt.TryGetProperty("model", out var m))
@@ -646,7 +647,7 @@ public class ClaudeSessionService
         }
 
         _log($"[Claude] Oneshot {actualModel} done ({text.Length} chars)", null);
-        return new OneshotResult(true, text, actualModel, inputTokens, outputTokens, null);
+        return new OneshotResult(true, text, actualModel, inputTokens, outputTokens, costUsd, null);
     }
 
     private static string BuildOneshotPrompt(JsonElement messages)
