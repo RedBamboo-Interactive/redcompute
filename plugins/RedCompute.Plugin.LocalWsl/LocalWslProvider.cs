@@ -157,11 +157,17 @@ public class LocalWslProvider : IPluginProvider
 
     private ProcessStartInfo BuildStartInfo()
     {
+        var extraArgs = "";
+        if (!string.IsNullOrEmpty(_config.Model))
+            extraArgs += $" --model {_config.Model}";
+        if (_config.BackendPort > 0)
+            extraArgs += $" --port {_config.BackendPort}";
+
         if (_config.WslDistro != null)
         {
             var venvActivate = _config.VenvPath != null ? $"source {_config.VenvPath}/bin/activate && " : "";
             var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
-            var command = $"{venvActivate}cd {serverPath} && python3 server.py";
+            var command = $"{venvActivate}cd {serverPath} && python3 server.py{extraArgs}";
 
             return new ProcessStartInfo
             {
@@ -177,7 +183,7 @@ public class LocalWslProvider : IPluginProvider
         return new ProcessStartInfo
         {
             FileName = "cmd.exe",
-            Arguments = $"/c cd /d \"{_config.ServerPath}\" && python3 server.py",
+            Arguments = $"/c cd /d \"{_config.ServerPath}\" && python3 server.py{extraArgs}",
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardOutput = true,

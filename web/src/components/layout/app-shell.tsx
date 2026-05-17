@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { NavLink, Outlet } from "react-router-dom"
 import { AppShell as UtilityAppShell } from "@redbamboo/utility"
-import { DropdownMenuItem } from "@redbamboo/ui"
+import { DropdownMenuItem, NavTabs, navTabClass } from "@redbamboo/ui"
 import { SettingsModal } from "./settings-modal"
 import { ConsolePanel } from "./console-panel"
 import type { Settings, LogEntry, TagInfo } from "@/api/types"
@@ -35,11 +35,7 @@ export function AppShell({
   const canShare = tunnel?.status === "Running" && !!tunnel.hostname && !!tunnel.accessToken
 
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors ${
-      isActive
-        ? "text-accent-teal bg-accent-teal-a15"
-        : "text-text-muted hover:text-contrast hover:bg-overlay-10"
-    }`
+    navTabClass(isActive)
 
   return (
     <UtilityAppShell
@@ -66,7 +62,7 @@ export function AppShell({
           : undefined,
       }}
       headerContent={
-        <>
+        <NavTabs>
           <NavLink to="/" end className={navLinkClass}>
             <i className="fa-solid fa-grid-2 text-xs" />
             <span>Capabilities</span>
@@ -79,7 +75,7 @@ export function AppShell({
             <i className="fa-solid fa-chart-simple text-xs" />
             <span>Stats</span>
           </NavLink>
-        </>
+        </NavTabs>
       }
       menuItems={
         <>

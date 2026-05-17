@@ -193,6 +193,17 @@ public class ConfigManager
                             HealthEndpoint = "/health",
                             Model = "large-v3",
                             StartupTimeoutSeconds = 300
+                        },
+                        ["local-wsl-turbo"] = new()
+                        {
+                            Type = "SttLocal",
+                            WslDistro = "Ubuntu-24.04",
+                            VenvPath = "~/stt-env",
+                            ServerPath = @"T:\Projects\faster-whisper-server",
+                            BackendPort = 8767,
+                            HealthEndpoint = "/health",
+                            Model = "large-v3-turbo",
+                            StartupTimeoutSeconds = 300
                         }
                     }
                 },
