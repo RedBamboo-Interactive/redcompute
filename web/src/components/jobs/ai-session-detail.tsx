@@ -190,6 +190,7 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
       actions={codeRedButton}
       chips={sessionChips}
       showLogs={false}
+      showPrompt={false}
       fillHeight
     >
       {/* Toolbar */}

@@ -88,12 +88,13 @@ interface JobDetailShellProps {
   chips?: ReactNode
   children: ReactNode
   showLogs?: boolean
+  showPrompt?: boolean
   fillHeight?: boolean
 }
 
 export function JobDetailShell({
   job, capability, title, status, live, actions, chips, children,
-  showLogs = true, fillHeight = false,
+  showLogs = true, showPrompt = true, fillHeight = false,
 }: JobDetailShellProps) {
   const [logs, setLogs] = useState<LogEntry[]>([])
 
@@ -176,7 +177,7 @@ export function JobDetailShell({
       </div>
 
       {/* Prompt */}
-      {prompt && (
+      {showPrompt && prompt && (
         <div className="border-l-2 border-accent-teal-a40 pl-4 py-2">
           <p className="text-sm font-serif leading-relaxed text-text-primary">{prompt}</p>
         </div>
