@@ -319,6 +319,9 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private ProcessStartInfo BuildStartInfo()
     {
         var listenArgs = $"--listen {_host} --port {_port}";
+        var serverArgs = ProviderHelpers.GetExtra(_config, "ServerArgs", "");
+        if (!string.IsNullOrWhiteSpace(serverArgs))
+            listenArgs += $" {serverArgs}";
 
         if (_config.WslDistro != null)
         {
