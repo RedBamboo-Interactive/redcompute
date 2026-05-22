@@ -157,10 +157,13 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
   const nextLocalId = useRef(100_000)
   const prevStatus = useRef<string | null>(null)
   const isExecute = useRef(false)
+  const jobRef = useRef(job)
+  jobRef.current = job
 
   const prefix = providerPrefix(job)
 
   const resolveAndFetch = useCallback(async () => {
+    const job = jobRef.current
     // Try direct session ID from job input first (works for all sessions, even old/dismissed)
     const directId = extractSessionId(job)
     if (directId) {
@@ -299,7 +302,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
     }
 
     setLoading(false)
-  }, [job, jobId, prefix])
+  }, [jobId, prefix])
 
   useEffect(() => {
     resolvedSessionId.current = null
@@ -309,6 +312,14 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
     setLoading(true)
     resolveAndFetch()
   }, [resolveAndFetch])
+
+  // When an execute job finishes, rebuild events from the complete stored output
+  useEffect(() => {
+    if (!isExecute.current) return
+    if (job.status !== "Completed" && job.status !== "Failed") return
+    if (!job.resultJson) return
+    resolveAndFetch()
+  }, [job.status, job.resultJson, resolveAndFetch])
 
   useWsSubscribe(useCallback((event) => {
     const isSessionEvent = event.type === "claude.session.created" || event.type === "claude.session.updated"

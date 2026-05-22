@@ -244,7 +244,7 @@ public static class GenericCapabilityEndpoints
                     job.Progress,
                     job.ErrorMessage,
                     durationMs = job.DurationMs,
-                    resultMetadata = job.ResultJson
+                    resultJson = job.ResultJson
                 });
             });
 

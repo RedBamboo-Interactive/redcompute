@@ -82,7 +82,7 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
     setSttOutput(null)
     fetch(authUrl(`/${job.capabilitySlug}/jobs/${job.id}/output`))
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data?.text) setSttOutput(data) })
+      .then(data => { if (data && typeof data.text === "string") setSttOutput(data) })
       .catch(() => {})
   }, [job.id, job.capabilitySlug, job.status, job.outputContentType])
 
@@ -179,14 +179,19 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
             <div className="bg-surface-base rounded-lg p-4">
               <div className="flex items-start justify-between gap-3 mb-3">
                 <span className="text-xs font-medium text-text-muted">Transcription</span>
-                <button
-                  onClick={() => navigator.clipboard.writeText(sttOutput.text)}
-                  className="inline-flex items-center gap-1.5 text-[11px] text-text-disabled hover:text-text-primary transition-colors shrink-0"
-                >
-                  <i className="fa-solid fa-copy" />Copy text
-                </button>
+                {sttOutput.text && (
+                  <button
+                    onClick={() => navigator.clipboard.writeText(sttOutput.text)}
+                    className="inline-flex items-center gap-1.5 text-[11px] text-text-disabled hover:text-text-primary transition-colors shrink-0"
+                  >
+                    <i className="fa-solid fa-copy" />Copy text
+                  </button>
+                )}
               </div>
-              <p className="text-sm leading-relaxed text-text-primary whitespace-pre-wrap">{sttOutput.text}</p>
+              {sttOutput.text
+                ? <p className="text-sm leading-relaxed text-text-primary whitespace-pre-wrap">{sttOutput.text}</p>
+                : <p className="text-sm italic text-text-disabled">No speech detected</p>
+              }
               {(sttOutput.language || sttOutput.segments) && (
                 <div className="mt-3 flex items-center gap-3 text-[11px] text-text-disabled">
                   {sttOutput.language && <span>Detected: {sttOutput.language}</span>}

@@ -22,7 +22,7 @@ export interface ApiJob {
   outputLocation?: string
   outputSizeBytes?: number
   outputContentType?: string
-  resultMetadata?: string
+  resultJson?: string
   errorDetails?: string
 }
 
@@ -46,7 +46,7 @@ export function mapJob(j: ApiJob): JobRecord {
     outputLocation: j.outputLocation,
     outputSizeBytes: j.outputSizeBytes,
     outputContentType: j.outputContentType,
-    resultJson: j.resultMetadata,
+    resultJson: j.resultJson,
     errorDetails: j.errorDetails,
     sessionStatus: j.sessionStatus as JobRecord["sessionStatus"],
   }

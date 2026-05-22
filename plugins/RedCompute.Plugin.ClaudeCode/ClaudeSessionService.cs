@@ -355,7 +355,7 @@ public class ClaudeSessionService
     private static void AddAgentArgs(List<string> args, string? model, string? effort,
         int maxTurns, string[]? allowedTools, string[]? addDirs)
     {
-        args.AddRange(["--print", "--output-format", "stream-json", "--verbose"]);
+        args.AddRange(["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
         args.AddRange(["--max-turns", maxTurns.ToString()]);
         args.Add("--dangerously-skip-permissions");
         if (!string.IsNullOrEmpty(model))

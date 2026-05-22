@@ -26,7 +26,7 @@ public class RedComputeDbContext : DbContext
         var conn = Database.GetDbConnection();
         conn.Open();
         using var cmd = conn.CreateCommand();
-        foreach (var col in new[] { ("Progress", "REAL"), ("ResultJson", "TEXT"), ("Name", "TEXT"), ("Rationale", "TEXT"), ("CostUsd", "REAL") })
+        foreach (var col in new[] { ("Progress", "REAL"), ("ResultJson", "TEXT"), ("Name", "TEXT"), ("Rationale", "TEXT"), ("CostUsd", "REAL"), ("CallerInfo", "TEXT"), ("IdempotencyKey", "TEXT") })
         {
             cmd.CommandText = $"ALTER TABLE Jobs ADD COLUMN {col.Item1} {col.Item2}";
             try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
