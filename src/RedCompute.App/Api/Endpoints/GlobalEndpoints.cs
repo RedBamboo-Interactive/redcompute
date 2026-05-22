@@ -123,7 +123,7 @@ public static class GlobalEndpoints
                 job.OutputLocation,
                 job.OutputSizeBytes,
                 job.OutputContentType,
-                resultMetadata = job.ResultJson,
+                resultJson = job.ResultJson,
                 job.ErrorMessage,
                 job.ErrorDetails,
                 job.CallerInfo,
@@ -351,22 +351,6 @@ public static class GlobalEndpoints
                     l.IsError
                 })
             });
-        });
-
-        app.MapGet("/logs/tags", () =>
-        {
-            var tagDefs = LogEntryParser.GetTagDefinitions();
-            var counts = App.Logger.GetTagCounts(DateTime.Now.AddHours(-24));
-
-            var tags = tagDefs.Select(kvp => new
-            {
-                tag = kvp.Key,
-                category = kvp.Value.Category,
-                color = kvp.Value.Color,
-                recentCount = counts.GetValueOrDefault(kvp.Key, 0)
-            }).OrderByDescending(t => t.recentCount).ToList();
-
-            return Results.Ok(new { tags });
         });
 
     }

@@ -149,9 +149,6 @@ public class RelayServer
         broadcaster.RegisterEvent(new WsEventSchema("job.updated",
             "Fired when a job's status, progress, or output changes", "JobRecord",
             ["id", "capabilitySlug", "status", "progress", "startedAt", "completedAt", "errorMessage", "outputSizeBytes", "durationMs"]));
-        broadcaster.RegisterEvent(new WsEventSchema("log.entry",
-            "Fired for every new log entry", "LogEntry",
-            ["id", "timestamp", "tag", "tagCategory", "message", "tagColor", "isError", "jobId"]));
         broadcaster.RegisterEvent(new WsEventSchema("capability.status",
             "Fired when a capability's backend status changes (polled every 5s)",
             Fields: ["slug", "displayName", "status", "sleeping", "provider"]));
@@ -176,7 +173,6 @@ public class RelayServer
 
         _jobTracker.JobCreated += job => broadcaster.Broadcast("job.created", job);
         _jobTracker.JobUpdated += job => broadcaster.Broadcast("job.updated", job);
-        _logger.LogEntryCreated += entry => broadcaster.Broadcast("log.entry", entry);
         _tunnelService.StatusChanged += (status, error) => broadcaster.Broadcast("tunnel.status", new
         {
             status = status.ToString(),

@@ -109,19 +109,8 @@ export interface Settings {
   }>
 }
 
-export interface TagInfo {
-  tag: string
-  category: string
-  color: string
-  recentCount: number
-}
-
-export interface TagCount {
-  [tag: string]: number
-}
-
 export interface WsEvent {
-  type: "job.created" | "job.updated" | "log.entry" | "capability.status" | "tunnel.status"
+  type: "job.created" | "job.updated" | "capability.status" | "tunnel.status"
     | "hardware.snapshot"
     | "claude.session.created" | "claude.session.updated" | "claude.session.ended" | "claude.stream"
   data: unknown

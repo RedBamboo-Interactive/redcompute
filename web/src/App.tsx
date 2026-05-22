@@ -10,17 +10,15 @@ import { TokenPrompt } from "@/components/auth/token-prompt"
 import { useCapabilities } from "@/hooks/use-capabilities"
 import { useHardware } from "@/hooks/use-hardware"
 import { useJobs, type JobFilters } from "@/hooks/use-jobs"
-import { useLogs } from "@/hooks/use-logs"
 import { useSettings } from "@/hooks/use-settings"
 import { isRemoteAccess, getToken, setToken } from "@/api/auth"
 import type { WsEvent } from "@/api/types"
 import { getTheme, subscribeTheme, getContrast, subscribeContrast } from "@/lib/theme-store"
 
-function WsHookBridge({ capsRef, hardwareRef, jobsRef, logsRef, settingsRef }: {
+function WsHookBridge({ capsRef, hardwareRef, jobsRef, settingsRef }: {
   capsRef: React.RefObject<ReturnType<typeof useCapabilities>>
   hardwareRef: React.RefObject<ReturnType<typeof useHardware>>
   jobsRef: React.RefObject<ReturnType<typeof useJobs>>
-  logsRef: React.RefObject<ReturnType<typeof useLogs>>
   settingsRef: React.RefObject<ReturnType<typeof useSettings>>
 }) {
   useWsSubscribe((event) => {
@@ -28,7 +26,6 @@ function WsHookBridge({ capsRef, hardwareRef, jobsRef, logsRef, settingsRef }: {
     capsRef.current.handleWsEvent(e)
     hardwareRef.current.handleWsEvent(e)
     jobsRef.current.handleWsEvent(e)
-    logsRef.current.handleWsEvent(e)
     settingsRef.current.handleWsEvent(e)
   })
   return null
@@ -61,18 +58,15 @@ export default function App() {
   const hardware = useHardware()
   const [jobFilters, setJobFilters] = useState<JobFilters>({})
   const jobs = useJobs(jobFilters)
-  const logs = useLogs()
   const settings = useSettings()
 
   const capsRef = useRef(caps)
   const hardwareRef = useRef(hardware)
   const jobsRef = useRef(jobs)
-  const logsRef = useRef(logs)
   const settingsRef = useRef(settings)
   capsRef.current = caps
   hardwareRef.current = hardware
   jobsRef.current = jobs
-  logsRef.current = logs
   settingsRef.current = settings
 
   const wsUrl = useCallback(() => {
@@ -99,7 +93,7 @@ export default function App() {
 
   return (
     <WsEventProvider url={wsUrl} onReconnect={onReconnect}>
-    <WsHookBridge capsRef={capsRef} hardwareRef={hardwareRef} jobsRef={jobsRef} logsRef={logsRef} settingsRef={settingsRef} />
+    <WsHookBridge capsRef={capsRef} hardwareRef={hardwareRef} jobsRef={jobsRef} settingsRef={settingsRef} />
     <HashRouter>
       <TooltipProvider>
         <Routes>
@@ -110,15 +104,6 @@ export default function App() {
               onUpdateGeneral={settings.updateGeneral}
               onUpdateCapability={settings.updateCapability}
               onUpdateProvider={settings.updateProvider}
-              logEntries={logs.entries}
-              logTags={logs.tags}
-              logSearch={logs.search}
-              setLogSearch={logs.setSearch}
-              logTagFilter={logs.tagFilter}
-              setLogTagFilter={logs.setTagFilter}
-              logSelectedEntry={logs.selectedEntry}
-              setLogSelectedEntry={logs.setSelectedEntry}
-              logAutoScrollRef={logs.autoScrollRef}
             />
           }>
             <Route index element={<DashboardPage capabilities={caps.capabilities} onRefresh={caps.refresh} hardware={hardware.hardware} />} />

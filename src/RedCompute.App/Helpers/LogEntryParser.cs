@@ -80,10 +80,4 @@ public static partial class LogEntryParser
         };
     }
 
-    public static IReadOnlyDictionary<string, (string Color, string Category)> GetTagDefinitions()
-    {
-        return TagMap.ToDictionary(
-            kvp => kvp.Key,
-            kvp => (kvp.Value.Color, kvp.Value.Category));
-    }
 }
