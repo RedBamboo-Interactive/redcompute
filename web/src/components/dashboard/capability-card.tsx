@@ -71,8 +71,8 @@ export function CapabilityCard({ cap, onRefresh }: {
 
   return (
     <>
-      <div className="rounded-xl shadow-[0_1px_6px_rgba(0,0,0,0.15)]">
-        <div className="bg-surface-elevated rounded-xl p-5">
+      <div className="rounded-xl shadow-[0_1px_6px_rgba(0,0,0,0.15)] h-full flex flex-col">
+        <div className="bg-surface-elevated rounded-xl p-5 flex flex-col flex-1">
           {/* Action buttons — top right */}
           <div className="flex justify-end gap-0 -mt-1 -mr-1 mb-0">
             <button onClick={() => navigate(`/stats?capability=${cap.slug}`)} title="View stats"
@@ -113,7 +113,7 @@ export function CapabilityCard({ cap, onRefresh }: {
           </div>
 
           {/* Title + provider(s) */}
-          <div className="text-center mb-3.5">
+          <div className="text-center mb-3.5 flex-1">
             <div className="text-[15px] font-semibold text-contrast">{cap.displayName}</div>
             {hasMultipleProviders ? (
               <div className="mt-1.5 space-y-1">
