@@ -71,7 +71,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         {
             ProjectsRoot = ProviderHelpers.GetExtra(config, "ProjectsRoot", @"T:\Projects"),
             CodexPath = string.IsNullOrEmpty(codexPath) ? null : codexPath,
-            MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "5"), out var ms) ? ms : 5,
+            MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
             DefaultExecModel = ProviderHelpers.GetExtra(config, "DefaultExecModel", "codex-mini-latest"),
             SandboxMode = ProviderHelpers.GetExtra(config, "SandboxMode", "workspace-write"),
