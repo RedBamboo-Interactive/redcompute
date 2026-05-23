@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from "react"
 import { useSearchParams } from "react-router-dom"
 import { JobList } from "@/components/jobs/job-list"
 import { JobDetail } from "@/components/jobs/job-detail"
-import { MasterDetailLayout, FilterBar, FilterPillGroup } from "@redbamboo/ui"
+import { MasterDetailLayout, PanelHeader, FilterBar, FilterPillGroup } from "@redbamboo/ui"
 import type { CapabilityStatus, JobRecord } from "@/api/types"
 import type { JobFilters } from "@/hooks/use-jobs"
 
@@ -104,8 +104,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
 
   const listHeader = (
     <>
-      <div className="flex items-center justify-between h-12 px-4">
-        <span className="text-[14px] font-medium text-contrast">Recent Jobs</span>
+      <PanelHeader title="Recent Jobs">
         {hasActiveFilters && (
           <button
             onClick={() => onFiltersChange({})}
@@ -114,7 +113,7 @@ export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJ
             Clear filters
           </button>
         )}
-      </div>
+      </PanelHeader>
       <FilterBar
         search={search}
         onSearch={setSearch}
