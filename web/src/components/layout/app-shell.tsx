@@ -43,6 +43,9 @@ export function AppShell({
           app: "https://github.com/RedBamboo-Interactive/redcompute",
           company: "https://github.com/RedBamboo-Interactive",
         },
+        nova: {
+          url: "http://localhost:18803",
+        },
         share: canShare
           ? {
               url: () => `https://${tunnel!.hostname}/#/?token=${encodeURIComponent(tunnel!.accessToken!)}`,
