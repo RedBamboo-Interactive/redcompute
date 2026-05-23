@@ -687,7 +687,8 @@ public class ClaudeSessionService
             ProjectName = Path.GetFileName(projectPath),
             ProjectPath = projectPath,
             Status = SessionStatus.Starting,
-            StartedAt = DateTimeOffset.UtcNow
+            StartedAt = DateTimeOffset.UtcNow,
+            Source = callerInfo
         };
 
         var claudePath = ResolveClaudePath();
@@ -813,6 +814,7 @@ public class ClaudeSessionService
             ContextTokens = sessionRecord.ContextTokens,
             ContextWindow = sessionRecord.ContextWindow,
             Effort = sessionRecord.Effort,
+            Source = sessionRecord.Source,
         };
 
         var startInfo = new ProcessStartInfo
@@ -1239,7 +1241,8 @@ public class ClaudeSessionService
         ContextTokens = r.ContextTokens,
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
-        JobId = r.JobId
+        JobId = r.JobId,
+        Source = r.Source
     };
 
     public List<ClaudeMessageRecord> GetHistory(string sessionId, int limit = 50_000)
@@ -1796,7 +1799,8 @@ public class ClaudeSessionService
                 ContextTokens = info.ContextTokens,
                 ContextWindow = info.ContextWindow,
                 Effort = info.Effort,
-                JobId = info.JobId
+                JobId = info.JobId,
+                Source = info.Source
             });
         }
         catch (Exception ex)

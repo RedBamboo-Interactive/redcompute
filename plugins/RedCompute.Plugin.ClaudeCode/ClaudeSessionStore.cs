@@ -57,6 +57,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.Effort = record.Effort;
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
+            existing.Source = record.Source;
         }
         else
         {

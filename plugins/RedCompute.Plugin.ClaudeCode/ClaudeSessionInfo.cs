@@ -23,6 +23,7 @@ public class ClaudeSessionInfo
     public string? Effort { get; set; }
     public Guid? JobId { get; set; }
     public string PermissionMode { get; set; } = "bypassPermissions";
+    public string? Source { get; set; }
 }
 
 public class ProjectInfo

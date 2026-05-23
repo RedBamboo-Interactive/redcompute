@@ -69,9 +69,12 @@ public static class ClaudeSessionEndpoints
             return Results.Ok(session);
         });
 
-        app.MapGet("/claude/sessions", (int? limit, bool? all) =>
+        app.MapGet("/claude/sessions", (int? limit, bool? all, string? excludeSource) =>
         {
-            return Results.Ok(claude.GetSessions(limit ?? 20, includeDismissed: all == true));
+            var sessions = claude.GetSessions(limit ?? 20, includeDismissed: all == true);
+            if (!string.IsNullOrEmpty(excludeSource))
+                sessions = sessions.Where(s => s.Source != excludeSource).ToList();
+            return Results.Ok(sessions);
         });
 
         app.MapGet("/claude/sessions/{id}", (string id) =>

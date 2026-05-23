@@ -256,7 +256,7 @@ public class ConfigManager
                             Extra = new Dictionary<string, object?>
                             {
                                 ["ProjectsRoot"] = @"T:\Projects",
-                                ["MaxSessions"] = 5,
+                                ["MaxSessions"] = 99,
                                 ["DefaultOneshotModel"] = "haiku"
                             }
                         }

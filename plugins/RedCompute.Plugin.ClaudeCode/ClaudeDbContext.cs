@@ -22,6 +22,32 @@ public class ClaudeDbContext : DbContext
     public void Initialize()
     {
         Database.EnsureCreated();
+        MigrateSchema();
+    }
+
+    private void MigrateSchema()
+    {
+        var conn = Database.GetDbConnection();
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA table_info(Sessions)";
+        var columns = new HashSet<string>();
+        using (var reader = cmd.ExecuteReader())
+        {
+            while (reader.Read())
+                columns.Add(reader.GetString(1));
+        }
+
+        if (!columns.Contains("Source"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN Source TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        using var backfill = conn.CreateCommand();
+        backfill.CommandText = "UPDATE Sessions SET Source = 'Nova' WHERE ProjectName = 'nova-workspace' AND Source IS NULL";
+        backfill.ExecuteNonQuery();
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)

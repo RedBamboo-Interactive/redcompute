@@ -71,7 +71,7 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
         {
             ProjectsRoot = ProviderHelpers.GetExtra(config, "ProjectsRoot", @"T:\Projects"),
             ClaudePath = string.IsNullOrEmpty(claudePath) ? null : claudePath,
-            MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "5"), out var ms) ? ms : 5,
+            MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
             DefaultOneshotModel = ProviderHelpers.GetExtra(config, "DefaultOneshotModel", "haiku"),
         };

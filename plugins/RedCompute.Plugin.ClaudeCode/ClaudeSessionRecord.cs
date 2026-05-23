@@ -21,4 +21,5 @@ public class ClaudeSessionRecord
     public string? Effort { get; set; }
     public Guid? JobId { get; set; }
     public bool Dismissed { get; set; }
+    public string? Source { get; set; }
 }
