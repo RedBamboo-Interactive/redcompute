@@ -39,7 +39,7 @@ export function useStats(capability: string | null, timeRange: TimeRange) {
       })
 
     const sessionPromise = capability === "ai-session"
-      ? api.get<ClaudeSessionInfo[]>(`/claude/sessions?limit=${FETCH_LIMIT}&all=true`)
+      ? api.get<ClaudeSessionInfo[]>(`/ai-session/sessions?limit=${FETCH_LIMIT}&all=true`)
           .then(sessions => setAllSessions(sessions))
           .catch(() => setAllSessions([]))
       : Promise.resolve(setAllSessions([]))
@@ -62,7 +62,7 @@ export function useStats(capability: string | null, timeRange: TimeRange) {
       if (job.capabilitySlug === capability) {
         setAllJobs(prev => prev.map(j => j.id === job.id ? job : j))
       }
-    } else if (event.type === "claude.session.updated" && capability === "ai-session") {
+    } else if (event.type === "session.updated" && capability === "ai-session") {
       const session = event.data as ClaudeSessionInfo
       setAllSessions(prev => {
         const exists = prev.some(s => s.id === session.id)

@@ -1,3 +1,5 @@
+using System.IO;
+using System.Net.Http;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -252,6 +254,41 @@ public static class UnifiedSessionEndpoints
             }
 
             return Results.Json(allProjects);
+        });
+
+        app.MapGet("/ai-session/projects/{name}/icon", (HttpContext ctx, string name) =>
+        {
+            var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
+            foreach (var provider in registry.FindProviders<ISessionProvider>())
+            {
+                if (providerFilter != null && provider.ProviderId != providerFilter)
+                    continue;
+                if (!provider.Capabilities.HasFlag(SessionCapabilities.ProjectDiscovery))
+                    continue;
+                var project = provider.ListProjects().FirstOrDefault(p =>
+                    p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                if (project == null) continue;
+                var iconPath = FindProjectIcon(project.Path);
+                if (iconPath != null)
+                    return Results.File(iconPath);
+            }
+            return Results.NotFound();
+        });
+
+        app.MapPost("/ai-session/sessions/{id}/open-in-codered", async (string id) =>
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                var res = await http.PostAsync($"http://localhost:18801/api/navigate?session={id}", null);
+                return res.IsSuccessStatusCode
+                    ? Results.Json(new { sent = true })
+                    : Results.Json(new { sent = false, error = "CodeRed returned " + (int)res.StatusCode }, statusCode: 502);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { sent = false, error = ex.Message }, statusCode: 502);
+            }
         });
 
         app.MapGet("/ai-session/models", (HttpContext ctx) =>
@@ -554,4 +591,24 @@ public static class UnifiedSessionEndpoints
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
+
+    private static readonly string[] IconCandidates =
+    [
+        "public/favicon.ico", "public/favicon.png", "public/favicon.svg",
+        "public/logo.png", "public/logo.svg",
+        "favicon.ico", "favicon.png", "favicon.svg",
+        "logo.png", "logo.svg",
+        "icon.png", "icon.ico", "icon.svg",
+        "wwwroot/favicon.ico",
+    ];
+
+    private static string? FindProjectIcon(string projectPath)
+    {
+        foreach (var candidate in IconCandidates)
+        {
+            var full = Path.Combine(projectPath, candidate);
+            if (File.Exists(full)) return full;
+        }
+        return null;
+    }
 }

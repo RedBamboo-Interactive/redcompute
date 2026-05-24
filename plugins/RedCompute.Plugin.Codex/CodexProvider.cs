@@ -48,12 +48,12 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var codexConfig = BuildConfig(config);
         _codex = new CodexSessionService(codexConfig, jobTracker, store, log);
 
-        _codex.SessionCreated += session => PluginEvent?.Invoke("codex.session.created", session);
-        _codex.SessionUpdated += session => PluginEvent?.Invoke("codex.session.updated", session);
-        _codex.SessionEnded += (id, reason) => PluginEvent?.Invoke("codex.session.ended", new { id, reason });
+        _codex.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
+        _codex.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
+        _codex.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
         _codex.StreamEvent += (sessionId, evt) =>
         {
-            PluginEvent?.Invoke("codex.stream", new { sessionId, @event = evt });
+            PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
             SessionStreamEvent?.Invoke(sessionId, ToUnifiedEvent(evt));
         };
     }

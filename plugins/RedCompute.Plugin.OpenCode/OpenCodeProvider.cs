@@ -55,12 +55,12 @@ public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlugi
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, store, log);
 
-        _opencode.SessionCreated += session => PluginEvent?.Invoke("opencode.session.created", session);
-        _opencode.SessionUpdated += session => PluginEvent?.Invoke("opencode.session.updated", session);
-        _opencode.SessionEnded += (id, reason) => PluginEvent?.Invoke("opencode.session.ended", new { id, reason });
+        _opencode.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
+        _opencode.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
+        _opencode.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
         _opencode.StreamEvent += (sessionId, evt) =>
         {
-            PluginEvent?.Invoke("opencode.stream", new { sessionId, @event = evt });
+            PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
             SessionStreamEvent?.Invoke(sessionId, ToUnifiedEvent(evt));
         };
     }
@@ -273,20 +273,5 @@ public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlugi
 
     public ReturnSchema OutputSchema => new() { ContentType = "application/json", Streaming = true };
 
-    public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => new List<EndpointManifest>
-    {
-        new() { Method = "POST", Path = "/opencode/execute", Description = "Execute a prompt with Open Code agent", Parameters = new() { ["prompt"] = new() { Type = "string", Required = true }, ["model"] = new() { Type = "string", Required = false, Default = "sonnet" } }, Returns = new() { ContentType = "application/json", Streaming = false } },
-        new() { Method = "GET", Path = "/opencode/models", Description = "List available models", Returns = new() { ContentType = "application/json", Streaming = false } },
-        new() { Method = "GET", Path = "/opencode/projects", Description = "List available projects" },
-        new() { Method = "GET", Path = "/opencode/sessions", Description = "List recent Open Code sessions" },
-        new() { Method = "GET", Path = "/opencode/sessions/{id}", Description = "Get session details and message history" },
-        new() { Method = "POST", Path = "/opencode/sessions", Description = "Start a new interactive session" },
-        new() { Method = "POST", Path = "/opencode/sessions/{id}/message", Description = "Send a message to an interactive session" },
-        new() { Method = "POST", Path = "/opencode/sessions/{id}/resume", Description = "Resume a stopped session" },
-        new() { Method = "POST", Path = "/opencode/sessions/{id}/interrupt", Description = "Interrupt an active session" },
-        new() { Method = "POST", Path = "/opencode/sessions/{id}/stop", Description = "Stop a session" },
-        new() { Method = "POST", Path = "/opencode/sessions/{id}/config", Description = "Update session configuration" },
-        new() { Method = "POST", Path = "/opencode/sessions/{id}/dismiss", Description = "Dismiss a session" },
-        new() { Method = "DELETE", Path = "/opencode/sessions/{id}", Description = "Force-kill a session" }
-    };
+    public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => [];
 }

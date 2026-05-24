@@ -112,10 +112,7 @@ export interface Settings {
 export interface WsEvent {
   type: "job.created" | "job.updated" | "capability.status" | "tunnel.status"
     | "hardware.snapshot"
-    | "claude.session.created" | "claude.session.updated" | "claude.session.ended" | "claude.stream"
-    | "codex.session.created" | "codex.session.updated" | "codex.session.ended" | "codex.stream"
-    | "opencode.session.created" | "opencode.session.updated" | "opencode.session.ended" | "opencode.stream"
-    | "ai-session.stream"
+    | "session.created" | "session.updated" | "session.ended" | "session.stream"
   data: unknown
 }
 

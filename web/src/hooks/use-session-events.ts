@@ -349,9 +349,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
   }, [job.status, job.resultJson, resolveAndFetch])
 
   useWsSubscribe(useCallback((event) => {
-    const isSessionEvent = event.type === "claude.session.created" || event.type === "claude.session.updated"
-      || event.type === "codex.session.created" || event.type === "codex.session.updated"
-      || event.type === "opencode.session.created" || event.type === "opencode.session.updated"
+    const isSessionEvent = event.type === "session.created" || event.type === "session.updated"
     if (isSessionEvent) {
       const s = event.data as ClaudeSessionInfo
       if (s.jobId === jobId) {
@@ -379,7 +377,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
       }
     }
 
-    if (event.type === "claude.stream" || event.type === "codex.stream" || event.type === "opencode.stream") {
+    if (event.type === "session.stream") {
       const { sessionId, event: evt } = event.data as { sessionId: string; event: ClaudeStreamEvent }
       if (sessionId !== resolvedSessionId.current) return
       if (evt.type === "status") return

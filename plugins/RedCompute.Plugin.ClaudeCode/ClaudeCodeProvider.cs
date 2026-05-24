@@ -52,12 +52,12 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
         var claudeConfig = BuildConfig(config);
         _claude = new ClaudeSessionService(claudeConfig, jobTracker, store, log);
 
-        _claude.SessionCreated += session => PluginEvent?.Invoke("claude.session.created", session);
-        _claude.SessionUpdated += session => PluginEvent?.Invoke("claude.session.updated", session);
-        _claude.SessionEnded += (id, reason) => PluginEvent?.Invoke("claude.session.ended", new { id, reason });
+        _claude.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
+        _claude.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
+        _claude.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
         _claude.StreamEvent += (sessionId, evt) =>
         {
-            PluginEvent?.Invoke("claude.stream", new { sessionId, @event = evt });
+            PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
             SessionStreamEvent?.Invoke(sessionId, ToUnifiedEvent(evt));
         };
     }
@@ -297,20 +297,5 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
 
     public ReturnSchema OutputSchema => new() { ContentType = "application/json", Streaming = true };
 
-    public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => new List<EndpointManifest>
-    {
-        new() { Method = "GET", Path = "/claude/projects", Description = "List available projects" },
-        new() { Method = "POST", Path = "/claude/sessions", Description = "Start a new session by project path", Parameters = new() { ["projectPath"] = new() { Type = "string", Required = true } } },
-        new() { Method = "GET", Path = "/claude/sessions", Description = "List all active and recent AI sessions" },
-        new() { Method = "GET", Path = "/claude/sessions/{id}", Description = "Get session details and message history" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/message", Description = "Send a message to an active session" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/answer", Description = "Answer a pending question" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/interrupt", Description = "Interrupt the current operation" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/stop", Description = "Stop a session gracefully" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/resume", Description = "Resume a stopped session" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/dismiss", Description = "Mark a session as dismissed" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/config", Description = "Update session model and effort" },
-        new() { Method = "POST", Path = "/claude/sessions/{id}/permission-mode", Description = "Set permission mode" },
-        new() { Method = "DELETE", Path = "/claude/sessions/{id}", Description = "Force-kill a session" }
-    };
+    public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => [];
 }

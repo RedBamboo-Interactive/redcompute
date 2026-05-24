@@ -153,7 +153,7 @@ export function useJobs(filters: JobFilters = {}, pageSize = 50) {
         return prev
       })
       setSelectedJob(prev => prev?.id === job.id ? { ...job, sessionStatus: prev.sessionStatus } : prev)
-    } else if (event.type === "claude.session.updated") {
+    } else if (event.type === "session.updated") {
       const session = event.data as ClaudeSessionInfo
       if (session.jobId) {
         const jobId = session.jobId

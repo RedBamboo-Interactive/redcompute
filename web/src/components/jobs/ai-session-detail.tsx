@@ -157,7 +157,7 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
     <button
       onClick={async () => {
         try {
-          await api.post(`/claude/sessions/${session.id}/open-in-codered`)
+          await api.post(`/ai-session/sessions/${session.id}/open-in-codered`)
           setCodeRedStatus("sent")
           setTimeout(() => setCodeRedStatus("idle"), 2000)
         } catch {

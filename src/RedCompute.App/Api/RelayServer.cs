@@ -156,16 +156,16 @@ public class RelayServer
         broadcaster.RegisterEvent(new WsEventSchema("tunnel.status",
             "Fired when the Cloudflare tunnel status changes",
             Fields: ["status", "hostname", "error"]));
-        broadcaster.RegisterEvent(new WsEventSchema("claude.session.created",
-            "Fired when a new AI session is started", "ClaudeSessionInfo",
-            ["id", "projectName", "projectPath", "status", "startedAt", "model", "claudeSessionId", "title", "messageCount", "permissionMode"]));
-        broadcaster.RegisterEvent(new WsEventSchema("claude.session.updated",
-            "Fired when a session's status, tokens, cost, or title changes", "ClaudeSessionInfo",
-            ["id", "projectName", "status", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens"]));
-        broadcaster.RegisterEvent(new WsEventSchema("claude.session.ended",
+        broadcaster.RegisterEvent(new WsEventSchema("session.created",
+            "Fired when a new AI session is started", "UnifiedSessionInfo",
+            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode"]));
+        broadcaster.RegisterEvent(new WsEventSchema("session.updated",
+            "Fired when a session's status, tokens, cost, or title changes", "UnifiedSessionInfo",
+            ["id", "provider", "projectName", "status", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens"]));
+        broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason"]));
-        broadcaster.RegisterEvent(new WsEventSchema("claude.stream",
+        broadcaster.RegisterEvent(new WsEventSchema("session.stream",
             "Fired for each streaming event from an active session (text, tool calls, thinking, errors)",
             Fields: ["sessionId", "event"]));
         broadcaster.RegisterEvent(new WsEventSchema("hardware.snapshot",
