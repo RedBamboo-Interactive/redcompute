@@ -84,9 +84,9 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
 
     // --- ISessionProvider: Session Lifecycle ---
 
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null)
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null)
     {
-        var info = _claude.StartSession(projectPath, callerInfo);
+        var info = _claude.StartSession(projectPath, callerInfo, model);
         return Task.FromResult(info != null ? ToUnified(info) : null);
     }
 

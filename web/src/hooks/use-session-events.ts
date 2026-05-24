@@ -153,10 +153,8 @@ function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessa
   return events
 }
 
-function providerPrefix(job: JobRecord): string {
-  if (job.providerName === "Codex") return "/codex"
-  if (job.providerName === "OpenCode") return "/opencode"
-  return "/claude"
+function providerPrefix(_job: JobRecord): string {
+  return "/ai-session"
 }
 
 function fetchSession(sessionId: string, prefix: string) {

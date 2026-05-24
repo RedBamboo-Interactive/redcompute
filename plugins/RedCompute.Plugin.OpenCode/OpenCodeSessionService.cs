@@ -77,7 +77,7 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -108,7 +108,7 @@ public class OpenCodeSessionService
             Source = callerInfo,
         };
 
-        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null);
+        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model);
         if (session == null)
         {
             LastStartError = error;
@@ -218,7 +218,8 @@ public class OpenCodeSessionService
     }
 
     private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
-        OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId)
+        OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId,
+        string? model = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -233,6 +234,14 @@ public class OpenCodeSessionService
             StandardErrorEncoding = Encoding.UTF8,
         };
         startInfo.ArgumentList.Add("acp");
+
+        var resolvedModel = model ?? _config.Model;
+        if (!string.IsNullOrEmpty(resolvedModel))
+        {
+            startInfo.EnvironmentVariables["OPENCODE_MODEL"] = resolvedModel;
+            startInfo.EnvironmentVariables["OPENCODE_CONFIG_CONTENT"] =
+                JsonSerializer.Serialize(new { model = resolvedModel });
+        }
 
         Process process;
         try
@@ -281,11 +290,10 @@ public class OpenCodeSessionService
             }
             else
             {
-                sessionResult = await SendRequest(session, "session/new", new
-                {
-                    cwd = projectPath,
-                    mcpServers = Array.Empty<object>(),
-                });
+                var newParams = !string.IsNullOrEmpty(resolvedModel)
+                    ? (object)new { cwd = projectPath, mcpServers = Array.Empty<object>(), model = resolvedModel }
+                    : new { cwd = projectPath, mcpServers = Array.Empty<object>() };
+                sessionResult = await SendRequest(session, "session/new", newParams);
 
                 if (sessionResult.TryGetProperty("sessionId", out var sid))
                 {
@@ -301,23 +309,8 @@ public class OpenCodeSessionService
                 info.Model = modelId.GetString();
             }
 
-            var resolvedModel = _config.Model ?? _config.DefaultModel;
             if (!string.IsNullOrEmpty(resolvedModel) && existingSessionId == null)
-            {
-                try
-                {
-                    await SendRequest(session, "session/set_config_option", new
-                    {
-                        sessionId = session.AcpSessionId,
-                        configOption = new { id = "model", value = resolvedModel },
-                    });
-                    info.Model = resolvedModel;
-                }
-                catch (Exception ex)
-                {
-                    _log($"[OpenCode] Failed to set model '{resolvedModel}': {ex.Message}", null);
-                }
-            }
+                info.Model = resolvedModel;
 
             return (session, null);
         }
@@ -408,6 +401,7 @@ public class OpenCodeSessionService
                 StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent { Type = "status", Content = "interrupted" });
 
             session.Info.Status = "Idle";
+            TryFetchOpenCodeTitle(session);
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
         }
@@ -421,6 +415,30 @@ public class OpenCodeSessionService
                 SessionUpdated?.Invoke(session.Info);
             }
         }
+    }
+
+    private void TryFetchOpenCodeTitle(ManagedSession session)
+    {
+        if (!string.IsNullOrEmpty(session.Info.Title)) return;
+        var acpSessionId = session.AcpSessionId;
+        if (string.IsNullOrEmpty(acpSessionId)) return;
+
+        try
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var dbPath = Path.Combine(home, ".local", "share", "opencode", "opencode.db");
+            if (!File.Exists(dbPath)) return;
+
+            using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT title FROM session WHERE id = @id";
+            cmd.Parameters.AddWithValue("@id", acpSessionId);
+            var title = cmd.ExecuteScalar() as string;
+            if (!string.IsNullOrEmpty(title) && !title.StartsWith("New session - "))
+                session.Info.Title = title;
+        }
+        catch { }
     }
 
     public bool SendAnswer(string sessionId, string answer) => false;

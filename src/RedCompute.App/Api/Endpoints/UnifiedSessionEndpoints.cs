@@ -69,8 +69,9 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(projectPath))
                 return Error(422, "validation_failed", "projectPath is required");
 
+            var model = body.TryGetProperty("model", out var m) ? m.GetString() : null;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
-            var session = await provider.StartSessionAsync(projectPath, callerInfo);
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -456,8 +457,9 @@ public static class UnifiedSessionEndpoints
         if (resolved == null)
             return Error(422, "validation_failed", $"Project '{project}' not found");
 
+        var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo);
+        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, model);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
 

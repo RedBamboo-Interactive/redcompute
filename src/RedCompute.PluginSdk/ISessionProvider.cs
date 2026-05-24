@@ -9,7 +9,7 @@ public interface ISessionProvider
     SessionCapabilities Capabilities { get; }
 
     // Session lifecycle (PersistentSessions)
-    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null);
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task StopSessionAsync(string sessionId);
     Task ForceKillAsync(string sessionId);

@@ -666,7 +666,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -711,7 +711,7 @@ public class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        PopulateSessionArgs(startInfo);
+        PopulateSessionArgs(startInfo, model: model);
 
         Process process;
         try
