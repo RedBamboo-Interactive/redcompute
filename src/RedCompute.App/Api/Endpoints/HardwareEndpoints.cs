@@ -1,14 +1,15 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services.Hardware;
 
 namespace RedCompute.App.Api.Endpoints;
 
 public static class HardwareEndpoints
 {
-    public static void Map(WebApplication app, HardwareMonitorService hardwareMonitor)
+    public static void Map(EndpointRegistry endpoints, HardwareMonitorService hardwareMonitor)
     {
-        app.MapGet("/hardware", () =>
+        endpoints.MapGet("/hardware", "GPU/CPU hardware metrics", () =>
         {
             var snapshot = hardwareMonitor.GetSnapshot();
             if (snapshot == null)

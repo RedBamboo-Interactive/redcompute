@@ -5,25 +5,26 @@ using RedCompute.Core.Providers;
 
 namespace RedCompute.App.Services;
 
-public class RedComputeServiceDescriptor : IServiceDescriptor
+public class RedComputeServiceDescriptor : RegistryServiceDescriptor
 {
     private readonly RedComputeConfig _config;
     private readonly CapabilityRegistry _registry;
     private readonly LogService? _logService;
 
-    public RedComputeServiceDescriptor(RedComputeConfig config, CapabilityRegistry registry, LogService? logService = null)
+    public RedComputeServiceDescriptor(RedComputeConfig config, CapabilityRegistry registry, LogService? logService, EndpointRegistry endpointRegistry)
+        : base(endpointRegistry)
     {
         _config = config;
         _registry = registry;
         _logService = logService;
     }
 
-    public string ServiceName => "RedCompute";
-    public string Version => "0.2.0";
-    public string Description => "AI-native inference abstraction layer — TTS, STT, image gen, music gen, AI sessions";
-    public string ApiBase => $"http://localhost:{_config.ApiPort}";
+    public override string ServiceName => "RedCompute";
+    public override string Version => "0.2.0";
+    public override string Description => "AI-native inference abstraction layer — TTS, STT, image gen, music gen, AI sessions";
+    public override string ApiBase => $"http://localhost:{_config.ApiPort}";
 
-    public async Task<IReadOnlyList<CapabilityDescriptor>> GetCapabilitiesAsync()
+    public override async Task<IReadOnlyList<CapabilityDescriptor>> GetCapabilitiesAsync()
     {
         var caps = new List<CapabilityDescriptor>();
         foreach (var (slug, entry) in _registry.Capabilities)
@@ -51,20 +52,7 @@ public class RedComputeServiceDescriptor : IServiceDescriptor
         return caps;
     }
 
-    public IReadOnlyList<EndpointDescriptor> GetAppEndpoints()
-    {
-        return new List<EndpointDescriptor>
-        {
-            new("GET", "/status", "Service status with uptime and capability states"),
-            new("GET", "/jobs", "List jobs with optional filters"),
-            new("GET", "/jobs/{id}", "Get job details"),
-            new("POST", "/jobs/{id}/rerun", "Rerun a completed job"),
-            new("GET", "/hardware", "GPU/CPU hardware metrics"),
-            new("GET", "/settings", "Current settings including tunnel config"),
-        };
-    }
-
-    public Task<object?> GetHealthExtrasAsync()
+    public override Task<object?> GetHealthExtrasAsync()
     {
         return Task.FromResult<object?>(new
         {

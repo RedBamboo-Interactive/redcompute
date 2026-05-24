@@ -98,16 +98,20 @@ public class RelayServer
             });
         }
 
+        var registry = _app.CreateEndpointRegistry();
+
         GlobalEndpoints.Initialize();
-        GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger);
+        GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger);
+        HardwareEndpoints.Map(registry, _hardwareMonitor);
+        SettingsEndpoints.Map(registry, _configManager, _tunnelService, _registry);
+
         UnifiedSessionEndpoints.Map(_app, _registry, _jobTracker, _log);
         GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log, _hardwareMonitor, _config);
-        HardwareEndpoints.Map(_app, _hardwareMonitor);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
         RegisterWsEvents(broadcaster);
 
-        var descriptor = new RedComputeServiceDescriptor(_config, _registry, App.LogService);
+        var descriptor = new RedComputeServiceDescriptor(_config, _registry, App.LogService, registry);
         _app.MapAppHostEndpoints(descriptor, _tunnelService, "RedCompute", () => new RedBamboo.AppHost.Tunnel.TunnelConfig
         {
             Enabled = _config.Tunnel.Enabled,
@@ -116,7 +120,6 @@ public class RelayServer
             CloudflaredPath = _config.Tunnel.CloudflaredPath,
             AccessToken = _config.Tunnel.AccessToken,
         }, App.LogService);
-        SettingsEndpoints.Map(_app, _configManager, _tunnelService, _registry);
 
         if (Directory.Exists(webRoot))
         {

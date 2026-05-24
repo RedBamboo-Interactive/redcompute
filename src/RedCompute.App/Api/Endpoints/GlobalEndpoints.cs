@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Helpers;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
@@ -13,9 +14,9 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class GlobalEndpoints
 {
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
+    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
     {
-        app.MapGet("/status", async () =>
+        endpoints.MapGet("/status", "Service status with uptime and capability states", async () =>
         {
             var capabilities = new List<object>();
             foreach (var (slug, entry) in registry.Capabilities)
@@ -58,7 +59,7 @@ public static class GlobalEndpoints
             });
         });
 
-        app.MapGet("/jobs", (string? capability, string? status, string? caller, string? search, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs", "List jobs with optional filters", (string? capability, string? status, string? caller, string? search, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;
             if (status != null && Enum.TryParse<JobStatus>(status, true, out var parsed))
@@ -103,7 +104,7 @@ public static class GlobalEndpoints
             });
         });
 
-        app.MapGet("/jobs/{id:guid}", (Guid id) =>
+        endpoints.MapGet("/jobs/{id:guid}", "Get job details", (Guid id) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
@@ -133,7 +134,7 @@ public static class GlobalEndpoints
             });
         });
 
-        app.MapDelete("/jobs/{id:guid}", (Guid id) =>
+        endpoints.MapDelete("/jobs/{id:guid}", "Cancel a running job", (Guid id) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
@@ -146,7 +147,7 @@ public static class GlobalEndpoints
             return Results.Ok(new { id, status = "Cancelled" });
         });
 
-        app.MapPost("/jobs/{id:guid}/rerun", async (Guid id, HttpContext ctx) =>
+        endpoints.MapPost("/jobs/{id:guid}/rerun", "Rerun a completed job", async (Guid id, HttpContext ctx) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
@@ -182,7 +183,7 @@ public static class GlobalEndpoints
             }
         });
 
-        app.MapDelete("/jobs/cleanup", (int? olderThanDays) =>
+        endpoints.MapDelete("/jobs/cleanup", "Clean up old jobs and logs", (int? olderThanDays) =>
         {
             var days = olderThanDays ?? 30;
             if (days < 1) return Results.BadRequest(new { error = "invalid_param", message = "olderThanDays must be >= 1" });
@@ -191,7 +192,7 @@ public static class GlobalEndpoints
             return Results.Ok(new { message = $"Cleaned up jobs and logs older than {days} days", deletedJobs, deletedLogs });
         });
 
-        app.MapGet("/activity", (int? window) =>
+        endpoints.MapGet("/activity", "Capability activity summary within a time window", (int? window) =>
         {
             var windowSeconds = window ?? 300;
             var now = DateTimeOffset.UtcNow;
@@ -253,7 +254,7 @@ public static class GlobalEndpoints
             });
         });
 
-        app.MapPost("/control/start/{slug}", async (string slug) =>
+        endpoints.MapPost("/control/start/{slug}", "Start a capability's active provider", async (string slug) =>
         {
             var entry = registry.Get(slug);
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
@@ -266,7 +267,7 @@ public static class GlobalEndpoints
             return Results.Json(new { error = "start_failed", message = $"Failed to start provider for '{slug}'" }, statusCode: 500);
         });
 
-        app.MapPost("/control/stop/{slug}", async (string slug) =>
+        endpoints.MapPost("/control/stop/{slug}", "Stop a capability's active provider", async (string slug) =>
         {
             var entry = registry.Get(slug);
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
@@ -277,7 +278,7 @@ public static class GlobalEndpoints
             return Results.Ok(new { slug, status = "Stopped" });
         });
 
-        app.MapPost("/control/sleep/{slug}", (string slug) =>
+        endpoints.MapPost("/control/sleep/{slug}", "Put a capability to sleep", (string slug) =>
         {
             var entry = registry.Get(slug);
             if (entry == null)
@@ -286,7 +287,7 @@ public static class GlobalEndpoints
             return Results.Ok(new { slug, sleeping = true });
         });
 
-        app.MapPost("/control/wake/{slug}", (string slug) =>
+        endpoints.MapPost("/control/wake/{slug}", "Wake a sleeping capability", (string slug) =>
         {
             var entry = registry.Get(slug);
             if (entry == null)
@@ -295,7 +296,7 @@ public static class GlobalEndpoints
             return Results.Ok(new { slug, sleeping = false });
         });
 
-        app.MapPost("/control/start/{slug}/{providerName}", async (string slug, string providerName) =>
+        endpoints.MapPost("/control/start/{slug}/{providerName}", "Start a specific provider for a capability", async (string slug, string providerName) =>
         {
             var entry = registry.Get(slug);
             if (entry == null)
@@ -309,7 +310,7 @@ public static class GlobalEndpoints
             return Results.Json(new { error = "start_failed", message = $"Failed to start provider '{providerName}' for '{slug}'" }, statusCode: 500);
         });
 
-        app.MapPost("/control/stop/{slug}/{providerName}", async (string slug, string providerName) =>
+        endpoints.MapPost("/control/stop/{slug}/{providerName}", "Stop a specific provider for a capability", async (string slug, string providerName) =>
         {
             var entry = registry.Get(slug);
             if (entry == null)
@@ -325,7 +326,7 @@ public static class GlobalEndpoints
         // LOG ENDPOINTS (AI-Native)
         // ============================================================
 
-        app.MapGet("/jobs/{id:guid}/logs", (Guid id, string? tag, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs/{id:guid}/logs", "Get logs for a specific job", (Guid id, string? tag, int? limit, int? offset) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });

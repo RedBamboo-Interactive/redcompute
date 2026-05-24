@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
@@ -14,12 +15,12 @@ public static class SettingsEndpoints
     private static CloudflareTunnelService _tunnelService = null!;
     private static CapabilityRegistry _registry = null!;
 
-    public static void Map(WebApplication app, ConfigManager configManager, CloudflareTunnelService tunnelService, CapabilityRegistry registry)
+    public static void Map(EndpointRegistry endpoints, ConfigManager configManager, CloudflareTunnelService tunnelService, CapabilityRegistry registry)
     {
         _tunnelService = tunnelService;
         _registry = registry;
 
-        app.MapGet("/settings", () =>
+        endpoints.MapGet("/settings", "Current settings including tunnel config", () =>
         {
             var config = configManager.Config;
             var sanitized = new
@@ -53,7 +54,7 @@ public static class SettingsEndpoints
             return Results.Ok(sanitized);
         });
 
-        app.MapPut("/settings/general", async (HttpContext ctx) =>
+        endpoints.MapPut("/settings/general", "Update general settings", async (HttpContext ctx) =>
         {
             var body = await ctx.Request.ReadFromJsonAsync<GeneralSettingsUpdate>();
             if (body == null)
@@ -76,7 +77,7 @@ public static class SettingsEndpoints
             return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel, config.AutoStartWithWindows });
         });
 
-        app.MapPut("/settings/capability/{slug}", async (HttpContext ctx, string slug) =>
+        endpoints.MapPut("/settings/capability/{slug}", "Update capability settings", async (HttpContext ctx, string slug) =>
         {
             var config = configManager.Config;
             if (!config.Capabilities.ContainsKey(slug))
@@ -99,7 +100,7 @@ public static class SettingsEndpoints
             return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.ActiveProvider });
         });
 
-        app.MapPut("/settings/capability/{slug}/provider/{providerName}", async (HttpContext ctx, string slug, string providerName) =>
+        endpoints.MapPut("/settings/capability/{slug}/provider/{providerName}", "Update provider settings for a capability", async (HttpContext ctx, string slug, string providerName) =>
         {
             var config = configManager.Config;
             if (!config.Capabilities.TryGetValue(slug, out var cap))
