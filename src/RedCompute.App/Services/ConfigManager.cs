@@ -111,7 +111,11 @@ public class ConfigManager
             foreach (var (providerName, defaultProvider) in defaultCap.Providers)
             {
                 if (!existingCap.Providers.TryGetValue(providerName, out var existingProvider))
+                {
+                    existingCap.Providers[providerName] = defaultProvider;
+                    dirty = true;
                     continue;
+                }
 
                 if (existingProvider.WslDistro == null && defaultProvider.WslDistro != null)
                 { existingProvider.WslDistro = defaultProvider.WslDistro; dirty = true; }
