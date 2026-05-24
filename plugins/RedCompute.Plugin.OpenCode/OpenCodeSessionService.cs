@@ -889,7 +889,7 @@ public class OpenCodeSessionService
         _store.AddMessage(new OpenCodeMessageRecord
         {
             SessionId = session.Info.Id,
-            Role = evt.Type == "tool_result" ? "user" : "assistant",
+            Role = "assistant",
             EventType = evt.Type,
             Content = evt.Content,
             ToolName = evt.ToolName,

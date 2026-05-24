@@ -9,9 +9,15 @@ import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
 
 const readOnlyTools = new Set([
-  "Read", "Glob", "Grep", "Agent", "WebSearch", "WebFetch", "Explore",
-  "ToolSearch", "AskUserQuestion", "Monitor", "CronList",
+  "read", "glob", "grep", "agent", "websearch", "webfetch", "explore",
+  "toolsearch", "askuserquestion", "monitor", "cronlist",
+  "list", "codesearch",
 ])
+
+function isReadOnly(toolName?: string): boolean {
+  if (!toolName) return true
+  return readOnlyTools.has(toolName.toLowerCase())
+}
 
 const eventTypeConfig: Record<string, { label: string; color: string; bg: string }> = {
   text: { label: "text", color: "text-accent-teal", bg: "bg-accent-teal-a20" },
@@ -24,13 +30,11 @@ const eventTypeConfig: Record<string, { label: string; color: string; bg: string
 }
 
 function toolColor(toolName?: string): string {
-  if (!toolName) return "text-accent-teal"
-  return readOnlyTools.has(toolName) ? "text-accent-teal" : "text-accent-gold"
+  return isReadOnly(toolName) ? "text-accent-teal" : "text-accent-gold"
 }
 
 function toolBg(toolName?: string): string {
-  if (!toolName) return "bg-accent-teal-a20"
-  return readOnlyTools.has(toolName) ? "bg-accent-teal-a20" : "bg-accent-gold-a20"
+  return isReadOnly(toolName) ? "bg-accent-teal-a20" : "bg-accent-gold-a20"
 }
 
 function formatTokens(n?: number): string {
