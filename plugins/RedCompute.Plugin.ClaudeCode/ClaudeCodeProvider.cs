@@ -4,11 +4,12 @@ using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
-public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider
+public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
@@ -16,6 +17,7 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
     private readonly Action<string, Guid?> _log;
 
     public event Action<string, object>? PluginEvent;
+    public event Action<string, UnifiedStreamEvent>? SessionStreamEvent;
 
     public string Name => "Claude Code";
     public string CapabilitySlug => _capabilitySlug;
@@ -25,6 +27,18 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
     public bool IsProxy => false;
     public bool SupportsProgress => false;
     public bool SupportsRerun => false;
+
+    // ISessionProvider
+    public string ProviderId => "claude-code";
+    public string ProviderDisplayName => "Claude Code";
+    public SessionCapabilities Capabilities =>
+        SessionCapabilities.StatelessExecution | SessionCapabilities.PersistentSessions |
+        SessionCapabilities.Resume | SessionCapabilities.Interrupt |
+        SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
+        SessionCapabilities.ConfigUpdate | SessionCapabilities.ImageAttachments |
+        SessionCapabilities.ProjectDiscovery | SessionCapabilities.Generate;
+
+    public string? LastStartError => _claude.LastStartError;
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, Action<string, Guid?> log)
@@ -41,7 +55,11 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
         _claude.SessionCreated += session => PluginEvent?.Invoke("claude.session.created", session);
         _claude.SessionUpdated += session => PluginEvent?.Invoke("claude.session.updated", session);
         _claude.SessionEnded += (id, reason) => PluginEvent?.Invoke("claude.session.ended", new { id, reason });
-        _claude.StreamEvent += (sessionId, evt) => PluginEvent?.Invoke("claude.stream", new { sessionId, @event = evt });
+        _claude.StreamEvent += (sessionId, evt) =>
+        {
+            PluginEvent?.Invoke("claude.stream", new { sessionId, @event = evt });
+            SessionStreamEvent?.Invoke(sessionId, ToUnifiedEvent(evt));
+        };
     }
 
     public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
@@ -64,6 +82,198 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
         return statuses.ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
     }
 
+    // --- ISessionProvider: Session Lifecycle ---
+
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null)
+    {
+        var info = _claude.StartSession(projectPath, callerInfo);
+        return Task.FromResult(info != null ? ToUnified(info) : null);
+    }
+
+    public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
+    {
+        var info = _claude.ResumeSession(sessionId);
+        return Task.FromResult(info != null ? ToUnified(info) : null);
+    }
+
+    public Task StopSessionAsync(string sessionId) => _claude.StopSession(sessionId);
+    public Task ForceKillAsync(string sessionId) => _claude.ForceKill(sessionId);
+    public void DismissSession(string sessionId) => _claude.DismissSession(sessionId);
+
+    // --- ISessionProvider: Messaging ---
+
+    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null)
+    {
+        var claudeImages = images?.Select(i => new ClaudeCode.ImageAttachment(i.MediaType, i.Base64)).ToArray();
+        return _claude.SendMessage(sessionId, content, claudeImages);
+    }
+
+    public bool SendAnswer(string sessionId, string answer) => _claude.SendAnswer(sessionId, answer);
+
+    // --- ISessionProvider: Interrupt ---
+
+    public Core.Sessions.InterruptResult InterruptSession(string sessionId)
+    {
+        var result = _claude.InterruptSession(sessionId);
+        return result switch
+        {
+            ClaudeSessionService.InterruptResult.Interrupted => Core.Sessions.InterruptResult.Interrupted,
+            ClaudeSessionService.InterruptResult.NotActive => Core.Sessions.InterruptResult.NotActive,
+            ClaudeSessionService.InterruptResult.NotFound => Core.Sessions.InterruptResult.NotFound,
+            _ => Core.Sessions.InterruptResult.Error,
+        };
+    }
+
+    // --- ISessionProvider: Configuration ---
+
+    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort)
+    {
+        var info = await _claude.UpdateSessionConfig(sessionId, model, effort);
+        return info != null ? ToUnified(info) : null;
+    }
+
+    public bool SetPermissionMode(string sessionId, string mode) => _claude.SetPermissionMode(sessionId, mode);
+
+    // --- ISessionProvider: Querying ---
+
+    public List<UnifiedSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false)
+        => _claude.GetSessions(limit, includeDismissed).Select(ToUnified).ToList();
+
+    public (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSession(string sessionId)
+    {
+        var (info, history) = _claude.GetSession(sessionId);
+        return (info != null ? ToUnified(info) : null, history.Select(ToUnifiedMessage).ToList());
+    }
+
+    public (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSessionByJobId(Guid jobId)
+    {
+        var (info, history) = _claude.GetSessionByJobId(jobId);
+        return (info != null ? ToUnified(info) : null, history.Select(ToUnifiedMessage).ToList());
+    }
+
+    public Dictionary<Guid, Core.Sessions.SessionStatus> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds)
+    {
+        var statuses = _claude.GetSessionStatusesByJobIds(jobIds);
+        return statuses.ToDictionary(kv => kv.Key, kv => (Core.Sessions.SessionStatus)(int)kv.Value);
+    }
+
+    // --- ISessionProvider: Execution ---
+
+    public async Task<SessionExecuteResult> ExecuteAsync(string prompt, string? workingDir, string? model,
+        int timeout, CancellationToken ct, string? streamKey = null,
+        Dictionary<string, string>? env = null, Dictionary<string, object?>? providerParams = null)
+    {
+        string? effort = null;
+        int maxTurns = 1;
+        string[]? allowedTools = null;
+        string[]? addDirs = null;
+        string? container = null;
+
+        if (providerParams != null)
+        {
+            if (providerParams.TryGetValue("effort", out var e) && e is string es) effort = es;
+            if (providerParams.TryGetValue("maxTurns", out var mt) && mt is int mti) maxTurns = mti;
+            if (providerParams.TryGetValue("allowedTools", out var at) && at is string[] ats) allowedTools = ats;
+            if (providerParams.TryGetValue("addDirs", out var ad) && ad is string[] ads) addDirs = ads;
+            if (providerParams.TryGetValue("container", out var c) && c is string cs) container = cs;
+        }
+
+        var result = await _claude.ExecuteAgentAsync(prompt, container, workingDir, model, effort,
+            maxTurns, allowedTools, addDirs, timeout, ct, streamKey, env);
+        return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
+            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+    }
+
+    // --- ISessionProvider: Generate ---
+
+    public async Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
+        string messagesJson, int maxTokens, CancellationToken ct)
+    {
+        var messages = JsonDocument.Parse(messagesJson).RootElement;
+        var result = await _claude.ExecuteOneshotAsync(model, system, messages, maxTokens, ct);
+        return new SessionGenerateResult(result.Success, result.Text, result.Model,
+            result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+    }
+
+    // --- ISessionProvider: Discovery ---
+
+    public List<SessionProjectInfo> ListProjects()
+        => _claude.ListProjects().Select(p => new SessionProjectInfo
+        {
+            Name = p.Name, Path = p.Path, HasClaudeMd = p.HasClaudeMd, HasIcon = p.HasIcon
+        }).ToList();
+
+    public List<ModelInfo> GetAvailableModels() =>
+    [
+        new() { Id = "haiku", Name = "Haiku", Fast = true },
+        new() { Id = "sonnet", Name = "Sonnet", Fast = false },
+        new() { Id = "opus", Name = "Opus", Fast = false },
+    ];
+
+    // --- ISessionProvider: Process Management ---
+
+    void ISessionProvider.CancelExecution(string key) => _claude.CancelExecution(key);
+    Task ISessionProvider.StopAllAsync() => _claude.StopAllAsync();
+
+    // --- Mapping Helpers ---
+
+    private static UnifiedSessionInfo ToUnified(ClaudeSessionInfo s) => new()
+    {
+        Id = s.Id,
+        Provider = "claude-code",
+        ProjectName = s.ProjectName,
+        ProjectPath = s.ProjectPath,
+        Status = (Core.Sessions.SessionStatus)(int)s.Status,
+        StartedAt = s.StartedAt,
+        Model = s.Model,
+        ProviderSessionId = s.ClaudeSessionId,
+        Title = s.Title,
+        MessageCount = s.MessageCount,
+        CostUsd = s.CostUsd,
+        InputTokens = s.InputTokens,
+        OutputTokens = s.OutputTokens,
+        CachedInputTokens = (s.CacheReadInputTokens ?? 0) + (s.CacheCreationInputTokens ?? 0) > 0
+            ? (s.CacheReadInputTokens ?? 0) + (s.CacheCreationInputTokens ?? 0) : null,
+        ContextTokens = s.ContextTokens,
+        ContextWindow = s.ContextWindow,
+        Effort = s.Effort,
+        JobId = s.JobId,
+        PermissionMode = s.PermissionMode,
+        Source = s.Source,
+        ProviderMetadata = new()
+        {
+            ["cacheReadInputTokens"] = s.CacheReadInputTokens,
+            ["cacheCreationInputTokens"] = s.CacheCreationInputTokens,
+        }
+    };
+
+    private static UnifiedStreamEvent ToUnifiedEvent(ClaudeStreamEvent e) => new()
+    {
+        Type = e.Type,
+        Content = e.Content,
+        ToolName = e.ToolName,
+        ToolInput = e.ToolInput,
+        ToolResult = e.ToolResult,
+        IsPartial = e.IsPartial,
+        MessageId = e.MessageId,
+    };
+
+    private static UnifiedMessageRecord ToUnifiedMessage(ClaudeMessageRecord m) => new()
+    {
+        Id = m.Id,
+        SessionId = m.SessionId,
+        Role = m.Role,
+        EventType = m.EventType,
+        Content = m.Content,
+        ToolName = m.ToolName,
+        ToolInput = m.ToolInput,
+        ToolResult = m.ToolResult,
+        MessageId = m.MessageId,
+        Timestamp = m.Timestamp,
+    };
+
+    // --- Config ---
+
     private static ClaudeConfig BuildConfig(ProviderConfig config)
     {
         var claudePath = ProviderHelpers.GetExtra(config, "ClaudePath", "");
@@ -79,21 +289,16 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
-        ["mode"] = new() { Type = "string", Required = false, Default = "session", Enum = ["session", "oneshot"], Description = "'session' starts a persistent coding session; 'oneshot' runs a single stateless prompt" },
-        ["project"] = new() { Type = "string", Required = false, Description = "(session mode) Project name to start the session in" },
-        ["prompt"] = new() { Type = "string", Required = false, Description = "(session mode) Initial message / (oneshot) messages required" },
-        ["model"] = new() { Type = "string", Required = false, Default = "haiku", Description = "(oneshot mode) Model alias" },
-        ["system"] = new() { Type = "string", Required = false, Description = "(oneshot mode) System prompt" },
-        ["messages"] = new() { Type = "array", Required = false, Description = "(oneshot mode) Array of {role, content} message objects" },
-        ["maxTokens"] = new() { Type = "integer", Required = false, Default = 1024, Min = 1, Max = 8192, Description = "(oneshot mode) Maximum tokens to generate" }
+        ["prompt"] = new() { Type = "string", Required = true, Description = "Prompt text for agent execution" },
+        ["model"] = new() { Type = "string", Required = false, Default = "sonnet", Enum = ["haiku", "sonnet", "opus"], Description = "Model to use" },
+        ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
+        ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }
     };
 
     public ReturnSchema OutputSchema => new() { ContentType = "application/json", Streaming = true };
 
     public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => new List<EndpointManifest>
     {
-        new() { Method = "POST", Path = "/ai-session/execute", Description = "Execute a prompt with full agent capabilities", Parameters = new() { ["prompt"] = new() { Type = "string", Required = true, Description = "Full prompt text" }, ["model"] = new() { Type = "string", Required = false, Default = "sonnet", Enum = ["haiku", "sonnet", "opus"] }, ["maxTurns"] = new() { Type = "integer", Required = false, Default = 1 } }, Returns = new() { ContentType = "application/json", Streaming = false } },
-        new() { Method = "GET", Path = "/ai-session/models", Description = "List available LLM models", Returns = new() { ContentType = "application/json", Streaming = false } },
         new() { Method = "GET", Path = "/claude/projects", Description = "List available projects" },
         new() { Method = "POST", Path = "/claude/sessions", Description = "Start a new session by project path", Parameters = new() { ["projectPath"] = new() { Type = "string", Required = true } } },
         new() { Method = "GET", Path = "/claude/sessions", Description = "List all active and recent AI sessions" },

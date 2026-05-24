@@ -100,6 +100,7 @@ public class RelayServer
 
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(_app, _registry, _jobTracker, _logger);
+        UnifiedSessionEndpoints.Map(_app, _registry, _jobTracker, _log);
         GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log, _hardwareMonitor, _config);
         HardwareEndpoints.Map(_app, _hardwareMonitor);
 
@@ -182,6 +183,13 @@ public class RelayServer
 
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
             source.PluginEvent += (type, data) => broadcaster.Broadcast(type, data);
+
+        foreach (var sp in _registry.FindProviders<ISessionProvider>())
+        {
+            var providerId = sp.ProviderId;
+            sp.SessionStreamEvent += (sessionId, evt) =>
+                broadcaster.Broadcast("ai-session.stream", new { provider = providerId, sessionId, @event = evt });
+        }
 
         _hardwareMonitor.SnapshotUpdated += snapshot => broadcaster.Broadcast("hardware.snapshot", snapshot);
 

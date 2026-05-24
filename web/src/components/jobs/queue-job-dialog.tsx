@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose, Button, Input, Switch } from "@redbamboo/ui"
 import { api } from "@/api/client"
-import type { CapabilityStatus, ParameterSchema } from "@/api/types"
+import type { CapabilityStatus, ParameterSchema, SessionProviderInfo } from "@/api/types"
 
 interface DiscoverResponse {
   capabilities: {
@@ -27,6 +27,8 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
   const [error, setError] = useState<string | null>(null)
   const [recording, setRecording] = useState(false)
   const [recordingTime, setRecordingTime] = useState(0)
+  const [sessionProviders, setSessionProviders] = useState<SessionProviderInfo[]>([])
+  const [selectedProvider, setSelectedProvider] = useState<string>("")
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -56,6 +58,20 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
     const initial = defaultSlug || runningCaps[0]?.slug || ""
     setSelectedSlug(initial)
   }, [open, defaultSlug, runningCaps.length])
+
+  useEffect(() => {
+    if (!open || selectedSlug !== "ai-session") {
+      setSessionProviders([])
+      return
+    }
+    api.get<SessionProviderInfo[]>("/ai-session/providers").then(providers => {
+      setSessionProviders(providers)
+      if (providers.length > 0 && !selectedProvider) {
+        const cap = capabilities.find(c => c.slug === "ai-session")
+        setSelectedProvider(cap?.defaultProvider ?? providers[0].providerId)
+      }
+    }).catch(() => {})
+  }, [open, selectedSlug])
 
   useEffect(() => {
     if (!open || !selectedSlug) return
@@ -104,7 +120,13 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
         }
       }
       body.rationale = "Queued from dashboard"
-      const result = await api.post<{ jobId?: string; sessionId?: string }>(endpointPath + "?async=true", body, { "X-Caller-Info": "RedCompute" })
+      const headers: Record<string, string> = { "X-Caller-Info": "RedCompute" }
+      let submitPath = endpointPath + "?async=true"
+      if (selectedSlug === "ai-session" && selectedProvider) {
+        body.provider = selectedProvider
+        submitPath = "/ai-session/execute?async=true"
+      }
+      const result = await api.post<{ jobId?: string; sessionId?: string; job_id?: string }>(submitPath, body, headers)
       onOpenChange(false)
       if (selectedSlug === "ai-session") {
         navigate("/claude")
@@ -137,6 +159,24 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
         </DialogHeader>
 
         <div className="space-y-5 mt-1">
+          {selectedSlug === "ai-session" && sessionProviders.length > 1 && (
+            <div>
+              <div className="mb-1.5">
+                <span className="text-[13px] font-medium text-contrast">Provider</span>
+                <p className="text-[11px] text-text-muted mt-0.5 leading-relaxed">Select which AI backend to use</p>
+              </div>
+              <select
+                value={selectedProvider}
+                onChange={e => setSelectedProvider(e.target.value)}
+                className="w-full bg-surface-base border border-border-subtle rounded-lg px-3 py-2.5 text-sm"
+              >
+                {sessionProviders.map(p => (
+                  <option key={p.providerId} value={p.providerId}>{p.displayName}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {Object.entries(params).map(([key, schema]) => (
             <div key={key}>
               <div className="mb-1.5">

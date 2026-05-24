@@ -113,7 +113,18 @@ export interface WsEvent {
   type: "job.created" | "job.updated" | "capability.status" | "tunnel.status"
     | "hardware.snapshot"
     | "claude.session.created" | "claude.session.updated" | "claude.session.ended" | "claude.stream"
+    | "codex.session.created" | "codex.session.updated" | "codex.session.ended" | "codex.stream"
+    | "opencode.session.created" | "opencode.session.updated" | "opencode.session.ended" | "opencode.stream"
+    | "ai-session.stream"
   data: unknown
+}
+
+// Unified session provider info
+export interface SessionProviderInfo {
+  providerId: string
+  displayName: string
+  capabilities: string[]
+  models: { id: string; name: string; fast: boolean }[]
 }
 
 // Hardware monitoring

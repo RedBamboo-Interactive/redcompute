@@ -259,6 +259,24 @@ public class ConfigManager
                                 ["MaxSessions"] = 99,
                                 ["DefaultOneshotModel"] = "haiku"
                             }
+                        },
+                        ["codex"] = new()
+                        {
+                            Type = "Codex",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["ProjectsRoot"] = @"T:\Projects",
+                                ["MaxSessions"] = 99,
+                            }
+                        },
+                        ["opencode"] = new()
+                        {
+                            Type = "OpenCode",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["ProjectsRoot"] = @"T:\Projects",
+                                ["MaxSessions"] = 99,
+                            }
                         }
                     }
                 }

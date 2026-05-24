@@ -94,6 +94,31 @@ function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessa
       }
     }
 
+    // OpenCode format (simple type-based events)
+    else if (obj.type === "text" || obj.type === "content") {
+      const content = (obj.content as string) || (obj.text as string)
+      if (content) {
+        const timestamp = new Date(baseTime + nextId).toISOString()
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content, timestamp })
+      }
+    } else if (obj.type === "thinking" || obj.type === "reasoning") {
+      const content = (obj.content as string) || (obj.thinking as string)
+      if (content) {
+        const timestamp = new Date(baseTime + nextId).toISOString()
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content, timestamp })
+      }
+    } else if (obj.type === "tool_use" || obj.type === "tool_call") {
+      const timestamp = new Date(baseTime + nextId).toISOString()
+      const toolName = (obj.name as string) || (obj.tool as string)
+      const input = obj.input != null ? (typeof obj.input === "string" ? obj.input : JSON.stringify(obj.input))
+        : obj.arguments != null ? JSON.stringify(obj.arguments) : undefined
+      events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName, toolInput: input, timestamp })
+    } else if (obj.type === "tool_result") {
+      const timestamp = new Date(baseTime + nextId).toISOString()
+      const content = (obj.content as string) || (obj.output as string)
+      events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content, toolResult: content, timestamp })
+    }
+
     // Codex format
     else if (obj.type === "item.completed") {
       const item = (obj.item as Record<string, unknown>) || obj
@@ -129,7 +154,9 @@ function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessa
 }
 
 function providerPrefix(job: JobRecord): string {
-  return job.providerName === "Codex" ? "/codex" : "/claude"
+  if (job.providerName === "Codex") return "/codex"
+  if (job.providerName === "OpenCode") return "/opencode"
+  return "/claude"
 }
 
 function fetchSession(sessionId: string, prefix: string) {
@@ -324,6 +351,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
   useWsSubscribe(useCallback((event) => {
     const isSessionEvent = event.type === "claude.session.created" || event.type === "claude.session.updated"
       || event.type === "codex.session.created" || event.type === "codex.session.updated"
+      || event.type === "opencode.session.created" || event.type === "opencode.session.updated"
     if (isSessionEvent) {
       const s = event.data as ClaudeSessionInfo
       if (s.jobId === jobId) {
@@ -351,7 +379,7 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
       }
     }
 
-    if (event.type === "claude.stream" || event.type === "codex.stream") {
+    if (event.type === "claude.stream" || event.type === "codex.stream" || event.type === "opencode.stream") {
       const { sessionId, event: evt } = event.data as { sessionId: string; event: ClaudeStreamEvent }
       if (sessionId !== resolvedSessionId.current) return
       if (evt.type === "status") return

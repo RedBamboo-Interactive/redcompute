@@ -51,6 +51,12 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ClaudeCode\RedCompute.Plugin.ClaudeCode.csproj" />
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Codex\RedCompute.Plugin.Codex.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenCode\RedCompute.Plugin.OpenCode.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
   </ItemGroup>
 
   <Target Name="CopyFrontend" AfterTargets="Build" Condition="Exists('..\..\web\dist\index.html')">
