@@ -436,7 +436,11 @@ public class OpenCodeSessionService
             cmd.Parameters.AddWithValue("@id", acpSessionId);
             var title = cmd.ExecuteScalar() as string;
             if (!string.IsNullOrEmpty(title) && !title.StartsWith("New session - "))
+            {
                 session.Info.Title = title;
+                if (session.Info.JobId.HasValue)
+                    _jobTracker.UpdateName(session.Info.JobId.Value, title);
+            }
         }
         catch { }
     }
