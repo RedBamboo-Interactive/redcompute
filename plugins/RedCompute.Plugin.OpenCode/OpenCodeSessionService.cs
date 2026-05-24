@@ -404,6 +404,9 @@ public class OpenCodeSessionService
             TryFetchOpenCodeTitle(session);
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
+
+            if (string.IsNullOrEmpty(session.Info.Title))
+                _ = RetryFetchTitle(session);
         }
         catch (Exception ex)
         {
@@ -443,6 +446,21 @@ public class OpenCodeSessionService
             }
         }
         catch { }
+    }
+
+    private async Task RetryFetchTitle(ManagedSession session)
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            await Task.Delay(3000);
+            TryFetchOpenCodeTitle(session);
+            if (!string.IsNullOrEmpty(session.Info.Title))
+            {
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                return;
+            }
+        }
     }
 
     public bool SendAnswer(string sessionId, string answer) => false;
