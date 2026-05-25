@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using RedBamboo.AppHost.Logging;
 using RedBamboo.AppHost.Tray;
@@ -73,6 +74,7 @@ public partial class App : Application
             AppName = "RedCompute",
             Port = ConfigManager.Config.ApiPort,
             EnableAutoStartToggle = true,
+            RebuildScript = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "rebuild.ps1")),
             LoadIcon = () => IconHelper.CreateTrayIcon(StatusColors.Teal, TrayIcons.Microchip),
             GetStatusLines = async () =>
             {
