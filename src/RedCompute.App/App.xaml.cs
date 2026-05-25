@@ -72,6 +72,7 @@ public partial class App : Application
         {
             AppName = "RedCompute",
             Port = ConfigManager.Config.ApiPort,
+            EnableAutoStartToggle = true,
             LoadIcon = () => IconHelper.CreateTrayIcon(StatusColors.Teal, TrayIcons.Microchip),
             GetStatusLines = async () =>
             {

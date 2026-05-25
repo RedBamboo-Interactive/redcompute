@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Discovery;
+using RedBamboo.AppHost.Startup;
 using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
@@ -27,7 +28,7 @@ public static class SettingsEndpoints
             {
                 config.ApiPort,
                 config.LogLevel,
-                config.AutoStartWithWindows,
+                AutoStartWithWindows = StartupManager.IsEnabled("RedCompute"),
                 configPath = GetConfigPath(),
                 tunnel = new
                 {
@@ -63,7 +64,7 @@ public static class SettingsEndpoints
             var config = configManager.Config;
             if (body.ApiPort.HasValue) config.ApiPort = body.ApiPort.Value;
             if (body.LogLevel != null) config.LogLevel = body.LogLevel;
-            if (body.AutoStartWithWindows.HasValue) config.AutoStartWithWindows = body.AutoStartWithWindows.Value;
+            if (body.AutoStartWithWindows.HasValue) StartupManager.SetEnabled("RedCompute", body.AutoStartWithWindows.Value);
 
             if (body.TunnelAccessToken != null) config.Tunnel.AccessToken = body.TunnelAccessToken;
             if (body.TunnelToken != null) config.Tunnel.TunnelToken = body.TunnelToken;
@@ -74,7 +75,7 @@ public static class SettingsEndpoints
                 await ApplyTunnelToggle(config, body.TunnelEnabled.Value, tunnelService);
 
             configManager.Save();
-            return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel, config.AutoStartWithWindows });
+            return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel, AutoStartWithWindows = StartupManager.IsEnabled("RedCompute") });
         });
 
         endpoints.MapPut("/settings/capability/{slug}", "Update capability settings", async (HttpContext ctx, string slug) =>
