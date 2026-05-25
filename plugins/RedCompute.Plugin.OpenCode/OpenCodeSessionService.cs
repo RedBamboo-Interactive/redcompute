@@ -932,25 +932,21 @@ public class OpenCodeSessionService
 
     private void OnProcessExited(string sessionId)
     {
-        if (!_sessions.TryGetValue(sessionId, out var session)) return;
+        if (!_sessions.TryRemove(sessionId, out var session)) return;
 
-        if (session.Info.Status is "Active" or "Idle" or "Starting")
-        {
-            _log($"[OpenCode] ACP process exited unexpectedly for session {sessionId}", null);
-            session.Info.Status = "Stopped";
+        _log($"[OpenCode] ACP process exited unexpectedly for session {sessionId}", null);
+        session.Info.Status = "Stopped";
 
-            foreach (var (_, tcs) in session.PendingRequests)
-                tcs.TrySetException(new Exception("ACP process exited"));
-            session.PendingRequests.Clear();
+        foreach (var (_, tcs) in session.PendingRequests)
+            tcs.TrySetException(new Exception("ACP process exited"));
+        session.PendingRequests.Clear();
 
-            _sessions.TryRemove(sessionId, out _);
-            CleanupSessionResources(session);
+        CleanupSessionResources(session);
 
-            CompleteSessionJob(session);
-            PersistSessionRecord(session.Info);
+        CompleteSessionJob(session);
+        PersistSessionRecord(session.Info);
 
-            SessionEnded?.Invoke(sessionId, "process_exited");
-        }
+        SessionEnded?.Invoke(sessionId, "process_exited");
     }
 
     private void CleanupSessionResources(ManagedSession session)
