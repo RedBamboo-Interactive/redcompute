@@ -257,7 +257,6 @@ public class OpenCodeSessionService
 
         var cts = new CancellationTokenSource();
         var session = new ManagedSession(info, process, cts);
-        _sessions[info.Id] = session;
 
         process.EnableRaisingEvents = true;
         process.Exited += (_, _) => OnProcessExited(info.Id);
@@ -312,12 +311,13 @@ public class OpenCodeSessionService
             if (!string.IsNullOrEmpty(resolvedModel) && existingSessionId == null)
                 info.Model = resolvedModel;
 
+            _sessions[info.Id] = session;
             return (session, null);
         }
         catch (Exception ex)
         {
-            _sessions.TryRemove(info.Id, out _);
-            try { process.Kill(entireProcessTree: true); } catch { }
+            _log($"[OpenCode] ACP initialization failed for {info.Id}: {ex.Message}", null);
+            CleanupSessionResources(session);
             return (null, $"ACP initialization failed: {ex.Message}");
         }
     }
@@ -386,7 +386,7 @@ public class OpenCodeSessionService
     {
         try
         {
-            var result = await responseTask;
+            var result = await responseTask.WaitAsync(session.Cts.Token);
 
             if (result.TryGetProperty("usage", out var usage))
             {
@@ -408,12 +408,17 @@ public class OpenCodeSessionService
             if (string.IsNullOrEmpty(session.Info.Title))
                 _ = RetryFetchTitle(session);
         }
+        catch (OperationCanceledException)
+        {
+            // Session stopped/cancelled — lifecycle handled by StopSession/ForceKill
+        }
         catch (Exception ex)
         {
             _log($"[OpenCode] Prompt response error for {session.Info.Id}: {ex.Message}", null);
             if (_sessions.ContainsKey(session.Info.Id))
             {
                 session.Info.Status = "Idle";
+                StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent { Type = "error", Content = ex.Message });
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
             }
@@ -445,7 +450,7 @@ public class OpenCodeSessionService
                     _jobTracker.UpdateName(session.Info.JobId.Value, title);
             }
         }
-        catch { }
+        catch (Exception ex) { _log($"[OpenCode] Failed to fetch title for {session.Info.Id}: {ex.Message}", null); }
     }
 
     private async Task RetryFetchTitle(ManagedSession session)
@@ -497,15 +502,18 @@ public class OpenCodeSessionService
             if (session.AcpSessionId != null)
             {
                 try { await SendRequest(session, "session/close", new { sessionId = session.AcpSessionId }, timeoutSeconds: 5); }
-                catch { }
+                catch (Exception ex) { _log($"[OpenCode] session/close failed for {sessionId}: {ex.Message}", null); }
             }
         }
-        catch { }
+        catch (Exception ex) { _log($"[OpenCode] Error during graceful stop of {sessionId}: {ex.Message}", null); }
 
         session.Info.Status = "Stopped";
-        session.Cts.Cancel();
 
-        try { session.Process.Kill(entireProcessTree: true); } catch { }
+        foreach (var (_, tcs) in session.PendingRequests)
+            tcs.TrySetCanceled();
+        session.PendingRequests.Clear();
+
+        CleanupSessionResources(session);
 
         CompleteSessionJob(session);
         PersistSessionRecord(session.Info);
@@ -523,13 +531,12 @@ public class OpenCodeSessionService
         }
 
         session.Info.Status = "Stopped";
-        session.Cts.Cancel();
 
         foreach (var (_, tcs) in session.PendingRequests)
             tcs.TrySetCanceled();
         session.PendingRequests.Clear();
 
-        try { session.Process.Kill(entireProcessTree: true); } catch { }
+        CleanupSessionResources(session);
 
         CompleteSessionJob(session);
         PersistSessionRecord(session.Info);
@@ -711,7 +718,7 @@ public class OpenCodeSessionService
             }
         }
         catch (OperationCanceledException) { }
-        catch { }
+        catch (Exception ex) { _log($"[OpenCode] ReadStderr error for {session.Info.Id}: {ex.Message}", null); }
     }
 
     // ===== ACP Agent Request Handlers =====
@@ -739,7 +746,7 @@ public class OpenCodeSessionService
         catch (Exception ex)
         {
             try { await RespondToRequestError(session, root, ex.Message); }
-            catch { }
+            catch (Exception logEx) { _log($"[OpenCode] Failed to send error response for {session.Info.Id}: {logEx.Message}", null); }
         }
     }
 
@@ -884,6 +891,9 @@ public class OpenCodeSessionService
                     session.Info.CostUsd = amount.GetDouble();
                 if (update.TryGetProperty("used", out var used))
                     session.Info.InputTokens = used.GetInt32();
+                if (update.TryGetProperty("generated", out var generated))
+                    session.Info.OutputTokens = generated.GetInt32();
+                PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
                 break;
             }
@@ -933,12 +943,21 @@ public class OpenCodeSessionService
                 tcs.TrySetException(new Exception("ACP process exited"));
             session.PendingRequests.Clear();
 
+            _sessions.TryRemove(sessionId, out _);
+            CleanupSessionResources(session);
+
             CompleteSessionJob(session);
             PersistSessionRecord(session.Info);
-            _sessions.TryRemove(sessionId, out _);
 
             SessionEnded?.Invoke(sessionId, "process_exited");
         }
+    }
+
+    private void CleanupSessionResources(ManagedSession session)
+    {
+        try { session.Cts.Cancel(); } catch (ObjectDisposedException) { }
+        try { session.Process.Kill(entireProcessTree: true); } catch { }
+        try { session.Process.Dispose(); } catch { }
     }
 
     private void CompleteSessionJob(ManagedSession session)
