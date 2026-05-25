@@ -25,6 +25,12 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
 }) {
   const [endpoints, setEndpoints] = useState<DiscoverEndpoint[]>([])
   const [port, setPort] = useState("")
+  const [autoStart, setAutoStart] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    fetch("/api/autostart").then(r => r.json()).then(d => setAutoStart(d.enabled)).catch(() => {})
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -51,6 +57,21 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
         <div className="bg-surface-deep rounded-lg p-4 mb-4">
           <ThemeToggle />
           <ContrastToggle />
+        </div>
+
+        {/* SYSTEM */}
+        <SectionLabel>SYSTEM</SectionLabel>
+        <div className="bg-surface-deep rounded-lg p-4 mb-4">
+          <FieldRow label="Start with Windows">
+            <Toggle
+              enabled={autoStart}
+              onToggle={async () => {
+                const next = !autoStart
+                setAutoStart(next)
+                await fetch("/api/autostart", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: next }) })
+              }}
+            />
+          </FieldRow>
         </div>
 
         {/* GENERAL */}
