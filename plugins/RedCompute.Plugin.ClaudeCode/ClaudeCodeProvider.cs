@@ -13,6 +13,7 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
+    private readonly ClaudeSessionStore _store;
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
 
@@ -48,9 +49,9 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
         _jobTracker = jobTracker;
 
         using (var db = new ClaudeDbContext()) { db.Initialize(); }
-        var store = new ClaudeSessionStore();
+        _store = new ClaudeSessionStore();
         var claudeConfig = BuildConfig(config);
-        _claude = new ClaudeSessionService(claudeConfig, jobTracker, store, log);
+        _claude = new ClaudeSessionService(claudeConfig, jobTracker, _store, log);
 
         _claude.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _claude.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
@@ -60,6 +61,22 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
             PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
             SessionStreamEvent?.Invoke(sessionId, ToUnifiedEvent(evt));
         };
+    }
+
+    public Task<bool> InjectMessageAsync(string sessionId, string role, string content)
+    {
+        var session = _store.FindSession(sessionId);
+        if (session == null) return Task.FromResult(false);
+
+        _store.AddMessage(new ClaudeMessageRecord
+        {
+            SessionId = sessionId,
+            Role = role,
+            EventType = "text",
+            Content = content,
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+        return Task.FromResult(true);
     }
 
     public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);

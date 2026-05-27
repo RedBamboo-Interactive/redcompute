@@ -45,6 +45,10 @@ public interface ISessionProvider
     List<SessionProjectInfo> ListProjects();
     List<ModelInfo> GetAvailableModels();
 
+    // Message injection (without triggering inference)
+    Task<bool> InjectMessageAsync(string sessionId, string role, string content)
+        => Task.FromResult(false);
+
     // Events
     event Action<string, UnifiedStreamEvent>? SessionStreamEvent;
     void CancelExecution(string key);

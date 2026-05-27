@@ -12,9 +12,14 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class UnifiedSessionEndpoints
 {
+    private static DockerContainerService? _docker;
+
     public static void Map(WebApplication app, CapabilityRegistry registry,
-        IJobTracker jobTracker, Action<string, Guid?> log)
+        IJobTracker jobTracker, Action<string, Guid?> log,
+        DockerContainerService? docker = null)
     {
+        _docker = docker;
+
         app.MapGet("/ai-session/providers", () =>
         {
             var providers = registry.FindProviders<ISessionProvider>().Select(p => new
@@ -122,6 +127,26 @@ public static class UnifiedSessionEndpoints
 
             var sent = await provider.SendMessageAsync(id, content ?? "", images);
             return Results.Json(new { sent });
+        });
+
+        app.MapPost("/ai-session/sessions/{id}/inject", async (HttpContext ctx, string id) =>
+        {
+            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info == null)
+                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+
+            var role = body.TryGetProperty("role", out var r) ? r.GetString() : null;
+            var content = body.TryGetProperty("content", out var c) ? c.GetString() : null;
+
+            if (string.IsNullOrEmpty(role) || string.IsNullOrEmpty(content))
+                return Error(400, "missing_fields", "role and content are required");
+
+            var injected = await provider!.InjectMessageAsync(id, role, content);
+            return Results.Json(new { injected });
         });
 
         app.MapPost("/ai-session/sessions/{id}/answer", async (HttpContext ctx, string id) =>
@@ -336,7 +361,7 @@ public static class UnifiedSessionEndpoints
                 env = envProp.EnumerateObject().ToDictionary(ep => ep.Name, ep => ep.Value.GetString() ?? "");
 
             var providerParams = new Dictionary<string, object?>();
-            foreach (var key in new[] { "effort", "maxTurns", "allowedTools", "addDirs", "container", "sandbox" })
+            foreach (var key in new[] { "effort", "maxTurns", "allowedTools", "addDirs", "container", "dockerImage", "sandbox" })
             {
                 if (body.TryGetProperty(key, out var val))
                 {
@@ -347,6 +372,23 @@ public static class UnifiedSessionEndpoints
                         JsonValueKind.Array => val.EnumerateArray().Select(x => x.GetString()!).Where(x => x != null).ToArray(),
                         _ => null
                     };
+                }
+            }
+
+            if (!providerParams.ContainsKey("container") || providerParams["container"] is not string)
+            {
+                if (providerParams.TryGetValue("dockerImage", out var di) && di is string dockerImage && _docker != null)
+                {
+                    try
+                    {
+                        var resolved = await _docker.EnsureContainerAsync(dockerImage);
+                        providerParams["container"] = resolved;
+                        log($"[Docker] Resolved image '{dockerImage}' to container '{resolved}'", null);
+                    }
+                    catch (Exception ex)
+                    {
+                        return Error(500, "docker_failed", $"Failed to ensure container for image '{dockerImage}': {ex.Message}");
+                    }
                 }
             }
 
