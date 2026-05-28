@@ -13,12 +13,14 @@ namespace RedCompute.App.Api.Endpoints;
 public static class UnifiedSessionEndpoints
 {
     private static DockerContainerService? _docker;
+    private static SessionCallbackRegistry? _callbacks;
 
     public static void Map(WebApplication app, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log,
-        DockerContainerService? docker = null)
+        DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null)
     {
         _docker = docker;
+        _callbacks = callbacks;
 
         app.MapGet("/ai-session/providers", () =>
         {
@@ -214,6 +216,27 @@ public static class UnifiedSessionEndpoints
 
             provider!.DismissSession(id);
             return Results.Json(new { dismissed = true });
+        });
+
+        app.MapPost("/ai-session/sessions/{id}/callback", async (HttpContext ctx, string id) =>
+        {
+            if (_callbacks == null)
+                return Error(503, "not_configured", "Callback registry not available");
+
+            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info == null)
+                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+
+            var url = body.TryGetProperty("url", out var u) ? u.GetString() : null;
+            if (string.IsNullOrWhiteSpace(url))
+                return Error(422, "validation_failed", "url is required");
+
+            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status);
+            return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         });
 
         app.MapPost("/ai-session/sessions/{id}/config", async (HttpContext ctx, string id) =>

@@ -33,6 +33,8 @@ public class RelayServer
     private readonly ConfigManager _configManager;
     private readonly CloudflareTunnelService _tunnelService;
     private readonly HardwareMonitorService _hardwareMonitor;
+    private readonly DockerContainerService _docker;
+    private readonly SessionCallbackRegistry _callbacks;
     private readonly Action<string, Guid?> _log;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
@@ -46,6 +48,8 @@ public class RelayServer
         _configManager = configManager;
         _tunnelService = tunnelService;
         _hardwareMonitor = hardwareMonitor;
+        _docker = new DockerContainerService(log);
+        _callbacks = new SessionCallbackRegistry(log);
         _log = log;
     }
 
@@ -105,7 +109,7 @@ public class RelayServer
         HardwareEndpoints.Map(registry, _hardwareMonitor);
         SettingsEndpoints.Map(registry, _configManager, _tunnelService, _registry);
 
-        UnifiedSessionEndpoints.Map(_app, _registry, _jobTracker, _log);
+        UnifiedSessionEndpoints.Map(_app, _registry, _jobTracker, _log, _docker, _callbacks);
         GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
@@ -185,7 +189,10 @@ public class RelayServer
         });
 
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
+        {
             source.PluginEvent += (type, data) => broadcaster.Broadcast(type, data);
+            source.PluginEvent += _callbacks.OnSessionEvent;
+        }
 
         foreach (var sp in _registry.FindProviders<ISessionProvider>())
         {
@@ -244,6 +251,8 @@ public class RelayServer
 
     public async Task StopAsync()
     {
+        await _docker.StopAllAsync();
+
         if (_app != null)
         {
             _log("[Relay] Shutting down", null);
