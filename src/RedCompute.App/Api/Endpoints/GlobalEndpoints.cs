@@ -254,6 +254,79 @@ public static class GlobalEndpoints
             });
         });
 
+        endpoints.MapGet("/activity/summary", "Activity summary over a time range with per-capability and per-caller breakdowns", (string? since, string? until) =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var sinceDate = since != null && DateTimeOffset.TryParse(since, out var s) ? s : now.Date;
+            var untilDate = until != null && DateTimeOffset.TryParse(until, out var u) ? u : now;
+
+            var jobs = jobTracker.GetJobsSince(sinceDate)
+                .Where(j => j.QueuedAt >= sinceDate && j.QueuedAt <= untilDate)
+                .ToList();
+
+            var totalCost = jobs.Where(j => j.CostUsd.HasValue).Sum(j => j.CostUsd!.Value);
+            var totalDuration = jobs.Where(j => j.DurationMs.HasValue).Sum(j => j.DurationMs!.Value);
+
+            var byCapability = new List<object>();
+            foreach (var group in jobs.GroupBy(j => j.CapabilitySlug).OrderByDescending(g => g.Count()))
+            {
+                var capJobs = group.ToList();
+                var entry = registry.Get(group.Key);
+                var displayName = entry?.Definition.DisplayName ?? group.Key;
+
+                byCapability.Add(new
+                {
+                    slug = group.Key,
+                    displayName,
+                    jobs = capJobs.Count,
+                    completed = capJobs.Count(j => j.Status == JobStatus.Completed),
+                    failed = capJobs.Count(j => j.Status == JobStatus.Failed),
+                    running = capJobs.Count(j => j.Status == JobStatus.Running),
+                    totalCostUsd = Math.Round(capJobs.Where(j => j.CostUsd.HasValue).Sum(j => j.CostUsd!.Value), 4),
+                    totalDurationMs = capJobs.Where(j => j.DurationMs.HasValue).Sum(j => j.DurationMs!.Value),
+                    items = capJobs.Select(j => new
+                    {
+                        j.Id,
+                        j.Name,
+                        status = j.Status.ToString(),
+                        j.CallerInfo,
+                        j.CostUsd,
+                        durationMs = j.DurationMs,
+                        j.StartedAt,
+                        j.CompletedAt
+                    })
+                });
+            }
+
+            var byCaller = jobs
+                .GroupBy(j => j.CallerInfo ?? "(direct)")
+                .OrderByDescending(g => g.Count())
+                .Select(g => new
+                {
+                    caller = g.Key,
+                    jobs = g.Count(),
+                    completed = g.Count(j => j.Status == JobStatus.Completed),
+                    totalCostUsd = Math.Round(g.Where(j => j.CostUsd.HasValue).Sum(j => j.CostUsd!.Value), 4)
+                });
+
+            return Results.Ok(new
+            {
+                since = sinceDate,
+                until = untilDate,
+                totals = new
+                {
+                    jobs = jobs.Count,
+                    completed = jobs.Count(j => j.Status == JobStatus.Completed),
+                    failed = jobs.Count(j => j.Status == JobStatus.Failed),
+                    running = jobs.Count(j => j.Status == JobStatus.Running),
+                    totalCostUsd = Math.Round(totalCost, 4),
+                    totalDurationMs = totalDuration
+                },
+                byCapability,
+                byCaller
+            });
+        });
+
         endpoints.MapPost("/control/start/{slug}", "Start a capability's active provider", async (string slug) =>
         {
             var entry = registry.Get(slug);

@@ -233,21 +233,8 @@ public class ClaudeSessionService
 
         if (useDocker)
         {
-            startInfo.FileName = "docker";
-            var args = new List<string> { "exec", "-i" };
-            if (!string.IsNullOrWhiteSpace(workingDir))
-            {
-                args.Add("-w");
-                args.Add(workingDir);
-            }
-            if (env is not null)
-                foreach (var (k, v) in env)
-                {
-                    args.Add("-e");
-                    args.Add($"{k}={v}");
-                }
-            args.Add(container!);
-            args.Add("claude");
+            DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "claude", workingDir, env);
+            var args = new List<string>();
             AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }

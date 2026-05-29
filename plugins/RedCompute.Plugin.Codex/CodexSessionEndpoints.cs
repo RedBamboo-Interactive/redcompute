@@ -135,7 +135,7 @@ public static class CodexSessionEndpoints
                 try
                 {
                     var result = await codex.ExecuteExecAsync(
-                        prompt!, workingDir, model, sandbox, timeout,
+                        prompt!, null, workingDir, model, sandbox, timeout,
                         CancellationToken.None,
                         streamKey: job.Id.ToString(),
                         env: env);
@@ -176,7 +176,7 @@ public static class CodexSessionEndpoints
         try
         {
             var result = await codex.ExecuteExecAsync(
-                prompt!, workingDir, model, sandbox, timeout,
+                prompt!, null, workingDir, model, sandbox, timeout,
                 ctx.RequestAborted,
                 streamKey: job.Id.ToString(),
                 env: env);

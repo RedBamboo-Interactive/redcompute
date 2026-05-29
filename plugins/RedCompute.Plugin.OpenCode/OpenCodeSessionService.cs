@@ -996,20 +996,24 @@ public class OpenCodeSessionService
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
     public async Task<ExecuteResult> ExecuteAsync(
-        string prompt, string? workingDir,
+        string prompt, string? container, string? workingDir,
         string? model, int timeout,
         CancellationToken ct,
         string? streamKey = null,
         Dictionary<string, string>? env = null)
     {
-        var opencodePath = ResolveOpenCodePath();
-        if (opencodePath == null)
-            return new ExecuteResult(false, null, null, null, 0, 0, null,
-                "Could not find 'opencode' CLI. Install opencode or set OpenCodePath in config.");
+        var useDocker = !string.IsNullOrWhiteSpace(container);
+
+        if (!useDocker)
+        {
+            var opencodePath = ResolveOpenCodePath();
+            if (opencodePath == null)
+                return new ExecuteResult(false, null, null, null, 0, 0, null,
+                    "Could not find 'opencode' CLI. Install opencode or set OpenCodePath in config.");
+        }
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = opencodePath,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -1019,12 +1023,19 @@ public class OpenCodeSessionService
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        if (!string.IsNullOrWhiteSpace(workingDir))
-            startInfo.WorkingDirectory = workingDir;
-
-        if (env is not null)
-            foreach (var (k, v) in env)
-                startInfo.EnvironmentVariables[k] = v;
+        if (useDocker)
+        {
+            DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "opencode", workingDir, env);
+        }
+        else
+        {
+            startInfo.FileName = ResolveOpenCodePath()!;
+            if (!string.IsNullOrWhiteSpace(workingDir))
+                startInfo.WorkingDirectory = workingDir;
+            if (env is not null)
+                foreach (var (k, v) in env)
+                    startInfo.EnvironmentVariables[k] = v;
+        }
 
         BuildExecArgs(startInfo, model);
 

@@ -53,15 +53,18 @@ export function AppShell({
       }}
       headerContent={
         <NavTabs>
-          <NavLink to="/" end className={navLinkClass}>
+          <NavLink to="/" end className={navLinkClass}
+            data-command="Capabilities" data-command-shortcut="F1" data-command-group="Navigate">
             <i className="fa-solid fa-grid-2 text-xs" />
             <span>Capabilities</span>
           </NavLink>
-          <NavLink to="/jobs" className={navLinkClass}>
+          <NavLink to="/jobs" className={navLinkClass}
+            data-command="Jobs" data-command-shortcut="F2" data-command-group="Navigate">
             <i className="fa-solid fa-list text-xs" />
             <span>Jobs</span>
           </NavLink>
-          <NavLink to="/stats" className={navLinkClass}>
+          <NavLink to="/stats" className={navLinkClass}
+            data-command="Stats" data-command-shortcut="F3" data-command-group="Navigate">
             <i className="fa-solid fa-chart-simple text-xs" />
             <span>Stats</span>
           </NavLink>

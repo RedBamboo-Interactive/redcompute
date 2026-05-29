@@ -174,7 +174,11 @@ public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlugi
         int timeout, CancellationToken ct, string? streamKey = null,
         Dictionary<string, string>? env = null, Dictionary<string, object?>? providerParams = null)
     {
-        var result = await _opencode.ExecuteAsync(prompt, workingDir, model, timeout, ct, streamKey, env);
+        string? container = null;
+        if (providerParams?.TryGetValue("container", out var c) == true && c is string cs)
+            container = cs;
+
+        var result = await _opencode.ExecuteAsync(prompt, container, workingDir, model, timeout, ct, streamKey, env);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }

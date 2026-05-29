@@ -152,10 +152,16 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Dictionary<string, string>? env = null, Dictionary<string, object?>? providerParams = null)
     {
         string? sandbox = null;
-        if (providerParams?.TryGetValue("sandbox", out var sb) == true && sb is string sbs)
-            sandbox = sbs;
+        string? container = null;
+        if (providerParams != null)
+        {
+            if (providerParams.TryGetValue("sandbox", out var sb) && sb is string sbs)
+                sandbox = sbs;
+            if (providerParams.TryGetValue("container", out var c) && c is string cs)
+                container = cs;
+        }
 
-        var result = await _codex.ExecuteExecAsync(prompt, workingDir, model, sandbox, timeout, ct, streamKey, env);
+        var result = await _codex.ExecuteExecAsync(prompt, container, workingDir, model, sandbox, timeout, ct, streamKey, env);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }

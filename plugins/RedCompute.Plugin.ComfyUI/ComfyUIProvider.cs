@@ -302,7 +302,12 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         {
             Success = true,
             OutputStream = stream,
-            ContentType = contentType ?? (wfDef.MediaType == "video" ? "video/mp4" : "image/png"),
+            ContentType = contentType ?? wfDef.MediaType switch
+            {
+                "video" => "video/mp4",
+                "animation" => "image/webp",
+                _ => "image/png"
+            },
             ResultJson = resultMeta
         };
     }
@@ -478,7 +483,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             return Math.Min((nodesFinished + currentNodeFrac) / nonCachedTotal, 0.95);
         }
 
-        var deadline = DateTime.UtcNow.AddSeconds(_pollTimeoutSeconds);
+        var executionStarted = false;
+        var deadline = DateTime.UtcNow.AddHours(24);
         var buffer = new byte[8192];
 
         while (ws.State == WebSocketState.Open && DateTime.UtcNow < deadline)
@@ -488,7 +494,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             do
             {
                 using var recvCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                recvCts.CancelAfter(TimeSpan.FromSeconds(_pollTimeoutSeconds));
+                recvCts.CancelAfter(TimeSpan.FromHours(24));
                 result = await ws.ReceiveAsync(buffer, recvCts.Token);
                 msgStream.Write(buffer, 0, result.Count);
             } while (!result.EndOfMessage);
@@ -519,6 +525,12 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                     break;
 
                 case "executing":
+                    if (!executionStarted)
+                    {
+                        executionStarted = true;
+                        deadline = DateTime.UtcNow.AddSeconds(_pollTimeoutSeconds);
+                        _log($"[ComfyUI] Execution started for {promptId}, timeout in {_pollTimeoutSeconds}s");
+                    }
                     if (data.TryGetProperty("node", out var nodeProp) && nodeProp.ValueKind == JsonValueKind.Null)
                     {
                         progressCallback?.Invoke(1.0);
@@ -589,11 +601,11 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
             // SaveImage → "images", SaveVideo → "gifs"
             JsonElement mediaList;
-            string contentType;
+            string fallbackContentType;
             if (nodeOutput.TryGetProperty("images", out mediaList))
-                contentType = "image/png";
+                fallbackContentType = "image/png";
             else if (nodeOutput.TryGetProperty("gifs", out mediaList))
-                contentType = "video/mp4";
+                fallbackContentType = "video/mp4";
             else
                 return (null, null, "No media in output node");
 
@@ -604,6 +616,17 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             var filename = first.GetProperty("filename").GetString()!;
             var subfolder = first.TryGetProperty("subfolder", out var sf) ? sf.GetString() ?? "" : "";
             var fileType = first.TryGetProperty("type", out var ft) ? ft.GetString() ?? "output" : "output";
+
+            var contentType = Path.GetExtension(filename).ToLowerInvariant() switch
+            {
+                ".webp" => "image/webp",
+                ".png" => "image/png",
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".gif" => "image/gif",
+                ".mp4" => "video/mp4",
+                ".webm" => "video/webm",
+                _ => fallbackContentType
+            };
 
             var stream = await DownloadFileAsync(filename, subfolder, fileType, ct);
             if (stream == null)

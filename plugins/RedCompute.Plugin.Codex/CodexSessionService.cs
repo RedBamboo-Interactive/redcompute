@@ -53,20 +53,24 @@ public class CodexSessionService
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
     public async Task<ExecuteResult> ExecuteExecAsync(
-        string prompt, string? workingDir,
+        string prompt, string? container, string? workingDir,
         string? model, string? sandbox, int timeout,
         CancellationToken ct,
         string? streamKey = null,
         Dictionary<string, string>? env = null)
     {
-        var codexPath = ResolveCodexPath();
-        if (codexPath == null)
-            return new ExecuteResult(false, null, null, null, 0, 0, null,
-                "Could not find 'codex' CLI. Install @openai/codex or set CodexPath in config.");
+        var useDocker = !string.IsNullOrWhiteSpace(container);
+
+        if (!useDocker)
+        {
+            var codexPath = ResolveCodexPath();
+            if (codexPath == null)
+                return new ExecuteResult(false, null, null, null, 0, 0, null,
+                    "Could not find 'codex' CLI. Install @openai/codex or set CodexPath in config.");
+        }
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = codexPath,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -76,12 +80,19 @@ public class CodexSessionService
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        if (!string.IsNullOrWhiteSpace(workingDir))
-            startInfo.WorkingDirectory = workingDir;
-
-        if (env is not null)
-            foreach (var (k, v) in env)
-                startInfo.EnvironmentVariables[k] = v;
+        if (useDocker)
+        {
+            DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "codex", workingDir, env);
+        }
+        else
+        {
+            startInfo.FileName = ResolveCodexPath()!;
+            if (!string.IsNullOrWhiteSpace(workingDir))
+                startInfo.WorkingDirectory = workingDir;
+            if (env is not null)
+                foreach (var (k, v) in env)
+                    startInfo.EnvironmentVariables[k] = v;
+        }
 
         BuildExecArgs(startInfo, model, sandbox);
 
