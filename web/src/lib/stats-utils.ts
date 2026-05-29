@@ -256,6 +256,23 @@ export function formatTokens(n: number): string {
   return String(n)
 }
 
+export interface CostBySource {
+  name: string
+  cost: number
+}
+
+export function groupCostBySource(jobs: JobRecord[]): CostBySource[] {
+  const costs = new Map<string, number>()
+  for (const j of jobs) {
+    if (j.costUsd == null || j.costUsd <= 0) continue
+    const source = j.callerInfo || "unknown"
+    costs.set(source, (costs.get(source) || 0) + j.costUsd)
+  }
+  return [...costs.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, cost]) => ({ name, cost }))
+}
+
 export function costTrendFromJobs(jobs: JobRecord[], range: TimeRange): CostBucket[] {
   const { start, step, count, labelFn } = createBuckets(range)
   const startMs = start.getTime()

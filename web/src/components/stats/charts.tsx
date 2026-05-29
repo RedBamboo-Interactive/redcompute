@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
 } from "recharts"
-import type { TimeBucket, DurationBucket, GroupCount, CostBucket } from "@/lib/stats-utils"
+import type { TimeBucket, DurationBucket, GroupCount, CostBucket, CostBySource } from "@/lib/stats-utils"
 import { formatDurationCompact, formatCost } from "@/lib/stats-utils"
 
 const STATUS_COLORS = {
@@ -14,7 +14,10 @@ const STATUS_COLORS = {
 
 const GRID_COLOR = "rgba(255,255,255,0.06)"
 const AXIS_COLOR = "#9B9CA2"
-const PURPLE = "#7C4DFF"
+const SOURCE_PALETTE = [
+  "#D4AA4F", "#7C4DFF", "#26A69A", "#E55B5B", "#42A5F5",
+  "#AB47BC", "#FF7043", "#66BB6A", "#EC407A", "#8D6E63",
+]
 
 function ChartCard({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
@@ -156,22 +159,48 @@ export function DurationChart({ data }: { data: DurationBucket[] }) {
 export function SourceBarChart({ data, label }: { data: GroupCount[]; label: string }) {
   const items = data.slice(0, 8)
   const hasData = items.length > 0
-  const height = Math.max(160, items.length * 32)
+  const total = items.reduce((s, d) => s + d.count, 0)
 
   return (
     <ChartCard title={label}>
       {hasData ? (
-        <ResponsiveContainer width="100%" height={height}>
-          <BarChart data={items} layout="vertical" margin={{ left: 0, right: 12 }}>
-            <CartesianGrid stroke={GRID_COLOR} strokeDasharray="3 3" horizontal={false} />
-            <XAxis type="number" tick={{ fill: AXIS_COLOR, fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
-            <YAxis type="category" dataKey="name" tick={{ fill: AXIS_COLOR, fontSize: 10 }} tickLine={false} axisLine={false} width={80} />
-            <RechartsTooltip content={<ChartTooltipContent />} cursor={{ fill: "rgba(255,255,255,0.03)" }} />
-            <Bar dataKey="count" name="Jobs" fill={PURPLE} radius={[0, 3, 3, 0]} barSize={16} />
-          </BarChart>
+        <ResponsiveContainer width="100%" height={220}>
+          <PieChart>
+            <Pie
+              data={items}
+              dataKey="count"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              innerRadius={55}
+              outerRadius={85}
+              paddingAngle={2}
+              strokeWidth={0}
+            >
+              {items.map((_, i) => (
+                <Cell key={i} fill={SOURCE_PALETTE[i % SOURCE_PALETTE.length]} />
+              ))}
+            </Pie>
+            <RechartsTooltip content={<ChartTooltipContent />} />
+            <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central"
+              style={{ fill: "#D0D1D6", fontSize: 20, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
+              {total}
+            </text>
+          </PieChart>
         </ResponsiveContainer>
       ) : (
-        <div className="flex items-center justify-center h-[160px] text-text-disabled text-xs">No data</div>
+        <div className="flex items-center justify-center h-[220px] text-text-disabled text-xs">No data</div>
+      )}
+      {hasData && (
+        <div className="flex flex-wrap gap-3 mt-1">
+          {items.map((d, i) => (
+            <div key={d.name} className="flex items-center gap-1.5 text-[10px]">
+              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: SOURCE_PALETTE[i % SOURCE_PALETTE.length] }} />
+              <span className="text-text-muted">{d.name}</span>
+              <span className="font-mono text-text-disabled">{d.count}</span>
+            </div>
+          ))}
+        </div>
       )}
     </ChartCard>
   )
@@ -205,6 +234,65 @@ export function CostChart({ data }: { data: CostBucket[] }) {
         </ResponsiveContainer>
       ) : (
         <div className="flex items-center justify-center h-[220px] text-text-disabled text-xs">No cost data available</div>
+      )}
+    </ChartCard>
+  )
+}
+
+function CostSourceTooltipContent({ payload }: { payload?: Array<{ name: string; value: number; payload: CostBySource }> }) {
+  if (!payload?.length) return null
+  const entry = payload[0]
+  return (
+    <div className="bg-[#2E3038] border border-[#43454F] rounded-lg px-3 py-2 text-xs shadow-lg">
+      <div className="text-text-muted mb-1">{entry.payload.name}</div>
+      <div className="text-contrast font-mono">{formatCost(entry.value)}</div>
+    </div>
+  )
+}
+
+export function CostBySourcePie({ data, totalCost }: { data: CostBySource[]; totalCost: number }) {
+  const hasData = data.length > 0
+
+  return (
+    <ChartCard title="Cost by source">
+      {hasData ? (
+        <ResponsiveContainer width="100%" height={220}>
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="cost"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              innerRadius={55}
+              outerRadius={85}
+              paddingAngle={2}
+              strokeWidth={0}
+            >
+              {data.map((_, i) => (
+                <Cell key={i} fill={SOURCE_PALETTE[i % SOURCE_PALETTE.length]} />
+              ))}
+            </Pie>
+            <RechartsTooltip content={<CostSourceTooltipContent />} />
+            <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central"
+              style={{ fill: "#D0D1D6", fontSize: 16, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
+              {formatCost(totalCost)}
+            </text>
+          </PieChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="flex items-center justify-center h-[220px] text-text-disabled text-xs">No cost data</div>
+      )}
+      {hasData && (
+        <div className="flex flex-wrap gap-3 mt-1">
+          {data.slice(0, 8).map((d, i) => (
+            <div key={d.name} className="flex items-center gap-1.5 text-[10px]">
+              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: SOURCE_PALETTE[i % SOURCE_PALETTE.length] }} />
+              <span className="text-text-muted">{d.name}</span>
+              <span className="font-mono text-text-disabled">{formatCost(d.cost)}</span>
+            </div>
+          ))}
+        </div>
       )}
     </ChartCard>
   )

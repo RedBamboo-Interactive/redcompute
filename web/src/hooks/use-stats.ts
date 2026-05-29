@@ -6,7 +6,7 @@ import type { JobRecord, ClaudeSessionInfo } from "@/api/types"
 import {
   type TimeRange, type StatsMetrics, type SessionMetrics,
   filterJobsByTimeRange, computeMetrics, bucketJobs, durationTrend, groupByField,
-  costTrendFromJobs,
+  costTrendFromJobs, groupCostBySource,
   filterSessionsByTimeRange, computeSessionMetrics,
 } from "@/lib/stats-utils"
 
@@ -78,6 +78,7 @@ export function useStats(capability: string | null, timeRange: TimeRange) {
   const costBuckets = useMemo(() => costTrendFromJobs(filteredJobs, timeRange), [filteredJobs, timeRange])
   const providers = useMemo(() => groupByField(filteredJobs, "providerName"), [filteredJobs])
   const callers = useMemo(() => groupByField(filteredJobs, "callerInfo"), [filteredJobs])
+  const costBySource = useMemo(() => groupCostBySource(filteredJobs), [filteredJobs])
 
   // Session-specific token metrics (ai-session only)
   const filteredSessions = useMemo(() => filterSessionsByTimeRange(allSessions, timeRange), [allSessions, timeRange])
@@ -89,7 +90,7 @@ export function useStats(capability: string | null, timeRange: TimeRange) {
 
   return {
     loading, allJobs, filteredJobs, metrics, timeBuckets, durationBuckets, costBuckets,
-    providers, callers, totalOnServer,
+    providers, callers, costBySource, totalOnServer,
     hasSessionData, sessionMetrics,
   }
 }

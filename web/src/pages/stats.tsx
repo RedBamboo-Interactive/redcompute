@@ -5,10 +5,10 @@ import { useStats } from "@/hooks/use-stats"
 import { useSuiteTelemetry } from "@/hooks/use-suite-telemetry"
 import { MetricCard } from "@/components/stats/metric-card"
 import { ApiTelemetryView } from "@/components/stats/api-telemetry-view"
-import { JobsOverTimeChart, StatusDonut, DurationChart, SourceBarChart, CostChart } from "@/components/stats/charts"
+import { JobsOverTimeChart, StatusDonut, DurationChart, SourceBarChart, CostChart, CostBySourcePie } from "@/components/stats/charts"
 import {
   formatDurationCompact, formatCost, formatTokens,
-  computeMetrics, bucketJobs, durationTrend, groupByField,
+  computeMetrics, bucketJobs, durationTrend, groupByField, groupCostBySource,
   type TimeRange, type GroupCount,
 } from "@/lib/stats-utils"
 import type { CapabilityStatus } from "@/api/types"
@@ -91,6 +91,11 @@ export function StatsPage({ capabilities }: { capabilities: CapabilityStatus[] }
   const callers: GroupCount[] = useMemo(
     () => secondaryFiltered ? groupByField(secondaryFiltered, "callerInfo") : stats.callers,
     [secondaryFiltered, stats.callers],
+  )
+
+  const costBySource = useMemo(
+    () => secondaryFiltered ? groupCostBySource(secondaryFiltered) : stats.costBySource,
+    [secondaryFiltered, stats.costBySource],
   )
 
   const statusCounts: GroupCount[] = useMemo(() => {
@@ -278,6 +283,7 @@ export function StatsPage({ capabilities }: { capabilities: CapabilityStatus[] }
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
                   <CostChart data={stats.costBuckets} />
+                  <CostBySourcePie data={costBySource} totalCost={metrics.totalCost} />
                 </div>
               </>
             )}
