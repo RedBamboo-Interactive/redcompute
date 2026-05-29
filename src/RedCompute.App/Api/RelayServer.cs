@@ -73,9 +73,11 @@ public class RelayServer
             });
         });
         builder.Services.AddAppHostWebSocket();
+        builder.Services.AddAppHostTelemetry(opts => opts.AppName = "RedCompute");
 
         _app = builder.Build();
 
+        _app.UseAppHostTelemetry();
         _app.UseCors();
         _app.UseWebSockets();
         _app.Use(async (ctx, next) =>
@@ -109,6 +111,7 @@ public class RelayServer
         HardwareEndpoints.Map(registry, _hardwareMonitor);
         SettingsEndpoints.Map(registry, _configManager, _tunnelService, _registry);
 
+        SuiteTelemetryEndpoints.Map(registry);
         UnifiedSessionEndpoints.Map(_app, _registry, _jobTracker, _log, _docker, _callbacks);
         GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
