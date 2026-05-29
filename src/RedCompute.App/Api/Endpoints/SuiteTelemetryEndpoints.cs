@@ -61,5 +61,34 @@ public static class SuiteTelemetryEndpoints
                 var results = await Task.WhenAll(tasks);
                 return Results.Ok(new { apps = results });
             });
+
+        endpoints.MapGet("/api/telemetry/suite/entries",
+            "Proxy individual telemetry entries from a suite app",
+            async (int port, string? route, string? method, string? since, string? until, int? limit) =>
+            {
+                if (!SuiteApps.Any(a => a.Port == port))
+                    return Results.BadRequest(new { error = "Unknown suite app port" });
+
+                var qs = new List<string>();
+                if (route is not null) qs.Add($"route={Uri.EscapeDataString(route)}");
+                if (method is not null) qs.Add($"method={Uri.EscapeDataString(method)}");
+                if (since is not null) qs.Add($"since={Uri.EscapeDataString(since)}");
+                if (until is not null) qs.Add($"until={Uri.EscapeDataString(until)}");
+                qs.Add($"limit={limit ?? 500}");
+
+                var url = $"http://localhost:{port}/api/telemetry/?{string.Join("&", qs)}";
+                try
+                {
+                    var response = await Http.GetAsync(url);
+                    if (!response.IsSuccessStatusCode)
+                        return Results.StatusCode((int)response.StatusCode);
+                    var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+                    return Results.Ok(json);
+                }
+                catch
+                {
+                    return Results.StatusCode(502);
+                }
+            });
     }
 }

@@ -182,7 +182,7 @@ export function StatsPage({ capabilities }: { capabilities: CapabilityStatus[] }
 
         {/* Telemetry view */}
         {view === "telemetry" && (
-          <ApiTelemetryView apps={telemetry.apps} loading={telemetry.loading} />
+          <ApiTelemetryView apps={telemetry.apps} loading={telemetry.loading} timeRange={timeRange} />
         )}
 
         {/* Jobs view */}

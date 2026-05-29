@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react"
 import type { AppTelemetry, RouteStats } from "@/hooks/use-suite-telemetry"
+import type { TimeRange } from "@/lib/stats-utils"
+import { RouteDetailModal } from "./route-detail-modal"
 
 type SortKey = "count" | "totalMs" | "avgMs" | "p50Ms" | "p70Ms" | "p90Ms" | "p99Ms" | "errorCount"
 type SortDir = "asc" | "desc"
@@ -8,6 +10,7 @@ interface FlatRow extends RouteStats {
   app: string
   appColor: string
   appIcon: string
+  appPort: number
 }
 
 const APP_ICONS: Record<string, string> = {
@@ -44,11 +47,12 @@ function durationColor(ms: number): string {
   return "text-accent-red"
 }
 
-export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; loading: boolean }) {
+export function ApiTelemetryView({ apps, loading, timeRange }: { apps: AppTelemetry[]; loading: boolean; timeRange: TimeRange }) {
   const [sortKey, setSortKey] = useState<SortKey>("p90Ms")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
   const [appFilter, setAppFilter] = useState<string | null>(null)
   const [hideJobs, setHideJobs] = useState(true)
+  const [selectedRow, setSelectedRow] = useState<FlatRow | null>(null)
 
   const onlineApps = useMemo(() => apps.filter(a => a.status === "online"), [apps])
 
@@ -58,7 +62,7 @@ export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; load
       if (appFilter && app.name !== appFilter) continue
       for (const route of app.stats?.routes ?? []) {
         if (hideJobs && route.kind === "job") continue
-        flat.push({ ...route, app: app.name, appColor: app.color, appIcon: APP_ICONS[app.name] ?? "fa-solid fa-cube" })
+        flat.push({ ...route, app: app.name, appColor: app.color, appIcon: APP_ICONS[app.name] ?? "fa-solid fa-cube", appPort: app.port })
       }
     }
     const getValue = (row: FlatRow, key: SortKey): number =>
@@ -159,7 +163,8 @@ export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; load
             <tbody>
               {rows.map((row, i) => (
                 <tr key={`${row.app}-${row.method}-${row.routePattern}-${i}`}
-                  className="border-b border-overlay-4 hover:bg-overlay-4 transition-colors">
+                  onClick={() => setSelectedRow(row)}
+                  className="border-b border-overlay-4 hover:bg-overlay-4 transition-colors cursor-pointer">
                   <td className="py-1.5 px-2">
                     <span className="flex items-center gap-1.5">
                       <i className={`${row.appIcon} text-[10px] shrink-0`} style={{ color: row.appColor }} />
@@ -208,6 +213,18 @@ export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; load
             </tbody>
           </table>
         </div>
+      )}
+
+      {selectedRow && (
+        <RouteDetailModal
+          route={selectedRow}
+          app={selectedRow.app}
+          appColor={selectedRow.appColor}
+          appIcon={selectedRow.appIcon}
+          appPort={selectedRow.appPort}
+          timeRange={timeRange}
+          onClose={() => setSelectedRow(null)}
+        />
       )}
     </div>
   )
