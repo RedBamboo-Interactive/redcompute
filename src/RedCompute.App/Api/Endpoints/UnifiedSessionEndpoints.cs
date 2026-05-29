@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using RedCompute.App.Services;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Sessions;
@@ -21,6 +22,18 @@ public static class UnifiedSessionEndpoints
     {
         _docker = docker;
         _callbacks = callbacks;
+
+        var telemetry = app.Services.GetService<RedBamboo.AppHost.Telemetry.TelemetryService>();
+        telemetry?.DescribeRoute("GET", "/ai-session/providers", "List available AI session providers");
+        telemetry?.DescribeRoute("GET", "/ai-session/sessions", "List active sessions");
+        telemetry?.DescribeRoute("POST", "/ai-session/sessions", "Start a new interactive session");
+        telemetry?.DescribeRoute("GET", "/ai-session/sessions/{id}", "Get session details");
+        telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/message", "Send message to session");
+        telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/stop", "Stop a running session");
+        telemetry?.DescribeRoute("POST", "/ai-session/execute", "Execute a one-shot AI task");
+        telemetry?.DescribeRoute("POST", "/ai-session/generate", "Generate via session or oneshot mode");
+        telemetry?.DescribeRoute("GET", "/ai-session/models", "List available models across providers");
+        telemetry?.DescribeRoute("GET", "/ai-session/projects", "List known project directories");
 
         app.MapGet("/ai-session/providers", () =>
         {
@@ -358,6 +371,8 @@ public static class UnifiedSessionEndpoints
 
         app.MapPost("/ai-session/execute", async (HttpContext ctx) =>
         {
+            ctx.Items["Telemetry.Kind"] = "job";
+
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
@@ -489,6 +504,8 @@ public static class UnifiedSessionEndpoints
 
         app.MapPost("/ai-session/generate", async (HttpContext ctx) =>
         {
+            ctx.Items["Telemetry.Kind"] = "job";
+
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }

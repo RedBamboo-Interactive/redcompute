@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import type { AppTelemetry, RouteStats } from "@/hooks/use-suite-telemetry"
 
-type SortKey = "count" | "avgMs" | "p50Ms" | "p70Ms" | "p90Ms" | "p99Ms" | "errorCount"
+type SortKey = "count" | "totalMs" | "avgMs" | "p50Ms" | "p70Ms" | "p90Ms" | "p99Ms" | "errorCount"
 type SortDir = "asc" | "desc"
 
 interface FlatRow extends RouteStats {
@@ -20,6 +20,7 @@ const APP_ICONS: Record<string, string> = {
 
 const COLUMNS: { key: SortKey; label: string; width: string }[] = [
   { key: "count", label: "Count", width: "w-[70px]" },
+  { key: "totalMs", label: "Total", width: "w-[80px]" },
   { key: "avgMs", label: "Avg", width: "w-[70px]" },
   { key: "p50Ms", label: "P50", width: "w-[70px]" },
   { key: "p70Ms", label: "P70", width: "w-[70px]" },
@@ -31,7 +32,9 @@ const COLUMNS: { key: SortKey; label: string; width: string }[] = [
 function formatMs(ms: number): string {
   if (ms < 1) return "<1ms"
   if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 3_600_000) return `${(ms / 60_000).toFixed(1)}m`
+  return `${(ms / 3_600_000).toFixed(1)}h`
 }
 
 function durationColor(ms: number): string {
@@ -45,6 +48,7 @@ export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; load
   const [sortKey, setSortKey] = useState<SortKey>("p90Ms")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
   const [appFilter, setAppFilter] = useState<string | null>(null)
+  const [hideJobs, setHideJobs] = useState(true)
 
   const onlineApps = useMemo(() => apps.filter(a => a.status === "online"), [apps])
 
@@ -53,16 +57,19 @@ export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; load
     for (const app of onlineApps) {
       if (appFilter && app.name !== appFilter) continue
       for (const route of app.stats?.routes ?? []) {
+        if (hideJobs && route.kind === "job") continue
         flat.push({ ...route, app: app.name, appColor: app.color, appIcon: APP_ICONS[app.name] ?? "fa-solid fa-cube" })
       }
     }
+    const getValue = (row: FlatRow, key: SortKey): number =>
+      key === "totalMs" ? row.count * row.avgMs : row[key] as number
     flat.sort((a, b) => {
-      const av = a[sortKey] as number
-      const bv = b[sortKey] as number
+      const av = getValue(a, sortKey)
+      const bv = getValue(b, sortKey)
       return sortDir === "desc" ? bv - av : av - bv
     })
     return flat
-  }, [onlineApps, sortKey, sortDir, appFilter])
+  }, [onlineApps, sortKey, sortDir, appFilter, hideJobs])
 
   const totalRequests = useMemo(
     () => onlineApps.reduce((sum, a) => sum + (a.stats?.total_requests ?? 0), 0),
@@ -112,6 +119,14 @@ export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; load
         <span className="text-[11px] text-text-disabled ml-2">
           {totalRequests.toLocaleString()} total requests
         </span>
+        <button
+          onClick={() => setHideJobs(h => !h)}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono transition-colors cursor-pointer ml-auto
+            ${hideJobs ? "bg-overlay-6 text-text-muted hover:bg-overlay-10" : "bg-accent-purple/15 text-accent-purple ring-1 ring-accent-purple/30"}`}
+        >
+          <i className="fa-solid fa-clock-rotate-left text-[9px]" />
+          {hideJobs ? "Show jobs" : "Showing jobs"}
+        </button>
       </div>
 
       {/* Table */}
@@ -151,16 +166,31 @@ export function ApiTelemetryView({ apps, loading }: { apps: AppTelemetry[]; load
                       <span style={{ color: row.appColor }}>{row.app}</span>
                     </span>
                   </td>
-                  <td className="py-1.5 px-2 text-text-primary max-w-[300px] truncate">
-                    <span className={`inline-block w-[38px] text-center rounded px-1 py-0.5 text-[9px] font-bold mr-2 ${
-                      row.method === "GET" ? "bg-accent-teal/15 text-accent-teal"
-                        : "bg-accent-amber/15 text-accent-amber"
-                    }`}>
-                      {row.method}
-                    </span>
-                    {row.routePattern}
+                  <td className="py-1.5 px-2 text-text-primary max-w-[400px]">
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-block w-[38px] text-center rounded px-1 py-0.5 text-[9px] font-bold shrink-0 ${
+                        row.method === "GET" ? "bg-accent-teal/15 text-accent-teal"
+                          : "bg-accent-amber/15 text-accent-amber"
+                      }`}>
+                        {row.method}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate">
+                          {row.routePattern}
+                          {row.kind === "job" && (
+                            <span className="ml-2 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase bg-accent-purple/15 text-accent-purple">
+                              async
+                            </span>
+                          )}
+                        </div>
+                        {row.description && (
+                          <div className="text-[10px] text-text-disabled truncate">{row.description}</div>
+                        )}
+                      </div>
+                    </div>
                   </td>
                   <td className="py-1.5 px-2 text-right text-text-muted">{row.count.toLocaleString()}</td>
+                  <td className="py-1.5 px-2 text-right text-text-secondary">{formatMs(row.count * row.avgMs)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.avgMs)}`}>{formatMs(row.avgMs)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.p50Ms)}`}>{formatMs(row.p50Ms)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.p70Ms)}`}>{formatMs(row.p70Ms)}</td>

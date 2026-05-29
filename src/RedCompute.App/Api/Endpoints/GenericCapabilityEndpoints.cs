@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
@@ -32,15 +33,20 @@ public static class GenericCapabilityEndpoints
         _registry = registry;
         Directory.CreateDirectory(OutputDir);
 
+        var telemetry = app.Services.GetService<RedBamboo.AppHost.Telemetry.TelemetryService>();
+
         foreach (var (capSlug, _) in registry.Capabilities)
         {
             if (capSlug == "ai-session") continue;
 
             var slug = capSlug;
+            telemetry?.DescribeRoute("POST", $"/{slug}/generate", $"Generate {slug} output via active provider");
 
             // POST /{slug}/generate — universal work endpoint
             app.MapPost($"/{slug}/generate", async (HttpContext ctx) =>
             {
+                ctx.Items["Telemetry.Kind"] = "job";
+
                 var entry = registry.Get(slug);
                 if (entry == null)
                     return Error(503, "provider_not_configured", $"Capability '{slug}' is not configured");

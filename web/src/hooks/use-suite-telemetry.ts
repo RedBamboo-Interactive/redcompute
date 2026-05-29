@@ -16,6 +16,8 @@ export interface RouteStats {
   p99Ms: number
   avgResponseSize: number | null
   lastSeen: string | null
+  kind: string | null
+  description: string | null
 }
 
 export interface AppTelemetry {
