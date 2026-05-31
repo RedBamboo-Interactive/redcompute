@@ -57,6 +57,9 @@ public partial class App : Application
         ConfigManager.Load();
         Log("[App] Configuration loaded");
 
+        if (ConfigManager.Config.AutoStartDocker)
+            _ = DockerDesktopService.EnsureRunningAsync(s => Log(s));
+
         var recovered = JobTracker.RecoverOrphanedJobs();
         if (recovered > 0)
             Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");

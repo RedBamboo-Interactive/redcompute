@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
-import { HashRouter, Routes, Route } from "react-router-dom"
-import { TooltipProvider } from "@redbamboo/ui"
+import { createHashRouter, RouterProvider } from "react-router-dom"
 import { WsEventProvider, useWsSubscribe } from "@redbamboo/utility"
-import { AppShell } from "@/components/layout/app-shell"
+import { AppLayout } from "@/components/layout/app-layout"
 import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"
 import { StatsPage } from "@/pages/stats"
 import { TokenPrompt } from "@/components/auth/token-prompt"
+import { AppStateProvider } from "@/contexts/app-state"
 import { useCapabilities } from "@/hooks/use-capabilities"
 import { useHardware } from "@/hooks/use-hardware"
 import { useJobs, type JobFilters } from "@/hooks/use-jobs"
@@ -38,6 +38,17 @@ function extractTokenFromHash(): string | null {
   window.location.hash = hash.replace(/[?&]token=[^&]+/, "").replace(/#\/$/, "#/")
   return decodeURIComponent(match[1])
 }
+
+const router = createHashRouter([
+  {
+    element: <AppLayout />,
+    children: [
+      { index: true, element: <DashboardPage />, handle: { crumb: "Capabilities", icon: "fa-solid fa-microchip" } },
+      { path: "jobs", element: <JobsPage />, handle: { crumb: "Jobs", icon: "fa-solid fa-list-check" } },
+      { path: "stats", element: <StatsPage />, handle: { crumb: "Stats", icon: "fa-solid fa-chart-line" } },
+    ],
+  },
+])
 
 export default function App() {
   const [authed, setAuthed] = useState(() => {
@@ -92,34 +103,11 @@ export default function App() {
   }
 
   return (
-    <WsEventProvider url={wsUrl} onReconnect={onReconnect}>
-    <WsHookBridge capsRef={capsRef} hardwareRef={hardwareRef} jobsRef={jobsRef} settingsRef={settingsRef} />
-    <HashRouter>
-      <TooltipProvider>
-        <Routes>
-          <Route element={
-            <AppShell
-              settings={settings.settings}
-              saving={settings.saving}
-              onUpdateGeneral={settings.updateGeneral}
-              onUpdateCapability={settings.updateCapability}
-              onUpdateProvider={settings.updateProvider}
-            />
-          }>
-            <Route index element={<DashboardPage capabilities={caps.capabilities} onRefresh={caps.refresh} hardware={hardware.hardware} />} />
-            <Route path="jobs" element={
-              <JobsPage
-                jobs={jobs.jobs} total={jobs.total} hasMore={jobs.hasMore} loading={jobs.loading}
-                selectedJob={jobs.selectedJob} onSelectJob={jobs.setSelectedJob} onLoadMore={jobs.loadMore}
-                filters={jobFilters} onFiltersChange={setJobFilters}
-                capabilities={caps.capabilities}
-              />
-            } />
-            <Route path="stats" element={<StatsPage capabilities={caps.capabilities} />} />
-          </Route>
-        </Routes>
-      </TooltipProvider>
-    </HashRouter>
-    </WsEventProvider>
+    <AppStateProvider value={{ caps, hardware, jobs, jobFilters, setJobFilters, settings }}>
+      <WsEventProvider url={wsUrl} onReconnect={onReconnect}>
+        <WsHookBridge capsRef={capsRef} hardwareRef={hardwareRef} jobsRef={jobsRef} settingsRef={settingsRef} />
+        <RouterProvider router={router} />
+      </WsEventProvider>
+    </AppStateProvider>
   )
 }

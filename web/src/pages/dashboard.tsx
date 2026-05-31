@@ -1,12 +1,12 @@
 import { CapabilityCard } from "@/components/dashboard/capability-card"
 import { HardwareFooter } from "@/components/dashboard/hardware-footer"
-import type { CapabilityStatus, HardwareSnapshot } from "@/api/types"
+import { useAppState } from "@/contexts/app-state"
 
-export function DashboardPage({ capabilities, onRefresh, hardware }: {
-  capabilities: CapabilityStatus[]
-  onRefresh: () => void
-  hardware: HardwareSnapshot | null
-}) {
+export function DashboardPage() {
+  const { caps, hardware } = useAppState()
+  const capabilities = caps.capabilities
+  const onRefresh = caps.refresh
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 p-4 md:p-6 overflow-auto">
@@ -20,7 +20,7 @@ export function DashboardPage({ capabilities, onRefresh, hardware }: {
           </div>
         )}
       </div>
-      {hardware?.available && <HardwareFooter hardware={hardware} capabilities={capabilities} />}
+      {hardware.hardware?.available && <HardwareFooter hardware={hardware.hardware} capabilities={capabilities} />}
     </div>
   )
 }

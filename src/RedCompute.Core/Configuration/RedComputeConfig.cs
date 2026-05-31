@@ -8,6 +8,7 @@ public class RedComputeConfig
     public string LogLevel { get; set; } = "Info";
     public bool AutoStartWithWindows { get; set; }
     public double ElectricityRatePerKwh { get; set; } = 0.15;
+    public bool AutoStartDocker { get; set; } = true;
     public TunnelConfig Tunnel { get; set; } = new();
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
 }

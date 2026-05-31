@@ -11,7 +11,7 @@ import {
   computeMetrics, bucketJobs, durationTrend, groupByField, groupCostBySource,
   type TimeRange, type GroupCount,
 } from "@/lib/stats-utils"
-import type { CapabilityStatus } from "@/api/types"
+import { useAppState } from "@/contexts/app-state"
 
 type StatsView = "jobs" | "telemetry"
 
@@ -27,7 +27,9 @@ const VIEW_TABS: { value: StatsView; label: string; icon: string }[] = [
   { value: "telemetry", label: "API Telemetry", icon: "fa-solid fa-gauge-high" },
 ]
 
-export function StatsPage({ capabilities }: { capabilities: CapabilityStatus[] }) {
+export function StatsPage() {
+  const { caps } = useAppState()
+  const capabilities = caps.capabilities
   const [searchParams, setSearchParams] = useSearchParams()
 
   const view = (searchParams.get("view") as StatsView) || "jobs"

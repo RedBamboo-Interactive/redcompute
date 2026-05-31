@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { NavLink, Outlet } from "react-router-dom"
+import { useState, type ReactNode } from "react"
+import { NavLink } from "react-router-dom"
 import { AppShell as UtilityAppShell, useLogStream, LogPanel } from "@redbamboo/utility"
 import { DropdownMenuItem, NavTabs, navTabClass, ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@redbamboo/ui"
 import { SettingsModal } from "./settings-modal"
@@ -12,10 +12,12 @@ interface Props {
   onUpdateGeneral: (updates: Record<string, unknown>) => void
   onUpdateCapability: (slug: string, updates: { activeProvider?: string }) => void
   onUpdateProvider: (slug: string, providerName: string, updates: Record<string, unknown>) => Promise<void>
+  breadcrumb?: ReactNode
+  children?: ReactNode
 }
 
 export function AppShell({
-  settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider,
+  settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider, breadcrumb, children,
 }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [consoleOpen, setConsoleOpen] = useState(false)
@@ -29,6 +31,7 @@ export function AppShell({
 
   return (
     <UtilityAppShell
+      breadcrumb={breadcrumb}
       config={{
         name: "RedCompute",
         version: __APP_VERSION__,
@@ -93,7 +96,7 @@ export function AppShell({
         <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0">
           <ResizablePanel defaultSize={75} minSize={30}>
             <main className="h-full overflow-auto">
-              <Outlet />
+              {children}
             </main>
           </ResizablePanel>
           <ResizableHandle withHandle />
@@ -112,7 +115,7 @@ export function AppShell({
         </ResizablePanelGroup>
       ) : (
         <main className="flex-1 min-h-0 overflow-auto">
-          <Outlet />
+          {children}
         </main>
       )}
 

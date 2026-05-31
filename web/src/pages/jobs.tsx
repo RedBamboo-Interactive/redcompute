@@ -4,7 +4,7 @@ import { JobList } from "@/components/jobs/job-list"
 import { JobDetail } from "@/components/jobs/job-detail"
 import { MasterDetailLayout, PanelHeader, FilterBar, FilterPillGroup } from "@redbamboo/ui"
 import type { CapabilityStatus, JobRecord } from "@/api/types"
-import type { JobFilters } from "@/hooks/use-jobs"
+import { useAppState } from "@/contexts/app-state"
 
 const statusColors: Record<string, string> = {
   Queued: "#D4AA4F",
@@ -15,18 +15,12 @@ const statusColors: Record<string, string> = {
 }
 
 
-export function JobsPage({ jobs, total, hasMore, loading, selectedJob, onSelectJob, onLoadMore, filters, onFiltersChange, capabilities: capsList }: {
-  jobs: JobRecord[]
-  total: number
-  hasMore: boolean
-  loading: boolean
-  selectedJob: JobRecord | null
-  onSelectJob: (job: JobRecord) => void
-  onLoadMore: () => void
-  filters: JobFilters
-  onFiltersChange: (f: JobFilters) => void
-  capabilities: CapabilityStatus[]
-}) {
+export function JobsPage() {
+  const { jobs: jobsState, jobFilters: filters, setJobFilters: onFiltersChange, caps } = useAppState()
+  const { jobs, total, hasMore, loading, selectedJob, setSelectedJob: onSelectJob } = jobsState
+  const onLoadMore = jobsState.loadMore
+  const capsList = caps.capabilities
+
   const capMap = useMemo(() => {
     const m = new Map<string, CapabilityStatus>()
     for (const c of capsList) m.set(c.slug, c)
