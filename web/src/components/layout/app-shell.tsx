@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react"
 import { NavLink } from "react-router-dom"
 import { AppShell as UtilityAppShell, useLogStream, LogPanel } from "@redbamboo/utility"
 import { DropdownMenuItem, NavTabs, navTabClass, ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@redbamboo/ui"
-import { SettingsModal } from "./settings-modal"
+import { SettingsPanel } from "./settings-panel"
 import { connectionStore } from "@/api/auth"
 import type { Settings } from "@/api/types"
 
@@ -84,7 +84,7 @@ export function AppShell({
               </span>
             )}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+          <DropdownMenuItem onClick={() => setSettingsOpen(prev => !prev)}>
             <i className="fa-solid fa-gear size-4 text-center" />
             Settings
           </DropdownMenuItem>
@@ -92,42 +92,49 @@ export function AppShell({
       }
       className="flex flex-col h-dvh w-full"
     >
-      {consoleOpen ? (
+      {(consoleOpen || settingsOpen) ? (
         <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0">
-          <ResizablePanel defaultSize={75} minSize={30}>
-            <main className="h-full overflow-auto">
-              {children}
-            </main>
+          <ResizablePanel defaultSize={consoleOpen && settingsOpen ? 55 : 75} minSize={30}>
+            <main className="h-full overflow-auto">{children}</main>
           </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={25} minSize={15}>
-            <LogPanel
-              entries={logStream.entries}
-              connected={logStream.connected}
-              paused={logStream.paused}
-              onPauseChange={logStream.setPaused}
-              onClear={logStream.clear}
-              onRefresh={() => logStream.refresh()}
-              errorCount={logStream.errorCount}
-              warnCount={logStream.warnCount}
-            />
-          </ResizablePanel>
+          {consoleOpen && (
+            <>
+              <ResizableHandle withHandle />
+              <ResizablePanel defaultSize={settingsOpen ? 20 : 25} minSize={15}>
+                <LogPanel
+                  entries={logStream.entries}
+                  connected={logStream.connected}
+                  paused={logStream.paused}
+                  onPauseChange={logStream.setPaused}
+                  onClear={logStream.clear}
+                  onRefresh={() => logStream.refresh()}
+                  errorCount={logStream.errorCount}
+                  warnCount={logStream.warnCount}
+                />
+              </ResizablePanel>
+            </>
+          )}
+          {settingsOpen && (
+            <>
+              <ResizableHandle withHandle />
+              <ResizablePanel defaultSize={consoleOpen ? 25 : 25} minSize={15}>
+                <SettingsPanel
+                  onClose={() => setSettingsOpen(false)}
+                  settings={settings}
+                  saving={saving}
+                  onUpdateGeneral={onUpdateGeneral}
+                  onUpdateCapability={onUpdateCapability}
+                  onUpdateProvider={onUpdateProvider}
+                />
+              </ResizablePanel>
+            </>
+          )}
         </ResizablePanelGroup>
       ) : (
         <main className="flex-1 min-h-0 overflow-auto">
           {children}
         </main>
       )}
-
-      <SettingsModal
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        settings={settings}
-        saving={saving}
-        onUpdateGeneral={onUpdateGeneral}
-        onUpdateCapability={onUpdateCapability}
-        onUpdateProvider={onUpdateProvider}
-      />
     </UtilityAppShell>
   )
 }

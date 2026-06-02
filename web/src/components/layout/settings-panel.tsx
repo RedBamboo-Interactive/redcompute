@@ -1,5 +1,5 @@
 import { useState, useEffect, useSyncExternalStore } from "react"
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@redbamboo/ui"
+import { PanelHeader, Button } from "@redbamboo/ui"
 import { TunnelSettingsPanel } from "@redbamboo/utility"
 import { api } from "@/api/client"
 import type { Settings } from "@/api/types"
@@ -14,9 +14,8 @@ interface DiscoverResponse {
 const inputClass = "bg-surface-deep border border-overlay-10 rounded px-2 py-1 outline-none text-contrast text-[13px] font-mono focus:border-overlay-30"
 const inputSmClass = "bg-surface-deep border border-overlay-10 rounded px-2 py-1 outline-none text-contrast text-[11px] font-mono min-w-0 focus:border-overlay-30"
 
-export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider }: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
+export function SettingsPanel({ onClose, settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider }: {
+  onClose: () => void
   settings: Settings | null
   saving: boolean
   onUpdateGeneral: (updates: Record<string, unknown>) => void
@@ -28,12 +27,10 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
   const [autoStart, setAutoStart] = useState(false)
 
   useEffect(() => {
-    if (!open) return
     fetch("/api/autostart").then(r => r.json()).then(d => setAutoStart(d.enabled)).catch(() => {})
-  }, [open])
+  }, [])
 
   useEffect(() => {
-    if (!open) return
     api.get<DiscoverResponse>("/discover").then(data => {
       const all: DiscoverEndpoint[] = []
       for (const cap of data.capabilities)
@@ -41,17 +38,28 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
       all.push(...data.management.endpoints)
       setEndpoints(all)
     }).catch(() => {})
-  }, [open])
+  }, [])
 
-  if (!settings) return null
+  if (!settings) return (
+    <div data-slot="settings-panel" className="flex flex-col h-full">
+      <PanelHeader title="Settings" leading={<i className="fa-solid fa-gear text-sm text-text-muted" />}>
+        <Button variant="ghost" size="icon-xs" onClick={onClose}>
+          <i className="fa-solid fa-xmark" />
+        </Button>
+      </PanelHeader>
+      <div className="flex-1 flex items-center justify-center text-text-muted text-sm">Loading...</div>
+    </div>
+  )
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-surface-elevated border-border-subtle max-w-lg w-[calc(100vw-2rem)] max-h-[85dvh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
-        </DialogHeader>
+    <div data-slot="settings-panel" className="flex flex-col h-full">
+      <PanelHeader title="Settings" leading={<i className="fa-solid fa-gear text-sm text-text-muted" />}>
+        <Button variant="ghost" size="icon-xs" onClick={onClose}>
+          <i className="fa-solid fa-xmark" />
+        </Button>
+      </PanelHeader>
 
+      <div className="flex-1 overflow-y-auto p-4">
         {/* APPEARANCE */}
         <SectionLabel>APPEARANCE</SectionLabel>
         <div className="bg-surface-deep rounded-lg p-4 mb-4">
@@ -107,8 +115,8 @@ export function SettingsModal({ open, onOpenChange, settings, saving, onUpdateGe
           ))}
           {endpoints.length === 0 && <p className="text-[11px] text-text-muted">Loading...</p>}
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
   )
 }
 
