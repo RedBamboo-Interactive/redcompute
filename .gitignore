@@ -9,5 +9,10 @@ obj/
 web/node_modules/
 web/dist/
 
+# Test artifacts
+screenshots/
+test-results/
+videos/
+
 # Temp
 Projectsredcomputetemp_build/
