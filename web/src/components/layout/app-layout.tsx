@@ -1,6 +1,7 @@
 import { Outlet, useMatches, useNavigate } from "react-router-dom"
 import { TooltipProvider, Breadcrumb } from "@redbamboo/ui"
 import { BreadcrumbLabelProvider, buildBreadcrumbs, useBreadcrumbLabelsContext, useNavigateUp } from "@redbamboo/utility"
+import type { RouteMatch } from "@redbamboo/utility"
 import { AppShell } from "./app-shell"
 import { useAppState } from "@/contexts/app-state"
 
@@ -8,7 +9,7 @@ function BreadcrumbNav() {
   const matches = useMatches()
   const labelCtx = useBreadcrumbLabelsContext()
   const navigate = useNavigate()
-  const items = buildBreadcrumbs(matches, labelCtx?.labels)
+  const items = buildBreadcrumbs(matches as RouteMatch[], labelCtx?.labels)
 
   useNavigateUp({
     getParentPath: () => {
