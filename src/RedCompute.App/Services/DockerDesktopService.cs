@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.IO.Pipes;
 using System.Text;
 
 namespace RedCompute.App.Services;
@@ -8,7 +7,6 @@ namespace RedCompute.App.Services;
 public static class DockerDesktopService
 {
     private const string DockerDesktopPath = @"C:\Program Files\Docker\Docker\Docker Desktop.exe";
-    private const string DockerPipe = "dockerDesktopLinuxEngine";
     private const int PollIntervalMs = 2000;
     private const int TimeoutMs = 30000;
 
