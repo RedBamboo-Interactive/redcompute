@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using RedBamboo.AppHost.Auth;
 using RedCompute.Core.Sessions;
 
 namespace RedCompute.App.Services;
@@ -11,10 +12,15 @@ public class SessionCallbackRegistry
     private record CallbackEntry(string Url, string? UserId);
 
     private readonly ConcurrentDictionary<string, CallbackEntry> _callbacks = new();
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private readonly HttpClient _http;
     private readonly Action<string, Guid?> _log;
 
-    public SessionCallbackRegistry(Action<string, Guid?> log) => _log = log;
+    public SessionCallbackRegistry(Action<string, Guid?> log, AuthenticatedHttpClientFactory? authFactory = null)
+    {
+        _log = log;
+        _http = authFactory?.CreateClient("http://localhost", TimeSpan.FromSeconds(10))
+            ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+    }
 
     public void Register(string sessionId, string callbackUrl, string? userId = null)
     {

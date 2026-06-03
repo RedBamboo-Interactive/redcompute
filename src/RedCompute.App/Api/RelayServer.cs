@@ -34,7 +34,7 @@ public class RelayServer
     private readonly CloudflareTunnelService _tunnelService;
     private readonly HardwareMonitorService _hardwareMonitor;
     private readonly DockerContainerService _docker;
-    private readonly SessionCallbackRegistry _callbacks;
+    private SessionCallbackRegistry _callbacks;
     private readonly Action<string, Guid?> _log;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
@@ -49,7 +49,7 @@ public class RelayServer
         _tunnelService = tunnelService;
         _hardwareMonitor = hardwareMonitor;
         _docker = new DockerContainerService(log);
-        _callbacks = new SessionCallbackRegistry(log);
+        _callbacks = new SessionCallbackRegistry(log);  // re-created with auth factory after Build()
         _log = log;
     }
 
@@ -114,6 +114,11 @@ public class RelayServer
                 FileProvider = new PhysicalFileProvider(webRoot)
             });
         }
+
+        var authFactory = _app.Services.GetRequiredService<AuthenticatedHttpClientFactory>();
+        _callbacks = new SessionCallbackRegistry(_log, authFactory);
+
+        _app.UseUserDetection();
 
         var registry = _app.CreateEndpointRegistry();
         registry.MapAuthEndpoints();
