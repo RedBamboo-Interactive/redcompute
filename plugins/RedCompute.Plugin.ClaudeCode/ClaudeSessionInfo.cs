@@ -24,6 +24,7 @@ public class ClaudeSessionInfo
     public Guid? JobId { get; set; }
     public string PermissionMode { get; set; } = "bypassPermissions";
     public string? Source { get; set; }
+    public string? UserId { get; set; }
 }
 
 public class ProjectInfo

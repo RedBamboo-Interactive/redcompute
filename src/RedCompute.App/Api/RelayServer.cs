@@ -75,6 +75,16 @@ public class RelayServer
         builder.Services.AddAppHostWebSocket();
         builder.Services.AddAppHostTelemetry(opts => opts.AppName = "RedCompute");
 
+        var signingKey = SigningKeyPersistence.EnsureSigningKey(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite"));
+        var authOptions = new AuthOptions
+        {
+            Jwt = new JwtOptions { SigningKey = signingKey },
+        };
+        builder.Services.AddSingleton(authOptions);
+        builder.Services.AddSingleton(authOptions.Jwt);
+        builder.Services.AddSingleton<JwtService>();
+
         _app = builder.Build();
 
         _app.UseAppHostTelemetry();
@@ -91,6 +101,7 @@ public class RelayServer
             CookieName = "redcompute_token",
             BypassPaths = ["/ping", "/api/remote/status"],
         });
+        _app.UseAppHostJwtAuth();
 
         // Prefer web/dist in the repo root for dev (live Vite rebuilds), fall back to wwwroot for production
         var repoWebDist = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "web", "dist");

@@ -87,9 +87,9 @@ public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlugi
 
     // --- ISessionProvider: Session Lifecycle ---
 
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null)
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null)
     {
-        var info = await _opencode.StartSession(projectPath, callerInfo, model);
+        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -225,6 +225,7 @@ public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlugi
         Effort = s.Effort,
         JobId = s.JobId,
         Source = s.Source,
+        UserId = s.UserId,
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(OpenCodeStreamEvent e) => new()

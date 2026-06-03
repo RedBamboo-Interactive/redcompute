@@ -653,7 +653,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -675,7 +675,8 @@ public class ClaudeSessionService
             ProjectPath = projectPath,
             Status = SessionStatus.Starting,
             StartedAt = DateTimeOffset.UtcNow,
-            Source = callerInfo
+            Source = callerInfo,
+            UserId = userId
         };
 
         var claudePath = ResolveClaudePath();

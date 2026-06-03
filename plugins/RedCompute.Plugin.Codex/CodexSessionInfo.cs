@@ -22,4 +22,5 @@ public class CodexSessionInfo
     public int? OutputTokens { get; set; }
     public int? CachedInputTokens { get; set; }
     public Guid? JobId { get; set; }
+    public string? UserId { get; set; }
 }

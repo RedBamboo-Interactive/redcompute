@@ -8,27 +8,29 @@ namespace RedCompute.App.Services;
 
 public class SessionCallbackRegistry
 {
-    private readonly ConcurrentDictionary<string, string> _callbacks = new();
+    private record CallbackEntry(string Url, string? UserId);
+
+    private readonly ConcurrentDictionary<string, CallbackEntry> _callbacks = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
     private readonly Action<string, Guid?> _log;
 
     public SessionCallbackRegistry(Action<string, Guid?> log) => _log = log;
 
-    public void Register(string sessionId, string callbackUrl)
+    public void Register(string sessionId, string callbackUrl, string? userId = null)
     {
-        _callbacks[sessionId] = callbackUrl;
+        _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId);
         _log($"[Callbacks] Registered callback for session {sessionId}", null);
     }
 
-    public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus)
+    public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus, string? userId = null)
     {
         if (currentStatus is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
         {
-            _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString());
+            _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), userId: userId);
             return false;
         }
 
-        Register(sessionId, callbackUrl);
+        Register(sessionId, callbackUrl, userId);
         return true;
     }
 
@@ -39,8 +41,8 @@ public class SessionCallbackRegistry
             if (session.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error))
                 return;
 
-            if (_callbacks.TryRemove(session.Id, out var url))
-                _ = FireAsync(url, session.Id, session.Status.ToString(), session.ProjectPath, session.Title);
+            if (_callbacks.TryRemove(session.Id, out var entry))
+                _ = FireAsync(entry.Url, session.Id, session.Status.ToString(), session.ProjectPath, session.Title, userId: session.UserId ?? entry.UserId);
         }
         else if (eventType == "session.ended")
         {
@@ -52,8 +54,8 @@ public class SessionCallbackRegistry
                 {
                     var id = idEl.GetString()!;
                     var reason = doc.RootElement.TryGetProperty("reason", out var r) ? r.GetString() : "ended";
-                    if (_callbacks.TryRemove(id, out var url))
-                        _ = FireAsync(url, id, "Ended", reason: reason);
+                    if (_callbacks.TryRemove(id, out var entry))
+                        _ = FireAsync(entry.Url, id, "Ended", reason: reason, userId: entry.UserId);
                 }
             }
             catch { }
@@ -61,7 +63,7 @@ public class SessionCallbackRegistry
     }
 
     private async Task FireAsync(string url, string sessionId, string status,
-        string? projectPath = null, string? title = null, string? reason = null)
+        string? projectPath = null, string? title = null, string? reason = null, string? userId = null)
     {
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -74,6 +76,7 @@ public class SessionCallbackRegistry
                     projectPath,
                     title,
                     reason,
+                    userId,
                 });
 
                 if (response.IsSuccessStatusCode)

@@ -77,7 +77,7 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -106,6 +106,7 @@ public class OpenCodeSessionService
             Status = "Starting",
             StartedAt = DateTimeOffset.UtcNow,
             Source = callerInfo,
+            UserId = userId,
         };
 
         var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model);

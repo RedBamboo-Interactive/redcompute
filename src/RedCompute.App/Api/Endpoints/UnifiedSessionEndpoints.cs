@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -66,6 +67,10 @@ public static class UnifiedSessionEndpoints
             if (excludeSource != null)
                 allSessions.RemoveAll(s => s.Source == excludeSource);
 
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user")
+                allSessions.RemoveAll(s => s.UserId != null && s.UserId != userId);
+
             allSessions.Sort((a, b) => b.StartedAt.CompareTo(a.StartedAt));
             if (allSessions.Count > limit)
                 allSessions = allSessions.Take(limit).ToList();
@@ -75,6 +80,10 @@ public static class UnifiedSessionEndpoints
 
         app.MapPost("/ai-session/sessions", async (HttpContext ctx) =>
         {
+            var userId = ResolveUserId(ctx);
+            if (userId == null)
+                return Error(401, "unauthorized", "Authentication required to create sessions");
+
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
@@ -91,7 +100,7 @@ public static class UnifiedSessionEndpoints
 
             var model = body.TryGetProperty("model", out var m) ? m.GetString() : null;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model);
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, userId);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -103,6 +112,11 @@ public static class UnifiedSessionEndpoints
             var (provider, info, history) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+
             return Results.Json(new { session = info, messages = history });
         });
 
@@ -248,7 +262,8 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(url))
                 return Error(422, "validation_failed", "url is required");
 
-            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status);
+            var userId = ResolveUserId(ctx) ?? info.UserId;
+            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId);
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         });
 
@@ -371,6 +386,10 @@ public static class UnifiedSessionEndpoints
 
         app.MapPost("/ai-session/execute", async (HttpContext ctx) =>
         {
+            var userId = ResolveUserId(ctx);
+            if (userId == null)
+                return Error(401, "unauthorized", "Authentication required to execute tasks");
+
             ctx.Items["Telemetry.Kind"] = "job";
 
             JsonElement body;
@@ -429,6 +448,9 @@ public static class UnifiedSessionEndpoints
                     }
                 }
             }
+
+            if (userId != null)
+                providerParams["userId"] = userId;
 
             var inputSummary = prompt.Length > 100 ? prompt[..97] + "..." : prompt;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
@@ -541,7 +563,8 @@ public static class UnifiedSessionEndpoints
 
         var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, model);
+        var userId = ResolveUserId(ctx);
+        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, model, userId);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -672,6 +695,13 @@ public static class UnifiedSessionEndpoints
             Error = "not_supported",
             Message = $"Provider '{providerId}' does not support {feature}"
         }, statusCode: 422);
+
+    private static string? ResolveUserId(HttpContext ctx)
+    {
+        if (ctx.Request.Headers.TryGetValue("X-User-Id", out var uid) && !string.IsNullOrEmpty(uid))
+            return uid.ToString();
+        return ctx.User?.FindFirst("sub")?.Value;
+    }
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
