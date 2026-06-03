@@ -99,6 +99,10 @@ export default function App() {
   }, [])
 
   if (!authed) {
+    if (!isRemoteAccess()) {
+      window.location.href = "/login"
+      return null
+    }
     return <TokenPrompt onAuthenticated={() => { setAuthed(true); location.reload() }} />
   }
 

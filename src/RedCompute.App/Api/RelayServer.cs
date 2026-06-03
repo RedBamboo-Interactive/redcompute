@@ -75,15 +75,15 @@ public class RelayServer
         builder.Services.AddAppHostWebSocket();
         builder.Services.AddAppHostTelemetry(opts => opts.AppName = "RedCompute");
 
-        var signingKey = SigningKeyPersistence.EnsureSigningKey(
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite"));
-        var authOptions = new AuthOptions
+        var redSuiteDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite");
+        var signingKey = SigningKeyPersistence.EnsureSigningKey(redSuiteDir);
+        var googleAuth = SigningKeyPersistence.LoadGoogleOAuth(redSuiteDir);
+        builder.Services.AddAppHostAuth(new AuthOptions
         {
             Jwt = new JwtOptions { SigningKey = signingKey },
-        };
-        builder.Services.AddSingleton(authOptions);
-        builder.Services.AddSingleton(authOptions.Jwt);
-        builder.Services.AddSingleton<JwtService>();
+            Google = googleAuth,
+            Mode = googleAuth != null ? AuthMode.Required : AuthMode.LocalDefault,
+        });
 
         _app = builder.Build();
 
@@ -116,6 +116,7 @@ public class RelayServer
         }
 
         var registry = _app.CreateEndpointRegistry();
+        registry.MapAuthEndpoints();
 
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger);

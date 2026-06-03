@@ -9,7 +9,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   if (token) headers["Authorization"] = `Bearer ${token}`
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers })
+  const res = await fetch(`${BASE}${path}`, { ...options, headers, credentials: "include" })
   if (res.status === 401) {
     window.dispatchEvent(new CustomEvent("redcompute:auth-required"))
     throw new Error("Authentication required")
