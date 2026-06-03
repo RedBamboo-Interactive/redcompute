@@ -136,6 +136,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
 
@@ -163,6 +166,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
 
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
@@ -183,6 +189,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
 
@@ -203,6 +212,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Interrupt))
                 return NotSupported(provider.ProviderId, "session interrupts");
 
@@ -215,6 +227,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Resume))
                 return NotSupported(provider.ProviderId, "session resume");
 
@@ -230,6 +245,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
 
             await provider!.StopSessionAsync(id);
             return Results.Json(new { stopped = true });
@@ -240,6 +258,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
 
             provider!.DismissSession(id);
             return Results.Json(new { dismissed = true });
@@ -253,6 +274,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
 
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
@@ -262,8 +286,7 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(url))
                 return Error(422, "validation_failed", "url is required");
 
-            var userId = ResolveUserId(ctx) ?? info.UserId;
-            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId);
+            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId);
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         });
 
@@ -272,6 +295,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.ConfigUpdate))
                 return NotSupported(provider.ProviderId, "config updates");
 
@@ -290,6 +316,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.PermissionMode))
                 return NotSupported(provider.ProviderId, "permission modes");
 
@@ -310,6 +339,9 @@ public static class UnifiedSessionEndpoints
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
 
             await provider!.ForceKillAsync(id);
             return Results.Json(new { killed = true });
