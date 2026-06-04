@@ -10,6 +10,7 @@ export interface RouteStats {
   avgMs: number
   minMs: number
   maxMs: number
+  p10Ms: number
   p50Ms: number
   p70Ms: number
   p90Ms: number

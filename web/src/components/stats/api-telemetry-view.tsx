@@ -3,7 +3,7 @@ import type { AppTelemetry, RouteStats } from "@/hooks/use-suite-telemetry"
 import type { TimeRange } from "@/lib/stats-utils"
 import { RouteDetailModal } from "./route-detail-modal"
 
-type SortKey = "count" | "totalMs" | "avgMs" | "p50Ms" | "p70Ms" | "p90Ms" | "p99Ms" | "errorCount"
+type SortKey = "count" | "totalMs" | "avgMs" | "minMs" | "p10Ms" | "p50Ms" | "p70Ms" | "p90Ms" | "p99Ms" | "maxMs" | "errorCount"
 type SortDir = "asc" | "desc"
 
 interface FlatRow extends RouteStats {
@@ -25,10 +25,13 @@ const COLUMNS: { key: SortKey; label: string; width: string }[] = [
   { key: "count", label: "Count", width: "w-[70px]" },
   { key: "totalMs", label: "Total", width: "w-[80px]" },
   { key: "avgMs", label: "Avg", width: "w-[70px]" },
+  { key: "minMs", label: "Min", width: "w-[70px]" },
+  { key: "p10Ms", label: "P10", width: "w-[70px]" },
   { key: "p50Ms", label: "P50", width: "w-[70px]" },
   { key: "p70Ms", label: "P70", width: "w-[70px]" },
   { key: "p90Ms", label: "P90", width: "w-[70px]" },
   { key: "p99Ms", label: "P99", width: "w-[70px]" },
+  { key: "maxMs", label: "Max", width: "w-[70px]" },
   { key: "errorCount", label: "Errors", width: "w-[70px]" },
 ]
 
@@ -197,10 +200,13 @@ export function ApiTelemetryView({ apps, loading, timeRange }: { apps: AppTeleme
                   <td className="py-1.5 px-2 text-right text-text-muted">{row.count.toLocaleString()}</td>
                   <td className="py-1.5 px-2 text-right text-text-secondary">{formatMs(row.count * row.avgMs)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.avgMs)}`}>{formatMs(row.avgMs)}</td>
+                  <td className={`py-1.5 px-2 text-right ${durationColor(row.minMs)}`}>{formatMs(row.minMs)}</td>
+                  <td className={`py-1.5 px-2 text-right ${durationColor(row.p10Ms)}`}>{formatMs(row.p10Ms)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.p50Ms)}`}>{formatMs(row.p50Ms)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.p70Ms)}`}>{formatMs(row.p70Ms)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.p90Ms)}`}>{formatMs(row.p90Ms)}</td>
                   <td className={`py-1.5 px-2 text-right ${durationColor(row.p99Ms)}`}>{formatMs(row.p99Ms)}</td>
+                  <td className={`py-1.5 px-2 text-right ${durationColor(row.maxMs)}`}>{formatMs(row.maxMs)}</td>
                   <td className="py-1.5 px-2 text-right">
                     {row.errorCount > 0 ? (
                       <span className="text-accent-red">{row.errorCount}</span>

@@ -164,6 +164,7 @@ export function RouteDetailModal({ route, app, appColor, appIcon, appPort, timeR
 
   const percentiles = [
     { label: "Min", value: route.minMs },
+    { label: "P10", value: route.p10Ms },
     { label: "P50", value: route.p50Ms },
     { label: "P70", value: route.p70Ms },
     { label: "P90", value: route.p90Ms },
@@ -173,7 +174,8 @@ export function RouteDetailModal({ route, app, appColor, appIcon, appPort, timeR
 
   const maxVal = route.maxMs || 1
   const segments = [
-    { from: route.minMs, to: route.p50Ms, color: `${TEAL}60` },
+    { from: route.minMs, to: route.p10Ms, color: `${TEAL}40` },
+    { from: route.p10Ms, to: route.p50Ms, color: `${TEAL}60` },
     { from: route.p50Ms, to: route.p70Ms, color: `${TEAL}90` },
     { from: route.p70Ms, to: route.p90Ms, color: AMBER },
     { from: route.p90Ms, to: route.p99Ms, color: `${RED}90` },
