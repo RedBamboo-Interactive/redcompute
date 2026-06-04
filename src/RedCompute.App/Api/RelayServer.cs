@@ -87,6 +87,7 @@ public class RelayServer
 
         _app = builder.Build();
 
+        _app.UseAppHostForwardedHeaders();
         _app.UseAppHostTelemetry();
         _app.UseCors();
         _app.UseWebSockets();
