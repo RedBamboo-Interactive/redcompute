@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Windows;
 using RedBamboo.AppHost.Logging;
 using RedBamboo.AppHost.Tray;
@@ -48,6 +49,9 @@ public partial class App : Application
         }
 
         base.OnStartup(e);
+
+        Console.InputEncoding = Encoding.UTF8;
+        Console.OutputEncoding = Encoding.UTF8;
 
         InitializeDatabase();
 
