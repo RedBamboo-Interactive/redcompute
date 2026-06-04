@@ -77,7 +77,7 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -119,7 +119,8 @@ public class OpenCodeSessionService
         info.Status = "Idle";
 
         var inputJson = JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = id });
-        var job = _jobTracker.CreateJob("ai-session", "OpenCode", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session");
+        var job = _jobTracker.CreateJob("ai-session", "OpenCode", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session",
+            userId: userId, userName: userName, userAvatarUrl: userAvatarUrl);
         _jobTracker.MarkRunning(job.Id);
         info.JobId = job.Id;
 

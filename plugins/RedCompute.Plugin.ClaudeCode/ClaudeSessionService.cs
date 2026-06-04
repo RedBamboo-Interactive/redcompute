@@ -653,7 +653,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -728,7 +728,8 @@ public class ClaudeSessionService
 
         // Create a job record for this session
         var inputJson = System.Text.Json.JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = info.Id });
-        var job = _jobTracker.CreateJob("ai-session", "Claude Code", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session");
+        var job = _jobTracker.CreateJob("ai-session", "Claude Code", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session",
+            userId: userId, userName: userName, userAvatarUrl: userAvatarUrl);
         _jobTracker.MarkRunning(job.Id);
         info.JobId = job.Id;
 

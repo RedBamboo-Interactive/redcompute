@@ -100,7 +100,8 @@ public static class UnifiedSessionEndpoints
 
             var model = body.TryGetProperty("model", out var m) ? m.GetString() : null;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, userId);
+            var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -491,7 +492,9 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrEmpty(jobName)) jobName = inputSummary;
 
             var inputJson = JsonSerializer.Serialize(new { prompt, model, workingDir, timeout, provider = provider.ProviderId });
-            var job = jobTracker.CreateJob("ai-session", provider.ProviderDisplayName, inputJson, callerInfo, idempotencyKey, jobName);
+            var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
+            var job = jobTracker.CreateJob("ai-session", provider.ProviderDisplayName, inputJson, callerInfo, idempotencyKey, jobName,
+                userId: uId, userName: uName, userAvatarUrl: uAvatar);
             jobTracker.MarkRunning(job.Id);
             log($"[{provider.ProviderId}] Execute job {job.Id} started (model={model ?? "default"})", job.Id);
 
@@ -595,8 +598,8 @@ public static class UnifiedSessionEndpoints
 
         var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
-        var userId = ResolveUserId(ctx);
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, model, userId);
+        var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
+        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, model, uId, uName, uAvatar);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -639,7 +642,9 @@ public static class UnifiedSessionEndpoints
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
 
-        var job = jobTracker.CreateJob("ai-session", provider.ProviderDisplayName, inputJson, callerInfo, name: jobName);
+        var (gUId, gUName, gUAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
+        var job = jobTracker.CreateJob("ai-session", provider.ProviderDisplayName, inputJson, callerInfo, name: jobName,
+            userId: gUId, userName: gUName, userAvatarUrl: gUAvatar);
         jobTracker.MarkRunning(job.Id);
 
         try

@@ -100,6 +100,7 @@ public class RelayServer
             GetAccessToken = () => _config.Tunnel.AccessToken,
             CookieName = "redcompute_token",
             BypassPaths = ["/ping", "/api/remote/status"],
+            FallThroughOnFailure = googleAuth != null,
         });
         _app.UseAppHostJwtAuth();
 

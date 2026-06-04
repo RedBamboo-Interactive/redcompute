@@ -23,6 +23,9 @@ export interface JobRecord {
   rationale?: string
   durationMs?: number
   costUsd?: number
+  userId?: string
+  userName?: string
+  userAvatarUrl?: string
   sessionStatus?: SessionStatus
 }
 

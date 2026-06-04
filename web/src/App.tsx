@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { createHashRouter, RouterProvider } from "react-router-dom"
-import { WsEventProvider, useWsSubscribe } from "@redbamboo/utility"
+import { WsEventProvider, useWsSubscribe, AuthProvider, useAuth } from "@redbamboo/utility"
 import { AppLayout } from "@/components/layout/app-layout"
 import { DashboardPage } from "@/pages/dashboard"
 import { JobsPage } from "@/pages/jobs"
 import { StatsPage } from "@/pages/stats"
-import { TokenPrompt } from "@/components/auth/token-prompt"
 import { AppStateProvider } from "@/contexts/app-state"
 import { useCapabilities } from "@/hooks/use-capabilities"
 import { useHardware } from "@/hooks/use-hardware"
 import { useJobs, type JobFilters } from "@/hooks/use-jobs"
 import { useSettings } from "@/hooks/use-settings"
-import { isRemoteAccess, getToken, setToken } from "@/api/auth"
+import { getToken, setToken } from "@/api/auth"
 import type { WsEvent } from "@/api/types"
 import { getTheme, subscribeTheme, getContrast, subscribeContrast } from "@/lib/theme-store"
 
@@ -50,12 +49,14 @@ const router = createHashRouter([
   },
 ])
 
-export default function App() {
-  const [authed, setAuthed] = useState(() => {
+function AppInner() {
+  const { isLoading, isAuthenticated } = useAuth()
+
+  useState(() => {
     const hashToken = extractTokenFromHash()
-    if (hashToken) { setToken(hashToken); return true }
-    return !isRemoteAccess() || !!getToken()
+    if (hashToken) setToken(hashToken)
   })
+
   const theme = useSyncExternalStore(subscribeTheme, getTheme)
   const contrast = useSyncExternalStore(subscribeContrast, getContrast)
 
@@ -64,6 +65,12 @@ export default function App() {
     root.classList.toggle("dark", theme === "dark")
     root.dataset.contrast = contrast
   }, [theme, contrast])
+
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      window.location.href = "/login"
+    }
+  }, [isLoading, isAuthenticated])
 
   const caps = useCapabilities()
   const hardware = useHardware()
@@ -92,19 +99,7 @@ export default function App() {
     jobsRef.current.refresh()
   }, [])
 
-  useEffect(() => {
-    const handler = () => setAuthed(false)
-    window.addEventListener("redcompute:auth-required", handler)
-    return () => window.removeEventListener("redcompute:auth-required", handler)
-  }, [])
-
-  if (!authed) {
-    if (!isRemoteAccess()) {
-      window.location.href = "/login"
-      return null
-    }
-    return <TokenPrompt onAuthenticated={() => { setAuthed(true); location.reload() }} />
-  }
+  if (isLoading || !isAuthenticated) return null
 
   return (
     <AppStateProvider value={{ caps, hardware, jobs, jobFilters, setJobFilters, settings }}>
@@ -113,5 +108,13 @@ export default function App() {
         <RouterProvider router={router} />
       </WsEventProvider>
     </AppStateProvider>
+  )
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
   )
 }

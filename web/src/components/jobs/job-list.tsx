@@ -48,6 +48,19 @@ export function JobList({ jobs, selectedId, onSelect, hasActiveFilters, hasMore,
                   <span className="text-text-disabled">{job.callerInfo}</span>
                 </>
               )}
+              {job.userName && (
+                <>
+                  <span className="opacity-50">&middot;</span>
+                  <span className="inline-flex items-center gap-1">
+                    {job.userAvatarUrl ? (
+                      <img src={job.userAvatarUrl} alt="" className="w-3.5 h-3.5 rounded-full" />
+                    ) : (
+                      <i className="fa-solid fa-user text-[10px]" />
+                    )}
+                    {job.userName}
+                  </span>
+                </>
+              )}
             </div>
           }
         />

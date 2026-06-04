@@ -1,13 +1,9 @@
-import { getToken } from "./auth"
-
 const BASE = ""
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = getToken()
   const headers: Record<string, string> = {
     ...(options?.headers as Record<string, string>),
   }
-  if (token) headers["Authorization"] = `Bearer ${token}`
 
   const res = await fetch(`${BASE}${path}`, { ...options, headers, credentials: "include" })
   if (res.status === 401) {

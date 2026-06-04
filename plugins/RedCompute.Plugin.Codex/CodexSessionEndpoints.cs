@@ -122,7 +122,8 @@ public static class CodexSessionEndpoints
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
 
         var providerLabel = model ?? "Codex";
-        var job = jobTracker.CreateJob("ai-session", providerLabel, inputSummary, callerInfo, idempotencyKey, jobName, rationale);
+        var job = jobTracker.CreateJob("ai-session", providerLabel, inputSummary, callerInfo, idempotencyKey, jobName, rationale,
+            userId: ctx.User?.FindFirst("sub")?.Value, userName: ctx.User?.FindFirst("name")?.Value, userAvatarUrl: ctx.User?.FindFirst("picture")?.Value);
         jobTracker.MarkRunning(job.Id);
         log($"[Codex] Execute job {job.Id} started (model={model ?? "default"})", job.Id);
 

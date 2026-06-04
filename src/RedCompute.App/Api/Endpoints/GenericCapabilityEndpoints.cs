@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using RedBamboo.AppHost.Auth;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
@@ -93,10 +94,12 @@ public static class GenericCapabilityEndpoints
                 body.Remove("name");
                 body.Remove("rationale");
 
+                var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
                 var job = jobTracker.CreateJob(slug, provider.Name,
                     JsonSerializer.Serialize(body),
                     ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
-                    idempotencyKey, name: jobName, rationale: jobRationale);
+                    idempotencyKey, name: jobName, rationale: jobRationale,
+                    userId: uId, userName: uName, userAvatarUrl: uAvatar);
                 jobTracker.MarkRunning(job.Id);
 
                 var firstParam = body.GetValueOrDefault("prompt")?.ToString()

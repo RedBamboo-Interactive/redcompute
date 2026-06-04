@@ -144,6 +144,16 @@ export function JobDetailShell({
           {job.callerInfo && (
             <ParamChip icon="fa-solid fa-arrow-right-to-bracket" value={job.callerInfo} />
           )}
+          {job.userName && (
+            <span className="inline-flex items-center gap-1.5 text-xs bg-overlay-6 rounded-lg px-2.5 py-1">
+              {job.userAvatarUrl ? (
+                <img src={job.userAvatarUrl} alt="" className="w-4 h-4 rounded-full" />
+              ) : (
+                <i className="fa-solid fa-user text-text-disabled" />
+              )}
+              <span className="text-text-primary">{job.userName}</span>
+            </span>
+          )}
           {job.rationale && (
             <ParamChip icon="fa-solid fa-tag" value={job.rationale} />
           )}

@@ -28,6 +28,10 @@ public class JobRecord
     public string? Rationale { get; set; }
     public double? CostUsd { get; set; }
 
+    public string? UserId { get; set; }
+    public string? UserName { get; set; }
+    public string? UserAvatarUrl { get; set; }
+
     public long? DurationMs => CompletedAt.HasValue && StartedAt.HasValue
         ? (long)(CompletedAt.Value - StartedAt.Value).TotalMilliseconds
         : null;

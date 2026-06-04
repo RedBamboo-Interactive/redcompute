@@ -12,7 +12,7 @@ public class JobTrackingService : IJobTracker
     public event Action<JobRecord>? JobCreated;
     public event Action<JobRecord>? JobUpdated;
 
-    public JobRecord CreateJob(string capabilitySlug, string providerName, string inputJson, string? callerInfo = null, string? idempotencyKey = null, string? name = null, string? rationale = null)
+    public JobRecord CreateJob(string capabilitySlug, string providerName, string inputJson, string? callerInfo = null, string? idempotencyKey = null, string? name = null, string? rationale = null, string? userId = null, string? userName = null, string? userAvatarUrl = null)
     {
         using var db = new RedComputeDbContext();
 
@@ -32,6 +32,9 @@ public class JobTrackingService : IJobTracker
             IdempotencyKey = idempotencyKey,
             Name = name,
             Rationale = rationale,
+            UserId = userId,
+            UserName = userName,
+            UserAvatarUrl = userAvatarUrl,
             Status = JobStatus.Queued,
             QueuedAt = DateTimeOffset.UtcNow
         };
