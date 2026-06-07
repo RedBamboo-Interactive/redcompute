@@ -5,10 +5,10 @@ import type { CapabilityStatus, JobRecord, LogEntry } from "@/api/types"
 import { formatCost } from "@/lib/stats-utils"
 
 const statusIconColor: Record<string, string> = {
-  Queued: "#D4AA4F", Running: "#D4AA4F", Starting: "#D4AA4F",
-  Completed: "#26A69A", Active: "#26A69A", Idle: "#26A69A",
-  Failed: "#E55B5B", Error: "#E55B5B",
-  Cancelled: "#727C7D", Stopped: "#727C7D",
+  Queued: "#D4AA4F", Running: "#D4AA4F",
+  Completed: "#26A69A",
+  Failed: "#E55B5B",
+  Cancelled: "#727C7D",
 }
 
 const statusBadgeColor: Record<string, string> = {
@@ -117,7 +117,7 @@ export function JobDetailShell({
         {/* Title row */}
         <div className="flex items-center gap-3">
           {capability?.icon && (
-            <i className={`${capability.icon} text-lg`} style={{ color: statusIconColor[statusLabel] || "#6B6F77" }} />
+            <i className={`${capability.icon} text-lg`} style={{ color: statusIconColor[job.status] || "#6B6F77" }} />
           )}
           <h2 className="text-xl font-semibold">{displayTitle}</h2>
           <Badge variant="outline" className={statusClass}>{statusLabel}</Badge>
