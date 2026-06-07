@@ -262,6 +262,7 @@ public class ClaudeSessionService
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeout));
 
+        var sb = new StringBuilder();
         try
         {
             var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
@@ -276,7 +277,6 @@ public class ClaudeSessionService
             }, timeoutCts.Token);
 
             // Read stdout line-by-line, broadcasting stream events in real time
-            var sb = new StringBuilder();
             var firstLineLogged = false;
             while (await process.StandardOutput.ReadLineAsync(timeoutCts.Token) is { } line)
             {
@@ -319,6 +319,14 @@ public class ClaudeSessionService
         {
             if (streamKey != null) _runningProcesses.TryRemove(streamKey, out _);
             try { process.Kill(entireProcessTree: true); } catch { }
+            var partialOutput = sb.ToString();
+            if (!string.IsNullOrWhiteSpace(partialOutput))
+            {
+                var partial = ParseStreamJsonOutput(partialOutput, model);
+                return new ExecuteResult(false, partial.Text, partial.StreamOutput, partial.Model,
+                    partial.InputTokens, partial.OutputTokens, partial.CostUsd,
+                    $"Execution timed out after {timeout}s");
+            }
             return new ExecuteResult(false, null, null, null, 0, 0, null,
                 $"Execution timed out after {timeout}s");
         }

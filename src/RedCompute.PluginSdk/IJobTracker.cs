@@ -11,7 +11,7 @@ public interface IJobTracker
     void MarkRunning(Guid jobId);
     void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null,
         string? contentType = null, string? resultJson = null, double? costUsd = null);
-    void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null);
+    void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null, string? resultJson = null);
     void MarkCancelled(Guid jobId);
     void UpdateName(Guid jobId, string name);
 }

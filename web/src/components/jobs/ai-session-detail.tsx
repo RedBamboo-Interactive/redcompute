@@ -115,6 +115,11 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
       <div className="flex items-center justify-center h-40 text-text-muted text-sm">
         {job.status === "Running" || job.status === "Queued" ? (
           <><i className="fa-solid fa-spinner-third fa-spin mr-2" />Executing agent&hellip;</>
+        ) : job.status === "Failed" && job.errorMessage ? (
+          <div className="flex flex-col items-center gap-2 text-center">
+            <i className="fa-solid fa-triangle-exclamation text-accent-red text-lg" />
+            <span className="text-accent-red">{job.errorMessage}</span>
+          </div>
         ) : (
           "Session not found for this job."
         )}

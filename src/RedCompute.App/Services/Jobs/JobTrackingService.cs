@@ -100,7 +100,7 @@ public class JobTrackingService : IJobTracker
         JobUpdated?.Invoke(job);
     }
 
-    public void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null)
+    public void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null, string? resultJson = null)
     {
         using var db = new RedComputeDbContext();
         var job = db.Jobs.Find(jobId);
@@ -110,6 +110,7 @@ public class JobTrackingService : IJobTracker
         job.CompletedAt = DateTimeOffset.UtcNow;
         job.ErrorMessage = errorMessage;
         job.ErrorDetails = errorDetails;
+        if (resultJson != null) job.ResultJson = resultJson;
         db.SaveChanges();
         JobUpdated?.Invoke(job);
     }

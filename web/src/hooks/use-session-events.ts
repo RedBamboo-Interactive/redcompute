@@ -271,6 +271,17 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
             })
           }
 
+          if (typeof r.error === "string" && r.error) {
+            streamEvents.push({
+              id: streamEvents.length + 1,
+              sessionId: "",
+              role: "assistant",
+              eventType: "error",
+              content: r.error,
+              timestamp: job.completedAt || job.startedAt || job.queuedAt,
+            })
+          }
+
           let execTitle = job.name
           if (!execTitle) {
             try {

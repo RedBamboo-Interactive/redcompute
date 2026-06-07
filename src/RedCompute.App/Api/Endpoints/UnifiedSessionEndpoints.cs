@@ -31,7 +31,7 @@ public static class UnifiedSessionEndpoints
         telemetry?.DescribeRoute("GET", "/ai-session/sessions/{id}", "Get session details");
         telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/message", "Send a user message to a persistent session. Body: {\"content\": \"...\"}. Returns {\"sent\": true}");
         telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/stop", "Stop a running session");
-        telemetry?.DescribeRoute("POST", "/ai-session/execute", "Run an agent task with full tool access (fire-and-forget, configurable timeout up to 1800s)");
+        telemetry?.DescribeRoute("POST", "/ai-session/execute", "Run an agent task with full tool access (fire-and-forget, default 30min, max 2h)");
         telemetry?.DescribeRoute("POST", "/ai-session/generate", "Dual-mode: 'session' creates a persistent interactive session by project name, 'oneshot' runs a stateless LLM completion (read-only tools, 60s)");
         telemetry?.DescribeRoute("GET", "/ai-session/models", "List available models across providers");
         telemetry?.DescribeRoute("GET", "/ai-session/projects", "List known project directories");
@@ -447,9 +447,9 @@ public static class UnifiedSessionEndpoints
             var workingDir = body.TryGetProperty("workingDir", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : null;
             var model = body.TryGetProperty("model", out var mod) && mod.ValueKind == JsonValueKind.String ? mod.GetString() : null;
 
-            var timeout = 600;
+            var timeout = 1800;
             if (body.TryGetProperty("timeout", out var to) && to.ValueKind == JsonValueKind.Number)
-                timeout = Math.Clamp(to.GetInt32(), 1, 1800);
+                timeout = Math.Clamp(to.GetInt32(), 1, 7200);
 
             Dictionary<string, string>? env = null;
             if (body.TryGetProperty("env", out var envProp) && envProp.ValueKind == JsonValueKind.Object)
@@ -523,7 +523,7 @@ public static class UnifiedSessionEndpoints
                         if (result.Success)
                             jobTracker.MarkCompleted(job.Id, resultJson: rj, costUsd: result.CostUsd);
                         else
-                            jobTracker.MarkFailed(job.Id, result.Error ?? "Execution failed");
+                            jobTracker.MarkFailed(job.Id, result.Error ?? "Execution failed", resultJson: rj);
                     }
                     catch (Exception ex) { jobTracker.MarkFailed(job.Id, ex.Message); }
                 });
@@ -547,7 +547,7 @@ public static class UnifiedSessionEndpoints
                 if (result.Success)
                     jobTracker.MarkCompleted(job.Id, resultJson: resultJson, costUsd: result.CostUsd);
                 else
-                    jobTracker.MarkFailed(job.Id, result.Error ?? "Execution failed");
+                    jobTracker.MarkFailed(job.Id, result.Error ?? "Execution failed", resultJson: resultJson);
 
                 ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
                 return Results.Content(resultJson, "application/json");
