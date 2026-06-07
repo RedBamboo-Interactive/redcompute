@@ -642,7 +642,7 @@ public static class UnifiedSessionEndpoints
                 prompt = content.GetString();
         }
 
-        var inputJson = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, effort, prompt, system, provider = provider.ProviderId });
+        var inputJson = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, effort, prompt, system, messages, provider = provider.ProviderId });
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))

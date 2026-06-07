@@ -289,13 +289,14 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
             : []
           const hasStreamContent = streamEvents.length > 0
 
-          // Inject system prompt + user prompt before stream events
+          // Inject conversation context before stream events
           try {
             const input = JSON.parse(job.inputJson) as Record<string, unknown>
             const prefix: typeof streamEvents = []
+            let prefixId = -1000
             if (typeof input.system === "string" && input.system) {
               prefix.push({
-                id: -1,
+                id: prefixId++,
                 sessionId: "",
                 role: "assistant",
                 eventType: "system",
@@ -303,9 +304,31 @@ export function useSessionEvents(job: JobRecord): SessionEventsResult {
                 timestamp: job.startedAt || job.queuedAt,
               })
             }
-            if (typeof input.prompt === "string" && input.prompt) {
+            // Use full messages array when available, fall back to single prompt
+            const msgs = Array.isArray(input.messages) ? input.messages as Array<Record<string, unknown>> : null
+            if (msgs && msgs.length > 0) {
+              for (const msg of msgs) {
+                const role = msg.role as string
+                let content: string | null = null
+                if (typeof msg.content === "string") {
+                  content = msg.content
+                } else if (Array.isArray(msg.content)) {
+                  content = (msg.content as Array<Record<string, unknown>>)
+                    .map(b => (b.text as string) || "").filter(Boolean).join("")
+                }
+                if (!content) continue
+                prefix.push({
+                  id: prefixId++,
+                  sessionId: "",
+                  role: role === "assistant" ? "assistant" : "user",
+                  eventType: role === "assistant" ? "context" : "text",
+                  content,
+                  timestamp: job.startedAt || job.queuedAt,
+                })
+              }
+            } else if (typeof input.prompt === "string" && input.prompt) {
               prefix.push({
-                id: 0,
+                id: prefixId++,
                 sessionId: "",
                 role: "user",
                 eventType: "text",
