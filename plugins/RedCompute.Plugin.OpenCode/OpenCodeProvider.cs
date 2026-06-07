@@ -136,7 +136,7 @@ public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlugi
     // --- ISessionProvider: Generate (not supported) ---
 
     public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
-        string messagesJson, int maxTokens, CancellationToken ct)
+        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null)
         => throw new NotSupportedException("OpenCode does not support direct LLM completion");
 
     // --- ISessionProvider: Querying ---

@@ -20,7 +20,7 @@ public record SessionExecuteResult(
     int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
 public record SessionGenerateResult(
-    bool Success, string? Text, string? Model,
+    bool Success, string? Text, string? StreamOutput, string? Model,
     int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
 public enum InterruptResult { Interrupted, NotActive, NotFound, Error }

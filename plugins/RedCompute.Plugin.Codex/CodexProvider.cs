@@ -113,7 +113,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         => throw new NotSupportedException("Codex does not support permission modes");
 
     public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
-        string messagesJson, int maxTokens, CancellationToken ct)
+        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null)
         => throw new NotSupportedException("Codex does not support LLM completion");
 
     // --- ISessionProvider: Querying ---

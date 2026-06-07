@@ -197,7 +197,7 @@ public class ClaudeSessionService
 
     public string? LastStartError { get; private set; }
 
-    public record OneshotResult(bool Success, string? Text, string? Model, int InputTokens, int OutputTokens, double? CostUsd, string? Error);
+    public record OneshotResult(bool Success, string? Text, string? StreamOutput, string? Model, int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
     public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error);
@@ -540,17 +540,17 @@ public class ClaudeSessionService
             string.IsNullOrEmpty(lastAssistantText) && !hadToolUse ? "No result event in stream output" : null);
     }
 
-    public async Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages, int maxTokens, CancellationToken ct)
+    public async Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages, int maxTokens, CancellationToken ct, string? effort = null)
     {
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
-            return new OneshotResult(false, null, null, 0, 0, null, "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
+            return new OneshotResult(false, null, null, null, 0, 0, null, "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
 
         var resolvedModel = model ?? _config.DefaultOneshotModel;
 
         var prompt = BuildOneshotPrompt(messages);
         if (string.IsNullOrWhiteSpace(prompt))
-            return new OneshotResult(false, null, null, 0, 0, null, "messages produced empty prompt");
+            return new OneshotResult(false, null, null, null, 0, 0, null, "messages produced empty prompt");
 
         var startInfo = new ProcessStartInfo
         {
@@ -566,7 +566,7 @@ public class ClaudeSessionService
 
         startInfo.ArgumentList.Add("-p");
         startInfo.ArgumentList.Add("--output-format");
-        startInfo.ArgumentList.Add("json");
+        startInfo.ArgumentList.Add("stream-json");
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add(resolvedModel);
         startInfo.ArgumentList.Add("--no-session-persistence");
@@ -577,82 +577,84 @@ public class ClaudeSessionService
             startInfo.ArgumentList.Add("--system-prompt");
             startInfo.ArgumentList.Add(system);
         }
+        if (!string.IsNullOrEmpty(effort))
+        {
+            startInfo.ArgumentList.Add("--effort");
+            startInfo.ArgumentList.Add(effort);
+        }
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         using var process = Process.Start(startInfo);
         if (process == null)
-            return new OneshotResult(false, null, null, 0, 0, null, "Failed to start claude process");
+            return new OneshotResult(false, null, null, null, 0, 0, null, "Failed to start claude process");
 
         _log($"[Claude] Oneshot process started in {sw.ElapsedMilliseconds}ms", null);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
 
-        await process.StandardInput.WriteAsync(prompt);
-        process.StandardInput.Close();
-
-        _log($"[Claude] Oneshot prompt written in {sw.ElapsedMilliseconds}ms", null);
-
-        var stdout = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-        var stderr = await process.StandardError.ReadToEndAsync(timeoutCts.Token);
-
-        _log($"[Claude] Oneshot stdout received in {sw.ElapsedMilliseconds}ms ({stdout.Length} chars)", null);
-
-        await process.WaitForExitAsync(timeoutCts.Token);
-
-        _log($"[Claude] Oneshot process exited in {sw.ElapsedMilliseconds}ms (code {process.ExitCode})", null);
-
-        if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
-        {
-            var errMsg = stderr.Length > 300 ? stderr[..300] : stderr;
-            _log($"[Claude] Oneshot exited {process.ExitCode}: {errMsg}", null);
-            return new OneshotResult(false, null, null, 0, 0, null, $"claude exited with code {process.ExitCode}: {errMsg}");
-        }
-
-        var text = stdout.Trim();
-        var inputTokens = 0;
-        var outputTokens = 0;
-        double? costUsd = null;
-        var actualModel = resolvedModel;
-
+        var rawSb = new StringBuilder();
+        var tsSb = new StringBuilder();
         try
         {
-            using var doc = JsonDocument.Parse(stdout);
-            var root = doc.RootElement;
+            var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
-            if (root.ValueKind == JsonValueKind.Array)
+            var stdinTask = Task.Run(async () =>
             {
-                foreach (var evt in root.EnumerateArray())
-                {
-                    var evtType = evt.TryGetProperty("type", out var t) ? t.GetString() : null;
-                    if (evtType == "result")
-                    {
-                        if (evt.TryGetProperty("result", out var r))
-                            text = r.ValueKind == JsonValueKind.String
-                                ? r.GetString() ?? text
-                                : ExtractTextFromContent(r) ?? text;
-                        if (evt.TryGetProperty("usage", out var usage))
-                        {
-                            if (usage.TryGetProperty("input_tokens", out var it)) inputTokens = it.GetInt32();
-                            if (usage.TryGetProperty("output_tokens", out var ot)) outputTokens = ot.GetInt32();
-                        }
-                        if (evt.TryGetProperty("total_cost_usd", out var cost))
-                            costUsd = cost.GetDouble();
-                        break;
-                    }
-                    if (evtType == "system" && evt.TryGetProperty("model", out var m))
-                        actualModel = m.GetString() ?? resolvedModel;
-                }
-            }
-        }
-        catch (JsonException)
-        {
-            // Plain text output — use as-is
-        }
+                await process.StandardInput.WriteAsync(prompt.AsMemory(), timeoutCts.Token);
+                process.StandardInput.Close();
+                _log($"[Claude] Oneshot prompt written in {sw.ElapsedMilliseconds}ms ({prompt.Length} chars)", null);
+            }, timeoutCts.Token);
 
-        _log($"[Claude] Oneshot {actualModel} done ({text.Length} chars)", null);
-        return new OneshotResult(true, text, actualModel, inputTokens, outputTokens, costUsd, null);
+            var firstLineLogged = false;
+            while (await process.StandardOutput.ReadLineAsync(timeoutCts.Token) is { } line)
+            {
+                if (!firstLineLogged)
+                {
+                    _log($"[Claude] Oneshot first stdout after {sw.ElapsedMilliseconds}ms", null);
+                    firstLineLogged = true;
+                }
+                rawSb.AppendLine(line);
+                tsSb.Append(DateTimeOffset.UtcNow.ToString("o"));
+                tsSb.Append('\t');
+                tsSb.AppendLine(line);
+            }
+
+            try { await stdinTask; } catch { /* stdin may already be closed */ }
+            var stderr = await stderrTask;
+            await process.WaitForExitAsync(timeoutCts.Token);
+
+            _log($"[Claude] Oneshot process exited in {sw.ElapsedMilliseconds}ms (code {process.ExitCode})", null);
+
+            var rawStdout = rawSb.ToString();
+            if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(rawStdout))
+            {
+                var errMsg = stderr.Length > 300 ? stderr[..300] : stderr;
+                _log($"[Claude] Oneshot exited {process.ExitCode}: {errMsg}", null);
+                return new OneshotResult(false, null, null, null, 0, 0, null, $"claude exited with code {process.ExitCode}: {errMsg}");
+            }
+
+            var result = ParseStreamJsonOutput(rawStdout, resolvedModel);
+            var streamOutput = tsSb.ToString();
+
+            _log($"[Claude] Oneshot {result.Model} done ({result.Text?.Length ?? 0} chars)", null);
+            return new OneshotResult(result.Success, result.Text, streamOutput, result.Model,
+                result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            var rawStdout = rawSb.ToString();
+            if (!string.IsNullOrWhiteSpace(rawStdout))
+            {
+                var partial = ParseStreamJsonOutput(rawStdout, resolvedModel);
+                return new OneshotResult(false, partial.Text, tsSb.ToString(), partial.Model,
+                    partial.InputTokens, partial.OutputTokens, partial.CostUsd,
+                    "Execution timed out after 60s");
+            }
+            return new OneshotResult(false, null, null, null, 0, 0, null, "Execution timed out after 60s");
+        }
     }
 
     private static string BuildOneshotPrompt(JsonElement messages)

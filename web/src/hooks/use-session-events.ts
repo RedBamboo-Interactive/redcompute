@@ -52,17 +52,79 @@ function extractCodexText(item: Record<string, unknown>): string | null {
   return null
 }
 
+function parseLine(raw: string): { ts: string | null; obj: Record<string, unknown> } | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+
+  // Lines may be prefixed with an ISO timestamp + tab (from backend timing)
+  const tabIdx = trimmed.indexOf('\t')
+  let ts: string | null = null
+  let json = trimmed
+  if (tabIdx >= 20 && tabIdx <= 40) {
+    const maybeTsStr = trimmed.slice(0, tabIdx)
+    const parsed = Date.parse(maybeTsStr)
+    if (!isNaN(parsed)) {
+      ts = new Date(parsed).toISOString()
+      json = trimmed.slice(tabIdx + 1)
+    }
+  }
+
+  try { return { ts, obj: JSON.parse(json) } } catch { return null }
+}
+
 function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessageRecord[] {
   const events: ClaudeMessageRecord[] = []
   let nextId = 1
   const baseTime = new Date(startedAt).getTime()
 
+  // Aggregation state for stream_event deltas
+  let thinkingContent = ""
+  let thinkingTs: string | null = null
+  let textContent = ""
+  let textTs: string | null = null
+  let hadDeltas = false
+
+  const flushDeltas = () => {
+    if (thinkingContent) {
+      events.push({ id: nextId++, sessionId: "", role: "assistant", eventType: "thinking", content: thinkingContent, timestamp: thinkingTs || startedAt })
+      thinkingContent = ""
+      thinkingTs = null
+    }
+    if (textContent) {
+      events.push({ id: nextId++, sessionId: "", role: "assistant", eventType: "text", content: textContent, timestamp: textTs || startedAt })
+      textContent = ""
+      textTs = null
+    }
+  }
+
   for (const line of streamOutput.split("\n")) {
-    if (!line.trim()) continue
-    let obj: Record<string, unknown>
-    try { obj = JSON.parse(line) } catch { continue }
+    const parsed = parseLine(line)
+    if (!parsed) continue
+    const { ts, obj } = parsed
 
     const sessionId = (obj.session_id as string) || ""
+    const fallbackTs = ts || new Date(baseTime + nextId).toISOString()
+
+    // stream_event deltas — aggregate into blocks with real timestamps
+    if (obj.type === "stream_event") {
+      const evt = obj.event as Record<string, unknown> | undefined
+      if (evt?.type === "content_block_delta") {
+        const delta = evt.delta as Record<string, unknown> | undefined
+        if (delta?.type === "thinking_delta" && delta.thinking) {
+          if (!thinkingTs) thinkingTs = ts
+          thinkingContent += delta.thinking as string
+          hadDeltas = true
+        } else if (delta?.type === "text_delta" && delta.text) {
+          if (!textTs) textTs = ts
+          textContent += delta.text as string
+          hadDeltas = true
+        }
+      }
+      continue
+    }
+
+    // Non-delta event — flush any accumulated deltas first
+    if (obj.type === "assistant" || obj.type === "result") flushDeltas()
 
     // Claude format
     if (obj.type === "assistant") {
@@ -71,14 +133,16 @@ function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessa
       if (!content || !Array.isArray(content)) continue
 
       for (const block of content) {
-        const timestamp = new Date(baseTime + nextId).toISOString()
+        // Skip thinking/text blocks when we already aggregated from deltas
+        if (hadDeltas && (block.type === "thinking" || block.type === "text")) continue
+
         if (block.type === "thinking" && block.thinking) {
-          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content: block.thinking as string, timestamp })
+          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content: block.thinking as string, timestamp: fallbackTs })
         } else if (block.type === "text" && block.text) {
-          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content: block.text as string, timestamp })
+          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content: block.text as string, timestamp: fallbackTs })
         } else if (block.type === "tool_use") {
           const input = block.input != null ? (typeof block.input === "string" ? block.input : JSON.stringify(block.input)) : undefined
-          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: block.name as string, toolInput: input, timestamp })
+          events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: block.name as string, toolInput: input, timestamp: fallbackTs })
         }
       }
     } else if (obj.type === "user") {
@@ -88,67 +152,60 @@ function parseStreamOutput(streamOutput: string, startedAt: string): ClaudeMessa
 
       for (const block of content) {
         if (block.type !== "tool_result") continue
-        const timestamp = new Date(baseTime + nextId).toISOString()
         const rc = typeof block.content === "string" ? block.content : JSON.stringify(block.content)
-        events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: rc, toolResult: rc, timestamp })
+        events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: rc, toolResult: rc, timestamp: fallbackTs })
       }
     }
 
     // OpenCode format (simple type-based events)
     else if (obj.type === "text" || obj.type === "content") {
       const content = (obj.content as string) || (obj.text as string)
-      if (content) {
-        const timestamp = new Date(baseTime + nextId).toISOString()
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content, timestamp })
-      }
+      if (content) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content, timestamp: fallbackTs })
     } else if (obj.type === "thinking" || obj.type === "reasoning") {
       const content = (obj.content as string) || (obj.thinking as string)
-      if (content) {
-        const timestamp = new Date(baseTime + nextId).toISOString()
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content, timestamp })
-      }
+      if (content) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content, timestamp: fallbackTs })
     } else if (obj.type === "tool_use" || obj.type === "tool_call") {
-      const timestamp = new Date(baseTime + nextId).toISOString()
       const toolName = (obj.name as string) || (obj.tool as string)
       const input = obj.input != null ? (typeof obj.input === "string" ? obj.input : JSON.stringify(obj.input))
         : obj.arguments != null ? JSON.stringify(obj.arguments) : undefined
-      events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName, toolInput: input, timestamp })
+      events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName, toolInput: input, timestamp: fallbackTs })
     } else if (obj.type === "tool_result") {
-      const timestamp = new Date(baseTime + nextId).toISOString()
       const content = (obj.content as string) || (obj.output as string)
-      events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content, toolResult: content, timestamp })
+      events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content, toolResult: content, timestamp: fallbackTs })
     }
 
     // Codex format
     else if (obj.type === "item.completed") {
       const item = (obj.item as Record<string, unknown>) || obj
       const itemType = item.type as string
-      const timestamp = new Date(baseTime + nextId).toISOString()
 
       if (itemType === "agentMessage") {
         const text = extractCodexText(item)
-        if (text) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content: text, timestamp })
+        if (text) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "text", content: text, timestamp: fallbackTs })
       } else if (itemType === "reasoning") {
         const summary = item.summary as Array<Record<string, unknown>> | undefined
         const text = summary?.map(s => (s.text as string) || "").filter(Boolean).join("\n")
-        if (text) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content: text, timestamp })
+        if (text) events.push({ id: nextId++, sessionId, role: "assistant", eventType: "thinking", content: text, timestamp: fallbackTs })
       } else if (itemType === "commandExecution") {
         const cmd = item.command as string | undefined
         const output = item.output as string | undefined
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: "Command", toolInput: cmd, timestamp })
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: "Command", toolInput: cmd, timestamp: fallbackTs })
         if (output) events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: output, toolResult: output, timestamp: new Date(baseTime + nextId).toISOString() })
       } else if (itemType === "fileChange") {
         const filename = item.filename as string | undefined
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: "FileEdit", toolInput: filename, timestamp })
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: "FileEdit", toolInput: filename, timestamp: fallbackTs })
       } else if (itemType === "mcpToolCall") {
         const toolName = item.name as string | undefined
-        const args = item.arguments != null ? JSON.stringify(item.arguments) : undefined
+        const args = item.arguments != null ? JSON.stringify(obj.arguments) : undefined
         const output = item.output as string | undefined
-        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: toolName, toolInput: args, timestamp })
+        events.push({ id: nextId++, sessionId, role: "assistant", eventType: "tool_use", toolName: toolName, toolInput: args, timestamp: fallbackTs })
         if (output) events.push({ id: nextId++, sessionId, role: "user", eventType: "tool_result", content: output, toolResult: output, timestamp: new Date(baseTime + nextId).toISOString() })
       }
     }
   }
+
+  // Flush any remaining deltas
+  flushDeltas()
 
   return events
 }

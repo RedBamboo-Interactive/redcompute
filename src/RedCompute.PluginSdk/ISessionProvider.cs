@@ -39,7 +39,7 @@ public interface ISessionProvider
 
     // LLM completion (Generate)
     Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
-        string messagesJson, int maxTokens, CancellationToken ct);
+        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null);
 
     // Discovery
     List<SessionProjectInfo> ListProjects();

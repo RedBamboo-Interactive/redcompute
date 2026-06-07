@@ -632,6 +632,7 @@ public static class UnifiedSessionEndpoints
 
         var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
         var system = body.TryGetProperty("system", out var sys) ? sys.GetString() : null;
+        var effort = body.TryGetProperty("effort", out var eff) ? eff.GetString() : null;
 
         string? prompt = null;
         foreach (var msg in messages.EnumerateArray())
@@ -641,7 +642,7 @@ public static class UnifiedSessionEndpoints
                 prompt = content.GetString();
         }
 
-        var inputJson = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, prompt, system, provider = provider.ProviderId });
+        var inputJson = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, effort, prompt, system, provider = provider.ProviderId });
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
@@ -654,7 +655,7 @@ public static class UnifiedSessionEndpoints
 
         try
         {
-            var result = await provider.GenerateAsync(model, system, messages.GetRawText(), maxTokens, ctx.RequestAborted);
+            var result = await provider.GenerateAsync(model, system, messages.GetRawText(), maxTokens, ctx.RequestAborted, effort);
             if (!result.Success)
             {
                 jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
@@ -663,7 +664,7 @@ public static class UnifiedSessionEndpoints
 
             var resultJson = JsonSerializer.Serialize(new
             {
-                success = true, text = result.Text, model = result.Model,
+                success = true, text = result.Text, streamOutput = result.StreamOutput, model = result.Model,
                 inputTokens = result.InputTokens, outputTokens = result.OutputTokens, costUsd = result.CostUsd
             });
             jobTracker.MarkCompleted(job.Id, resultJson: resultJson, costUsd: result.CostUsd);

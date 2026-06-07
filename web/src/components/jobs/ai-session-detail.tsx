@@ -262,6 +262,7 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
                   index={idx + 1}
                   expanded={expandedIds.has(event.id)}
                   onToggle={() => toggleExpand(event.id)}
+                  baseTimestamp={filteredEvents[0]?.timestamp}
                 />
               ))}
             </div>
@@ -281,7 +282,15 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
   )
 }
 
-function EventLogRow({ event, index, expanded, onToggle }: { event: ClaudeMessageRecord; index: number; expanded: boolean; onToggle: () => void }) {
+function formatRelativeTime(eventTs: string, baseTs?: string): string | null {
+  if (!baseTs) return null
+  const delta = new Date(eventTs).getTime() - new Date(baseTs).getTime()
+  if (isNaN(delta) || delta < 10) return null
+  if (delta < 1000) return `+${delta}ms`
+  return `+${(delta / 1000).toFixed(1)}s`
+}
+
+function EventLogRow({ event, index, expanded, onToggle, baseTimestamp }: { event: ClaudeMessageRecord; index: number; expanded: boolean; onToggle: () => void; baseTimestamp?: string }) {
   const cfg = eventTypeConfig[event.eventType] || eventTypeConfig.text
   const isToolUse = event.eventType === "tool_use"
   const isToolResult = event.eventType === "tool_result"
@@ -292,6 +301,7 @@ function EventLogRow({ event, index, expanded, onToggle }: { event: ClaudeMessag
   const tBg = isToolUse ? toolBg(event.toolName) : cfg.bg
 
   const summary = getSummary(event)
+  const relTime = formatRelativeTime(event.timestamp, baseTimestamp)
 
   return (
     <div className="group">
@@ -308,6 +318,12 @@ function EventLogRow({ event, index, expanded, onToggle }: { event: ClaudeMessag
         <span className={`inline-flex items-center px-1.5 py-px rounded text-[10px] font-medium shrink-0 ${tBg} ${tColor}`}>
           {isToolUse ? event.toolName || "tool" : cfg.label}
         </span>
+
+        {relTime && (
+          <span className="font-mono text-[10px] text-overlay-30 shrink-0 pt-px">
+            {relTime}
+          </span>
+        )}
 
         <span className={`text-xs truncate flex-1 ${isError ? "text-accent-red" : "text-text-muted"}`}>
           {summary}
