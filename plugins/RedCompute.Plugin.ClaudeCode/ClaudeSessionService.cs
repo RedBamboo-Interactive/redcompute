@@ -570,9 +570,13 @@ public class ClaudeSessionService
             startInfo.ArgumentList.Add(system);
         }
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         using var process = Process.Start(startInfo);
         if (process == null)
             return new OneshotResult(false, null, null, 0, 0, null, "Failed to start claude process");
+
+        _log($"[Claude] Oneshot process started in {sw.ElapsedMilliseconds}ms", null);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
@@ -580,10 +584,16 @@ public class ClaudeSessionService
         await process.StandardInput.WriteAsync(prompt);
         process.StandardInput.Close();
 
+        _log($"[Claude] Oneshot prompt written in {sw.ElapsedMilliseconds}ms", null);
+
         var stdout = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
         var stderr = await process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
+        _log($"[Claude] Oneshot stdout received in {sw.ElapsedMilliseconds}ms ({stdout.Length} chars)", null);
+
         await process.WaitForExitAsync(timeoutCts.Token);
+
+        _log($"[Claude] Oneshot process exited in {sw.ElapsedMilliseconds}ms (code {process.ExitCode})", null);
 
         if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
         {

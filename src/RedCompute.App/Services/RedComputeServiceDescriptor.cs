@@ -136,7 +136,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
             [new ParameterDescriptor("provider", "string", false, "Filter by provider")]));
 
         endpoints.Add(new EndpointDescriptor("POST", "/ai-session/generate",
-            "Start a session by project name, or run a oneshot LLM completion",
+            "Dual-mode: 'session' creates a persistent interactive session by project name, 'oneshot' runs a stateless LLM completion (read-only tools, 60s limit)",
             [
                 new("mode", "string", false, "'session' (default) starts a persistent session; 'oneshot' runs a stateless LLM completion", "session", ["session", "oneshot"]),
                 new("project", "string", false, "(session mode) Project name"),
@@ -149,7 +149,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
             ]));
 
         endpoints.Add(new EndpointDescriptor("POST", "/ai-session/execute",
-            "Execute a prompt via any session provider",
+            "Run an agent task with full tool access (fire-and-forget, configurable timeout up to 1800s)",
             [
                 new("prompt", "string", true, "Prompt text"),
                 new("model", "string", false, "Model to use"),

@@ -29,10 +29,10 @@ public static class UnifiedSessionEndpoints
         telemetry?.DescribeRoute("GET", "/ai-session/sessions", "List active sessions");
         telemetry?.DescribeRoute("POST", "/ai-session/sessions", "Start a new interactive session");
         telemetry?.DescribeRoute("GET", "/ai-session/sessions/{id}", "Get session details");
-        telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/message", "Send message to session");
+        telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/message", "Send a user message to a persistent session. Body: {\"content\": \"...\"}. Returns {\"sent\": true}");
         telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/stop", "Stop a running session");
-        telemetry?.DescribeRoute("POST", "/ai-session/execute", "Execute a one-shot AI task");
-        telemetry?.DescribeRoute("POST", "/ai-session/generate", "Generate via session or oneshot mode");
+        telemetry?.DescribeRoute("POST", "/ai-session/execute", "Run an agent task with full tool access (fire-and-forget, configurable timeout up to 1800s)");
+        telemetry?.DescribeRoute("POST", "/ai-session/generate", "Dual-mode: 'session' creates a persistent interactive session by project name, 'oneshot' runs a stateless LLM completion (read-only tools, 60s)");
         telemetry?.DescribeRoute("GET", "/ai-session/models", "List available models across providers");
         telemetry?.DescribeRoute("GET", "/ai-session/projects", "List known project directories");
 
@@ -148,6 +148,9 @@ public static class UnifiedSessionEndpoints
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
             var content = body.TryGetProperty("content", out var c) ? c.GetString() : null;
+            if (string.IsNullOrWhiteSpace(content))
+                return Error(400, "missing_content", "content is required");
+
             ImageAttachment[]? images = null;
             if (body.TryGetProperty("images", out var imagesEl) && imagesEl.ValueKind == JsonValueKind.Array)
             {
@@ -158,7 +161,9 @@ public static class UnifiedSessionEndpoints
                     .ToArray();
             }
 
-            var sent = await provider.SendMessageAsync(id, content ?? "", images);
+            var sent = await provider.SendMessageAsync(id, content, images);
+            if (!sent)
+                return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
             return Results.Json(new { sent });
         });
 
