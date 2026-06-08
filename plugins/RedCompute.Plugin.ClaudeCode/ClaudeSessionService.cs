@@ -268,14 +268,9 @@ public class ClaudeSessionService
         {
             var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
-            // Write stdin in background to avoid pipe deadlock with Docker buffers
-            var stdinTask = Task.Run(async () =>
-            {
-                var stdinSw = Stopwatch.StartNew();
-                await process.StandardInput.WriteAsync(prompt.AsMemory(), timeoutCts.Token);
-                process.StandardInput.Close();
-                _log($"[Claude] TIMING stdin write took {stdinSw.ElapsedMilliseconds}ms ({prompt.Length} chars)", null);
-            }, timeoutCts.Token);
+            // Start stdin write immediately (not via Task.Run which is subject to
+            // thread pool scheduling delays — the Claude CLI has a 3s stdin timeout)
+            var stdinTask = WriteStdinAsync(process, prompt, timeoutCts.Token, sw);
 
             // Read stdout line-by-line, broadcasting stream events in real time
             var firstLineLogged = false;
@@ -602,12 +597,7 @@ public class ClaudeSessionService
         {
             var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
-            var stdinTask = Task.Run(async () =>
-            {
-                await process.StandardInput.WriteAsync(prompt.AsMemory(), timeoutCts.Token);
-                process.StandardInput.Close();
-                _log($"[Claude] Oneshot prompt written in {sw.ElapsedMilliseconds}ms ({prompt.Length} chars)", null);
-            }, timeoutCts.Token);
+            var stdinTask = WriteStdinAsync(process, prompt, timeoutCts.Token, sw);
 
             var firstLineLogged = false;
             while (await process.StandardOutput.ReadLineAsync(timeoutCts.Token) is { } line)
@@ -1770,6 +1760,13 @@ public class ClaudeSessionService
         {
             _log($"[Claude] Failed to read session title for {session.Info.Id}: {ex.Message}", null);
         }
+    }
+
+    private async Task WriteStdinAsync(Process process, string data, CancellationToken ct, Stopwatch sw)
+    {
+        await process.StandardInput.WriteAsync(data.AsMemory(), ct);
+        process.StandardInput.Close();
+        _log($"[Claude] TIMING stdin write took {sw.ElapsedMilliseconds}ms ({data.Length} chars)", null);
     }
 
     private static async Task<bool> WaitForExit(Process process, TimeSpan timeout)
