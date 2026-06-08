@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -17,11 +19,15 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
     private readonly ProviderConfig _config;
     private readonly string _capabilitySlug;
     private readonly string _voicesBasePath;
+    private readonly Action<string> _log;
+
+    private static readonly string[] BuiltinVoices = ["Serena", "Aiden", "Ryan", "Vivian"];
 
     public TtsLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
+        _log = log;
         _inner = new LocalWslProvider(config, capabilitySlug, log);
         _voicesBasePath = config.VoicesBasePath ?? "";
     }
@@ -156,5 +162,83 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
             parameters.Remove("voice");
         }
         return parameters;
+    }
+
+    public async Task<string?> PrepareAsync(Dictionary<string, object?> body, string proxyUrl, CancellationToken ct)
+    {
+        var speaker = body.GetValueOrDefault("speaker")?.ToString();
+        if (string.IsNullOrEmpty(speaker)) return null;
+
+        using var http = new HttpClient
+        {
+            BaseAddress = new Uri(proxyUrl),
+            Timeout = TimeSpan.FromSeconds(10)
+        };
+
+        try
+        {
+            var infoResp = await http.GetAsync("/model/info", ct);
+            if (!infoResp.IsSuccessStatusCode) return null;
+
+            var info = await infoResp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+            if (info.TryGetProperty("speakers", out var speakersEl) && speakersEl.ValueKind == JsonValueKind.Array)
+            {
+                var loaded = speakersEl.EnumerateArray().Select(s => s.GetString()).ToList();
+                if (loaded.Contains(speaker, StringComparer.OrdinalIgnoreCase))
+                    return null;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        string checkpointPath;
+        if (BuiltinVoices.Contains(speaker, StringComparer.OrdinalIgnoreCase))
+        {
+            checkpointPath = _config.Model ?? "";
+        }
+        else
+        {
+            var windowsPath = Path.Combine(_voicesBasePath, speaker, "model", "checkpoint");
+            checkpointPath = ConvertToWslPath(windowsPath);
+        }
+
+        if (string.IsNullOrEmpty(checkpointPath))
+            return $"Cannot determine checkpoint path for voice '{speaker}'";
+
+        _log($"[tts] Switching model for voice '{speaker}': {checkpointPath}");
+
+        try
+        {
+            using var reloadHttp = new HttpClient
+            {
+                BaseAddress = new Uri(proxyUrl),
+                Timeout = TimeSpan.FromSeconds(120)
+            };
+            var reloadResp = await reloadHttp.PostAsJsonAsync("/model/reload",
+                new { checkpoint_path = checkpointPath }, ct);
+
+            if (!reloadResp.IsSuccessStatusCode)
+            {
+                var error = await reloadResp.Content.ReadAsStringAsync(ct);
+                return $"Failed to load voice '{speaker}': {error}";
+            }
+
+            _log($"[tts] Model switched to '{speaker}'");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"Model reload failed: {ex.Message}";
+        }
+    }
+
+    private static string ConvertToWslPath(string windowsPath)
+    {
+        var path = windowsPath.Replace("\\", "/");
+        if (path.Length >= 2 && path[1] == ':')
+            path = $"/mnt/{char.ToLower(path[0])}/{path[2..].TrimStart('/')}";
+        return path;
     }
 }

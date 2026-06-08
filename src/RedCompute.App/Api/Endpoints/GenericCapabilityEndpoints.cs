@@ -124,6 +124,14 @@ public static class GenericCapabilityEndpoints
                     {
                         backendPath = proxyPlugin.ProxyGeneratePath;
                         body = proxyPlugin.TransformParameters(body);
+
+                        var prepareError = await proxyPlugin.PrepareAsync(body, proxyUrl, ctx.RequestAborted);
+                        if (prepareError != null)
+                        {
+                            jobTracker.MarkFailed(job.Id, prepareError);
+                            log($"[{slug}] Job {job.Id} prepare failed: {prepareError}", job.Id);
+                            return Error(422, "prepare_failed", prepareError);
+                        }
                     }
                     try
                     {
