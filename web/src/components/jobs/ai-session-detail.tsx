@@ -50,6 +50,7 @@ function shortModel(model?: string): string {
   if (model.includes("opus")) return "Opus"
   if (model.includes("sonnet")) return "Sonnet"
   if (model.includes("haiku")) return "Haiku"
+  if (model.includes("fable")) return "Fable"
   if (model.includes("codex-mini")) return "Codex Mini"
   if (model.includes("gpt-5.5")) return "GPT-5.5"
   if (model.includes("gpt-5.4-mini")) return "GPT-5.4m"

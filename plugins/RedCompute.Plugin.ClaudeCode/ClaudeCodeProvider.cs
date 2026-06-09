@@ -225,6 +225,7 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
         new() { Id = "haiku", Name = "Haiku", Fast = true },
         new() { Id = "sonnet", Name = "Sonnet", Fast = false },
         new() { Id = "opus", Name = "Opus", Fast = false },
+        new() { Id = "fable", Name = "Fable", Fast = false },
     ];
 
     // --- ISessionProvider: Process Management ---
@@ -308,7 +309,7 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
         ["prompt"] = new() { Type = "string", Required = true, Description = "Prompt text for agent execution" },
-        ["model"] = new() { Type = "string", Required = false, Default = "sonnet", Enum = ["haiku", "sonnet", "opus"], Description = "Model to use" },
+        ["model"] = new() { Type = "string", Required = false, Default = "sonnet", Enum = ["haiku", "sonnet", "opus", "fable"], Description = "Model to use" },
         ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
         ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }
     };
