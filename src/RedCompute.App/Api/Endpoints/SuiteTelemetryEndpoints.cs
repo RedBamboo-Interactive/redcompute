@@ -15,7 +15,7 @@ public static class SuiteTelemetryEndpoints
     [
         ("RedCompute", 18800, "#26A69A"),
         ("CodeRed", 18801, "#E55B5B"),
-        ("RedMatter", 18802, "#7C4DFF"),
+        ("RedMatter", 18802, "#D4A03C"),
         ("Nova", 18803, "#C74B7A"),
         ("RedLeaf", 18804, "#66BB6A"),
     ];

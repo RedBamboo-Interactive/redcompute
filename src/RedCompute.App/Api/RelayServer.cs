@@ -93,7 +93,7 @@ public class RelayServer
         _app.UseWebSockets();
         _app.Use(async (ctx, next) =>
         {
-            ctx.Response.Headers["X-RedCompute-Version"] = "0.2.0";
+            ctx.Response.Headers["X-RedCompute-Version"] = RedComputeServiceDescriptor.AppVersion;
             await next();
         });
         _app.UseAppHostAuth(new BearerAuthOptions

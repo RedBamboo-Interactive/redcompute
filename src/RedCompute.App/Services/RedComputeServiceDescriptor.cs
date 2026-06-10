@@ -19,12 +19,15 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         _logService = logService;
     }
 
+    /// <summary>Single source of truth for the app version (also sent as X-RedCompute-Version).</summary>
+    public const string AppVersion = "0.2.0";
+
     public override string ServiceName => "RedCompute";
-    public override string Version => "0.2.0";
+    public override string Version => AppVersion;
     public override string Description => "AI-native inference abstraction layer — TTS, STT, image gen, music gen, AI sessions";
     public override string ApiBase => $"http://localhost:{_config.ApiPort}";
     public override string? IconClass => "fa-solid fa-microchip";
-    public override string? IconColor => "#E55B5B";
+    public override string? IconColor => "#26A69A";
 
     public override async Task<IReadOnlyList<CapabilityDescriptor>> GetCapabilitiesAsync()
     {
