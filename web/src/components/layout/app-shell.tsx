@@ -1,8 +1,10 @@
 import { useState, type ReactNode } from "react"
 import { NavLink } from "react-router-dom"
-import { AppShell as UtilityAppShell, useLogStream, LogPanel } from "@redbamboo/utility"
+import { AppShell as UtilityAppShell, useLogStream, LogPanel, useCommand } from "@redbamboo/utility"
 import { DropdownMenuItem, NavTabs, navTabClass, ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@redbamboo/ui"
 import { SettingsPanel } from "./settings-panel"
+import { QueueJobDialog } from "@/components/jobs/queue-job-dialog"
+import { useAppState } from "@/contexts/app-state"
 import { connectionStore } from "@/api/auth"
 import type { Settings } from "@/api/types"
 
@@ -16,11 +18,40 @@ interface Props {
   children?: ReactNode
 }
 
+// Registered as a child of UtilityAppShell so the CommandProvider context exists
+function ShellCommands({ onToggleConsole, onToggleSettings, onQueueJob }: {
+  onToggleConsole: () => void
+  onToggleSettings: () => void
+  onQueueJob: () => void
+}) {
+  useCommand("view:toggle-console", {
+    label: "Toggle Console",
+    description: "Show or hide the live log console panel",
+    group: "View",
+    action: onToggleConsole,
+  })
+  useCommand("view:toggle-settings", {
+    label: "Toggle Settings",
+    description: "Show or hide the settings panel",
+    group: "View",
+    action: onToggleSettings,
+  })
+  useCommand("jobs:queue", {
+    label: "Queue Job…",
+    description: "Submit a new job to a running capability",
+    group: "Jobs",
+    action: onQueueJob,
+  })
+  return null
+}
+
 export function AppShell({
   settings, saving, onUpdateGeneral, onUpdateCapability, onUpdateProvider, breadcrumb, children,
 }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [consoleOpen, setConsoleOpen] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(false)
+  const { caps } = useAppState()
   const logStream = useLogStream({ store: connectionStore })
 
   const tunnel = settings?.tunnel
@@ -92,6 +123,16 @@ export function AppShell({
       }
       className="flex flex-col h-dvh w-full"
     >
+      <ShellCommands
+        onToggleConsole={() => setConsoleOpen(prev => !prev)}
+        onToggleSettings={() => setSettingsOpen(prev => !prev)}
+        onQueueJob={() => setQueueOpen(true)}
+      />
+      <QueueJobDialog
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        capabilities={caps.capabilities}
+      />
       {(consoleOpen || settingsOpen) ? (
         <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0">
           <ResizablePanel defaultSize={consoleOpen && settingsOpen ? 55 : 75} minSize={30}>

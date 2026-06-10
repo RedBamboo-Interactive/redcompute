@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react"
 import { AudioPlayer, ImageLightbox } from "@redbamboo/ui"
+import { useCommand } from "@redbamboo/utility"
 import { api } from "@/api/client"
 import { authUrl } from "@/api/auth"
 import type { CapabilityStatus, JobRecord } from "@/api/types"
@@ -35,9 +36,11 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
   const [clipCount, setClipCount] = useState(1)
   const [lightbox, setLightbox] = useState(false)
   const [rerunning, setRerunning] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const [sttOutput, setSttOutput] = useState<SttOutput | null>(null)
 
   const canRerun = !!capability?.rerunnable && terminalStatuses.has(job.status)
+  const canCancel = job.status === "Running" || job.status === "Queued"
 
   const handleRerun = useCallback(async () => {
     setRerunning(true)
@@ -50,6 +53,33 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
       setRerunning(false)
     }
   }, [job.id, onRerun])
+
+  const handleCancel = useCallback(async () => {
+    setCancelling(true)
+    try {
+      await api.delete(`/jobs/${job.id}`)
+    } catch (err) {
+      console.error("Cancel failed:", err)
+    } finally {
+      setCancelling(false)
+    }
+  }, [job.id])
+
+  useCommand("job:rerun", {
+    label: "Rerun Job",
+    description: "Rerun the selected job with the same input",
+    group: "Jobs",
+    action: handleRerun,
+    enabled: canRerun,
+  })
+
+  useCommand("job:cancel", {
+    label: "Cancel Job",
+    description: "Cancel the selected running job",
+    group: "Jobs",
+    action: handleCancel,
+    enabled: canCancel,
+  })
 
   useEffect(() => {
     if (job.capabilitySlug !== "music-gen" || job.status !== "Completed") {
@@ -130,15 +160,29 @@ function MediaJobDetail({ job, onRerun, capability }: { job: JobRecord; onRerun?
     <JobDetailShell
       job={job}
       capability={capability}
-      actions={canRerun ? (
-        <button
-          onClick={handleRerun}
-          disabled={rerunning}
-          className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors bg-overlay-6 text-text-muted hover:bg-overlay-10 hover:text-text-primary disabled:opacity-50"
-        >
-          <i className={`fa-solid ${rerunning ? "fa-spinner fa-spin" : "fa-rotate-right"} text-[11px]`} />
-          {rerunning ? "Rerunning..." : "Rerun"}
-        </button>
+      actions={(canRerun || canCancel) ? (
+        <>
+          {canCancel && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors bg-overlay-6 text-text-muted hover:bg-overlay-10 hover:text-destructive disabled:opacity-50"
+            >
+              <i className={`fa-solid ${cancelling ? "fa-spinner fa-spin" : "fa-ban"} text-[11px]`} />
+              {cancelling ? "Cancelling..." : "Cancel"}
+            </button>
+          )}
+          {canRerun && (
+            <button
+              onClick={handleRerun}
+              disabled={rerunning}
+              className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md transition-colors bg-overlay-6 text-text-muted hover:bg-overlay-10 hover:text-text-primary disabled:opacity-50"
+            >
+              <i className={`fa-solid ${rerunning ? "fa-spinner fa-spin" : "fa-rotate-right"} text-[11px]`} />
+              {rerunning ? "Rerunning..." : "Rerun"}
+            </button>
+          )}
+        </>
       ) : undefined}
       chips={chips}
     >
