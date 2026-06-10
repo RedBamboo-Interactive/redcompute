@@ -51,6 +51,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         }
         if (_logService is not null)
             caps.Add(LogEndpoints.GetLogCapabilityDescriptor(_logService));
+        caps.Add(RedBamboo.AppHost.Telemetry.TelemetryEndpoints.GetTelemetryCapabilityDescriptor());
         return caps;
     }
 
