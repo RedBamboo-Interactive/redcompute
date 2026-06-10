@@ -200,6 +200,7 @@ public static class GenericCapabilityEndpoints
                     {
                         await using var outputStream = result.OutputStream;
                         var path = SaveOutput(job.Id, outputStream, result.ContentType);
+                        SaveExtraOutputs(job.Id, result.ExtraOutputs);
                         var size = new FileInfo(path).Length;
                         jobTracker.MarkCompleted(job.Id, path, size, result.ContentType, result.ResultJson);
                         if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
@@ -274,7 +275,7 @@ public static class GenericCapabilityEndpoints
 
             // GET /{slug}/jobs/{id}/output
             endpoints.MapGet($"/{slug}/jobs/{{id:guid}}/output",
-                $"Download the output of a completed {slug} job", async (HttpContext ctx, Guid id) =>
+                $"Download the output of a completed {slug} job", async (HttpContext ctx, Guid id, int? clip) =>
             {
                 var job = jobTracker.GetJob(id);
                 if (job == null)
@@ -293,13 +294,27 @@ public static class GenericCapabilityEndpoints
                     return Error(404, "output_not_found", "Output file not available");
                 }
 
+                var outputPath = job.OutputLocation;
+                if (clip is > 0)
+                {
+                    var dir = Path.GetDirectoryName(job.OutputLocation) ?? OutputDir;
+                    var baseName = Path.GetFileNameWithoutExtension(job.OutputLocation);
+                    var ext = Path.GetExtension(job.OutputLocation);
+                    outputPath = Path.Combine(dir, $"{baseName}_clip{clip}{ext}");
+                    if (!File.Exists(outputPath))
+                        return Error(404, "clip_not_found", $"Clip {clip} not available for job {id}");
+                }
+
                 ctx.Response.ContentType = job.OutputContentType ?? "application/octet-stream";
                 if (job.ResultJson != null)
                     ctx.Response.Headers["X-Result-Json"] = job.ResultJson;
-                await using var stream = File.OpenRead(job.OutputLocation);
+                await using var stream = File.OpenRead(outputPath);
                 await stream.CopyToAsync(ctx.Response.Body);
                 return Results.Empty;
-            });
+            })
+                .WithParam("clip", "integer",
+                    description: "Variation index for multi-clip outputs (e.g. music): 0 or omitted = primary clip, 1..N = additional clips",
+                    location: ParamLocation.Query);
         }
 
         // Proxy catch-all: /{slug}/{**path} for providers with GetProxyTargetUrl
@@ -353,6 +368,7 @@ public static class GenericCapabilityEndpoints
         {
             await using var outputStream = result.OutputStream;
             var path = SaveOutput(jobId, outputStream, result.ContentType);
+            SaveExtraOutputs(jobId, result.ExtraOutputs);
             var size = new FileInfo(path).Length;
             jobTracker.MarkCompleted(jobId, path, size, result.ContentType, result.ResultJson);
             log($"[{slug}] Job {jobId} completed ({size / 1024}KB)", jobId);
@@ -406,25 +422,46 @@ public static class GenericCapabilityEndpoints
         return false;
     }
 
+    private static string ExtensionFor(string? contentType) => contentType switch
+    {
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/webp" => ".webp",
+        "video/mp4" => ".mp4",
+        "audio/wav" => ".wav",
+        "audio/mpeg" => ".mp3",
+        "audio/ogg" => ".ogg",
+        "application/json" => ".json",
+        _ => ".bin"
+    };
+
     private static string SaveOutput(Guid jobId, Stream data, string? contentType)
     {
-        var ext = contentType switch
-        {
-            "image/png" => ".png",
-            "image/jpeg" => ".jpg",
-            "image/webp" => ".webp",
-            "video/mp4" => ".mp4",
-            "audio/wav" => ".wav",
-            "audio/mpeg" => ".mp3",
-            "audio/ogg" => ".ogg",
-            "application/json" => ".json",
-            _ => ".bin"
-        };
-        var path = Path.Combine(OutputDir, $"{jobId}{ext}");
+        var path = Path.Combine(OutputDir, $"{jobId}{ExtensionFor(contentType)}");
         using var fs = File.Create(path);
         data.Position = 0;
         data.CopyTo(fs);
         return path;
+    }
+
+    private static void SaveExtraOutputs(Guid jobId, IReadOnlyList<JobOutputPart>? extras)
+    {
+        if (extras == null) return;
+        foreach (var extra in extras)
+        {
+            try
+            {
+                var path = Path.Combine(OutputDir, $"{jobId}{extra.Suffix}{ExtensionFor(extra.ContentType)}");
+                using var fs = File.Create(path);
+                extra.Data.Position = 0;
+                extra.Data.CopyTo(fs);
+            }
+            catch { }
+            finally
+            {
+                extra.Data.Dispose();
+            }
+        }
     }
 
     private static async Task<Dictionary<string, object?>> ReadJsonBody(HttpContext ctx)

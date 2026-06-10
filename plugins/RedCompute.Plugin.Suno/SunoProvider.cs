@@ -176,12 +176,23 @@ public class SunoProvider : IPluginProvider
             _log($"[Suno] Generated {results.Count} clip(s): {string.Join(", ", results.Select(r => r.Title))}");
             LastClipResults = results;
 
+            // Clips beyond the first are saved as {jobId}_clip{i}.mp3 and served via ?clip=i
+            var extraOutputs = results.Skip(1)
+                .Select((r, i) => new JobOutputPart
+                {
+                    Suffix = $"_clip{i + 1}",
+                    Data = r.AudioData!,
+                    ContentType = "audio/mpeg"
+                })
+                .ToList();
+
             return new JobResult
             {
                 Success = true,
                 OutputStream = firstClipStream,
                 ContentType = "audio/mpeg",
-                ResultJson = resultJson
+                ResultJson = resultJson,
+                ExtraOutputs = extraOutputs.Count > 0 ? extraOutputs : null
             };
         }
         finally
