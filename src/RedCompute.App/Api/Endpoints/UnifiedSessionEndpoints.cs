@@ -741,9 +741,29 @@ public static class UnifiedSessionEndpoints
 
     private static string? ResolveUserId(HttpContext ctx)
     {
-        if (ctx.Request.Headers.TryGetValue("X-User-Id", out var uid) && !string.IsNullOrEmpty(uid))
+        var sub = ctx.User?.FindFirst("sub")?.Value;
+        if (!string.IsNullOrEmpty(sub))
+            return sub;
+
+        // X-User-Id is spoofable, so only trust it for cross-service calls on localhost
+        if (IsLocalRequest(ctx) &&
+            ctx.Request.Headers.TryGetValue("X-User-Id", out var uid) && !string.IsNullOrEmpty(uid))
             return uid.ToString();
-        return ctx.User?.FindFirst("sub")?.Value;
+
+        return null;
+    }
+
+    private static bool IsLocalRequest(HttpContext ctx)
+    {
+        if (ctx.Request.Headers.ContainsKey("Cf-Connecting-Ip") ||
+            ctx.Request.Headers.ContainsKey("Cf-Ray"))
+            return false;
+
+        var remote = ctx.Connection.RemoteIpAddress;
+        if (remote == null) return true;
+        if (System.Net.IPAddress.IsLoopback(remote)) return true;
+        if (remote.Equals(ctx.Connection.LocalIpAddress)) return true;
+        return false;
     }
 
     private static IResult Error(int status, string error, string message)
