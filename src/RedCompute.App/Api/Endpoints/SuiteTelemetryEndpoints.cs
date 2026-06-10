@@ -68,7 +68,7 @@ public static class SuiteTelemetryEndpoints
             async (int port, string? route, string? method, string? since, string? until, int? limit) =>
             {
                 if (!SuiteApps.Any(a => a.Port == port))
-                    return Results.BadRequest(new { error = "Unknown suite app port" });
+                    return Results.BadRequest(new { error = "unknown_port", message = $"Port {port} is not a known suite app. Known ports: {string.Join(", ", SuiteApps.Select(a => a.Port))}" });
 
                 var qs = new List<string>();
                 if (route is not null) qs.Add($"route={Uri.EscapeDataString(route)}");
@@ -82,13 +82,17 @@ public static class SuiteTelemetryEndpoints
                 {
                     var response = await Http.GetAsync(url);
                     if (!response.IsSuccessStatusCode)
-                        return Results.StatusCode((int)response.StatusCode);
+                        return Results.Json(
+                            new { error = "upstream_error", message = $"Suite app on port {port} returned {(int)response.StatusCode}" },
+                            statusCode: (int)response.StatusCode);
                     var json = await response.Content.ReadFromJsonAsync<JsonElement>();
                     return Results.Ok(json);
                 }
                 catch
                 {
-                    return Results.StatusCode(502);
+                    return Results.Json(
+                        new { error = "backend_unavailable", message = $"Suite app on port {port} is not reachable" },
+                        statusCode: 502);
                 }
             })
             .WithParam("port", "integer", required: true, description: "Port of the suite app to query (must be a known suite port)", location: ParamLocation.Query)

@@ -93,7 +93,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         app.MapGet($"/{CapabilitySlug}/workflows/{{name}}", (string name) =>
         {
             var wf = WorkflowLoader.Get(name);
-            return wf != null ? Results.Json(wf) : Results.NotFound(new { error = $"Workflow '{name}' not found" });
+            return wf != null ? Results.Json(wf) : Results.NotFound(new { error = "not_found", message = $"Workflow '{name}' not found" });
         });
     }
 

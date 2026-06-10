@@ -133,7 +133,7 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
             }
             catch (Exception ex)
             {
-                return Results.Problem($"Failed to reach STT backend: {ex.Message}", statusCode: 502);
+                return Results.Json(new { error = "backend_unavailable", message = $"Failed to reach STT backend: {ex.Message}" }, statusCode: 502);
             }
         });
 
@@ -151,7 +151,7 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
             }
             catch (Exception ex)
             {
-                return Results.Problem($"Failed to reach STT backend: {ex.Message}", statusCode: 502);
+                return Results.Json(new { error = "backend_unavailable", message = $"Failed to reach STT backend: {ex.Message}" }, statusCode: 502);
             }
         });
     }
