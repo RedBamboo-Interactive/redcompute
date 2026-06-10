@@ -3,8 +3,7 @@ using System.Net.Http;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
-using RedBamboo.AppHost.Auth;
+using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
@@ -26,7 +25,8 @@ public static class GenericCapabilityEndpoints
     private static RedComputeConfig? _config;
     private static CapabilityRegistry? _registry;
 
-    public static void Map(WebApplication app, CapabilityRegistry registry, JobTrackingService jobTracker, Action<string, Guid?> log,
+    public static void Map(WebApplication app, EndpointRegistry endpoints, CapabilityRegistry registry,
+        JobTrackingService jobTracker, Action<string, Guid?> log,
         HardwareMonitorService? hardwareMonitor = null, RedComputeConfig? config = null)
     {
         _hardwareMonitor = hardwareMonitor;
@@ -34,17 +34,16 @@ public static class GenericCapabilityEndpoints
         _registry = registry;
         Directory.CreateDirectory(OutputDir);
 
-        var telemetry = app.Services.GetService<RedBamboo.AppHost.Telemetry.TelemetryService>();
-
         foreach (var (capSlug, _) in registry.Capabilities)
         {
             if (capSlug == "ai-session") continue;
 
             var slug = capSlug;
-            telemetry?.DescribeRoute("POST", $"/{slug}/generate", $"Generate {slug} output via active provider");
 
             // POST /{slug}/generate — universal work endpoint
-            app.MapPost($"/{slug}/generate", async (HttpContext ctx) =>
+            endpoints.MapPost($"/{slug}/generate",
+                $"Generate {slug} output via the active provider. Body parameters come from the provider's input schema (see the capability entry in /discover).",
+                async (HttpContext ctx) =>
             {
                 ctx.Items["Telemetry.Kind"] = "job";
 
@@ -245,10 +244,18 @@ public static class GenericCapabilityEndpoints
                     log($"[{slug}] Job {job.Id} failed: {ex.Message}", job.Id);
                     return Error(500, "generation_failed", ex.Message);
                 }
-            });
+            })
+                .WithParam("async", "boolean", description: "Fire-and-forget: returns 202 with a job id instead of streaming the result", location: ParamLocation.Query)
+                .WithParam("X-Async", "string", description: "Set to 'true' as an alternative to ?async", location: ParamLocation.Header)
+                .WithParam("X-Caller-Info", "string", description: "Identifies the calling app/agent for job attribution", location: ParamLocation.Header)
+                .WithParam("X-Idempotency-Key", "string", description: "Dedupe key — repeated requests with the same key reuse the original job", location: ParamLocation.Header)
+                .WithParam("X-Job-Name", "string", description: "Human-readable job name (body 'name' takes precedence)", location: ParamLocation.Header)
+                .WithParam("X-Job-Rationale", "string", description: "Why the job was queued (body 'rationale' takes precedence)", location: ParamLocation.Header)
+                .WithParam("X-Provider", "string", description: "Provider to use for this request (body 'provider' takes precedence)", location: ParamLocation.Header);
 
             // GET /{slug}/jobs/{id}/progress
-            app.MapGet($"/{slug}/jobs/{{id:guid}}/progress", (Guid id) =>
+            endpoints.MapGet($"/{slug}/jobs/{{id:guid}}/progress",
+                $"Real-time progress and status of a {slug} job", (Guid id) =>
             {
                 var job = jobTracker.GetJob(id);
                 if (job == null)
@@ -266,7 +273,8 @@ public static class GenericCapabilityEndpoints
             });
 
             // GET /{slug}/jobs/{id}/output
-            app.MapGet($"/{slug}/jobs/{{id:guid}}/output", async (HttpContext ctx, Guid id) =>
+            endpoints.MapGet($"/{slug}/jobs/{{id:guid}}/output",
+                $"Download the output of a completed {slug} job", async (HttpContext ctx, Guid id) =>
             {
                 var job = jobTracker.GetJob(id);
                 if (job == null)
@@ -300,11 +308,22 @@ public static class GenericCapabilityEndpoints
             if (capSlug == "ai-session") continue;
 
             var slug = capSlug;
+            endpoints.Describe("ANY", $"/{slug}/{{**path}}",
+                $"Proxy passthrough to the active {slug} backend (when the provider exposes one). Known routes (generate, jobs/*) are served directly.");
             app.Map($"/{slug}/{{**path}}", async (HttpContext ctx, string? path) =>
             {
-                // Skip if this is a known endpoint pattern (generate, jobs)
+                // Known endpoint patterns (generate, jobs) are handled by the routes above;
+                // reaching here means the path didn't match anything proxyable.
                 if (path != null && (path.StartsWith("jobs/") || path == "generate"))
+                {
+                    ctx.Response.StatusCode = 404;
+                    await ctx.Response.WriteAsJsonAsync(new ErrorResponse
+                    {
+                        Error = "not_found",
+                        Message = $"No endpoint at '/{slug}/{path}'"
+                    });
                     return;
+                }
 
                 var entry = registry.Get(slug);
                 var proxyProvider = entry?.ActiveProvider;

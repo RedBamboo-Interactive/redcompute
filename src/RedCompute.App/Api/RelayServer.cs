@@ -131,8 +131,8 @@ public class RelayServer
         SettingsEndpoints.Map(registry, _configManager, _tunnelService, _registry);
 
         SuiteTelemetryEndpoints.Map(registry);
-        UnifiedSessionEndpoints.Map(_app, _registry, _jobTracker, _log, _docker, _callbacks);
-        GenericCapabilityEndpoints.Map(_app, _registry, _jobTracker, _log, _hardwareMonitor, _config);
+        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks);
+        GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
         RegisterWsEvents(broadcaster);

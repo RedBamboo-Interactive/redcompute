@@ -9,6 +9,7 @@ public class RedComputeConfig
     public bool AutoStartWithWindows { get; set; }
     public double ElectricityRatePerKwh { get; set; } = 0.15;
     public bool AutoStartDocker { get; set; } = true;
+    public string CodeRedUrl { get; set; } = "http://localhost:18801";
     public TunnelConfig Tunnel { get; set; } = new();
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
 }

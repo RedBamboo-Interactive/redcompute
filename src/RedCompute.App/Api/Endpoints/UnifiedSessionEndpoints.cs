@@ -4,8 +4,9 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
+using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
+using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -17,26 +18,18 @@ public static class UnifiedSessionEndpoints
     private static DockerContainerService? _docker;
     private static SessionCallbackRegistry? _callbacks;
 
-    public static void Map(WebApplication app, CapabilityRegistry registry,
-        IJobTracker jobTracker, Action<string, Guid?> log,
+    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
+        IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
         DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null)
     {
         _docker = docker;
         _callbacks = callbacks;
 
-        var telemetry = app.Services.GetService<RedBamboo.AppHost.Telemetry.TelemetryService>();
-        telemetry?.DescribeRoute("GET", "/ai-session/providers", "List available AI session providers");
-        telemetry?.DescribeRoute("GET", "/ai-session/sessions", "List active sessions");
-        telemetry?.DescribeRoute("POST", "/ai-session/sessions", "Start a new interactive session");
-        telemetry?.DescribeRoute("GET", "/ai-session/sessions/{id}", "Get session details");
-        telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/message", "Send a user message to a persistent session. Body: {\"content\": \"...\"}. Returns {\"sent\": true}");
-        telemetry?.DescribeRoute("POST", "/ai-session/sessions/{id}/stop", "Stop a running session");
-        telemetry?.DescribeRoute("POST", "/ai-session/execute", "Run an agent task with full tool access (fire-and-forget, default 30min, max 2h)");
-        telemetry?.DescribeRoute("POST", "/ai-session/generate", "Dual-mode: 'session' creates a persistent interactive session by project name, 'oneshot' runs a stateless LLM completion (read-only tools, 60s)");
-        telemetry?.DescribeRoute("GET", "/ai-session/models", "List available models across providers");
-        telemetry?.DescribeRoute("GET", "/ai-session/projects", "List known project directories");
+        var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
+        var providerEnum = providerIds.Count > 0 ? providerIds : null;
 
-        app.MapGet("/ai-session/providers", () =>
+        endpoints.MapGet("/ai-session/providers",
+            "List all registered AI session providers with their capabilities and models", () =>
         {
             var providers = registry.FindProviders<ISessionProvider>().Select(p => new
             {
@@ -48,7 +41,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(providers);
         });
 
-        app.MapGet("/ai-session/sessions", (HttpContext ctx) =>
+        endpoints.MapGet("/ai-session/sessions",
+            "List sessions across all providers, newest first", (HttpContext ctx) =>
         {
             var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
             var limitStr = ctx.Request.Query["limit"].FirstOrDefault();
@@ -76,9 +70,14 @@ public static class UnifiedSessionEndpoints
                 allSessions = allSessions.Take(limit).ToList();
 
             return Results.Json(allSessions);
-        });
+        })
+            .WithParam("limit", "integer", description: "Max sessions to return", defaultValue: 20, location: ParamLocation.Query)
+            .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query)
+            .WithParam("all", "boolean", description: "Include dismissed sessions (presence flag)", location: ParamLocation.Query)
+            .WithParam("excludeSource", "string", description: "Exclude sessions whose source matches this value", location: ParamLocation.Query);
 
-        app.MapPost("/ai-session/sessions", async (HttpContext ctx) =>
+        endpoints.MapPost("/ai-session/sessions",
+            "Start a new interactive session in a project directory", async (HttpContext ctx) =>
         {
             var userId = ResolveUserId(ctx);
             if (userId == null)
@@ -106,9 +105,13 @@ public static class UnifiedSessionEndpoints
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
 
             return Results.Json(session);
-        });
+        })
+            .WithParam("projectPath", "string", required: true, description: "Path to the project directory", location: ParamLocation.Body)
+            .WithParam("provider", "string", description: "Provider to use. Defaults to the active provider.", enumValues: providerEnum, location: ParamLocation.Body)
+            .WithParam("model", "string", description: "Model to use", location: ParamLocation.Body);
 
-        app.MapGet("/ai-session/sessions/{id}", (HttpContext ctx, string id) =>
+        endpoints.MapGet("/ai-session/sessions/{id}",
+            "Get session details and message history", (HttpContext ctx, string id) =>
         {
             var (provider, info, history) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -121,7 +124,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { session = info, messages = history });
         });
 
-        app.MapGet("/ai-session/sessions/by-job/{jobId:guid}", (HttpContext ctx, Guid jobId) =>
+        endpoints.MapGet("/ai-session/sessions/by-job/{jobId:guid}",
+            "Get the session associated with a job ID", (HttpContext ctx, Guid jobId) =>
         {
             foreach (var provider in registry.FindProviders<ISessionProvider>())
             {
@@ -132,7 +136,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new ErrorResponse { Error = "not_found", Message = $"No session for job '{jobId}'" }, statusCode: 404);
         });
 
-        app.MapPost("/ai-session/sessions/{id}/message", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/message",
+            "Send a user message to a persistent session. Returns {\"sent\": true}", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -165,9 +170,34 @@ public static class UnifiedSessionEndpoints
             if (!sent)
                 return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
             return Results.Json(new { sent });
-        });
+        })
+            .WithRequestBody(new
+            {
+                type = "object",
+                required = new[] { "content" },
+                properties = new
+                {
+                    content = new { type = "string", description = "Message text to send" },
+                    images = new
+                    {
+                        type = "array",
+                        description = "Optional image attachments",
+                        items = new
+                        {
+                            type = "object",
+                            required = new[] { "base64" },
+                            properties = new
+                            {
+                                mediaType = new { type = "string", description = "MIME type of the image", @default = "image/png" },
+                                base64 = new { type = "string", description = "Base64-encoded image data" },
+                            },
+                        },
+                    },
+                },
+            });
 
-        app.MapPost("/ai-session/sessions/{id}/inject", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/inject",
+            "Inject a message into the session history without triggering a model turn", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -188,9 +218,12 @@ public static class UnifiedSessionEndpoints
 
             var injected = await provider!.InjectMessageAsync(id, role, content);
             return Results.Json(new { injected });
-        });
+        })
+            .WithParam("role", "string", required: true, description: "Role of the injected message (e.g. user, assistant)", location: ParamLocation.Body)
+            .WithParam("content", "string", required: true, description: "Message content to inject", location: ParamLocation.Body);
 
-        app.MapPost("/ai-session/sessions/{id}/answer", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/answer",
+            "Answer a pending question from the session", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -211,9 +244,11 @@ public static class UnifiedSessionEndpoints
 
             var sent = provider.SendAnswer(id, answer);
             return Results.Json(new { sent });
-        });
+        })
+            .WithParam("answer", "string", required: true, description: "Answer text", location: ParamLocation.Body);
 
-        app.MapPost("/ai-session/sessions/{id}/interrupt", (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/interrupt",
+            "Interrupt the session's current operation", (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -228,7 +263,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { interrupted = result == InterruptResult.Interrupted, reason = result.ToString() });
         });
 
-        app.MapPost("/ai-session/sessions/{id}/resume", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/resume",
+            "Resume a stopped session", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -246,7 +282,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(session);
         });
 
-        app.MapPost("/ai-session/sessions/{id}/stop", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/stop",
+            "Stop a running session gracefully", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -259,7 +296,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { stopped = true });
         });
 
-        app.MapPost("/ai-session/sessions/{id}/dismiss", (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/dismiss",
+            "Mark a session as dismissed (hidden from default listings)", (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -272,7 +310,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { dismissed = true });
         });
 
-        app.MapPost("/ai-session/sessions/{id}/callback", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/callback",
+            "Register a completion webhook: RedCompute POSTs the session result to the given URL when the session finishes. Preferred over polling for agents awaiting session completion.", async (HttpContext ctx, string id) =>
         {
             if (_callbacks == null)
                 return Error(503, "not_configured", "Callback registry not available");
@@ -294,9 +333,11 @@ public static class UnifiedSessionEndpoints
 
             var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId);
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
-        });
+        })
+            .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body);
 
-        app.MapPost("/ai-session/sessions/{id}/config", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/config",
+            "Update session model and reasoning effort", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -315,9 +356,12 @@ public static class UnifiedSessionEndpoints
             var effort = body.TryGetProperty("effort", out var e) ? e.GetString() : null;
             var updated = await provider.UpdateSessionConfigAsync(id, model, effort);
             return Results.Json(updated);
-        });
+        })
+            .WithParam("model", "string", description: "Model to switch to", location: ParamLocation.Body)
+            .WithParam("effort", "string", description: "Reasoning effort level", location: ParamLocation.Body);
 
-        app.MapPost("/ai-session/sessions/{id}/permission-mode", async (HttpContext ctx, string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
+            "Set the session's permission mode", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -338,9 +382,13 @@ public static class UnifiedSessionEndpoints
 
             var ok = provider.SetPermissionMode(id, mode);
             return Results.Json(new { mode, ok });
-        });
+        })
+            .WithParam("mode", "string", required: true, description: "Permission mode",
+                enumValues: ["default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"],
+                location: ParamLocation.Body);
 
-        app.MapDelete("/ai-session/sessions/{id}", async (HttpContext ctx, string id) =>
+        endpoints.MapDelete("/ai-session/sessions/{id}",
+            "Force-kill a session", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -353,7 +401,8 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { killed = true });
         });
 
-        app.MapGet("/ai-session/projects", (HttpContext ctx) =>
+        endpoints.MapGet("/ai-session/projects",
+            "List known project directories across providers", (HttpContext ctx) =>
         {
             var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
             var allProjects = new List<object>();
@@ -369,9 +418,11 @@ public static class UnifiedSessionEndpoints
             }
 
             return Results.Json(allProjects);
-        });
+        })
+            .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
 
-        app.MapGet("/ai-session/projects/{name}/icon", (HttpContext ctx, string name) =>
+        endpoints.MapGet("/ai-session/projects/{name}/icon",
+            "Serve the project's icon image (favicon/logo) if one exists", (HttpContext ctx, string name) =>
         {
             var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
             foreach (var provider in registry.FindProviders<ISessionProvider>())
@@ -388,14 +439,16 @@ public static class UnifiedSessionEndpoints
                     return Results.File(iconPath);
             }
             return Results.NotFound();
-        });
+        })
+            .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
 
-        app.MapPost("/ai-session/sessions/{id}/open-in-codered", async (string id) =>
+        endpoints.MapPost("/ai-session/sessions/{id}/open-in-codered",
+            "Ask the local CodeRed instance to navigate to this session", async (string id) =>
         {
             try
             {
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                var res = await http.PostAsync($"http://localhost:18801/api/navigate?session={id}", null);
+                var res = await http.PostAsync($"{config.CodeRedUrl.TrimEnd('/')}/api/navigate?session={id}", null);
                 return res.IsSuccessStatusCode
                     ? Results.Json(new { sent = true })
                     : Results.Json(new { sent = false, error = "CodeRed returned " + (int)res.StatusCode }, statusCode: 502);
@@ -406,7 +459,8 @@ public static class UnifiedSessionEndpoints
             }
         });
 
-        app.MapGet("/ai-session/models", (HttpContext ctx) =>
+        endpoints.MapGet("/ai-session/models",
+            "List available models across providers", (HttpContext ctx) =>
         {
             var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
             var allModels = new List<object>();
@@ -420,9 +474,11 @@ public static class UnifiedSessionEndpoints
             }
 
             return Results.Json(new { models = allModels });
-        });
+        })
+            .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
 
-        app.MapPost("/ai-session/execute", async (HttpContext ctx) =>
+        endpoints.MapPost("/ai-session/execute",
+            "Run an agent task with full tool access (default 30min timeout, max 2h). Use ?async for fire-and-forget with job tracking.", async (HttpContext ctx) =>
         {
             var userId = ResolveUserId(ctx);
             if (userId == null)
@@ -562,9 +618,35 @@ public static class UnifiedSessionEndpoints
                 jobTracker.MarkFailed(job.Id, ex.Message);
                 return Error(500, "execution_failed", ex.Message);
             }
-        });
+        })
+            .WithParam("async", "boolean", description: "Fire-and-forget: returns 202 with a job id instead of waiting for completion (presence flag)", location: ParamLocation.Query)
+            .WithParam("X-Caller-Info", "string", description: "Identifies the calling app/agent for job attribution", location: ParamLocation.Header)
+            .WithParam("X-Idempotency-Key", "string", description: "Dedupe key — repeated requests with the same key reuse the original job", location: ParamLocation.Header)
+            .WithParam("X-Job-Name", "string", description: "Human-readable job name (defaults to a prompt excerpt)", location: ParamLocation.Header)
+            .WithRequestBody(new
+            {
+                type = "object",
+                required = new[] { "prompt" },
+                properties = new
+                {
+                    prompt = new { type = "string", description = "Prompt text for the agent task" },
+                    model = new { type = "string", description = "Model to use (provider default if omitted)" },
+                    workingDir = new { type = "string", description = "Working directory for the agent" },
+                    timeout = new { type = "integer", description = "Timeout in seconds, clamped to 1-7200", @default = 1800 },
+                    provider = new { type = "string", description = "Session provider to use (defaults to active provider)", @enum = providerEnum },
+                    env = new { type = "object", description = "Environment variables passed to the agent process (string values)" },
+                    effort = new { type = "string", description = "Reasoning effort level (provider-specific)" },
+                    maxTurns = new { type = "integer", description = "Maximum agent turns (provider-specific)" },
+                    allowedTools = new { type = "array", items = new { type = "string" }, description = "Tool names the agent may use (provider-specific)" },
+                    addDirs = new { type = "array", items = new { type = "string" }, description = "Additional directories the agent may access (provider-specific)" },
+                    container = new { type = "string", description = "Existing Docker container to run in" },
+                    dockerImage = new { type = "string", description = "Docker image — a container is created/reused automatically when no container is given" },
+                    sandbox = new { type = "string", description = "Sandbox mode (provider-specific, e.g. read-only, workspace-write, danger-full-access)" },
+                },
+            });
 
-        app.MapPost("/ai-session/generate", async (HttpContext ctx) =>
+        endpoints.MapPost("/ai-session/generate",
+            "Dual-mode: 'session' creates a persistent interactive session by project name, 'oneshot' runs a stateless LLM completion", async (HttpContext ctx) =>
         {
             ctx.Items["Telemetry.Kind"] = "job";
 
@@ -581,7 +663,17 @@ public static class UnifiedSessionEndpoints
                 return await HandleGenerateOneshot(ctx, body, provider!, jobTracker);
 
             return await HandleGenerateSession(ctx, body, provider!, jobTracker);
-        });
+        })
+            .WithParam("mode", "string", description: "'session' starts a persistent session; 'oneshot' runs a stateless LLM completion",
+                defaultValue: "session", enumValues: ["session", "oneshot"], location: ParamLocation.Body)
+            .WithParam("project", "string", description: "(session mode, required) Project name to start the session in", location: ParamLocation.Body)
+            .WithParam("prompt", "string", description: "(session mode) Initial message to send once the session is up", location: ParamLocation.Body)
+            .WithParam("messages", "array", description: "(oneshot mode, required) Array of {role, content} message objects", location: ParamLocation.Body)
+            .WithParam("model", "string", description: "Model to use", location: ParamLocation.Body)
+            .WithParam("system", "string", description: "(oneshot mode) System prompt", location: ParamLocation.Body)
+            .WithParam("maxTokens", "integer", description: "(oneshot mode) Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
+            .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
+            .WithParam("effort", "string", description: "(oneshot mode) Reasoning effort level (provider-specific)", location: ParamLocation.Body);
     }
 
     private static async Task<IResult> HandleGenerateSession(

@@ -65,19 +65,19 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
     private List<EndpointDescriptor> BuildEndpoints(string slug, CapabilityEntry entry)
     {
         var endpoints = new List<EndpointDescriptor>();
-        if (entry.ActiveProvider is not IPluginProvider plugin) return endpoints;
+        var plugins = entry.Providers.Values.OfType<IPluginProvider>().ToList();
+        var schemaPlugin = entry.ActiveProvider as IPluginProvider ?? plugins.FirstOrDefault();
 
-        if (slug == "ai-session")
+        // The unified /ai-session/* surface is registered in the EndpointRegistry and
+        // surfaces via app_endpoints; per-capability entries only carry the generic job
+        // endpoints plus provider-specific custom endpoints.
+        if (slug != "ai-session")
         {
-            BuildUnifiedSessionEndpoints(endpoints, entry);
-        }
-        else
-        {
-            var generateParams = plugin.InputParameters
+            var generateParams = schemaPlugin?.InputParameters
                 .Select(kv => new ParameterDescriptor(
                     kv.Key, kv.Value.Type, kv.Value.Required,
                     kv.Value.Description, kv.Value.Default, kv.Value.Enum))
-                .ToList();
+                .ToList() ?? [];
 
             if (entry.Providers.Count > 1)
             {
@@ -90,14 +90,14 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
 
             endpoints.Add(new EndpointDescriptor(
                 "POST", $"/{slug}/generate",
-                $"Generate via {plugin.DisplayName}",
+                $"Generate via {schemaPlugin?.DisplayName ?? entry.Definition.DisplayName}",
                 generateParams.Count > 0 ? generateParams : null));
 
             endpoints.Add(new EndpointDescriptor(
                 "GET", $"/{slug}/jobs/{{id}}/output",
                 "Download the output for a completed job"));
 
-            if (plugin.SupportsProgress)
+            if (plugins.Any(p => p.SupportsProgress))
             {
                 endpoints.Add(new EndpointDescriptor(
                     "GET", $"/{slug}/jobs/{{id}}/progress",
@@ -105,115 +105,26 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
             }
         }
 
-        foreach (var custom in plugin.GetCustomEndpointManifests())
+        // Custom endpoints from ALL registered providers, not just the active one
+        var seen = new HashSet<string>();
+        foreach (var plugin in plugins)
         {
-            var customParams = custom.Parameters?
-                .Select(kv => new ParameterDescriptor(
-                    kv.Key, kv.Value.Type, kv.Value.Required,
-                    kv.Value.Description, kv.Value.Default, kv.Value.Enum))
-                .ToList();
+            foreach (var custom in plugin.GetCustomEndpointManifests())
+            {
+                if (!seen.Add($"{custom.Method} {custom.Path}")) continue;
 
-            endpoints.Add(new EndpointDescriptor(
-                custom.Method, custom.Path, custom.Description,
-                customParams is { Count: > 0 } ? customParams : null));
+                var customParams = custom.Parameters?
+                    .Select(kv => new ParameterDescriptor(
+                        kv.Key, kv.Value.Type, kv.Value.Required,
+                        kv.Value.Description, kv.Value.Default, kv.Value.Enum))
+                    .ToList();
+
+                endpoints.Add(new EndpointDescriptor(
+                    custom.Method, custom.Path, custom.Description,
+                    customParams is { Count: > 0 } ? customParams : null));
+            }
         }
 
         return endpoints;
-    }
-
-    private void BuildUnifiedSessionEndpoints(List<EndpointDescriptor> endpoints, CapabilityEntry entry)
-    {
-        var providerNames = entry.Providers.Keys.ToList();
-        var providerParam = new ParameterDescriptor("provider", "string", false,
-            "Provider to use (e.g. claude-code, codex, opencode). Defaults to active provider.",
-            entry.DefaultProviderName, providerNames);
-
-        endpoints.Add(new EndpointDescriptor("GET", "/ai-session/providers",
-            "List all registered session providers with their capabilities and models"));
-
-        endpoints.Add(new EndpointDescriptor("GET", "/ai-session/models",
-            "List available models across all providers",
-            [new ParameterDescriptor("provider", "string", false, "Filter by provider")]));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/generate",
-            "Dual-mode: 'session' creates a persistent interactive session by project name, 'oneshot' runs a stateless LLM completion (read-only tools, 60s limit)",
-            [
-                new("mode", "string", false, "'session' (default) starts a persistent session; 'oneshot' runs a stateless LLM completion", "session", ["session", "oneshot"]),
-                new("project", "string", false, "(session mode) Project name"),
-                new("prompt", "string", false, "(session mode) Initial message to send"),
-                new("messages", "array", false, "(oneshot mode) Array of {role, content} message objects"),
-                new("model", "string", false, "Model to use"),
-                new("system", "string", false, "(oneshot mode) System prompt"),
-                new("maxTokens", "integer", false, "(oneshot mode) Maximum tokens to generate", 1024),
-                providerParam,
-            ]));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/execute",
-            "Run an agent task with full tool access (fire-and-forget, configurable timeout up to 1800s)",
-            [
-                new("prompt", "string", true, "Prompt text"),
-                new("model", "string", false, "Model to use"),
-                new("workingDir", "string", false, "Working directory"),
-                new("timeout", "integer", false, "Timeout in seconds (1-1800)", 600),
-                providerParam,
-            ]));
-
-        endpoints.Add(new EndpointDescriptor("GET", "/ai-session/projects",
-            "List available projects across all providers",
-            [new ParameterDescriptor("provider", "string", false, "Filter by provider")]));
-
-        endpoints.Add(new EndpointDescriptor("GET", "/ai-session/sessions",
-            "List sessions across all providers",
-            [
-                new("limit", "integer", false, "Max sessions to return", 20),
-                new("provider", "string", false, "Filter by provider"),
-            ]));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions",
-            "Start a new persistent session",
-            [
-                new("projectPath", "string", true, "Path to the project directory"),
-                providerParam,
-            ]));
-
-        endpoints.Add(new EndpointDescriptor("GET", "/ai-session/sessions/{id}",
-            "Get session details and message history"));
-
-        endpoints.Add(new EndpointDescriptor("GET", "/ai-session/sessions/by-job/{jobId}",
-            "Get session by job ID"));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/message",
-            "Send a message to an active session",
-            [new ParameterDescriptor("content", "string", true, "Message content")]));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/answer",
-            "Answer a pending question",
-            [new ParameterDescriptor("answer", "string", true, "Answer text")]));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/interrupt",
-            "Interrupt the current operation"));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/resume",
-            "Resume a stopped session"));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/stop",
-            "Stop a session gracefully"));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/dismiss",
-            "Mark a session as dismissed"));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/config",
-            "Update session model and effort",
-            [
-                new("model", "string", false, "Model to switch to"),
-                new("effort", "string", false, "Reasoning effort level"),
-            ]));
-
-        endpoints.Add(new EndpointDescriptor("POST", "/ai-session/sessions/{id}/permission-mode",
-            "Set permission mode",
-            [new ParameterDescriptor("mode", "string", true, "Permission mode")]));
-
-        endpoints.Add(new EndpointDescriptor("DELETE", "/ai-session/sessions/{id}",
-            "Force-kill a session"));
     }
 }
