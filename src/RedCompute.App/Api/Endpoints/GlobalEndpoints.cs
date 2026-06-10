@@ -105,7 +105,14 @@ public static class GlobalEndpoints
                 }),
                 total = totalCount
             });
-        });
+        })
+            .WithParam("capability", "string", description: "Filter by capability slug", location: ParamLocation.Query)
+            .WithParam("status", "string", description: "Filter by job status",
+                enumValues: ["Queued", "Running", "Completed", "Failed", "Cancelled"], location: ParamLocation.Query)
+            .WithParam("caller", "string", description: "Filter by caller info (X-Caller-Info value)", location: ParamLocation.Query)
+            .WithParam("search", "string", description: "Substring match over job name, provider, caller and capability", location: ParamLocation.Query)
+            .WithParam("limit", "integer", description: "Max jobs to return", defaultValue: 50, location: ParamLocation.Query)
+            .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
         endpoints.MapGet("/jobs/{id:guid}", "Get job details", (Guid id) =>
         {
@@ -196,7 +203,8 @@ public static class GlobalEndpoints
             var deletedJobs = jobTracker.CleanupOldJobs(days);
             var deletedLogs = logger.CleanupOldLogs(days);
             return Results.Ok(new { message = $"Cleaned up jobs and logs older than {days} days", deletedJobs, deletedLogs });
-        });
+        })
+            .WithParam("olderThanDays", "integer", description: "Delete jobs and logs older than this many days (min 1)", defaultValue: 30, location: ParamLocation.Query);
 
         endpoints.MapGet("/activity", "Capability activity summary within a time window", (int? window) =>
         {
@@ -258,7 +266,8 @@ public static class GlobalEndpoints
                 to = now,
                 capabilities
             });
-        });
+        })
+            .WithParam("window", "integer", description: "Window size in seconds", defaultValue: 300, location: ParamLocation.Query);
 
         endpoints.MapGet("/activity/summary", "Activity summary over a time range with per-capability and per-caller breakdowns", (string? since, string? until) =>
         {
@@ -331,7 +340,9 @@ public static class GlobalEndpoints
                 byCapability,
                 byCaller
             });
-        });
+        })
+            .WithParam("since", "string", description: "ISO8601 start time (defaults to start of today UTC)", location: ParamLocation.Query)
+            .WithParam("until", "string", description: "ISO8601 end time (defaults to now)", location: ParamLocation.Query);
 
         endpoints.MapPost("/control/start/{slug}", "Start a capability's active provider", async (string slug) =>
         {
@@ -431,7 +442,10 @@ public static class GlobalEndpoints
                     l.IsError
                 })
             });
-        });
+        })
+            .WithParam("tag", "string", description: "Filter by log tag", location: ParamLocation.Query)
+            .WithParam("limit", "integer", description: "Max log entries to return", defaultValue: 100, location: ParamLocation.Query)
+            .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
     }
 

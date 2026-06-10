@@ -75,7 +75,15 @@ public static class SettingsEndpoints
 
             configManager.Save();
             return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel, config.AutoStartWithWindows });
-        });
+        })
+            .WithParam("apiPort", "integer", description: "HTTP port the service listens on (applies after restart)", location: ParamLocation.Body)
+            .WithParam("logLevel", "string", description: "Log verbosity", location: ParamLocation.Body)
+            .WithParam("autoStartWithWindows", "boolean", description: "Launch RedCompute when Windows starts", location: ParamLocation.Body)
+            .WithParam("tunnelEnabled", "boolean", description: "Enable/disable the Cloudflare tunnel (starts or stops it immediately)", location: ParamLocation.Body)
+            .WithParam("tunnelAccessToken", "string", description: "Bearer token required for remote access through the tunnel", location: ParamLocation.Body)
+            .WithParam("tunnelToken", "string", description: "Cloudflare tunnel token", location: ParamLocation.Body)
+            .WithParam("tunnelHostname", "string", description: "Public hostname of the tunnel", location: ParamLocation.Body)
+            .WithParam("tunnelCloudflaredPath", "string", description: "Path to the cloudflared executable", location: ParamLocation.Body);
 
         endpoints.MapPut("/settings/capability/{slug}", "Update capability settings", async (HttpContext ctx, string slug) =>
         {
@@ -98,7 +106,8 @@ public static class SettingsEndpoints
 
             configManager.Save();
             return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.ActiveProvider });
-        });
+        })
+            .WithParam("activeProvider", "string", description: "Provider name to make the capability's default", location: ParamLocation.Body);
 
         endpoints.MapPut("/settings/capability/{slug}/provider/{providerName}", "Update provider settings for a capability", async (HttpContext ctx, string slug, string providerName) =>
         {
@@ -135,7 +144,20 @@ public static class SettingsEndpoints
 
             configManager.Save();
             return Results.Ok(new { message = $"Provider '{providerName}' settings updated", slug, providerName, provider = SanitizeProvider(provider) });
-        });
+        })
+            .WithParam("wslDistro", "string", description: "WSL distribution to run the backend in", location: ParamLocation.Body)
+            .WithParam("venvPath", "string", description: "Python virtualenv path", location: ParamLocation.Body)
+            .WithParam("serverPath", "string", description: "Backend server path", location: ParamLocation.Body)
+            .WithParam("backendPort", "integer", description: "Port the backend listens on", location: ParamLocation.Body)
+            .WithParam("model", "string", description: "Default model for the provider", location: ParamLocation.Body)
+            .WithParam("voicesBasePath", "string", description: "Base path for TTS voice files", location: ParamLocation.Body)
+            .WithParam("healthEndpoint", "string", description: "Health-check endpoint path", location: ParamLocation.Body)
+            .WithParam("startupTimeoutSeconds", "integer", description: "Seconds to wait for the backend to become healthy", location: ParamLocation.Body)
+            .WithParam("apiKey", "string", description: "API key for cloud providers", location: ParamLocation.Body)
+            .WithParam("podId", "string", description: "RunPod pod ID", location: ParamLocation.Body)
+            .WithParam("gpuCount", "integer", description: "Number of GPUs to request (RunPod)", location: ParamLocation.Body)
+            .WithParam("autoStopOnExit", "boolean", description: "Stop the pod when RedCompute exits (RunPod)", location: ParamLocation.Body)
+            .WithParam("extra", "object", description: "Provider-specific key/value settings merged into the provider's Extra map", location: ParamLocation.Body);
     }
 
     private static object SanitizeProvider(ProviderConfig p)

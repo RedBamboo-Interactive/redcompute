@@ -60,7 +60,8 @@ public static class SuiteTelemetryEndpoints
 
                 var results = await Task.WhenAll(tasks);
                 return Results.Ok(new { apps = results });
-            });
+            })
+            .WithParam("since", "string", description: "ISO8601 start time forwarded to each app's /api/telemetry/stats", location: ParamLocation.Query);
 
         endpoints.MapGet("/api/telemetry/suite/entries",
             "Proxy individual telemetry entries from a suite app",
@@ -89,6 +90,12 @@ public static class SuiteTelemetryEndpoints
                 {
                     return Results.StatusCode(502);
                 }
-            });
+            })
+            .WithParam("port", "integer", required: true, description: "Port of the suite app to query (must be a known suite port)", location: ParamLocation.Query)
+            .WithParam("route", "string", description: "Filter by route pattern", location: ParamLocation.Query)
+            .WithParam("method", "string", description: "Filter by HTTP method", location: ParamLocation.Query)
+            .WithParam("since", "string", description: "ISO8601 start time", location: ParamLocation.Query)
+            .WithParam("until", "string", description: "ISO8601 end time", location: ParamLocation.Query)
+            .WithParam("limit", "integer", description: "Max entries to return", defaultValue: 500, location: ParamLocation.Query);
     }
 }
