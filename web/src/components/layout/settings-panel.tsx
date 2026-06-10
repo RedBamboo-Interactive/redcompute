@@ -8,7 +8,7 @@ import { getTheme, setTheme, subscribeTheme, getContrast, setContrast, subscribe
 interface DiscoverEndpoint { method: string; path: string; description: string }
 interface DiscoverResponse {
   capabilities: { slug: string; endpoints?: DiscoverEndpoint[] }[]
-  management: { endpoints: DiscoverEndpoint[] }
+  app_endpoints?: DiscoverEndpoint[]
 }
 
 const inputClass = "bg-surface-deep border border-overlay-10 rounded px-2 py-1 outline-none text-contrast text-[13px] font-mono focus:border-overlay-30"
@@ -35,7 +35,7 @@ export function SettingsPanel({ onClose, settings, saving, onUpdateGeneral, onUp
       const all: DiscoverEndpoint[] = []
       for (const cap of data.capabilities)
         if (cap.endpoints) all.push(...cap.endpoints)
-      all.push(...data.management.endpoints)
+      if (data.app_endpoints) all.push(...data.app_endpoints)
       setEndpoints(all)
     }).catch(() => {})
   }, [])

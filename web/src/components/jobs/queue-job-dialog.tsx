@@ -129,7 +129,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
       const result = await api.post<{ jobId?: string; sessionId?: string; job_id?: string }>(submitPath, body, headers)
       onOpenChange(false)
       if (selectedSlug === "ai-session") {
-        navigate("/claude")
+        navigate("/jobs")
       } else {
         navigate("/jobs", result?.jobId ? { state: { focusJobId: result.jobId } } : undefined)
       }
