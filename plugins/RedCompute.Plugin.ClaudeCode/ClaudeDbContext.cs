@@ -45,6 +45,13 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("StopReason"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN StopReason TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         using var backfill = conn.CreateCommand();
         backfill.CommandText = "UPDATE Sessions SET Source = 'Nova' WHERE ProjectName = 'nova-workspace' AND Source IS NULL";
         backfill.ExecuteNonQuery();

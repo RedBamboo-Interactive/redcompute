@@ -8,6 +8,7 @@ public class ClaudeSessionInfo
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }
     public SessionStatus Status { get; set; }
+    public string? StopReason { get; set; }
     public DateTimeOffset StartedAt { get; init; }
     public string? Model { get; set; }
     public string? ClaudeSessionId { get; set; }

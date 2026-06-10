@@ -331,7 +331,7 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(url))
                 return Error(422, "validation_failed", "url is required");
 
-            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId);
+            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason);
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         })
             .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body);

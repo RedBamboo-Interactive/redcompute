@@ -55,7 +55,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
         _claude.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _claude.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
-        _claude.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
+        _claude.SessionEnded += (id, reason, stopReason) => PluginEvent?.Invoke("session.ended", new { id, reason, stopReason });
         _claude.StreamEvent += (sessionId, evt) =>
         {
             PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
@@ -237,6 +237,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         Status = (Core.Sessions.SessionStatus)(int)s.Status,
+        StopReason = s.StopReason,
         StartedAt = s.StartedAt,
         Model = s.Model,
         ProviderSessionId = s.ClaudeSessionId,

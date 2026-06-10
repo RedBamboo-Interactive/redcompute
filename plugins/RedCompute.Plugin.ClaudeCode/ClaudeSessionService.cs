@@ -19,7 +19,7 @@ public class ClaudeSessionService
 
     public event Action<ClaudeSessionInfo>? SessionCreated;
     public event Action<ClaudeSessionInfo>? SessionUpdated;
-    public event Action<string, string>? SessionEnded;
+    public event Action<string, string, string?>? SessionEnded;
     public event Action<string, ClaudeStreamEvent>? StreamEvent;
 
     public void EmitStreamEvent(string key, ClaudeStreamEvent evt) => StreamEvent?.Invoke(key, evt);
@@ -932,6 +932,7 @@ public class ClaudeSessionService
             session.Process.StandardInput.Flush();
             session.Info.MessageCount++;
             session.Info.Status = SessionStatus.Active;
+            session.Info.StopReason = null;
             SessionUpdated?.Invoke(session.Info);
 
             PersistMessage(sessionId, "user", "text", content, null, null, null, null);
@@ -1111,13 +1112,14 @@ public class ClaudeSessionService
 
         session.Cts.Cancel();
         session.Info.Status = SessionStatus.Stopped;
+        session.Info.StopReason = "user_stopped";
         _sessions.TryRemove(sessionId, out _);
         PersistSessionRecord(session.Info);
 
         if (session.Info.JobId.HasValue)
             _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
 
-        SessionEnded?.Invoke(sessionId, "stopped");
+        SessionEnded?.Invoke(sessionId, "stopped", session.Info.StopReason);
     }
 
     public async Task ForceKill(string sessionId)
@@ -1128,12 +1130,13 @@ public class ClaudeSessionService
         try { session.Process.Kill(entireProcessTree: true); } catch { }
         session.Cts.Cancel();
         session.Info.Status = SessionStatus.Stopped;
+        session.Info.StopReason = "user_stopped";
         PersistSessionRecord(session.Info);
 
         if (session.Info.JobId.HasValue)
             _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
 
-        SessionEnded?.Invoke(sessionId, "killed");
+        SessionEnded?.Invoke(sessionId, "killed", session.Info.StopReason);
         await Task.CompletedTask;
     }
 
@@ -1231,6 +1234,7 @@ public class ClaudeSessionService
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         Status = Enum.TryParse<SessionStatus>(r.Status, out var s) ? s : SessionStatus.Stopped,
+        StopReason = r.StopReason,
         StartedAt = r.StartedAt,
         Model = r.Model,
         ClaudeSessionId = r.ClaudeSessionId,
@@ -1591,6 +1595,7 @@ public class ClaudeSessionService
         {
             session.InterruptPending = false;
             session.Info.Status = SessionStatus.Idle;
+            session.Info.StopReason = "completed";
 
             if (root.TryGetProperty("total_cost_usd", out var cost))
                 session.Info.CostUsd = cost.GetDouble();
@@ -1609,6 +1614,13 @@ public class ClaudeSessionService
                 ? (e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString()) ?? "unknown error"
                 : "unknown error";
             _log($"[Claude] Session {session.Info.Id} result error: {error}", null);
+
+            var isUsageLimit = IsUsageLimitError(error);
+            if (isUsageLimit)
+            {
+                session.Info.StopReason = "usage_limit";
+                _log($"[Claude] Session {session.Info.Id} hit usage limit", null);
+            }
 
             if (session.InterruptPending)
             {
@@ -1643,6 +1655,15 @@ public class ClaudeSessionService
             ToolResult = content,
             MessageId = toolUseId
         };
+    }
+
+    private static bool IsUsageLimitError(string error)
+    {
+        var lower = error.ToLowerInvariant();
+        return lower.Contains("usage limit") || lower.Contains("spending limit")
+            || lower.Contains("spend limit") || lower.Contains("rate limit")
+            || lower.Contains("quota exceeded") || lower.Contains("budget")
+            || (lower.Contains("limit") && lower.Contains("exceed"));
     }
 
     private void UpdateContextFromStreamEvent(JsonElement root, ManagedSession session)
@@ -1717,13 +1738,14 @@ public class ClaudeSessionService
         if (session.Info.Status != SessionStatus.Stopped)
         {
             session.Info.Status = SessionStatus.Error;
+            session.Info.StopReason ??= "error";
             PersistSessionRecord(session.Info);
-            _log($"[Claude] Session {sessionId} process exited unexpectedly (code {exitCode})", null);
+            _log($"[Claude] Session {sessionId} process exited unexpectedly (code {exitCode}, reason={session.Info.StopReason})", null);
 
             if (session.Info.JobId.HasValue)
                 _jobTracker.MarkFailed(session.Info.JobId.Value, $"Process exited with code {exitCode}");
 
-            SessionEnded?.Invoke(sessionId, $"process_exited:{exitCode}");
+            SessionEnded?.Invoke(sessionId, $"process_exited:{exitCode}", session.Info.StopReason);
         }
     }
 
@@ -1796,6 +1818,7 @@ public class ClaudeSessionService
                 ProjectName = info.ProjectName,
                 ProjectPath = info.ProjectPath,
                 Status = info.Status.ToString(),
+                StopReason = info.StopReason,
                 StartedAt = info.StartedAt,
                 Model = info.Model,
                 ClaudeSessionId = info.ClaudeSessionId,

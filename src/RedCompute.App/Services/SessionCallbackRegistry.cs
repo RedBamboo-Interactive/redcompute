@@ -28,11 +28,12 @@ public class SessionCallbackRegistry
         _log($"[Callbacks] Registered callback for session {sessionId}", null);
     }
 
-    public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus, string? userId = null)
+    public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus,
+        string? userId = null, string? stopReason = null)
     {
         if (currentStatus is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
         {
-            _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), userId: userId);
+            _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), userId: userId, stopReason: stopReason);
             return false;
         }
 
@@ -48,7 +49,8 @@ public class SessionCallbackRegistry
                 return;
 
             if (_callbacks.TryRemove(session.Id, out var entry))
-                _ = FireAsync(entry.Url, session.Id, session.Status.ToString(), session.ProjectPath, session.Title, userId: session.UserId ?? entry.UserId);
+                _ = FireAsync(entry.Url, session.Id, session.Status.ToString(), session.ProjectPath, session.Title,
+                    userId: session.UserId ?? entry.UserId, stopReason: session.StopReason);
         }
         else if (eventType == "session.ended")
         {
@@ -60,8 +62,9 @@ public class SessionCallbackRegistry
                 {
                     var id = idEl.GetString()!;
                     var reason = doc.RootElement.TryGetProperty("reason", out var r) ? r.GetString() : "ended";
+                    var stopReason = doc.RootElement.TryGetProperty("stopReason", out var sr) ? sr.GetString() : null;
                     if (_callbacks.TryRemove(id, out var entry))
-                        _ = FireAsync(entry.Url, id, "Ended", reason: reason, userId: entry.UserId);
+                        _ = FireAsync(entry.Url, id, "Ended", reason: reason, userId: entry.UserId, stopReason: stopReason);
                 }
             }
             catch { }
@@ -69,7 +72,7 @@ public class SessionCallbackRegistry
     }
 
     private async Task FireAsync(string url, string sessionId, string status,
-        string? projectPath = null, string? title = null, string? reason = null, string? userId = null)
+        string? projectPath = null, string? title = null, string? reason = null, string? userId = null, string? stopReason = null)
     {
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -83,6 +86,7 @@ public class SessionCallbackRegistry
                     title,
                     reason,
                     userId,
+                    stopReason,
                 });
 
                 if (response.IsSuccessStatusCode)

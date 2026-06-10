@@ -42,6 +42,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.ProjectName = record.ProjectName;
             existing.ProjectPath = record.ProjectPath;
             existing.Status = record.Status;
+            existing.StopReason = record.StopReason;
             existing.StartedAt = record.StartedAt;
             existing.Model = record.Model;
             existing.ClaudeSessionId = record.ClaudeSessionId;
