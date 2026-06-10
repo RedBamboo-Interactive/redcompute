@@ -9,7 +9,7 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.OpenCode;
 
-public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
+public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
 {
     private readonly string _capabilitySlug;
     private readonly OpenCodeSessionService _opencode;
@@ -71,11 +71,6 @@ public class OpenCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlugi
     public string? GetProxyTargetUrl() => null;
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
-    public void MapCustomEndpoints(WebApplication app)
-    {
-        OpenCodeSessionEndpoints.Map(app, _opencode, _jobTracker, _log);
-    }
 
     public void CancelJob(string jobKey) => _opencode.CancelExecution(jobKey);
 

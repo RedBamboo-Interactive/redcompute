@@ -9,7 +9,7 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
-public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
+public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
@@ -85,11 +85,6 @@ public class ClaudeCodeProvider : IPluginProvider, ICustomEndpointProvider, IPlu
     public string? GetProxyTargetUrl() => null;
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
-    public void MapCustomEndpoints(WebApplication app)
-    {
-        ClaudeSessionEndpoints.Map(app, _claude, _jobTracker, _log);
-    }
 
     public void CancelJob(string jobKey) => _claude.CancelExecution(jobKey);
 
