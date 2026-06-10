@@ -175,12 +175,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         }).ToList();
 
     public List<ModelInfo> GetAvailableModels() =>
-    [
-        new() { Id = "codex-mini-latest", Name = "Codex Mini", Fast = true },
-        new() { Id = "gpt-5.5", Name = "GPT-5.5", Fast = false },
-        new() { Id = "gpt-5.4", Name = "GPT-5.4", Fast = false },
-        new() { Id = "gpt-5.4-mini", Name = "GPT-5.4 Mini", Fast = true },
-    ];
+        CodexSessionEndpoints.ModelCatalog
+            .Select(m => new ModelInfo { Id = m.Id, Name = m.Name, Fast = m.Fast })
+            .ToList();
 
     // --- ISessionProvider: Process Management ---
 
@@ -252,7 +249,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
         ["prompt"] = new() { Type = "string", Required = true, Description = "Prompt text for agent execution" },
-        ["model"] = new() { Type = "string", Required = false, Default = "codex-mini-latest", Enum = ["codex-mini-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"], Description = "Model to use" },
+        ["model"] = new() { Type = "string", Required = false, Default = "codex-mini-latest", Enum = CodexSessionEndpoints.ModelCatalog.Select(m => m.Id).ToList(), Description = "Model to use" },
         ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
         ["sandbox"] = new() { Type = "string", Required = false, Default = "workspace-write", Enum = ["read-only", "workspace-write", "danger-full-access"], Description = "Sandbox mode" },
         ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }
@@ -267,6 +264,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         new() { Method = "GET", Path = "/codex/projects", Description = "List available projects" },
         new() { Method = "GET", Path = "/codex/sessions", Description = "List recent Codex sessions" },
         new() { Method = "GET", Path = "/codex/sessions/{id}", Description = "Get session details and message history" },
+        new() { Method = "GET", Path = "/codex/sessions/by-job/{jobId}", Description = "Get the session associated with a job ID" },
         new() { Method = "POST", Path = "/codex/sessions/{id}/stop", Description = "Stop a running execution" },
         new() { Method = "POST", Path = "/codex/sessions/{id}/dismiss", Description = "Dismiss a session" },
         new() { Method = "DELETE", Path = "/codex/sessions/{id}", Description = "Force-kill an execution" }

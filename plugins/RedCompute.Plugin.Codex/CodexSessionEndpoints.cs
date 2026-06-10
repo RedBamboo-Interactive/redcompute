@@ -15,13 +15,7 @@ public static class CodexSessionEndpoints
         {
             return Results.Json(new
             {
-                models = new[]
-                {
-                    new { id = "codex-mini-latest", name = "Codex Mini", fast = true },
-                    new { id = "gpt-5.5", name = "GPT-5.5", fast = false },
-                    new { id = "gpt-5.4", name = "GPT-5.4", fast = false },
-                    new { id = "gpt-5.4-mini", name = "GPT-5.4 Mini", fast = true },
-                },
+                models = ModelCatalog.Select(m => new { id = m.Id, name = m.Name, fast = m.Fast }),
                 @default = "codex-mini-latest"
             });
         });
@@ -77,7 +71,18 @@ public static class CodexSessionEndpoints
         });
     }
 
-    private static readonly string[] ValidModels = ["codex-mini-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"];
+    /// <summary>Single source of truth for Codex models — drives /codex/models and execute validation.</summary>
+    public static readonly (string Id, string Name, bool Fast)[] ModelCatalog =
+    [
+        ("codex-mini-latest", "Codex Mini", true),
+        ("gpt-5.5", "GPT-5.5", false),
+        ("gpt-5.4", "GPT-5.4", false),
+        ("gpt-5.4-mini", "GPT-5.4 Mini", true),
+        ("gpt-5.3-codex", "GPT-5.3 Codex", false),
+        ("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", true),
+    ];
+
+    private static readonly string[] ValidModels = ModelCatalog.Select(m => m.Id).ToArray();
 
     private static async Task<IResult> HandleExecute(HttpContext ctx, JsonElement body,
         CodexSessionService codex, IJobTracker jobTracker, Action<string, Guid?> log)
