@@ -170,6 +170,7 @@ export interface ClaudeSessionInfo {
   projectName: string
   projectPath: string
   status: SessionStatus
+  stopReason?: string
   startedAt: string
   model?: string
   claudeSessionId?: string

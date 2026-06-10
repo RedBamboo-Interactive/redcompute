@@ -196,7 +196,9 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
       job={job}
       capability={capability}
       title={session.title || session.projectName}
-      status={{ label: session.status }}
+      status={session.stopReason === "usage_limit"
+        ? { label: "Usage Limit", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" }
+        : { label: session.status }}
       live={isLive}
       actions={codeRedButton}
       chips={sessionChips}
@@ -204,6 +206,13 @@ export function AiSessionDetail({ job, capability }: { job: JobRecord; capabilit
       showPrompt={false}
       fillHeight
     >
+      {session.stopReason === "usage_limit" && (
+        <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm">
+          <i className="fa-solid fa-triangle-exclamation" />
+          <span>Session paused — Anthropic usage limit reached. Resume when the limit resets.</span>
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
