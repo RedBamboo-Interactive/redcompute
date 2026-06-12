@@ -733,7 +733,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("system", "string", description: "(oneshot mode) System prompt", location: ParamLocation.Body)
             .WithParam("maxTokens", "integer", description: "(oneshot mode) Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
-            .WithParam("effort", "string", description: "(oneshot mode) Reasoning effort level (provider-specific)", location: ParamLocation.Body);
+            .WithParam("effort", "string", description: "(oneshot mode) Reasoning effort level (provider-specific)", location: ParamLocation.Body)
+            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
     }
 
     private static async Task<IResult> HandleGenerateSession(
@@ -782,9 +783,10 @@ public static class UnifiedSessionEndpoints
         if (body.TryGetProperty("maxTokens", out var mt) && mt.ValueKind == JsonValueKind.Number && mt.TryGetInt32(out var mtv))
             maxTokens = Math.Clamp(mtv, 1, 8192);
 
-        var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
+        var q = ResolveQuality(body);
+        var model = q.Model;
+        var effort = q.Effort;
         var system = body.TryGetProperty("system", out var sys) ? sys.GetString() : null;
-        var effort = body.TryGetProperty("effort", out var eff) ? eff.GetString() : null;
 
         string? prompt = null;
         foreach (var msg in messages.EnumerateArray())
