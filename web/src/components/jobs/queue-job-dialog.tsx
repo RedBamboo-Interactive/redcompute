@@ -126,7 +126,9 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
     setError(null)
     try {
       const body: Record<string, unknown> = {}
+      const aiSessionManaged = new Set(["model", "effort", "qualityTier", "provider"])
       for (const [key, val] of Object.entries(values)) {
+        if (selectedSlug === "ai-session" && aiSessionManaged.has(key)) continue
         if (val instanceof File) {
           const buf = await val.arrayBuffer()
           const bytes = new Uint8Array(buf)
@@ -227,7 +229,9 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
             </div>
           )}
 
-          {Object.entries(params).map(([key, schema]) => (
+          {Object.entries(params)
+            .filter(([key]) => selectedSlug !== "ai-session" || !["model", "effort", "qualityTier", "provider"].includes(key))
+            .map(([key, schema]) => (
             <div key={key}>
               <div className="mb-1.5">
                 <span className="text-[13px] font-medium text-contrast">
