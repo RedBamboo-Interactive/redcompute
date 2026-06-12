@@ -90,7 +90,7 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var q = ResolveQuality(body);
+            var q = ResolveQuality(ctx, body);
             var (provider, error) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
             if (error != null) return error;
 
@@ -359,9 +359,9 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var model = body.TryGetProperty("model", out var m) ? m.GetString() : null;
-            var effort = body.TryGetProperty("effort", out var e) ? e.GetString() : null;
-            var qualityTier = body.TryGetProperty("qualityTier", out var qt) ? qt.GetString() : null;
+            var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+            var effort = body.TryGetProperty("effort", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+            var qualityTier = body.TryGetProperty("qualityTier", out var qt) && qt.ValueKind == JsonValueKind.String ? qt.GetString() : null;
 
             // Explicit model wins; otherwise a qualityTier resolves to a model (+effort) for this provider.
             if (string.IsNullOrWhiteSpace(model) && !string.IsNullOrWhiteSpace(qualityTier) && _quality != null)
@@ -544,7 +544,7 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var q = ResolveQuality(body);
+            var q = ResolveQuality(ctx, body);
             var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
             if (resolveError != null) return resolveError;
 
@@ -714,15 +714,16 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body);
+            var q = ResolveQuality(ctx, body);
+            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
             if (resolveError != null) return resolveError;
 
             var mode = body.TryGetProperty("mode", out var m) ? m.GetString() : "session";
 
             if (mode == "oneshot")
-                return await HandleGenerateOneshot(ctx, body, provider!, jobTracker);
+                return await HandleGenerateOneshot(ctx, body, provider!, jobTracker, q);
 
-            return await HandleGenerateSession(ctx, body, provider!, jobTracker);
+            return await HandleGenerateSession(ctx, body, provider!, jobTracker, q);
         })
             .WithParam("mode", "string", description: "'session' starts a persistent session; 'oneshot' runs a stateless LLM completion",
                 defaultValue: "session", enumValues: ["session", "oneshot"], location: ParamLocation.Body)
@@ -733,12 +734,12 @@ public static class UnifiedSessionEndpoints
             .WithParam("system", "string", description: "(oneshot mode) System prompt", location: ParamLocation.Body)
             .WithParam("maxTokens", "integer", description: "(oneshot mode) Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
-            .WithParam("effort", "string", description: "(oneshot mode) Reasoning effort level (provider-specific)", location: ParamLocation.Body)
+            .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
     }
 
     private static async Task<IResult> HandleGenerateSession(
-        HttpContext ctx, JsonElement body, ISessionProvider provider, IJobTracker jobTracker)
+        HttpContext ctx, JsonElement body, ISessionProvider provider, IJobTracker jobTracker, QualityResolution q)
     {
         if (!provider.Capabilities.HasFlag(SessionCapabilities.PersistentSessions))
             return NotSupported(provider.ProviderId, "persistent sessions");
@@ -754,10 +755,9 @@ public static class UnifiedSessionEndpoints
         if (resolved == null)
             return Error(422, "validation_failed", $"Project '{project}' not found");
 
-        var model = body.TryGetProperty("model", out var mod) ? mod.GetString() : null;
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, model, uId, uName, uAvatar);
+        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar, q.Effort);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -771,7 +771,7 @@ public static class UnifiedSessionEndpoints
     }
 
     private static async Task<IResult> HandleGenerateOneshot(
-        HttpContext ctx, JsonElement body, ISessionProvider provider, IJobTracker jobTracker)
+        HttpContext ctx, JsonElement body, ISessionProvider provider, IJobTracker jobTracker, QualityResolution q)
     {
         if (!provider.Capabilities.HasFlag(SessionCapabilities.Generate))
             return NotSupported(provider.ProviderId, "LLM completion");
@@ -783,7 +783,6 @@ public static class UnifiedSessionEndpoints
         if (body.TryGetProperty("maxTokens", out var mt) && mt.ValueKind == JsonValueKind.Number && mt.TryGetInt32(out var mtv))
             maxTokens = Math.Clamp(mtv, 1, 8192);
 
-        var q = ResolveQuality(body);
         var model = q.Model;
         var effort = q.Effort;
         var system = body.TryGetProperty("system", out var sys) ? sys.GetString() : null;
@@ -843,12 +842,13 @@ public static class UnifiedSessionEndpoints
     /// </summary>
     private record QualityResolution(string? Model, string? Effort, string? ProviderName);
 
-    private static QualityResolution ResolveQuality(JsonElement body)
+    private static QualityResolution ResolveQuality(HttpContext ctx, JsonElement body)
     {
         var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
         var effort = body.TryGetProperty("effort", out var ef) && ef.ValueKind == JsonValueKind.String ? ef.GetString() : null;
         var tier = body.TryGetProperty("qualityTier", out var qt) && qt.ValueKind == JsonValueKind.String ? qt.GetString() : null;
         var explicitProvider = body.TryGetProperty("provider", out var pv) && pv.ValueKind == JsonValueKind.String ? pv.GetString() : null;
+        explicitProvider ??= ctx.Request.Headers["X-Provider"].FirstOrDefault();
 
         // Explicit model wins, and no tier means nothing to resolve — leave request values untouched.
         if (!string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(tier) || _quality == null)

@@ -10,10 +10,12 @@ public record QualityMode(
     string Model, string? Effort, int? ThinkingBudget,
     int? Timeout, int? MaxTurns, bool IsDefault, string? Description);
 
-/// <summary>The concrete settings a quality tier resolves to, handed to the inference backend.</summary>
-public record ResolvedMode(
-    string Provider, string Model, string? Effort,
-    int? ThinkingBudget, int? Timeout, int? MaxTurns);
+/// <summary>
+/// The concrete settings a quality tier resolves to, handed to the inference backend.
+/// A null model means the tier has no mode for the requested provider — the provider's
+/// own default model applies.
+/// </summary>
+public record ResolvedMode(string Provider, string? Model, string? Effort);
 
 /// <summary>
 /// Resolves abstract quality tiers (fast, standard, deep, research) to provider-specific
@@ -71,8 +73,9 @@ public class QualityModeService
 
     /// <summary>
     /// Resolve a quality tier to concrete settings. A null/blank tier defaults to "standard".
-    /// Prefers a mode matching <paramref name="preferredProvider"/>, then the tier's default
-    /// mode, then the first mode. Falls back to standard/claude-code when the tier is unknown.
+    /// When <paramref name="preferredProvider"/> is given, only that provider's modes are
+    /// considered — if the tier has none for it, the model is left unset so the provider's own
+    /// default applies (never another provider's model). An unknown tier resolves as "standard".
     /// </summary>
     public ResolvedMode Resolve(string? qualityTier = null, string? preferredProvider = null)
     {
@@ -81,19 +84,24 @@ public class QualityModeService
         Dictionary<string, List<QualityMode>> snapshot;
         lock (_lock) { snapshot = _modes; }
 
-        if (snapshot.TryGetValue(tier, out var candidates) && candidates.Count > 0)
+        if (!snapshot.TryGetValue(tier, out var candidates) || candidates.Count == 0)
         {
-            QualityMode? chosen = null;
-            if (!string.IsNullOrWhiteSpace(preferredProvider))
-                chosen = candidates.FirstOrDefault(m =>
-                    string.Equals(m.Provider, preferredProvider, StringComparison.OrdinalIgnoreCase));
-            chosen ??= candidates.FirstOrDefault(m => m.IsDefault);
-            chosen ??= candidates[0];
-            return ToResolved(chosen);
+            _log($"[QualityModes] Unknown quality tier '{tier}' requested; resolving as standard", null);
+            if (!snapshot.TryGetValue("standard", out candidates) || candidates.Count == 0)
+                return string.IsNullOrWhiteSpace(preferredProvider)
+                    ? new ResolvedMode("claude-code", "sonnet", null)
+                    : new ResolvedMode(preferredProvider, null, null);
         }
 
-        // Unknown tier — final safety net.
-        return new ResolvedMode("claude-code", "sonnet", null, null, 60, null);
+        if (!string.IsNullOrWhiteSpace(preferredProvider))
+        {
+            var match = candidates.FirstOrDefault(m =>
+                string.Equals(m.Provider, preferredProvider, StringComparison.OrdinalIgnoreCase));
+            return match != null ? ToResolved(match) : new ResolvedMode(preferredProvider, null, null);
+        }
+
+        var chosen = candidates.FirstOrDefault(m => m.IsDefault) ?? candidates[0];
+        return ToResolved(chosen);
     }
 
     /// <summary>All known modes across every tier.</summary>
@@ -109,22 +117,22 @@ public class QualityModeService
     }
 
     private static ResolvedMode ToResolved(QualityMode m)
-        => new(m.Provider, m.Model, m.Effort, m.ThinkingBudget, m.Timeout, m.MaxTurns);
+        => new(m.Provider, m.Model, m.Effort);
 
     private static Dictionary<string, List<QualityMode>> BuildFallbacks()
     {
-        static QualityMode M(string tier, string model, string? effort, int timeout, bool isDefault)
+        static QualityMode M(string tier, string model, string? effort, bool isDefault)
             => new(
                 Id: $"fallback-{tier}", Slug: tier, QualityTier: tier, Provider: "claude-code",
-                Model: model, Effort: effort, ThinkingBudget: null, Timeout: timeout, MaxTurns: null,
+                Model: model, Effort: effort, ThinkingBudget: null, Timeout: null, MaxTurns: null,
                 IsDefault: isDefault, Description: $"Built-in {tier} fallback");
 
         return new Dictionary<string, List<QualityMode>>(StringComparer.OrdinalIgnoreCase)
         {
-            ["fast"] = [M("fast", "haiku", "low", 30, false)],
-            ["standard"] = [M("standard", "sonnet", null, 60, true)],
-            ["deep"] = [M("deep", "opus", "high", 120, false)],
-            ["research"] = [M("research", "fable", "high", 180, false)],
+            ["fast"] = [M("fast", "haiku", "low", false)],
+            ["standard"] = [M("standard", "sonnet", null, true)],
+            ["deep"] = [M("deep", "opus", "high", false)],
+            ["research"] = [M("research", "fable", "high", false)],
         };
     }
 
