@@ -308,7 +308,12 @@ public class RelayServer
         SettingsEndpoints.Map(registry, _configManager, _tunnelService, _registry);
 
         SuiteTelemetryEndpoints.Map(registry);
-        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes);
+        // Read-path cutover: session list/history reads come from RedLeaf
+        // (hard dependency by decision); plugin SQLite stays write-only
+        // (dual-write) until the verification window closes.
+        var redLeafReader = new RedLeafSessionReader(
+            _config.RedLeafUrl, new JwtService(new JwtOptions { SigningKey = signingKey }));
+        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes, redLeafReader);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();

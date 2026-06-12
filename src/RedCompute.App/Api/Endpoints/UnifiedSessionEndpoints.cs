@@ -18,15 +18,17 @@ public static class UnifiedSessionEndpoints
     private static DockerContainerService? _docker;
     private static SessionCallbackRegistry? _callbacks;
     private static QualityModeService? _quality;
+    private static RedLeafSessionReader? _redLeafReader;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
         DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null,
-        QualityModeService? quality = null)
+        QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null)
     {
         _docker = docker;
         _callbacks = callbacks;
         _quality = quality;
+        _redLeafReader = redLeafReader;
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
@@ -45,7 +47,7 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapGet("/ai-session/sessions",
-            "List sessions across all providers, newest first", (HttpContext ctx) =>
+            "List sessions across all providers, newest first", async (HttpContext ctx) =>
         {
             var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
             var limitStr = ctx.Request.Query["limit"].FirstOrDefault();
@@ -53,12 +55,16 @@ public static class UnifiedSessionEndpoints
             var all = ctx.Request.Query.ContainsKey("all");
             var excludeSource = ctx.Request.Query["excludeSource"].FirstOrDefault();
 
-            var allSessions = new List<UnifiedSessionInfo>();
-            foreach (var provider in registry.FindProviders<ISessionProvider>())
+            // Read-path cutover: RedLeaf is the source of truth for session
+            // history. By decision it is a hard dependency — no local fallback.
+            List<UnifiedSessionInfo> allSessions;
+            try
             {
-                if (providerFilter != null && provider.ProviderId != providerFilter)
-                    continue;
-                allSessions.AddRange(provider.GetSessions(limit, all));
+                allSessions = await _redLeafReader!.GetSessionsAsync(providerFilter, limit, all);
+            }
+            catch (Exception ex)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
             }
 
             if (excludeSource != null)
@@ -67,10 +73,6 @@ public static class UnifiedSessionEndpoints
             var userId = ResolveUserId(ctx);
             if (userId != null && userId != "local-user")
                 allSessions.RemoveAll(s => s.UserId != null && s.UserId != userId);
-
-            allSessions.Sort((a, b) => b.StartedAt.CompareTo(a.StartedAt));
-            if (allSessions.Count > limit)
-                allSessions = allSessions.Take(limit).ToList();
 
             return Results.Json(allSessions);
         })
@@ -118,9 +120,19 @@ public static class UnifiedSessionEndpoints
             .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body);
 
         endpoints.MapGet("/ai-session/sessions/{id}",
-            "Get session details and message history", (HttpContext ctx, string id) =>
+            "Get session details and message history", async (HttpContext ctx, string id) =>
         {
-            var (provider, info, history) = FindSessionAcrossProviders(registry, id);
+            UnifiedSessionInfo? info;
+            List<UnifiedMessageRecord> history;
+            try
+            {
+                (info, history) = await _redLeafReader!.GetSessionAsync(id);
+            }
+            catch (Exception ex)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
 
@@ -132,14 +144,21 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapGet("/ai-session/sessions/by-job/{jobId:guid}",
-            "Get the session associated with a job ID", (HttpContext ctx, Guid jobId) =>
+            "Get the session associated with a job ID", async (HttpContext ctx, Guid jobId) =>
         {
-            foreach (var provider in registry.FindProviders<ISessionProvider>())
+            UnifiedSessionInfo? info;
+            List<UnifiedMessageRecord> history;
+            try
             {
-                var (info, history) = provider.GetSessionByJobId(jobId);
-                if (info != null)
-                    return Results.Json(new { session = info, messages = history });
+                (info, history) = await _redLeafReader!.GetSessionByJobIdAsync(jobId);
             }
+            catch (Exception ex)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
+            if (info != null)
+                return Results.Json(new { session = info, messages = history });
             return Results.Json(new ErrorResponse { Error = "not_found", Message = $"No session for job '{jobId}'" }, statusCode: 404);
         });
 
