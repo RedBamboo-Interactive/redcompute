@@ -1,7 +1,42 @@
+using RedCompute.PluginSdk;
+
 namespace RedCompute.Plugin.Codex;
 
 public class CodexSessionStore : ICodexSessionStore
 {
+    private static AiSessionSnapshot ToSnapshot(CodexSessionRecord r) => new()
+    {
+        Provider = "codex",
+        Id = r.Id,
+        Title = r.Title,
+        ProjectName = r.ProjectName,
+        ProjectPath = r.ProjectPath,
+        Status = r.Status,
+        StartedAt = r.StartedAt,
+        Model = r.Model,
+        MessageCount = r.MessageCount,
+        CostUsd = r.CostUsd,
+        InputTokens = r.InputTokens,
+        OutputTokens = r.OutputTokens,
+        CacheReadInputTokens = r.CachedInputTokens,
+        JobId = r.JobId,
+        Dismissed = r.Dismissed,
+    };
+
+    private static AiMessageSnapshot ToSnapshot(CodexMessageRecord m) => new()
+    {
+        Provider = "codex",
+        SessionId = m.SessionId,
+        Role = m.Role,
+        EventType = m.EventType,
+        Content = m.Content,
+        ToolName = m.ToolName,
+        ToolInput = m.ToolInput,
+        ToolResult = m.ToolResult,
+        MessageId = m.MessageId,
+        Timestamp = m.Timestamp,
+    };
+
     public CodexSessionRecord? FindSession(string sessionId)
     {
         using var db = new CodexDbContext();
@@ -58,6 +93,7 @@ public class CodexSessionStore : ICodexSessionStore
             db.Sessions.Add(record);
         }
         db.SaveChanges();
+        SuiteMirror.PublishSession(ToSnapshot(record));
     }
 
     public void DismissSession(string sessionId)
@@ -68,6 +104,7 @@ public class CodexSessionStore : ICodexSessionStore
         {
             record.Dismissed = true;
             db.SaveChanges();
+            SuiteMirror.PublishSession(ToSnapshot(record));
         }
     }
 
@@ -76,6 +113,7 @@ public class CodexSessionStore : ICodexSessionStore
         using var db = new CodexDbContext();
         db.Messages.Add(message);
         db.SaveChanges();
+        SuiteMirror.PublishMessages([ToSnapshot(message)]);
     }
 
     public void AddMessages(List<CodexMessageRecord> messages)
@@ -84,6 +122,7 @@ public class CodexSessionStore : ICodexSessionStore
         using var db = new CodexDbContext();
         db.Messages.AddRange(messages);
         db.SaveChanges();
+        SuiteMirror.PublishMessages(messages.Select(ToSnapshot).ToList());
     }
 
     public List<CodexMessageRecord> GetMessages(string sessionId, int limit = 50_000)

@@ -168,6 +168,67 @@ public class RelayServer
         });
         telemetry.OnEntry += _telemetryForwarder;
 
+        // Mirror AI sessions (claude-code / opencode / codex) to RedLeaf:
+        // sessions as ai-session entities (versioning off — token counts and
+        // status churn constantly), messages as session-messages records.
+        _streamClient.DefineEntityType(new EntityTypeDefinition(
+            "ai-session", "AI Session",
+            "AI coding/inference session (claude-code, opencode, codex)",
+            Icon: "fa-solid fa-square-terminal", Color: "pink", Versioning: false));
+        _streamClient.DefineStream(new StreamDefinition(
+            "session-messages", "Session Messages",
+            "Messages and tool events from AI sessions", RetentionDays: 180, ParentType: "ai-session"));
+
+        SuiteMirror.SessionUpserted = snap => _streamClient.UpsertEntity(
+            SessionEntitySlug(snap.Provider, snap.Id),
+            "ai-session",
+            snap.Title ?? $"{snap.ProjectName} ({snap.Provider})",
+            new
+            {
+                provider = snap.Provider,
+                session_id = snap.Id,
+                project_name = snap.ProjectName,
+                project_path = snap.ProjectPath,
+                status = snap.Status,
+                stop_reason = snap.StopReason,
+                started_at = snap.StartedAt.ToString("O"),
+                model = snap.Model,
+                external_session_id = snap.ExternalSessionId,
+                message_count = snap.MessageCount,
+                cost_usd = snap.CostUsd,
+                input_tokens = snap.InputTokens,
+                output_tokens = snap.OutputTokens,
+                cache_read_input_tokens = snap.CacheReadInputTokens,
+                cache_creation_input_tokens = snap.CacheCreationInputTokens,
+                context_tokens = snap.ContextTokens,
+                context_window = snap.ContextWindow,
+                effort = snap.Effort,
+                job_id = snap.JobId,
+                dismissed = snap.Dismissed,
+                source = snap.Source,
+                app = "redcompute",
+            });
+
+        SuiteMirror.MessagesAdded = messages =>
+        {
+            foreach (var m in messages)
+            {
+                _streamClient.EnqueueForEntity("session-messages", SessionEntitySlug(m.Provider, m.SessionId), new
+                {
+                    provider = m.Provider,
+                    session_id = m.SessionId,
+                    role = m.Role,
+                    event_type = m.EventType,
+                    content = m.Content,
+                    tool_name = m.ToolName,
+                    tool_input = m.ToolInput,
+                    tool_result = m.ToolResult,
+                    message_id = m.MessageId,
+                    timestamp = m.Timestamp.ToString("O"),
+                });
+            }
+        };
+
         var registry = _app.CreateEndpointRegistry();
         registry.MapAuthEndpoints();
 
@@ -325,6 +386,9 @@ public class RelayServer
     {
         await _docker.StopAllAsync();
 
+        SuiteMirror.SessionUpserted = null;
+        SuiteMirror.MessagesAdded = null;
+
         if (_logForwarder != null)
         {
             App.LogService.OnLogEntry -= _logForwarder;
@@ -348,5 +412,12 @@ public class RelayServer
             await _app.DisposeAsync();
             _app = null;
         }
+    }
+
+    private static string SessionEntitySlug(string provider, string sessionId)
+    {
+        var sanitized = new string(sessionId.ToLowerInvariant()
+            .Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-').ToArray());
+        return $"ai-session-{provider}-{sanitized}";
     }
 }

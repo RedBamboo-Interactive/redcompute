@@ -1,7 +1,44 @@
+using RedCompute.PluginSdk;
+
 namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeSessionStore : IOpenCodeSessionStore
 {
+    private static AiSessionSnapshot ToSnapshot(OpenCodeSessionRecord r) => new()
+    {
+        Provider = "opencode",
+        Id = r.Id,
+        Title = r.Title,
+        ProjectName = r.ProjectName,
+        ProjectPath = r.ProjectPath,
+        Status = r.Status,
+        StartedAt = r.StartedAt,
+        Model = r.Model,
+        ExternalSessionId = r.OpenCodeSessionId,
+        MessageCount = r.MessageCount,
+        CostUsd = r.CostUsd,
+        InputTokens = r.InputTokens,
+        OutputTokens = r.OutputTokens,
+        Effort = r.Effort,
+        JobId = r.JobId,
+        Dismissed = r.Dismissed,
+        Source = r.Source,
+    };
+
+    private static AiMessageSnapshot ToSnapshot(OpenCodeMessageRecord m) => new()
+    {
+        Provider = "opencode",
+        SessionId = m.SessionId,
+        Role = m.Role,
+        EventType = m.EventType,
+        Content = m.Content,
+        ToolName = m.ToolName,
+        ToolInput = m.ToolInput,
+        ToolResult = m.ToolResult,
+        MessageId = m.MessageId,
+        Timestamp = m.Timestamp,
+    };
+
     public OpenCodeSessionRecord? FindSession(string sessionId)
     {
         using var db = new OpenCodeDbContext();
@@ -57,6 +94,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             db.Sessions.Add(record);
         }
         db.SaveChanges();
+        SuiteMirror.PublishSession(ToSnapshot(record));
     }
 
     public void DismissSession(string sessionId)
@@ -67,6 +105,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         {
             record.Dismissed = true;
             db.SaveChanges();
+            SuiteMirror.PublishSession(ToSnapshot(record));
         }
     }
 
@@ -75,6 +114,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         using var db = new OpenCodeDbContext();
         db.Messages.Add(message);
         db.SaveChanges();
+        SuiteMirror.PublishMessages([ToSnapshot(message)]);
     }
 
     public void AddMessages(List<OpenCodeMessageRecord> messages)
@@ -83,6 +123,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         using var db = new OpenCodeDbContext();
         db.Messages.AddRange(messages);
         db.SaveChanges();
+        SuiteMirror.PublishMessages(messages.Select(ToSnapshot).ToList());
     }
 
     public List<OpenCodeMessageRecord> GetMessages(string sessionId, int limit = 50_000)

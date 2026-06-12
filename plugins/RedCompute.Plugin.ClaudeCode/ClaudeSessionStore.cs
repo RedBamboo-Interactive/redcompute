@@ -1,7 +1,49 @@
+using RedCompute.PluginSdk;
+
 namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeSessionStore : IClaudeSessionStore
 {
+    private static AiSessionSnapshot ToSnapshot(ClaudeSessionRecord r) => new()
+    {
+        Provider = "claude-code",
+        Id = r.Id,
+        Title = r.Title,
+        ProjectName = r.ProjectName,
+        ProjectPath = r.ProjectPath,
+        Status = r.Status,
+        StopReason = r.StopReason,
+        StartedAt = r.StartedAt,
+        Model = r.Model,
+        ExternalSessionId = r.ClaudeSessionId,
+        MessageCount = r.MessageCount,
+        CostUsd = r.CostUsd,
+        InputTokens = r.InputTokens,
+        OutputTokens = r.OutputTokens,
+        CacheReadInputTokens = r.CacheReadInputTokens,
+        CacheCreationInputTokens = r.CacheCreationInputTokens,
+        ContextTokens = r.ContextTokens,
+        ContextWindow = r.ContextWindow,
+        Effort = r.Effort,
+        JobId = r.JobId,
+        Dismissed = r.Dismissed,
+        Source = r.Source,
+    };
+
+    private static AiMessageSnapshot ToSnapshot(ClaudeMessageRecord m) => new()
+    {
+        Provider = "claude-code",
+        SessionId = m.SessionId,
+        Role = m.Role,
+        EventType = m.EventType,
+        Content = m.Content,
+        ToolName = m.ToolName,
+        ToolInput = m.ToolInput,
+        ToolResult = m.ToolResult,
+        MessageId = m.MessageId,
+        Timestamp = m.Timestamp,
+    };
+
     public ClaudeSessionRecord? FindSession(string sessionId)
     {
         using var db = new ClaudeDbContext();
@@ -65,6 +107,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             db.Sessions.Add(record);
         }
         db.SaveChanges();
+        SuiteMirror.PublishSession(ToSnapshot(record));
     }
 
     public void DismissSession(string sessionId)
@@ -75,6 +118,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         {
             record.Dismissed = true;
             db.SaveChanges();
+            SuiteMirror.PublishSession(ToSnapshot(record));
         }
     }
 
@@ -83,6 +127,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         using var db = new ClaudeDbContext();
         db.Messages.Add(message);
         db.SaveChanges();
+        SuiteMirror.PublishMessages([ToSnapshot(message)]);
     }
 
     public void AddMessages(List<ClaudeMessageRecord> messages)
@@ -91,6 +136,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         using var db = new ClaudeDbContext();
         db.Messages.AddRange(messages);
         db.SaveChanges();
+        SuiteMirror.PublishMessages(messages.Select(ToSnapshot).ToList());
     }
 
     public List<ClaudeMessageRecord> GetMessages(string sessionId, int limit = 50_000)
