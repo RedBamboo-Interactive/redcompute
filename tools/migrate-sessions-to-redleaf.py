@@ -32,17 +32,26 @@ SESSIONS_ONLY = "--sessions-only" in sys.argv
 
 
 def api(method, path, body=None):
-    req = urllib.request.Request(
-        REDLEAF + path,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json"},
-        method=method,
-    )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return resp.status, json.loads(resp.read() or b"null")
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read() or b"null")
+    data = json.dumps(body).encode() if body is not None else None
+    # Retry connection-level failures (e.g. RedLeaf restarting mid-migration);
+    # HTTP error statuses are returned to the caller, not retried.
+    for attempt in range(6):
+        req = urllib.request.Request(
+            REDLEAF + path, data=data,
+            headers={"Content-Type": "application/json"}, method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.status, json.loads(resp.read() or b"null")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"null")
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt == 5:
+                raise
+            wait = 5 * (attempt + 1)
+            print(f"  connection failed ({e}); retrying in {wait}s...")
+            import time
+            time.sleep(wait)
 
 
 def session_slug(provider, session_id):
