@@ -76,6 +76,28 @@ def reconcile(provider, db_path):
             (cutoff_old, cutoff_recent)):
         src.setdefault(sid, Counter())[ts] += 1
 
+    # The legacy pre-plugin-split tables in the main redcompute.db hold a few
+    # messages that exist nowhere else (imported separately) — count them as
+    # source too, max-merged since most rows are exact duplicates.
+    if provider == "claude-code":
+        legacy_db = os.path.join(os.environ["LOCALAPPDATA"], "RedCompute", "redcompute.db")
+        if os.path.exists(legacy_db):
+            legacy_conn = sqlite3.connect(legacy_db)
+            try:
+                legacy = {}
+                for sid, ts in legacy_conn.execute(
+                        "SELECT SessionId, Timestamp FROM ClaudeMessages WHERE Timestamp >= ? AND Timestamp < ?",
+                        (cutoff_old, cutoff_recent)):
+                    legacy.setdefault(sid, Counter())[ts] += 1
+                for sid, counts in legacy.items():
+                    dst_counts = src.setdefault(sid, Counter())
+                    for ts, n in counts.items():
+                        dst_counts[ts] = max(dst_counts[ts], n)
+            except sqlite3.OperationalError:
+                pass  # legacy tables dropped — nothing to merge
+            finally:
+                legacy_conn.close()
+
     dst = {}  # sid -> ts -> [record ids]
     rows = psql(f"""
         SELECT "Data"->>'session_id', "Data"->>'timestamp', "Id"
