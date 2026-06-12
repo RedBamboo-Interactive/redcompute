@@ -175,7 +175,29 @@ public class RelayServer
         _streamClient.DefineEntityType(new EntityTypeDefinition(
             "ai-session", "AI Session",
             "AI coding/inference session (claude-code, opencode, codex)",
-            Icon: "fa-solid fa-square-terminal", Color: "pink", Versioning: false));
+            Icon: "fa-solid fa-square-terminal", Color: "pink", Versioning: false,
+            Fields:
+            [
+                // Field names slugify to the snake_case data keys below.
+                new { name = "Provider", fieldType = "string", description = "Session provider plugin (claude-code, opencode, codex)" },
+                new { name = "Status", fieldType = "string", description = "Lifecycle status (Starting, Active, Idle, Stopped...)" },
+                new { name = "Project Name", fieldType = "string" },
+                new { name = "Project Path", fieldType = "string", description = "Machine-local path to the project directory" },
+                new { name = "Model", fieldType = "string" },
+                new { name = "Message Count", fieldType = "number" },
+                new { name = "Cost USD", fieldType = "float" },
+                new { name = "Started At", fieldType = "date" },
+                new { name = "Stop Reason", fieldType = "string" },
+                new { name = "Effort", fieldType = "string" },
+                new { name = "Job ID", fieldType = "string", description = "RedCompute job this session belongs to" },
+                new { name = "Dismissed", fieldType = "boolean" },
+                new { name = "Source", fieldType = "string", description = "Origin app (e.g. Nova)" },
+                new { name = "External Session ID", fieldType = "string", description = "Provider-side session identifier" },
+                new { name = "Input Tokens", fieldType = "number" },
+                new { name = "Output Tokens", fieldType = "number" },
+                new { name = "Session ID", fieldType = "string", description = "Provider-local session key" },
+                new { name = "App", fieldType = "string", description = "Owning Red Suite app" },
+            ]));
         _streamClient.DefineStream(new StreamDefinition(
             "session-messages", "Session Messages",
             "Messages and tool events from AI sessions", RetentionDays: 180, ParentType: "ai-session"));
