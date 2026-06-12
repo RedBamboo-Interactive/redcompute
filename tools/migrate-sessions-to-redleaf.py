@@ -16,7 +16,9 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-REDLEAF = "http://localhost:18804"
+# 127.0.0.1, not localhost: Kestrel binds IPv4 only, and Windows' IPv6-first
+# localhost resolution costs ~1s of connect fallback per request.
+REDLEAF = "http://127.0.0.1:18804"
 MESSAGE_CUTOFF_DAYS = 180  # matches session-messages stream retention
 BATCH = 500
 
@@ -31,6 +33,11 @@ DRY_RUN = "--dry-run" in sys.argv
 SESSIONS_ONLY = "--sessions-only" in sys.argv
 
 
+# Skip Windows proxy auto-detection (a per-request registry lookup that
+# dominates latency for localhost calls).
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def api(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     # Retry connection-level failures (e.g. RedLeaf restarting mid-migration);
@@ -41,7 +48,7 @@ def api(method, path, body=None):
             headers={"Content-Type": "application/json"}, method=method,
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with _opener.open(req, timeout=60) as resp:
                 return resp.status, json.loads(resp.read() or b"null")
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"null")

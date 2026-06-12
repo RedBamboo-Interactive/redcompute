@@ -14,10 +14,17 @@ import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-REDLEAF = "http://localhost:18804"
+# 127.0.0.1, not localhost: Kestrel binds IPv4 only, and Windows' IPv6-first
+# localhost resolution costs ~1s of connect fallback per request.
+REDLEAF = "http://127.0.0.1:18804"
 DB = os.path.join(os.environ["LOCALAPPDATA"], "RedCompute", "redcompute.db")
 DRY_RUN = "--dry-run" in sys.argv
 DAYS = int(sys.argv[sys.argv.index("--days") + 1]) if "--days" in sys.argv else 90
+
+
+# Skip Windows proxy auto-detection (a per-request registry lookup that
+# dominates latency for localhost calls).
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def api(method, path, body=None):
@@ -28,7 +35,7 @@ def api(method, path, body=None):
             headers={"Content-Type": "application/json"}, method=method,
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with _opener.open(req, timeout=60) as resp:
                 return resp.status, json.loads(resp.read() or b"null")
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"null")
