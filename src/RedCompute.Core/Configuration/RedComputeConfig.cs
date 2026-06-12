@@ -10,6 +10,7 @@ public class RedComputeConfig
     public double ElectricityRatePerKwh { get; set; } = 0.15;
     public bool AutoStartDocker { get; set; } = true;
     public string CodeRedUrl { get; set; } = "http://localhost:18801";
+    public string RedLeafUrl { get; set; } = "http://localhost:18804";
     public TunnelConfig Tunnel { get; set; } = new();
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
 }

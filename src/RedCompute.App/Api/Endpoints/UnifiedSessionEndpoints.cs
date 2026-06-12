@@ -17,13 +17,16 @@ public static class UnifiedSessionEndpoints
 {
     private static DockerContainerService? _docker;
     private static SessionCallbackRegistry? _callbacks;
+    private static QualityModeService? _quality;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
-        DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null)
+        DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null,
+        QualityModeService? quality = null)
     {
         _docker = docker;
         _callbacks = callbacks;
+        _quality = quality;
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
@@ -87,7 +90,8 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var (provider, error) = ResolveProviderFromBody(ctx, registry, body);
+            var q = ResolveQuality(body);
+            var (provider, error) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
             if (error != null) return error;
 
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.PersistentSessions))
@@ -97,10 +101,11 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(projectPath))
                 return Error(422, "validation_failed", "projectPath is required");
 
-            var model = body.TryGetProperty("model", out var m) ? m.GetString() : null;
+            var model = q.Model;
+            var effort = q.Effort;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar);
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -108,7 +113,9 @@ public static class UnifiedSessionEndpoints
         })
             .WithParam("projectPath", "string", required: true, description: "Path to the project directory", location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Provider to use. Defaults to the active provider.", enumValues: providerEnum, location: ParamLocation.Body)
-            .WithParam("model", "string", description: "Model to use", location: ParamLocation.Body);
+            .WithParam("model", "string", description: "Model to use. Overrides qualityTier when both are given.", location: ParamLocation.Body)
+            .WithParam("effort", "string", description: "Effort level (e.g. low, normal, high)", location: ParamLocation.Body)
+            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body);
 
         endpoints.MapGet("/ai-session/sessions/{id}",
             "Get session details and message history", (HttpContext ctx, string id) =>
@@ -354,11 +361,22 @@ public static class UnifiedSessionEndpoints
 
             var model = body.TryGetProperty("model", out var m) ? m.GetString() : null;
             var effort = body.TryGetProperty("effort", out var e) ? e.GetString() : null;
+            var qualityTier = body.TryGetProperty("qualityTier", out var qt) ? qt.GetString() : null;
+
+            // Explicit model wins; otherwise a qualityTier resolves to a model (+effort) for this provider.
+            if (string.IsNullOrWhiteSpace(model) && !string.IsNullOrWhiteSpace(qualityTier) && _quality != null)
+            {
+                var resolved = _quality.Resolve(qualityTier, provider.ProviderId);
+                model = resolved.Model;
+                if (string.IsNullOrWhiteSpace(effort)) effort = resolved.Effort;
+            }
+
             var updated = await provider.UpdateSessionConfigAsync(id, model, effort);
             return Results.Json(updated);
         })
-            .WithParam("model", "string", description: "Model to switch to", location: ParamLocation.Body)
-            .WithParam("effort", "string", description: "Reasoning effort level", location: ParamLocation.Body);
+            .WithParam("model", "string", description: "Model to switch to. Overrides qualityTier when both are given.", location: ParamLocation.Body)
+            .WithParam("effort", "string", description: "Reasoning effort level", location: ParamLocation.Body)
+            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved to a model+effort for this session's provider. Ignored when model is set.", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
             "Set the session's permission mode", async (HttpContext ctx, string id) =>
@@ -477,6 +495,42 @@ public static class UnifiedSessionEndpoints
         })
             .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
 
+        endpoints.MapGet("/ai-session/quality-modes",
+            "List the suite-wide quality tiers (fast, standard, deep, research) and the provider+model+effort each resolves to. Lets any suite app build a tier picker without talking to RedLeaf directly.", () =>
+        {
+            if (_quality == null)
+                return Error(503, "not_configured", "Quality mode service is not available");
+
+            return Results.Json(new
+            {
+                tiers = _quality.GetTiers(),
+                modes = _quality.GetAll().Select(m => new
+                {
+                    m.Id, m.Slug, qualityTier = m.QualityTier, m.Provider, m.Model,
+                    m.Effort, m.ThinkingBudget, m.Timeout, m.MaxTurns, m.IsDefault, m.Description,
+                }),
+            });
+        });
+
+        endpoints.MapPost("/ai-session/quality-modes/refresh",
+            "Re-fetch quality mode definitions from RedLeaf and return the refreshed set. Falls back to the cached/built-in modes if RedLeaf is unreachable.", async () =>
+        {
+            if (_quality == null)
+                return Error(503, "not_configured", "Quality mode service is not available");
+
+            await _quality.RefreshAsync();
+            return Results.Json(new
+            {
+                refreshed = true,
+                tiers = _quality.GetTiers(),
+                modes = _quality.GetAll().Select(m => new
+                {
+                    m.Id, m.Slug, qualityTier = m.QualityTier, m.Provider, m.Model,
+                    m.Effort, m.ThinkingBudget, m.Timeout, m.MaxTurns, m.IsDefault, m.Description,
+                }),
+            });
+        });
+
         endpoints.MapPost("/ai-session/execute",
             "Run an agent task with full tool access (default 30min timeout, max 2h). Use ?async for fire-and-forget with job tracking.", async (HttpContext ctx) =>
         {
@@ -490,7 +544,8 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body);
+            var q = ResolveQuality(body);
+            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
             if (resolveError != null) return resolveError;
 
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.StatelessExecution))
@@ -501,7 +556,7 @@ public static class UnifiedSessionEndpoints
                 return Error(422, "validation_failed", "prompt is required");
 
             var workingDir = body.TryGetProperty("workingDir", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : null;
-            var model = body.TryGetProperty("model", out var mod) && mod.ValueKind == JsonValueKind.String ? mod.GetString() : null;
+            var model = q.Model;
 
             var timeout = 1800;
             if (body.TryGetProperty("timeout", out var to) && to.ValueKind == JsonValueKind.Number)
@@ -525,6 +580,10 @@ public static class UnifiedSessionEndpoints
                     };
                 }
             }
+
+            // qualityTier supplies effort when not given explicitly (q.Effort already prefers an explicit effort).
+            if (!string.IsNullOrWhiteSpace(q.Effort))
+                providerParams["effort"] = q.Effort;
 
             if (!providerParams.ContainsKey("container") || providerParams["container"] is not string)
             {
@@ -630,7 +689,8 @@ public static class UnifiedSessionEndpoints
                 properties = new
                 {
                     prompt = new { type = "string", description = "Prompt text for the agent task" },
-                    model = new { type = "string", description = "Model to use (provider default if omitted)" },
+                    model = new { type = "string", description = "Model to use (provider default if omitted). Overrides qualityTier when both are given." },
+                    qualityTier = new { type = "string", description = "Abstract quality tier (fast, standard, deep, research) resolved suite-wide to a provider+model+effort. Ignored when model is set." },
                     workingDir = new { type = "string", description = "Working directory for the agent" },
                     timeout = new { type = "integer", description = "Timeout in seconds, clamped to 1-7200", @default = 1800 },
                     provider = new { type = "string", description = "Session provider to use (defaults to active provider)", @enum = providerEnum },
@@ -775,13 +835,39 @@ public static class UnifiedSessionEndpoints
         }
     }
 
+    /// <summary>
+    /// The model/effort/provider a request resolves to once a quality tier is applied.
+    /// An explicit model always wins; otherwise a qualityTier resolves all three suite-wide.
+    /// </summary>
+    private record QualityResolution(string? Model, string? Effort, string? ProviderName);
+
+    private static QualityResolution ResolveQuality(JsonElement body)
+    {
+        var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+        var effort = body.TryGetProperty("effort", out var ef) && ef.ValueKind == JsonValueKind.String ? ef.GetString() : null;
+        var tier = body.TryGetProperty("qualityTier", out var qt) && qt.ValueKind == JsonValueKind.String ? qt.GetString() : null;
+        var explicitProvider = body.TryGetProperty("provider", out var pv) && pv.ValueKind == JsonValueKind.String ? pv.GetString() : null;
+
+        // Explicit model wins, and no tier means nothing to resolve — leave request values untouched.
+        if (!string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(tier) || _quality == null)
+            return new QualityResolution(model, effort, explicitProvider);
+
+        var resolved = _quality.Resolve(tier, explicitProvider);
+        return new QualityResolution(
+            resolved.Model,
+            string.IsNullOrWhiteSpace(effort) ? resolved.Effort : effort,
+            explicitProvider ?? resolved.Provider);
+    }
+
     private static (ISessionProvider? provider, IResult? error) ResolveProviderFromBody(
-        HttpContext ctx, CapabilityRegistry registry, JsonElement body)
+        HttpContext ctx, CapabilityRegistry registry, JsonElement body, string? providerOverride = null)
     {
         string? providerName = null;
         if (body.TryGetProperty("provider", out var pv) && pv.ValueKind == JsonValueKind.String)
             providerName = pv.GetString();
         providerName ??= ctx.Request.Headers["X-Provider"].FirstOrDefault();
+        // A quality-tier-resolved provider feeds selection only when the caller named none explicitly.
+        providerName ??= providerOverride;
 
         var entry = registry.Get("ai-session");
         if (entry == null)

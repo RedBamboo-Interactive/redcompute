@@ -34,6 +34,7 @@ public class RelayServer
     private readonly CloudflareTunnelService _tunnelService;
     private readonly HardwareMonitorService _hardwareMonitor;
     private readonly DockerContainerService _docker;
+    private readonly QualityModeService _qualityModes;
     private SessionCallbackRegistry _callbacks;
     private readonly Action<string, Guid?> _log;
 
@@ -49,6 +50,7 @@ public class RelayServer
         _tunnelService = tunnelService;
         _hardwareMonitor = hardwareMonitor;
         _docker = new DockerContainerService(log);
+        _qualityModes = new QualityModeService(config, log);
         _callbacks = new SessionCallbackRegistry(log);  // re-created with auth factory after Build()
         _log = log;
     }
@@ -131,7 +133,7 @@ public class RelayServer
         SettingsEndpoints.Map(registry, _configManager, _tunnelService, _registry);
 
         SuiteTelemetryEndpoints.Map(registry);
-        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks);
+        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
@@ -169,6 +171,10 @@ public class RelayServer
         _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);
         _log($"[Relay] Listening at http://localhost:{_config.ApiPort}", null);
+
+        // Fetch suite-wide quality modes from RedLeaf in the background. Fallbacks already
+        // seeded in the constructor keep resolution working if RedLeaf is offline.
+        _ = _qualityModes.RefreshAsync(ct);
     }
 
     private void RegisterWsEvents(WebSocketBroadcaster broadcaster)
