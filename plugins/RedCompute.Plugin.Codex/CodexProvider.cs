@@ -80,7 +80,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     // --- ISessionProvider: Not supported (stateless only) ---
 
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null)
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
         => throw new NotSupportedException("Codex does not support persistent sessions");
 
     public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)

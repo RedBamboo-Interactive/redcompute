@@ -665,7 +665,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -688,7 +688,8 @@ public class ClaudeSessionService
             Status = SessionStatus.Starting,
             StartedAt = DateTimeOffset.UtcNow,
             Source = callerInfo,
-            UserId = userId
+            UserId = userId,
+            Effort = effort
         };
 
         var claudePath = ResolveClaudePath();
@@ -712,7 +713,7 @@ public class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        PopulateSessionArgs(startInfo, model: model);
+        PopulateSessionArgs(startInfo, model: model, effort: effort);
 
         Process process;
         try
