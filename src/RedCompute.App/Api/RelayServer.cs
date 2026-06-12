@@ -12,6 +12,8 @@ using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Extensions;
 using RedBamboo.AppHost.Logging;
 using RedBamboo.AppHost.RemoteAccess;
+using RedBamboo.AppHost.Streams;
+using RedBamboo.AppHost.Telemetry;
 using RedBamboo.AppHost.Tunnel;
 using RedBamboo.AppHost.WebSockets;
 using RedCompute.App.Api.Endpoints;
@@ -37,6 +39,9 @@ public class RelayServer
     private readonly QualityModeService _qualityModes;
     private SessionCallbackRegistry _callbacks;
     private readonly Action<string, Guid?> _log;
+    private RedLeafStreamClient? _streamClient;
+    private Action<RedBamboo.AppHost.Logging.LogEntry>? _logForwarder;
+    private Action<TelemetryEntry>? _telemetryForwarder;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager, CloudflareTunnelService tunnelService,
@@ -123,6 +128,45 @@ public class RelayServer
         _callbacks = new SessionCallbackRegistry(_log, authFactory);
 
         _app.UseUserDetection();
+
+        // Ship job logs and API telemetry to RedLeaf record streams. Local
+        // SQLite stays the read path (dual-write) until reads move over too.
+        _streamClient = new RedLeafStreamClient(
+            _config.RedLeafUrl, "redcompute",
+            new JwtService(new JwtOptions { SigningKey = signingKey }),
+            App.LogService);
+        _streamClient.DefineStream(new StreamDefinition(
+            "compute-logs", "Compute Logs",
+            "Structured RedCompute job and app logs", RetentionDays: 30, ParentType: "compute-job"));
+        _streamClient.DefineStream(new StreamDefinition(
+            "api-telemetry", "API Telemetry",
+            "HTTP request/response stats from Red Suite apps", RetentionDays: 30));
+
+        _logForwarder = entry => _streamClient.Enqueue("compute-logs", new
+        {
+            tag = entry.Tag,
+            category = entry.Category,
+            message = entry.Message,
+            full_message = entry.FullMessage,
+            tag_color = entry.TagColor,
+            is_error = entry.Level >= RedBamboo.AppHost.Logging.LogLevel.Error,
+            job_id = entry.JobId,
+        }, entityId: entry.JobId is { } jid && Guid.TryParse(jid, out var jobGuid) ? jobGuid : null);
+        App.LogService.OnLogEntry += _logForwarder;
+
+        var telemetry = _app.Services.GetRequiredService<TelemetryService>();
+        _telemetryForwarder = e => _streamClient.Enqueue("api-telemetry", new
+        {
+            app = "redcompute",
+            method = e.Method,
+            path = e.Path,
+            route_pattern = e.RoutePattern,
+            status_code = e.StatusCode,
+            duration_ms = Math.Round(e.DurationMs, 2),
+            response_size = e.ResponseSize,
+            error = e.Error,
+        });
+        telemetry.OnEntry += _telemetryForwarder;
 
         var registry = _app.CreateEndpointRegistry();
         registry.MapAuthEndpoints();
@@ -280,6 +324,22 @@ public class RelayServer
     public async Task StopAsync()
     {
         await _docker.StopAllAsync();
+
+        if (_logForwarder != null)
+        {
+            App.LogService.OnLogEntry -= _logForwarder;
+            _logForwarder = null;
+        }
+        if (_telemetryForwarder != null && _app != null)
+        {
+            _app.Services.GetRequiredService<TelemetryService>().OnEntry -= _telemetryForwarder;
+            _telemetryForwarder = null;
+        }
+        if (_streamClient != null)
+        {
+            await _streamClient.DisposeAsync();
+            _streamClient = null;
+        }
 
         if (_app != null)
         {
