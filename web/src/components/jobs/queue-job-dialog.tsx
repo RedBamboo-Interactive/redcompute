@@ -11,6 +11,18 @@ interface DiscoverResponse {
   }[]
 }
 
+interface QualityModeEntry {
+  qualityTier: string
+  description?: string
+  model?: string
+  effort?: string
+}
+
+interface QualityModesResponse {
+  tiers: string[]
+  modes: QualityModeEntry[]
+}
+
 export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -29,6 +41,9 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
   const [recordingTime, setRecordingTime] = useState(0)
   const [sessionProviders, setSessionProviders] = useState<SessionProviderInfo[]>([])
   const [selectedProvider, setSelectedProvider] = useState<string>("")
+  const [selectedQualityTier, setSelectedQualityTier] = useState<string>("standard")
+  const [qualityTiers, setQualityTiers] = useState<string[]>(["fast", "standard", "deep", "research"])
+  const [qualityModes, setQualityModes] = useState<QualityModeEntry[]>([])
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -70,6 +85,10 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
         const cap = capabilities.find(c => c.slug === "ai-session")
         setSelectedProvider(cap?.defaultProvider ?? providers[0].providerId)
       }
+    }).catch(() => {})
+    api.get<QualityModesResponse>("/ai-session/quality-modes").then(data => {
+      if (data.tiers?.length) setQualityTiers(data.tiers)
+      if (data.modes?.length) setQualityModes(data.modes)
     }).catch(() => {})
   }, [open, selectedSlug])
 
@@ -124,6 +143,7 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
       let submitPath = endpointPath + "?async=true"
       if (selectedSlug === "ai-session" && selectedProvider) {
         body.provider = selectedProvider
+        body.qualityTier = selectedQualityTier
         submitPath = "/ai-session/execute?async=true"
       }
       const result = await api.post<{ jobId?: string; sessionId?: string; job_id?: string }>(submitPath, body, headers)
@@ -159,6 +179,36 @@ export function QueueJobDialog({ open, onOpenChange, capabilities, defaultSlug }
         </DialogHeader>
 
         <div className="space-y-5 mt-1">
+          {selectedSlug === "ai-session" && (
+            <div>
+              <div className="mb-1.5">
+                <span className="text-[13px] font-medium text-contrast">Quality</span>
+                {(() => {
+                  const mode = qualityModes.find(m => m.qualityTier === selectedQualityTier)
+                  return mode?.description
+                    ? <p className="text-[11px] text-text-muted mt-0.5 leading-relaxed">{mode.description}</p>
+                    : null
+                })()}
+              </div>
+              <div className="flex gap-1.5">
+                {qualityTiers.map(tier => (
+                  <button
+                    key={tier}
+                    type="button"
+                    onClick={() => setSelectedQualityTier(tier)}
+                    className={`flex-1 py-2 px-1 rounded-lg text-xs font-medium capitalize transition-colors border ${
+                      selectedQualityTier === tier
+                        ? "bg-accent-blue-a20 border-accent-blue-a40 text-accent-blue"
+                        : "bg-surface-base border-border-subtle text-text-secondary hover:text-contrast hover:border-border-strong"
+                    }`}
+                  >
+                    {tier}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {selectedSlug === "ai-session" && sessionProviders.length > 1 && (
             <div>
               <div className="mb-1.5">
