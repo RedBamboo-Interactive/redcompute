@@ -42,6 +42,7 @@ public class RelayServer
     private RedLeafStreamClient? _streamClient;
     private Action<RedBamboo.AppHost.Logging.LogEntry>? _logForwarder;
     private Action<TelemetryEntry>? _telemetryForwarder;
+    private Action<RedCompute.Core.Jobs.JobRecord>? _jobForwarder;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager, CloudflareTunnelService tunnelService,
@@ -229,6 +230,53 @@ public class RelayServer
             }
         };
 
+        // Jobs mirror as compute-job entities — the parent type compute-logs
+        // records link to. Progress is deliberately excluded (churns per tick;
+        // live progress stays on the WebSocket).
+        _streamClient.DefineEntityType(new EntityTypeDefinition(
+            "compute-job", "Compute Job",
+            "RedCompute job lifecycle record",
+            Icon: "fa-solid fa-microchip", Color: "pink", Versioning: false,
+            Fields:
+            [
+                new { name = "Capability", fieldType = "string", description = "tts, stt, music-gen, image-gen, ai-session…" },
+                new { name = "Provider", fieldType = "string" },
+                new { name = "Status", fieldType = "string" },
+                new { name = "Queued At", fieldType = "date" },
+                new { name = "Cost USD", fieldType = "float" },
+                new { name = "Caller Info", fieldType = "string" },
+                new { name = "Error Message", fieldType = "string" },
+            ]));
+
+        _jobForwarder = job => _streamClient.UpsertEntity(
+            $"compute-job-{job.Id:N}", "compute-job",
+            job.Name ?? $"{job.CapabilitySlug} ({job.ProviderName})",
+            new
+            {
+                job_id = job.Id,
+                capability = job.CapabilitySlug,
+                provider = job.ProviderName,
+                status = job.Status.ToString(),
+                queued_at = job.QueuedAt.ToString("O"),
+                started_at = job.StartedAt?.ToString("O"),
+                completed_at = job.CompletedAt?.ToString("O"),
+                input_json = job.InputJson,
+                output_location = job.OutputLocation,
+                output_size_bytes = job.OutputSizeBytes,
+                output_content_type = job.OutputContentType,
+                result_json = job.ResultJson,
+                error_message = job.ErrorMessage,
+                caller_info = job.CallerInfo,
+                rationale = job.Rationale,
+                cost_usd = job.CostUsd,
+                duration_ms = job.DurationMs,
+                user_id = job.UserId,
+                user_name = job.UserName,
+                app = "redcompute",
+            });
+        _jobTracker.JobCreated += _jobForwarder;
+        _jobTracker.JobUpdated += _jobForwarder;
+
         var registry = _app.CreateEndpointRegistry();
         registry.MapAuthEndpoints();
 
@@ -388,6 +436,13 @@ public class RelayServer
 
         SuiteMirror.SessionUpserted = null;
         SuiteMirror.MessagesAdded = null;
+
+        if (_jobForwarder != null)
+        {
+            _jobTracker.JobCreated -= _jobForwarder;
+            _jobTracker.JobUpdated -= _jobForwarder;
+            _jobForwarder = null;
+        }
 
         if (_logForwarder != null)
         {
