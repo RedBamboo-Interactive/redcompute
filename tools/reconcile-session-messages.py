@@ -76,27 +76,18 @@ def reconcile(provider, db_path):
             (cutoff_old, cutoff_recent)):
         src.setdefault(sid, Counter())[ts] += 1
 
-    # The legacy pre-plugin-split tables in the main redcompute.db hold a few
-    # messages that exist nowhere else (imported separately) — count them as
-    # source too, max-merged since most rows are exact duplicates.
+    # The legacy pre-plugin-split tables held messages that exist nowhere
+    # else; they were imported into RedLeaf and the tables dropped. Their
+    # (session, timestamp) counts live on in a committed sidecar — count it
+    # as source, max-merged, or those records read as surplus and a non-dry
+    # run would delete the only copy.
     if provider == "claude-code":
-        legacy_db = os.path.join(os.environ["LOCALAPPDATA"], "RedCompute", "redcompute.db")
-        if os.path.exists(legacy_db):
-            legacy_conn = sqlite3.connect(legacy_db)
-            try:
-                legacy = {}
-                for sid, ts in legacy_conn.execute(
-                        "SELECT SessionId, Timestamp FROM ClaudeMessages WHERE Timestamp >= ? AND Timestamp < ?",
-                        (cutoff_old, cutoff_recent)):
-                    legacy.setdefault(sid, Counter())[ts] += 1
-                for sid, counts in legacy.items():
-                    dst_counts = src.setdefault(sid, Counter())
-                    for ts, n in counts.items():
-                        dst_counts[ts] = max(dst_counts[ts], n)
-            except sqlite3.OperationalError:
-                pass  # legacy tables dropped — nothing to merge
-            finally:
-                legacy_conn.close()
+        sidecar_path = os.path.join(os.path.dirname(__file__), "legacy-claude-messages.json")
+        with open(sidecar_path, encoding="utf-8") as f:
+            for sid, counts in json.load(f).items():
+                dst_counts = src.setdefault(sid, Counter())
+                for ts, n in counts.items():
+                    dst_counts[ts] = max(dst_counts[ts], n)
 
     dst = {}  # sid -> ts -> [record ids]
     rows = psql(f"""
