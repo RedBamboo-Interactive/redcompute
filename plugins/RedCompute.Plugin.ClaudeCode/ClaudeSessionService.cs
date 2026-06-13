@@ -349,6 +349,11 @@ public class ClaudeSessionService
         args.AddRange(["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
         args.AddRange(["--max-turns", maxTurns.ToString()]);
         args.Add("--dangerously-skip-permissions");
+        // Opus 4.7+ and Fable 5 default thinking.display to "omitted", so thinking blocks
+        // stream with an empty body (signature only). Request "summarized" to restore the
+        // visible reasoning text. Harmless on 4.6 (already its default) and ignored when
+        // thinking is disabled.
+        args.AddRange(["--thinking-display", "summarized"]);
         if (!string.IsNullOrEmpty(model))
         {
             args.Add("--model");
@@ -569,6 +574,9 @@ public class ClaudeSessionService
         startInfo.ArgumentList.Add("--no-session-persistence");
         startInfo.ArgumentList.Add("--allowedTools");
         startInfo.ArgumentList.Add("Read,Glob,Grep");
+        // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
+        startInfo.ArgumentList.Add("--thinking-display");
+        startInfo.ArgumentList.Add("summarized");
         if (!string.IsNullOrEmpty(system))
         {
             startInfo.ArgumentList.Add("--system-prompt");
@@ -1296,7 +1304,9 @@ public class ClaudeSessionService
     {
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
             "--input-format", "stream-json", "--include-partial-messages",
-            "--permission-mode", "bypassPermissions" })
+            "--permission-mode", "bypassPermissions",
+            // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
+            "--thinking-display", "summarized" })
             startInfo.ArgumentList.Add(arg);
 
         var m = model ?? _config.Model;
