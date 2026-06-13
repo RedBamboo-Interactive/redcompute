@@ -4,6 +4,9 @@ using RedCompute.Core.Configuration;
 
 namespace RedCompute.App.Services;
 
+/// <summary>An abstract quality tier with display properties.</summary>
+public record QualityTier(string Slug, string Label, string Color, string Icon, int SortOrder);
+
 /// <summary>An abstract quality tier resolved to a concrete provider + model + params.</summary>
 public record QualityMode(
     string Id, string Slug, string QualityTier, string Provider,
@@ -31,6 +34,7 @@ public class QualityModeService
 
     private readonly object _lock = new();
     private Dictionary<string, List<QualityMode>> _modes;
+    private Dictionary<string, QualityTier> _tiers;
 
     public QualityModeService(RedComputeConfig config, Action<string, Guid?> log)
     {
@@ -38,6 +42,7 @@ public class QualityModeService
         _log = log;
         // Seed with fallbacks so Resolve() works before (and if) RedLeaf is ever reached.
         _modes = BuildFallbacks();
+        _tiers = BuildTierFallbacks();
     }
 
     /// <summary>
@@ -48,22 +53,35 @@ public class QualityModeService
     {
         try
         {
-            var url = $"{_config.RedLeafUrl.TrimEnd('/')}/api/entities?type=quality-mode&limit=100";
-            var json = await _http.GetStringAsync(url, ct);
+            var baseUrl = _config.RedLeafUrl.TrimEnd('/');
 
-            var parsed = ParseModes(json);
+            var modesJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-mode&limit=100", ct);
+            var parsed = ParseModes(modesJson);
             if (parsed.Count == 0)
             {
                 _log("[QualityModes] RedLeaf returned no usable quality-mode entities; keeping current modes", null);
-                return;
+            }
+            else
+            {
+                var grouped = parsed
+                    .GroupBy(m => m.QualityTier, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+                lock (_lock) { _modes = grouped; }
+                _log($"[QualityModes] Loaded {parsed.Count} quality mode(s) across {grouped.Count} tier(s) from RedLeaf", null);
             }
 
-            var grouped = parsed
-                .GroupBy(m => m.QualityTier, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
-
-            lock (_lock) { _modes = grouped; }
-            _log($"[QualityModes] Loaded {parsed.Count} quality mode(s) across {grouped.Count} tier(s) from RedLeaf", null);
+            var tiersJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-tier&limit=100", ct);
+            var parsedTiers = ParseTiers(tiersJson);
+            if (parsedTiers.Count == 0)
+            {
+                _log("[QualityModes] RedLeaf returned no quality-tier entities; keeping current tiers", null);
+            }
+            else
+            {
+                var tiersDict = parsedTiers.ToDictionary(t => t.Slug, StringComparer.OrdinalIgnoreCase);
+                lock (_lock) { _tiers = tiersDict; }
+                _log($"[QualityModes] Loaded {parsedTiers.Count} quality tier(s) from RedLeaf", null);
+            }
         }
         catch (Exception ex)
         {
@@ -110,10 +128,10 @@ public class QualityModeService
         lock (_lock) { return _modes.Values.SelectMany(v => v).ToList(); }
     }
 
-    /// <summary>The set of quality tiers currently known.</summary>
-    public IReadOnlyList<string> GetTiers()
+    /// <summary>The set of quality tiers currently known, ordered by SortOrder.</summary>
+    public IReadOnlyList<QualityTier> GetTiers()
     {
-        lock (_lock) { return _modes.Keys.ToList(); }
+        lock (_lock) { return _tiers.Values.OrderBy(t => t.SortOrder).ToList(); }
     }
 
     private static ResolvedMode ToResolved(QualityMode m)
@@ -136,7 +154,64 @@ public class QualityModeService
         };
     }
 
+    private static Dictionary<string, QualityTier> BuildTierFallbacks() =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["fast"]     = new("fast",     "Fast",     "#22d3ee", "fa-solid fa-rabbit",     0),
+            ["standard"] = new("standard", "Standard", "#a78bfa", "fa-solid fa-bolt",       1),
+            ["deep"]     = new("deep",     "Deep",     "#fb923c", "fa-solid fa-brain",      2),
+            ["research"] = new("research", "Research", "#f43f5e", "fa-solid fa-microscope", 3),
+        };
+
     // ---- RedLeaf response parsing --------------------------------------------------------
+
+    private static List<QualityTier> ParseTiers(string json)
+    {
+        var result = new List<QualityTier>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            JsonElement array;
+            if (root.ValueKind == JsonValueKind.Array)
+                array = root;
+            else if (root.ValueKind != JsonValueKind.Object || !TryFindArray(root, out array))
+                return result;
+
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var slug = GetString(item, "slug") ?? GetString(item, "id");
+                if (string.IsNullOrWhiteSpace(slug)) continue;
+
+                JsonDocument? dataDoc = null;
+                try
+                {
+                    var data = item;
+                    if (item.TryGetProperty("data", out var d))
+                    {
+                        if (d.ValueKind == JsonValueKind.Object) data = d;
+                        else if (d.ValueKind == JsonValueKind.String)
+                        {
+                            var raw = d.GetString();
+                            if (!string.IsNullOrWhiteSpace(raw)) { dataDoc = JsonDocument.Parse(raw); data = dataDoc.RootElement; }
+                        }
+                    }
+
+                    var label    = GetString(data, "label") ?? GetString(item, "name") ?? slug!;
+                    var color    = GetString(data, "color") ?? "#a78bfa";
+                    var icon     = GetString(data, "icon")  ?? "fa-solid fa-bolt";
+                    var sortOrder = GetInt(data, "sort_order") ?? GetInt(data, "sortOrder") ?? 99;
+
+                    result.Add(new QualityTier(slug!, label, color, icon, sortOrder));
+                }
+                catch (JsonException) { }
+                finally { dataDoc?.Dispose(); }
+            }
+        }
+        catch (JsonException) { }
+        return result;
+    }
 
     private static List<QualityMode> ParseModes(string json)
     {

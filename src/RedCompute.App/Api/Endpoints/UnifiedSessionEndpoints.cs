@@ -522,7 +522,10 @@ public static class UnifiedSessionEndpoints
 
             return Results.Json(new
             {
-                tiers = _quality.GetTiers(),
+                tiers = _quality.GetTiers().Select(t => new
+                {
+                    t.Slug, t.Label, t.Color, t.Icon, t.SortOrder,
+                }),
                 modes = _quality.GetAll().Select(m => new
                 {
                     m.Id, m.Slug, qualityTier = m.QualityTier, m.Provider, m.Model,
@@ -541,7 +544,10 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new
             {
                 refreshed = true,
-                tiers = _quality.GetTiers(),
+                tiers = _quality.GetTiers().Select(t => new
+                {
+                    t.Slug, t.Label, t.Color, t.Icon, t.SortOrder,
+                }),
                 modes = _quality.GetAll().Select(m => new
                 {
                     m.Id, m.Slug, qualityTier = m.QualityTier, m.Provider, m.Model,
