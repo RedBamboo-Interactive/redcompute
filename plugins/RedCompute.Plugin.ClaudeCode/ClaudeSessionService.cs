@@ -30,10 +30,9 @@ public class ClaudeSessionService
         _jobTracker = jobTracker;
         _sessionStore = sessionStore;
         _log = log;
-        RecoverSessions();
     }
 
-    private void RecoverSessions()
+    internal void RecoverSessions()
     {
         try
         {

@@ -79,7 +79,11 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         return Task.FromResult(true);
     }
 
-    public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
+    public Task<bool> StartAsync(CancellationToken ct = default)
+    {
+        _claude.RecoverSessions();
+        return Task.FromResult(true);
+    }
     public Task StopAsync(CancellationToken ct = default) => _claude.StopAllAsync();
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
     public string? GetProxyTargetUrl() => null;
