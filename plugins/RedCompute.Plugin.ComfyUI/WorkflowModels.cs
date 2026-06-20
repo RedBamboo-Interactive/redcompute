@@ -9,6 +9,17 @@ public class WorkflowParameter
     public required string NodeId { get; init; }
     public required string Field { get; init; }
     public object? Default { get; init; }
+
+    public string Type { get; init; } = "string";
+    public string? Description { get; init; }
+    public bool Required { get; init; } = false;
+    public string[]? Enum { get; init; }
+    public double? Minimum { get; init; }
+    public double? Maximum { get; init; }
+    public double? Step { get; init; }
+    public string? Widget { get; init; }
+    public string? Placeholder { get; init; }
+    public string? Suffix { get; init; }
 }
 
 public class WorkflowDefinition
@@ -77,12 +88,26 @@ public class WorkflowLoader
                             };
                         }
 
+                        string[]? enumValues = null;
+                        if (p.TryGetProperty("enum", out var enumProp) && enumProp.ValueKind == JsonValueKind.Array)
+                            enumValues = enumProp.EnumerateArray().Select(e => e.GetString()!).ToArray();
+
                         parameters.Add(new WorkflowParameter
                         {
                             Name = p.GetProperty("name").GetString()!,
                             NodeId = p.GetProperty("node_id").ToString(),
                             Field = p.GetProperty("field").GetString()!,
-                            Default = defaultVal
+                            Default = defaultVal,
+                            Type = p.TryGetProperty("type", out var tp) ? tp.GetString() ?? "string" : "string",
+                            Description = p.TryGetProperty("description", out var dp) ? dp.GetString() : null,
+                            Required = p.TryGetProperty("required", out var rp) && rp.GetBoolean(),
+                            Enum = enumValues,
+                            Minimum = p.TryGetProperty("minimum", out var minP) ? minP.GetDouble() : null,
+                            Maximum = p.TryGetProperty("maximum", out var maxP) ? maxP.GetDouble() : null,
+                            Step = p.TryGetProperty("step", out var stepP) ? stepP.GetDouble() : null,
+                            Widget = p.TryGetProperty("widget", out var wp) ? wp.GetString() : null,
+                            Placeholder = p.TryGetProperty("placeholder", out var pp) ? pp.GetString() : null,
+                            Suffix = p.TryGetProperty("suffix", out var sp) ? sp.GetString() : null,
                         });
                     }
                 }

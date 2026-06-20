@@ -49,7 +49,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
         ["prompt"] = new ParameterSchema { Type = "string", Required = true, Description = "Text prompt for image generation" },
-        ["workflow"] = new ParameterSchema { Type = "string", Required = false, Default = "z_turbo", Description = "Workflow name to use" },
+        ["workflow"] = new ParameterSchema { Type = "string", Required = false, Default = "z_turbo", Description = "Workflow name. Each workflow exposes typed parameters via GET /{slug}/workflows/{name}" },
         ["negative"] = new ParameterSchema { Type = "string", Required = false, Description = "Negative prompt" },
         ["seed"] = new ParameterSchema { Type = "integer", Required = false, Description = "Random seed for reproducibility" },
         ["width"] = new ParameterSchema { Type = "integer", Required = false, Description = "Output image width" },
