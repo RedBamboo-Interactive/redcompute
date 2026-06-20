@@ -63,67 +63,14 @@ public class WorkflowLoader
             try
             {
                 var json = File.ReadAllText(path);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-
-                if (!root.TryGetProperty("_axl", out var axl))
+                var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+                if (dict == null || !dict.ContainsKey("_axl"))
                     continue;
 
                 var name = Path.GetFileNameWithoutExtension(path);
-                var parameters = new List<WorkflowParameter>();
+                result[name] = ParseWorkflowDefinition(name, dict, Path.GetFileName(path), path);
 
-                if (axl.TryGetProperty("parameters", out var paramArray))
-                {
-                    foreach (var p in paramArray.EnumerateArray())
-                    {
-                        object? defaultVal = null;
-                        if (p.TryGetProperty("default", out var def))
-                        {
-                            defaultVal = def.ValueKind switch
-                            {
-                                JsonValueKind.String => def.GetString(),
-                                JsonValueKind.Number => def.TryGetInt64(out var l) ? l : def.GetDouble(),
-                                JsonValueKind.Null => null,
-                                _ => def.ToString()
-                            };
-                        }
-
-                        string[]? enumValues = null;
-                        if (p.TryGetProperty("enum", out var enumProp) && enumProp.ValueKind == JsonValueKind.Array)
-                            enumValues = enumProp.EnumerateArray().Select(e => e.GetString()!).ToArray();
-
-                        parameters.Add(new WorkflowParameter
-                        {
-                            Name = p.GetProperty("name").GetString()!,
-                            NodeId = p.GetProperty("node_id").ToString(),
-                            Field = p.GetProperty("field").GetString()!,
-                            Default = defaultVal,
-                            Type = p.TryGetProperty("type", out var tp) ? tp.GetString() ?? "string" : "string",
-                            Description = p.TryGetProperty("description", out var dp) ? dp.GetString() : null,
-                            Required = p.TryGetProperty("required", out var rp) && rp.GetBoolean(),
-                            Enum = enumValues,
-                            Minimum = p.TryGetProperty("minimum", out var minP) ? minP.GetDouble() : null,
-                            Maximum = p.TryGetProperty("maximum", out var maxP) ? maxP.GetDouble() : null,
-                            Step = p.TryGetProperty("step", out var stepP) ? stepP.GetDouble() : null,
-                            Widget = p.TryGetProperty("widget", out var wp) ? wp.GetString() : null,
-                            Placeholder = p.TryGetProperty("placeholder", out var pp) ? pp.GetString() : null,
-                            Suffix = p.TryGetProperty("suffix", out var sp) ? sp.GetString() : null,
-                        });
-                    }
-                }
-
-                result[name] = new WorkflowDefinition
-                {
-                    Name = name,
-                    FileName = Path.GetFileName(path),
-                    FilePath = path,
-                    Description = axl.TryGetProperty("description", out var desc) ? desc.GetString() ?? "" : "",
-                    MediaType = axl.TryGetProperty("media_type", out var mt) ? mt.GetString() ?? "image" : "image",
-                    OutputNode = axl.TryGetProperty("output_node", out var on) ? on.ToString() : "9",
-                    Parameters = parameters
-                };
-
-                _log($"[WorkflowLoader] Loaded workflow: {name} ({parameters.Count} params, {result[name].MediaType})");
+                _log($"[WorkflowLoader] Loaded workflow: {name} ({result[name].Parameters.Count} params, {result[name].MediaType})");
             }
             catch (Exception ex)
             {
@@ -133,6 +80,76 @@ public class WorkflowLoader
 
         _workflows = result;
         _log($"[WorkflowLoader] {result.Count} workflow(s) loaded from {_workflowsDir}");
+    }
+
+    public static WorkflowDefinition ParseWorkflowDefinition(string name, Dictionary<string, JsonElement> json, string? fileName = null, string? filePath = null)
+    {
+        var parameters = new List<WorkflowParameter>();
+
+        if (json.TryGetValue("_axl", out var axlElement))
+        {
+            if (axlElement.TryGetProperty("parameters", out var paramArray))
+            {
+                foreach (var p in paramArray.EnumerateArray())
+                {
+                    object? defaultVal = null;
+                    if (p.TryGetProperty("default", out var def))
+                    {
+                        defaultVal = def.ValueKind switch
+                        {
+                            JsonValueKind.String => def.GetString(),
+                            JsonValueKind.Number => def.TryGetInt64(out var l) ? l : def.GetDouble(),
+                            JsonValueKind.Null => null,
+                            _ => def.ToString()
+                        };
+                    }
+
+                    string[]? enumValues = null;
+                    if (p.TryGetProperty("enum", out var enumProp) && enumProp.ValueKind == JsonValueKind.Array)
+                        enumValues = enumProp.EnumerateArray().Select(e => e.GetString()!).ToArray();
+
+                    parameters.Add(new WorkflowParameter
+                    {
+                        Name = p.GetProperty("name").GetString()!,
+                        NodeId = p.GetProperty("node_id").ToString(),
+                        Field = p.GetProperty("field").GetString()!,
+                        Default = defaultVal,
+                        Type = p.TryGetProperty("type", out var tp) ? tp.GetString() ?? "string" : "string",
+                        Description = p.TryGetProperty("description", out var dp) ? dp.GetString() : null,
+                        Required = p.TryGetProperty("required", out var rp) && rp.GetBoolean(),
+                        Enum = enumValues,
+                        Minimum = p.TryGetProperty("minimum", out var minP) ? minP.GetDouble() : null,
+                        Maximum = p.TryGetProperty("maximum", out var maxP) ? maxP.GetDouble() : null,
+                        Step = p.TryGetProperty("step", out var stepP) ? stepP.GetDouble() : null,
+                        Widget = p.TryGetProperty("widget", out var wp) ? wp.GetString() : null,
+                        Placeholder = p.TryGetProperty("placeholder", out var pp) ? pp.GetString() : null,
+                        Suffix = p.TryGetProperty("suffix", out var sp) ? sp.GetString() : null,
+                    });
+                }
+            }
+
+            return new WorkflowDefinition
+            {
+                Name = name,
+                FileName = fileName ?? "",
+                FilePath = filePath ?? "",
+                Description = axlElement.TryGetProperty("description", out var desc) ? desc.GetString() ?? "" : "",
+                MediaType = axlElement.TryGetProperty("media_type", out var mt) ? mt.GetString() ?? "image" : "image",
+                OutputNode = axlElement.TryGetProperty("output_node", out var on) ? on.ToString() : "9",
+                Parameters = parameters
+            };
+        }
+
+        return new WorkflowDefinition
+        {
+            Name = name,
+            FileName = fileName ?? "",
+            FilePath = filePath ?? "",
+            Description = "",
+            MediaType = "image",
+            OutputNode = "9",
+            Parameters = parameters
+        };
     }
 
     public WorkflowDefinition? Get(string name) =>

@@ -54,7 +54,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         ["seed"] = new ParameterSchema { Type = "integer", Required = false, Description = "Random seed for reproducibility" },
         ["width"] = new ParameterSchema { Type = "integer", Required = false, Description = "Output image width" },
         ["height"] = new ParameterSchema { Type = "integer", Required = false, Description = "Output image height" },
-        ["image_url"] = new ParameterSchema { Type = "string", Required = false, Description = "Source image URL for img2img workflows" }
+        ["image_url"] = new ParameterSchema { Type = "string", Required = false, Description = "Source image URL for img2img workflows" },
+        ["workflow_json"] = new ParameterSchema { Type = "string", Required = false, Description = "Inline ComfyUI workflow JSON (alternative to workflow name). Must include _axl metadata." }
     };
 
     public ReturnSchema OutputSchema => new()
@@ -241,28 +242,79 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         var progressCallback = ProgressCallback;
         var p = request.Parameters;
         var workflowName = ProviderHelpers.GetParam<string>(p, "workflow") ?? _defaultWorkflow;
+        var inlineJson = ProviderHelpers.GetParam<string>(p, "workflow_json");
         var prompt = ProviderHelpers.GetParam<string>(p, "prompt");
         var negative = ProviderHelpers.GetParam<string>(p, "negative") ?? "";
         var seedParam = ProviderHelpers.GetParam<long?>(p, "seed");
 
-        if (string.IsNullOrWhiteSpace(prompt))
-            return new JobResult { Success = false, ErrorMessage = "prompt is required" };
+        WorkflowDefinition wfDef;
+        Dictionary<string, JsonElement> workflow;
 
-        var wfDef = WorkflowLoader.Get(workflowName);
-        if (wfDef == null)
+        if (!string.IsNullOrEmpty(inlineJson))
         {
-            var available = string.Join(", ", WorkflowLoader.Workflows.Keys);
-            return new JobResult { Success = false, ErrorMessage = $"Unknown workflow '{workflowName}'. Available: {available}" };
-        }
+            var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(inlineJson);
+            if (parsed == null)
+                return new JobResult { Success = false, ErrorMessage = "Failed to parse workflow_json" };
 
-        var workflow = WorkflowLoader.LoadWorkflowJson(workflowName);
-        if (workflow == null)
-            return new JobResult { Success = false, ErrorMessage = $"Failed to load workflow JSON for '{workflowName}'" };
+            var inlineOutputNode = ProviderHelpers.GetParam<string>(p, "output_node");
+            if (!string.IsNullOrEmpty(inlineOutputNode))
+            {
+                var paramJson = p.TryGetValue("workflow_parameters", out var wp) ? wp : null;
+                var paramList = new List<WorkflowParameter>();
+                if (paramJson is JsonElement je && je.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var pe in je.EnumerateArray())
+                    {
+                        paramList.Add(new WorkflowParameter
+                        {
+                            Name = pe.TryGetProperty("name", out var n) ? n.GetString()! : "",
+                            NodeId = pe.TryGetProperty("node_id", out var ni) ? ni.ToString() : "",
+                            Field = pe.TryGetProperty("field", out var f) ? f.GetString()! : "",
+                            Default = pe.TryGetProperty("default", out var d) ? (object?)d.ToString() : null,
+                        });
+                    }
+                }
+                wfDef = new WorkflowDefinition
+                {
+                    Name = workflowName ?? "inline",
+                    FileName = "",
+                    FilePath = "",
+                    OutputNode = inlineOutputNode,
+                    MediaType = ProviderHelpers.GetParam<string>(p, "media_type") ?? "image",
+                    Parameters = paramList,
+                };
+            }
+            else
+            {
+                wfDef = WorkflowLoader.ParseWorkflowDefinition(workflowName ?? "inline", parsed);
+            }
+            workflow = parsed;
+            workflow.Remove("_axl");
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(prompt))
+                return new JobResult { Success = false, ErrorMessage = "prompt is required" };
+
+            var def = WorkflowLoader.Get(workflowName);
+            if (def == null)
+            {
+                var available = string.Join(", ", WorkflowLoader.Workflows.Keys);
+                return new JobResult { Success = false, ErrorMessage = $"Unknown workflow '{workflowName}'. Available: {available}" };
+            }
+            wfDef = def;
+
+            var loaded = WorkflowLoader.LoadWorkflowJson(workflowName);
+            if (loaded == null)
+                return new JobResult { Success = false, ErrorMessage = $"Failed to load workflow JSON for '{workflowName}'" };
+            workflow = loaded;
+        }
 
         var actualSeed = seedParam ?? Random.Shared.NextInt64(0, uint.MaxValue);
 
         var extraParams = new Dictionary<string, object?>(p);
         extraParams.Remove("workflow");
+        extraParams.Remove("workflow_json");
         extraParams.Remove("prompt");
         extraParams.Remove("negative");
         extraParams.Remove("seed");
