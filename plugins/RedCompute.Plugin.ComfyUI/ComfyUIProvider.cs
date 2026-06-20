@@ -271,6 +271,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                             NodeId = pe.TryGetProperty("node_id", out var ni) ? ni.ToString() : "",
                             Field = pe.TryGetProperty("field", out var f) ? f.GetString()! : "",
                             Default = pe.TryGetProperty("default", out var d) ? (object?)d.ToString() : null,
+                            Type = pe.TryGetProperty("type", out var t) ? t.GetString()! : "string",
                         });
                     }
                 }
@@ -330,6 +331,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             extraParams["image"] = uploadedName;
         }
 
+        await ResolveAssetParamsAsync(extraParams, wfDef.Parameters, ct);
         InjectParameters(workflow, wfDef.Parameters, prompt, negative, actualSeed, extraParams);
 
         var clientId = Guid.NewGuid().ToString();
@@ -709,6 +711,94 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         catch (Exception ex)
         {
             _log($"[ComfyUI] Download error: {ex.Message}");
+            return null;
+        }
+    }
+
+    private async Task ResolveAssetParamsAsync(
+        Dictionary<string, object?> extras,
+        List<WorkflowParameter> paramDefs,
+        CancellationToken ct)
+    {
+        foreach (var param in paramDefs)
+        {
+            if (!extras.TryGetValue(param.Name, out var value) || value == null) continue;
+
+            string? assetUrl = null;
+
+            if (value is JsonElement je)
+            {
+                if (je.ValueKind == JsonValueKind.Object && je.TryGetProperty("assetUrl", out var urlProp))
+                    assetUrl = urlProp.GetString();
+                else if (je.ValueKind == JsonValueKind.String && param.Type is "image" or "video" or "audio")
+                {
+                    var str = je.GetString();
+                    if (!string.IsNullOrEmpty(str) && !str.StartsWith("http"))
+                        assetUrl = $"http://localhost:18804/api/assets/{str}";
+                    else if (!string.IsNullOrEmpty(str))
+                        assetUrl = str;
+                }
+            }
+
+            if (string.IsNullOrEmpty(assetUrl)) continue;
+
+            if (assetUrl.StartsWith("/"))
+                assetUrl = $"http://localhost:18804{assetUrl}";
+
+            var uploadedName = await UploadFileToComfyAsync(assetUrl, ct);
+            if (uploadedName != null)
+                extras[param.Name] = uploadedName;
+            else
+                _log($"[ComfyUI] Warning: failed to resolve asset for param '{param.Name}'");
+        }
+    }
+
+    private async Task<string?> UploadFileToComfyAsync(string fileUrl, CancellationToken ct)
+    {
+        try
+        {
+            var resp = await _http.GetAsync(fileUrl, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _log($"[ComfyUI] Failed to download asset: HTTP {(int)resp.StatusCode} from {fileUrl}");
+                return null;
+            }
+            var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+            var contentType = resp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+
+            var ext = contentType switch
+            {
+                "image/jpeg" or "image/jpg" => ".jpg",
+                "image/png" => ".png",
+                "image/webp" => ".webp",
+                "video/mp4" => ".mp4",
+                "video/webm" => ".webm",
+                "audio/wav" => ".wav",
+                "audio/mpeg" => ".mp3",
+                _ => Path.GetExtension(new Uri(fileUrl).AbsolutePath) is { Length: > 0 } uriExt ? uriExt : ".bin"
+            };
+
+            var filename = $"rl_{Guid.NewGuid():N}{ext}";
+            using var form = new MultipartFormDataContent();
+            form.Add(new ByteArrayContent(bytes), "image", filename);
+            form.Add(new StringContent("true"), "overwrite");
+
+            var uploadResp = await _http.PostAsync($"{BaseUrl}/upload/image", form, ct);
+            if (!uploadResp.IsSuccessStatusCode)
+            {
+                var body = await uploadResp.Content.ReadAsStringAsync(ct);
+                _log($"[ComfyUI] Asset upload error {(int)uploadResp.StatusCode}: {body[..Math.Min(body.Length, 200)]}");
+                return null;
+            }
+
+            var result = await uploadResp.Content.ReadFromJsonAsync<JsonElement>(ct);
+            var name = result.GetProperty("name").GetString();
+            _log($"[ComfyUI] Uploaded asset '{name}' ({bytes.Length / 1024}KB, {contentType})");
+            return name;
+        }
+        catch (Exception ex)
+        {
+            _log($"[ComfyUI] Asset upload error: {ex.Message}");
             return null;
         }
     }
