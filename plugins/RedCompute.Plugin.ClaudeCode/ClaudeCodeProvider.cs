@@ -203,10 +203,10 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     // --- ISessionProvider: Generate ---
 
     public async Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
-        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null)
+        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
     {
         var messages = JsonDocument.Parse(messagesJson).RootElement;
-        var result = await _claude.ExecuteOneshotAsync(model, system, messages, maxTokens, ct, effort);
+        var result = await _claude.ExecuteOneshotAsync(model, system, messages, maxTokens, ct, effort, timeout ?? 120);
         return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput, result.Model,
             result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }

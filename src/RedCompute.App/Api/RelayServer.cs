@@ -37,6 +37,7 @@ public class RelayServer
     private readonly HardwareMonitorService _hardwareMonitor;
     private readonly DockerContainerService _docker;
     private readonly QualityModeService _qualityModes;
+    private readonly ProviderConfigService _providerConfig;
     private SessionCallbackRegistry _callbacks;
     private readonly Action<string, Guid?> _log;
     private RedLeafStreamClient? _streamClient;
@@ -56,7 +57,8 @@ public class RelayServer
         _tunnelService = tunnelService;
         _hardwareMonitor = hardwareMonitor;
         _docker = new DockerContainerService(log);
-        _qualityModes = new QualityModeService(config, log);
+        _providerConfig = new ProviderConfigService(config, log);
+        _qualityModes = new QualityModeService(config, log, _providerConfig);
         _callbacks = new SessionCallbackRegistry(log);  // re-created with auth factory after Build()
         _log = log;
     }
@@ -313,7 +315,7 @@ public class RelayServer
         // (dual-write) until the verification window closes.
         var redLeafReader = new RedLeafSessionReader(
             _config.RedLeafUrl, new JwtService(new JwtOptions { SigningKey = signingKey }));
-        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes, redLeafReader);
+        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes, redLeafReader, _providerConfig);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
@@ -352,9 +354,10 @@ public class RelayServer
         await _app.StartAsync(ct);
         _log($"[Relay] Listening at http://localhost:{_config.ApiPort}", null);
 
-        // Fetch suite-wide quality modes from RedLeaf in the background. Fallbacks already
-        // seeded in the constructor keep resolution working if RedLeaf is offline.
+        // Fetch suite-wide quality modes and provider configs from RedLeaf. Fallbacks seeded
+        // in the constructors keep resolution working if RedLeaf is offline.
         _ = _qualityModes.RefreshAsync(ct);
+        _ = _providerConfig.RefreshAsync(ct);
     }
 
     private void RegisterWsEvents(WebSocketBroadcaster broadcaster)

@@ -18,7 +18,8 @@ public record QualityMode(
 /// A null model means the tier has no mode for the requested provider — the provider's
 /// own default model applies.
 /// </summary>
-public record ResolvedMode(string Provider, string? Model, string? Effort);
+public record ResolvedMode(string Provider, string? Model, string? Effort,
+    string? Backend = null, string? EndpointUrl = null, string? ApiKey = null);
 
 /// <summary>
 /// Resolves abstract quality tiers (fast, standard, deep, research) to provider-specific
@@ -30,16 +31,18 @@ public class QualityModeService
 {
     private readonly RedComputeConfig _config;
     private readonly Action<string, Guid?> _log;
+    private readonly ProviderConfigService _providerConfig;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
 
     private readonly object _lock = new();
     private Dictionary<string, List<QualityMode>> _modes;
     private Dictionary<string, QualityTier> _tiers;
 
-    public QualityModeService(RedComputeConfig config, Action<string, Guid?> log)
+    public QualityModeService(RedComputeConfig config, Action<string, Guid?> log, ProviderConfigService providerConfig)
     {
         _config = config;
         _log = log;
+        _providerConfig = providerConfig;
         // Seed with fallbacks so Resolve() works before (and if) RedLeaf is ever reached.
         _modes = BuildFallbacks();
         _tiers = BuildTierFallbacks();
@@ -106,16 +109,21 @@ public class QualityModeService
         {
             _log($"[QualityModes] Unknown quality tier '{tier}' requested; resolving as standard", null);
             if (!snapshot.TryGetValue("standard", out candidates) || candidates.Count == 0)
-                return string.IsNullOrWhiteSpace(preferredProvider)
-                    ? new ResolvedMode("claude-code", "sonnet", null)
-                    : new ResolvedMode(preferredProvider, null, null);
+            {
+                if (string.IsNullOrWhiteSpace(preferredProvider))
+                    return new ResolvedMode("claude-code", "sonnet", null, "claude-code");
+                var pc = _providerConfig.Resolve(preferredProvider);
+                return new ResolvedMode(preferredProvider, pc.DefaultModel, null, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(preferredProvider))
         {
             var match = candidates.FirstOrDefault(m =>
                 string.Equals(m.Provider, preferredProvider, StringComparison.OrdinalIgnoreCase));
-            return match != null ? ToResolved(match) : new ResolvedMode(preferredProvider, null, null);
+            if (match != null) return ToResolved(match);
+            var ppc = _providerConfig.Resolve(preferredProvider);
+            return new ResolvedMode(preferredProvider, ppc.DefaultModel, null, ppc.Backend, ppc.EndpointUrl, ppc.ApiKey);
         }
 
         var chosen = candidates.FirstOrDefault(m => m.IsDefault) ?? candidates[0];
@@ -134,8 +142,11 @@ public class QualityModeService
         lock (_lock) { return _tiers.Values.OrderBy(t => t.SortOrder).ToList(); }
     }
 
-    private static ResolvedMode ToResolved(QualityMode m)
-        => new(m.Provider, m.Model, m.Effort);
+    private ResolvedMode ToResolved(QualityMode m)
+    {
+        var pc = _providerConfig.Resolve(m.Provider);
+        return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+    }
 
     private static Dictionary<string, List<QualityMode>> BuildFallbacks()
     {

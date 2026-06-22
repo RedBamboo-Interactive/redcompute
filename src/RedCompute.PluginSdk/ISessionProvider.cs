@@ -10,6 +10,10 @@ public interface ISessionProvider
 
     // Session lifecycle (PersistentSessions)
     Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null);
+
+    // Extended start with provider-level endpoint override (default delegates to 7-param above).
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null)
+        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task StopSessionAsync(string sessionId);
     Task ForceKillAsync(string sessionId);
@@ -39,7 +43,7 @@ public interface ISessionProvider
 
     // LLM completion (Generate)
     Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
-        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null);
+        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null);
 
     // Discovery
     List<SessionProjectInfo> ListProjects();

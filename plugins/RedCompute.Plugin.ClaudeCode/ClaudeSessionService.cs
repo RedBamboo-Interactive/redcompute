@@ -540,7 +540,7 @@ public class ClaudeSessionService
             string.IsNullOrEmpty(lastAssistantText) && !hadToolUse ? "No result event in stream output" : null);
     }
 
-    public async Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages, int maxTokens, CancellationToken ct, string? effort = null)
+    public async Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages, int maxTokens, CancellationToken ct, string? effort = null, int timeout = 120)
     {
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
@@ -595,8 +595,9 @@ public class ClaudeSessionService
 
         _log($"[Claude] Oneshot process started in {sw.ElapsedMilliseconds}ms", null);
 
+        var clampedTimeout = Math.Clamp(timeout, 10, 600);
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(clampedTimeout));
 
         var rawSb = new StringBuilder();
         var tsSb = new StringBuilder();
@@ -650,9 +651,9 @@ public class ClaudeSessionService
                 var partial = ParseStreamJsonOutput(rawStdout, resolvedModel);
                 return new OneshotResult(false, partial.Text, tsSb.ToString(), partial.Model,
                     partial.InputTokens, partial.OutputTokens, partial.CostUsd,
-                    "Execution timed out after 60s");
+                    $"Execution timed out after {clampedTimeout}s");
             }
-            return new OneshotResult(false, null, null, null, 0, 0, null, "Execution timed out after 60s");
+            return new OneshotResult(false, null, null, null, 0, 0, null, $"Execution timed out after {clampedTimeout}s");
         }
     }
 

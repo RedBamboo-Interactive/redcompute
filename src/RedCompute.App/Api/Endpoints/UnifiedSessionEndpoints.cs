@@ -19,16 +19,19 @@ public static class UnifiedSessionEndpoints
     private static SessionCallbackRegistry? _callbacks;
     private static QualityModeService? _quality;
     private static RedLeafSessionReader? _redLeafReader;
+    private static ProviderConfigService? _providerConfig;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
         DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null,
-        QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null)
+        QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null,
+        ProviderConfigService? providerConfig = null)
     {
         _docker = docker;
         _callbacks = callbacks;
         _quality = quality;
         _redLeafReader = redLeafReader;
+        _providerConfig = providerConfig;
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
@@ -93,7 +96,7 @@ public static class UnifiedSessionEndpoints
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
             var q = ResolveQuality(ctx, body);
-            var (provider, error) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
+            var (provider, error) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
             if (error != null) return error;
 
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.PersistentSessions))
@@ -107,7 +110,7 @@ public static class UnifiedSessionEndpoints
             var effort = q.Effort;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort);
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort, q.EndpointUrl, q.ApiKey);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -540,7 +543,10 @@ public static class UnifiedSessionEndpoints
             if (_quality == null)
                 return Error(503, "not_configured", "Quality mode service is not available");
 
-            await _quality.RefreshAsync();
+            await Task.WhenAll(
+                _quality.RefreshAsync(),
+                _providerConfig?.RefreshAsync() ?? Task.CompletedTask);
+
             return Results.Json(new
             {
                 refreshed = true,
@@ -554,6 +560,28 @@ public static class UnifiedSessionEndpoints
                     m.Effort, m.ThinkingBudget, m.Timeout, m.MaxTurns, m.IsDefault, m.Description,
                 }),
             });
+        });
+
+        endpoints.MapGet("/ai-session/providers/configured",
+            "List all active AI provider configurations, resolved from RedLeaf. Use these slugs in the provider field.", () =>
+        {
+            if (_providerConfig == null)
+                return Error(503, "not_configured", "Provider config service is not available");
+
+            var defaultSlug = _providerConfig.DefaultProviderSlug;
+            var providers = _providerConfig.GetAll().Select(p => new
+            {
+                p.Slug,
+                p.Name,
+                p.Backend,
+                endpointUrl = p.EndpointUrl,
+                hasApiKey = !string.IsNullOrEmpty(p.ApiKey),
+                defaultModel = p.DefaultModel,
+                isDefault = string.Equals(p.Slug, defaultSlug, StringComparison.OrdinalIgnoreCase),
+                p.Status,
+                p.Description,
+            });
+            return Results.Json(providers);
         });
 
         endpoints.MapPost("/ai-session/execute",
@@ -570,7 +598,7 @@ public static class UnifiedSessionEndpoints
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
             var q = ResolveQuality(ctx, body);
-            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
+            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
             if (resolveError != null) return resolveError;
 
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.StatelessExecution))
@@ -629,6 +657,18 @@ public static class UnifiedSessionEndpoints
 
             if (userId != null)
                 providerParams["userId"] = userId;
+
+            // Thread provider endpoint/key into env so providers that support custom endpoints can use them.
+            if (!string.IsNullOrEmpty(q.EndpointUrl))
+            {
+                env ??= new Dictionary<string, string>();
+                env["OPENAI_BASE_URL"] = q.EndpointUrl;
+            }
+            if (!string.IsNullOrEmpty(q.ApiKey))
+            {
+                env ??= new Dictionary<string, string>();
+                env["OPENAI_API_KEY"] = q.ApiKey;
+            }
 
             var inputSummary = prompt.Length > 100 ? prompt[..97] + "..." : prompt;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
@@ -740,7 +780,7 @@ public static class UnifiedSessionEndpoints
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
             var q = ResolveQuality(ctx, body);
-            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName);
+            var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
             if (resolveError != null) return resolveError;
 
             var mode = body.TryGetProperty("mode", out var m) ? m.GetString() : "session";
@@ -782,7 +822,7 @@ public static class UnifiedSessionEndpoints
 
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar, q.Effort);
+        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar, q.Effort, q.EndpointUrl, q.ApiKey);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -807,6 +847,10 @@ public static class UnifiedSessionEndpoints
         var maxTokens = 1024;
         if (body.TryGetProperty("maxTokens", out var mt) && mt.ValueKind == JsonValueKind.Number && mt.TryGetInt32(out var mtv))
             maxTokens = Math.Clamp(mtv, 1, 8192);
+
+        int? timeout = null;
+        if (body.TryGetProperty("timeout", out var to) && to.ValueKind == JsonValueKind.Number && to.TryGetInt32(out var tov))
+            timeout = Math.Clamp(tov, 10, 600);
 
         var model = q.Model;
         var effort = q.Effort;
@@ -833,7 +877,7 @@ public static class UnifiedSessionEndpoints
 
         try
         {
-            var result = await provider.GenerateAsync(model, system, messages.GetRawText(), maxTokens, ctx.RequestAborted, effort);
+            var result = await provider.GenerateAsync(model, system, messages.GetRawText(), maxTokens, ctx.RequestAborted, effort, timeout);
             if (!result.Success)
             {
                 jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
@@ -865,7 +909,8 @@ public static class UnifiedSessionEndpoints
     /// The model/effort/provider a request resolves to once a quality tier is applied.
     /// An explicit model always wins; otherwise a qualityTier resolves all three suite-wide.
     /// </summary>
-    private record QualityResolution(string? Model, string? Effort, string? ProviderName);
+    private record QualityResolution(string? Model, string? Effort, string? ProviderName,
+        string? BackendName = null, string? EndpointUrl = null, string? ApiKey = null);
 
     private static QualityResolution ResolveQuality(HttpContext ctx, JsonElement body)
     {
@@ -876,18 +921,30 @@ public static class UnifiedSessionEndpoints
         explicitProvider ??= ctx.Request.Headers["X-Provider"].FirstOrDefault();
 
         // Explicit model wins, and no tier means nothing to resolve — leave request values untouched.
+        // Still resolve provider config so endpoint/apiKey flow through even without a quality tier.
         if (!string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(tier) || _quality == null)
+        {
+            if (explicitProvider != null && _providerConfig != null)
+            {
+                var pc = _providerConfig.Resolve(explicitProvider);
+                return new QualityResolution(model, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+            }
             return new QualityResolution(model, effort, explicitProvider);
+        }
 
         var resolved = _quality.Resolve(tier, explicitProvider);
         return new QualityResolution(
             resolved.Model,
             string.IsNullOrWhiteSpace(effort) ? resolved.Effort : effort,
-            explicitProvider ?? resolved.Provider);
+            explicitProvider ?? resolved.Provider,
+            resolved.Backend,
+            resolved.EndpointUrl,
+            resolved.ApiKey);
     }
 
     private static (ISessionProvider? provider, IResult? error) ResolveProviderFromBody(
-        HttpContext ctx, CapabilityRegistry registry, JsonElement body, string? providerOverride = null)
+        HttpContext ctx, CapabilityRegistry registry, JsonElement body,
+        string? providerOverride = null, string? backendOverride = null)
     {
         string? providerName = null;
         if (body.TryGetProperty("provider", out var pv) && pv.ValueKind == JsonValueKind.String)
@@ -902,7 +959,11 @@ public static class UnifiedSessionEndpoints
 
         if (providerName != null)
         {
-            var (backend, err) = ProviderResolver.Resolve(entry, providerName, "ai-session");
+            // Translate provider slug (e.g. "anthropic-direct") to backend ID (e.g. "claude-code")
+            // so ProviderResolver can find the registered ISessionProvider instance.
+            var backendName = backendOverride
+                ?? (_providerConfig?.Resolve(providerName).Backend ?? providerName);
+            var (backend, err) = ProviderResolver.Resolve(entry, backendName, "ai-session");
             if (err != null) return (null, err);
             if (backend is ISessionProvider sp) return (sp, null);
             return (null, Error(500, "not_session_provider", $"Provider '{providerName}' does not implement ISessionProvider"));

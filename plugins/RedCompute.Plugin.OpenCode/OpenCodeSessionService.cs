@@ -77,7 +77,7 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -109,7 +109,7 @@ public class OpenCodeSessionService
             UserId = userId,
         };
 
-        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model);
+        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, endpointUrl, apiKey);
         if (session == null)
         {
             LastStartError = error;
@@ -221,7 +221,7 @@ public class OpenCodeSessionService
 
     private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
         OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId,
-        string? model = null)
+        string? model = null, string? endpointUrl = null, string? apiKey = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -239,10 +239,19 @@ public class OpenCodeSessionService
 
         var resolvedModel = model ?? _config.Model;
         if (!string.IsNullOrEmpty(resolvedModel))
-        {
             startInfo.EnvironmentVariables["OPENCODE_MODEL"] = resolvedModel;
-            startInfo.EnvironmentVariables["OPENCODE_CONFIG_CONTENT"] =
-                JsonSerializer.Serialize(new { model = resolvedModel });
+
+        if (!string.IsNullOrEmpty(endpointUrl))
+            startInfo.EnvironmentVariables["OPENAI_BASE_URL"] = endpointUrl;
+        if (!string.IsNullOrEmpty(apiKey))
+            startInfo.EnvironmentVariables["OPENAI_API_KEY"] = apiKey;
+
+        if (!string.IsNullOrEmpty(resolvedModel) || !string.IsNullOrEmpty(endpointUrl))
+        {
+            var configContent = new Dictionary<string, object>();
+            if (!string.IsNullOrEmpty(resolvedModel)) configContent["model"] = resolvedModel;
+            if (!string.IsNullOrEmpty(endpointUrl)) configContent["baseURL"] = endpointUrl;
+            startInfo.EnvironmentVariables["OPENCODE_CONFIG_CONTENT"] = JsonSerializer.Serialize(configContent);
         }
 
         Process process;

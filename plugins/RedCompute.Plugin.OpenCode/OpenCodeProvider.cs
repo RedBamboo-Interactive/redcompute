@@ -82,9 +82,12 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Session Lifecycle ---
 
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
+        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, null, null);
+
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null)
     {
-        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl);
+        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, endpointUrl, apiKey);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -131,7 +134,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     // --- ISessionProvider: Generate (not supported) ---
 
     public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
-        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null)
+        string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
         => throw new NotSupportedException("OpenCode does not support direct LLM completion");
 
     // --- ISessionProvider: Querying ---
