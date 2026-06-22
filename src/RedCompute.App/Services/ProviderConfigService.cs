@@ -6,7 +6,7 @@ namespace RedCompute.App.Services;
 
 public record ProviderEntityConfig(
     string Id, string Slug, string Name, string Backend,
-    string? EndpointUrl, string? ApiKey, string? DefaultModel,
+    string? Icon, string? EndpointUrl, string? ApiKey, string? DefaultModel,
     string Status, string? Description);
 
 /// <summary>
@@ -87,7 +87,7 @@ public class ProviderConfigService
         if (AliasMap.TryGetValue(slug, out var aliasSlug) && snapshot.TryGetValue(aliasSlug, out var aliased))
             return aliased;
 
-        return new ProviderEntityConfig(slug, slug, slug, slug, null, null, null, "active", null);
+        return new ProviderEntityConfig(slug, slug, slug, slug, "fa-solid fa-plug", null, null, null, "active", null);
     }
 
     /// <summary>Returns the default provider from suite-config, falling back to first active, then hardcoded.</summary>
@@ -104,7 +104,7 @@ public class ProviderConfigService
         if (first != null) return first;
 
         return new ProviderEntityConfig("anthropic-direct", "anthropic-direct", "Anthropic (Direct)", "claude-code",
-            null, null, null, "active", "Default Anthropic provider via Claude Code CLI.");
+            "fa-solid fa-a", null, null, null, "active", "Default Anthropic provider via Claude Code CLI.");
     }
 
     /// <summary>The slug of the current default provider (from suite-config).</summary>
@@ -122,9 +122,9 @@ public class ProviderConfigService
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["anthropic-direct"] = new("anthropic-direct", "anthropic-direct", "Anthropic (Direct)", "claude-code",
-                null, null, null, "active", "Default Anthropic provider via Claude Code CLI."),
+                "fa-solid fa-a", null, null, null, "active", "Default Anthropic provider via Claude Code CLI."),
             ["opencode-default"] = new("opencode-default", "opencode-default", "OpenCode (Default)", "opencode",
-                null, null, "gpt-4o", "active", null),
+                "fa-brands fa-openai", null, null, "gpt-4o", "active", null),
         };
 
     // ---- suite-config parsing ---------------------------------------------------------------
@@ -244,6 +244,7 @@ public class ProviderConfigService
                 Slug:         slug!,
                 Name:         name!,
                 Backend:      backend!,
+                Icon:         GetString(data, "icon") ?? "fa-solid fa-plug",
                 EndpointUrl:  GetString(data, "endpoint_url"),
                 ApiKey:       GetString(data, "api_key"),
                 DefaultModel: GetString(data, "default_model"),

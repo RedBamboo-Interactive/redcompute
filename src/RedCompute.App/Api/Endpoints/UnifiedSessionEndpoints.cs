@@ -574,6 +574,7 @@ public static class UnifiedSessionEndpoints
                 p.Slug,
                 p.Name,
                 p.Backend,
+                p.Icon,
                 endpointUrl = p.EndpointUrl,
                 hasApiKey = !string.IsNullOrEmpty(p.ApiKey),
                 defaultModel = p.DefaultModel,
