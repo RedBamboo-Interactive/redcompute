@@ -109,7 +109,7 @@ public class OpenCodeSessionService
             UserId = userId,
         };
 
-        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, endpointUrl, apiKey);
+        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model);
         if (session == null)
         {
             LastStartError = error;
@@ -221,7 +221,7 @@ public class OpenCodeSessionService
 
     private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
         OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId,
-        string? model = null, string? endpointUrl = null, string? apiKey = null)
+        string? model = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -238,21 +238,6 @@ public class OpenCodeSessionService
         startInfo.ArgumentList.Add("acp");
 
         var resolvedModel = model ?? _config.Model;
-        if (!string.IsNullOrEmpty(resolvedModel))
-            startInfo.EnvironmentVariables["OPENCODE_MODEL"] = resolvedModel;
-
-        if (!string.IsNullOrEmpty(endpointUrl))
-            startInfo.EnvironmentVariables["OPENAI_BASE_URL"] = endpointUrl;
-        if (!string.IsNullOrEmpty(apiKey))
-            startInfo.EnvironmentVariables["OPENAI_API_KEY"] = apiKey;
-
-        if (!string.IsNullOrEmpty(resolvedModel) || !string.IsNullOrEmpty(endpointUrl))
-        {
-            var configContent = new Dictionary<string, object>();
-            if (!string.IsNullOrEmpty(resolvedModel)) configContent["model"] = resolvedModel;
-            if (!string.IsNullOrEmpty(endpointUrl)) configContent["baseURL"] = endpointUrl;
-            startInfo.EnvironmentVariables["OPENCODE_CONFIG_CONTENT"] = JsonSerializer.Serialize(configContent);
-        }
 
         Process process;
         try
@@ -300,15 +285,26 @@ public class OpenCodeSessionService
             }
             else
             {
-                var newParams = !string.IsNullOrEmpty(resolvedModel)
-                    ? (object)new { cwd = projectPath, mcpServers = Array.Empty<object>(), model = resolvedModel }
-                    : new { cwd = projectPath, mcpServers = Array.Empty<object>() };
-                sessionResult = await SendRequest(session, "session/new", newParams);
+                sessionResult = await SendRequest(session, "session/new", new
+                {
+                    cwd = projectPath,
+                    mcpServers = Array.Empty<object>(),
+                });
 
                 if (sessionResult.TryGetProperty("sessionId", out var sid))
                 {
                     session.AcpSessionId = sid.GetString();
                     info.OpenCodeSessionId = session.AcpSessionId;
+                }
+
+                if (!string.IsNullOrEmpty(resolvedModel) && session.AcpSessionId != null)
+                {
+                    await SendRequest(session, "session/set_config_option", new
+                    {
+                        sessionId = session.AcpSessionId,
+                        configId = "model",
+                        value = resolvedModel,
+                    });
                 }
             }
 
@@ -567,7 +563,8 @@ public class OpenCodeSessionService
                 await SendRequest(session, "session/set_config_option", new
                 {
                     sessionId = session.AcpSessionId,
-                    configOption = new { id = "model", value = model },
+                    configId = "model",
+                    value = model,
                 });
                 session.Info.Model = model;
             }
@@ -577,7 +574,7 @@ public class OpenCodeSessionService
                 await SendRequest(session, "session/set_config_option", new
                 {
                     sessionId = session.AcpSessionId,
-                    configOption = new { id = "effort", value = effort },
+                    configId = "effort", value = effort,
                 });
                 session.Info.Effort = effort;
             }
@@ -904,6 +901,8 @@ public class OpenCodeSessionService
                     session.Info.InputTokens = used.GetInt32();
                 if (update.TryGetProperty("generated", out var generated))
                     session.Info.OutputTokens = generated.GetInt32();
+                if (update.TryGetProperty("size", out var size))
+                    session.Info.ContextWindow = size.GetInt32();
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
                 break;
@@ -1397,21 +1396,36 @@ public class OpenCodeSessionService
         if (_config.OpenCodePath != null)
             return File.Exists(_config.OpenCodePath) ? _config.OpenCodePath : null;
 
+        // Try npm global node_modules directly first — avoids .cmd wrapper
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var npmBinDirect = Path.Combine(appData, "npm", "node_modules", "opencode-ai", "bin", "opencode.exe");
+        if (File.Exists(npmBinDirect))
+            return npmBinDirect;
+
         var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
         foreach (var dir in pathDirs)
         {
+            // Prefer .exe over .cmd; skip .cmd wrappers in npm dirs when possible
             foreach (var ext in new[] { ".exe", ".cmd", "" })
             {
                 var candidate = Path.Combine(dir, $"opencode{ext}");
-                if (File.Exists(candidate))
-                    return candidate;
+                if (!File.Exists(candidate)) continue;
+
+                // If we found a .cmd in an npm directory, try to resolve through to the real exe
+                if (ext == ".cmd" && dir.Replace('\\', '/').Contains("/npm", StringComparison.OrdinalIgnoreCase))
+                {
+                    var resolvedExe = Path.Combine(dir, "node_modules", "opencode-ai", "bin", "opencode.exe");
+                    if (File.Exists(resolvedExe))
+                        return resolvedExe;
+                }
+
+                return candidate;
             }
         }
 
-        var npmGlobal = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var npmCandidate = Path.Combine(npmGlobal, "npm", "opencode.cmd");
-        if (File.Exists(npmCandidate))
-            return npmCandidate;
+        var npmFallback = Path.Combine(appData, "npm", "opencode.cmd");
+        if (File.Exists(npmFallback))
+            return npmFallback;
 
         return null;
     }

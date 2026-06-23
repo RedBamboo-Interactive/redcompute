@@ -928,7 +928,7 @@ public static class UnifiedSessionEndpoints
             if (explicitProvider != null && _providerConfig != null)
             {
                 var pc = _providerConfig.Resolve(explicitProvider);
-                return new QualityResolution(model, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+                return new QualityResolution(model ?? pc.DefaultModel, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey);
             }
             return new QualityResolution(model, effort, explicitProvider);
         }
