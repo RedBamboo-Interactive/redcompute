@@ -106,7 +106,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public Core.Sessions.InterruptResult InterruptSession(string sessionId)
         => throw new NotSupportedException("Codex does not support session interrupts");
 
-    public Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort)
+    public Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
         => throw new NotSupportedException("Codex does not support config updates");
 
     public bool SetPermissionMode(string sessionId, string mode)
