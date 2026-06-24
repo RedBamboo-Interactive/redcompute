@@ -250,6 +250,7 @@ public class RelayServer
                     tool_result = m.ToolResult,
                     message_id = m.MessageId,
                     timestamp = m.Timestamp.ToString("O"),
+                    attachments_json = m.AttachmentsJson,
                 });
             }
         };

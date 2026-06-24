@@ -245,11 +245,27 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrEmpty(role) || string.IsNullOrEmpty(content))
                 return Error(400, "missing_fields", "role and content are required");
 
-            var injected = await provider!.InjectMessageAsync(id, role, content);
+            string? attachmentsJson = null;
+            var audioUrl = body.TryGetProperty("audioUrl", out var au) ? au.GetString() : null;
+            var hasImages = body.TryGetProperty("images", out var imgs) && imgs.ValueKind == JsonValueKind.Array;
+            var hasMetadata = body.TryGetProperty("metadata", out var meta) && meta.ValueKind == JsonValueKind.Object;
+            if (audioUrl != null || hasImages || hasMetadata)
+            {
+                var attachments = new Dictionary<string, object?>();
+                if (audioUrl != null) attachments["audioUrl"] = audioUrl;
+                if (hasImages) attachments["images"] = imgs;
+                if (hasMetadata) attachments["metadata"] = meta;
+                attachmentsJson = JsonSerializer.Serialize(attachments);
+            }
+
+            var injected = await provider!.InjectMessageAsync(id, role, content, attachmentsJson);
             return Results.Json(new { injected });
         })
             .WithParam("role", "string", required: true, description: "Role of the injected message (e.g. user, assistant)", location: ParamLocation.Body)
-            .WithParam("content", "string", required: true, description: "Message content to inject", location: ParamLocation.Body);
+            .WithParam("content", "string", required: true, description: "Message content to inject", location: ParamLocation.Body)
+            .WithParam("audioUrl", "string", required: false, description: "URL to an audio file (display-only, not sent to model)", location: ParamLocation.Body)
+            .WithParam("images", "array", required: false, description: "Attached images as [{mediaType, base64}] or [{url}] (display-only)", location: ParamLocation.Body)
+            .WithParam("metadata", "object", required: false, description: "Arbitrary key-value metadata (display-only)", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/answer",
             "Answer a pending question from the session", async (HttpContext ctx, string id) =>
@@ -384,6 +400,7 @@ public static class UnifiedSessionEndpoints
             var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
             var effort = body.TryGetProperty("effort", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
             var qualityTier = body.TryGetProperty("qualityTier", out var qt) && qt.ValueKind == JsonValueKind.String ? qt.GetString() : null;
+            int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
 
             // Explicit model wins; otherwise a qualityTier resolves to a model (+effort) for this provider.
             if (string.IsNullOrWhiteSpace(model) && !string.IsNullOrWhiteSpace(qualityTier) && _quality != null)
@@ -393,12 +410,13 @@ public static class UnifiedSessionEndpoints
                 if (string.IsNullOrWhiteSpace(effort)) effort = resolved.Effort;
             }
 
-            var updated = await provider.UpdateSessionConfigAsync(id, model, effort);
+            var updated = await provider.UpdateSessionConfigAsync(id, model, effort, thinkingBudget);
             return Results.Json(updated);
         })
             .WithParam("model", "string", description: "Model to switch to. Overrides qualityTier when both are given.", location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level", location: ParamLocation.Body)
-            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved to a model+effort for this session's provider. Ignored when model is set.", location: ParamLocation.Body);
+            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved to a model+effort for this session's provider. Ignored when model is set.", location: ParamLocation.Body)
+            .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
             "Set the session's permission mode", async (HttpContext ctx, string id) =>

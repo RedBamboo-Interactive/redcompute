@@ -106,6 +106,7 @@ public sealed class RedLeafSessionReader
                     MessageId = Str(d, "message_id"),
                     Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
                         ? t : default,
+                    AttachmentsJson = Str(d, "attachments_json"),
                 });
             }
             if (items.GetArrayLength() < 1000) break;

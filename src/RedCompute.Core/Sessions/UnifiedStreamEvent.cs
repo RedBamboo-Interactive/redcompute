@@ -9,4 +9,13 @@ public class UnifiedStreamEvent
     public string? ToolResult { get; init; }
     public bool IsPartial { get; init; }
     public string? MessageId { get; init; }
+    public List<UnifiedAttachment>? Attachments { get; init; }
+}
+
+public class UnifiedAttachment
+{
+    public required string Type { get; init; }
+    public string? MimeType { get; init; }
+    public string? Data { get; init; }
+    public string? Url { get; init; }
 }

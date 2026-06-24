@@ -122,9 +122,9 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Configuration ---
 
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort)
+    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
     {
-        var info = await _opencode.UpdateSessionConfig(sessionId, model, effort);
+        var info = await _opencode.UpdateSessionConfig(sessionId, model, effort, thinkingBudget);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -236,6 +236,13 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ToolResult = e.ToolResult,
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
+        Attachments = e.Attachments?.Select(a => new UnifiedAttachment
+        {
+            Type = a.Type,
+            MimeType = a.MimeType,
+            Data = a.Data,
+            Url = a.Url
+        }).ToList(),
     };
 
     private static UnifiedMessageRecord ToUnifiedMessage(OpenCodeMessageRecord m) => new()
@@ -250,6 +257,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
         Timestamp = m.Timestamp,
+        AttachmentsJson = m.AttachmentsJson,
     };
 
     // --- Config ---

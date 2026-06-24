@@ -44,6 +44,7 @@ public sealed class AiMessageSnapshot
     public string? ToolResult { get; init; }
     public string? MessageId { get; init; }
     public DateTimeOffset Timestamp { get; init; }
+    public string? AttachmentsJson { get; init; }
 }
 
 /// <summary>

@@ -9,4 +9,13 @@ public class OpenCodeStreamEvent
     public string? ToolResult { get; init; }
     public bool IsPartial { get; init; }
     public string? MessageId { get; init; }
+    public List<OpenCodeAttachment>? Attachments { get; init; }
+}
+
+public class OpenCodeAttachment
+{
+    public required string Type { get; init; }
+    public string? MimeType { get; init; }
+    public string? Data { get; init; }
+    public string? Url { get; init; }
 }

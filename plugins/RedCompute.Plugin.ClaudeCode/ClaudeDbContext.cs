@@ -55,6 +55,21 @@ public class ClaudeDbContext : DbContext
         using var backfill = conn.CreateCommand();
         backfill.CommandText = "UPDATE Sessions SET Source = 'Nova' WHERE ProjectName = 'nova-workspace' AND Source IS NULL";
         backfill.ExecuteNonQuery();
+
+        cmd.CommandText = "PRAGMA table_info(Messages)";
+        var msgColumns = new HashSet<string>();
+        using (var reader = cmd.ExecuteReader())
+        {
+            while (reader.Read())
+                msgColumns.Add(reader.GetString(1));
+        }
+
+        if (!msgColumns.Contains("AttachmentsJson"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Messages ADD COLUMN AttachmentsJson TEXT";
+            alter.ExecuteNonQuery();
+        }
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)

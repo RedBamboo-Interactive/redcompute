@@ -63,7 +63,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         };
     }
 
-    public Task<bool> InjectMessageAsync(string sessionId, string role, string content)
+    public Task<bool> InjectMessageAsync(string sessionId, string role, string content, string? attachmentsJson = null)
     {
         var session = _store.FindSession(sessionId);
         if (session == null) return Task.FromResult(false);
@@ -75,6 +75,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             EventType = "text",
             Content = content,
             Timestamp = DateTimeOffset.UtcNow,
+            AttachmentsJson = attachmentsJson,
         });
         return Task.FromResult(true);
     }
@@ -142,7 +143,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     // --- ISessionProvider: Configuration ---
 
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort)
+    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
     {
         var info = await _claude.UpdateSessionConfig(sessionId, model, effort);
         return info != null ? ToUnified(info) : null;

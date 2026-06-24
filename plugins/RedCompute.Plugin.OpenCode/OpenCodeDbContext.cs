@@ -38,6 +38,9 @@ public class OpenCodeDbContext : DbContext
                 try { cmd.ExecuteNonQuery(); }
                 catch { }
             }
+            cmd.CommandText = "ALTER TABLE Messages ADD COLUMN AttachmentsJson TEXT";
+            try { cmd.ExecuteNonQuery(); }
+            catch { }
         }
         finally
         {

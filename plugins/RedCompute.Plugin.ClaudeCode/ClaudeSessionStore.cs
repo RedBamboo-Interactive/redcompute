@@ -42,6 +42,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
         Timestamp = m.Timestamp,
+        AttachmentsJson = m.AttachmentsJson,
     };
 
     public ClaudeSessionRecord? FindSession(string sessionId)

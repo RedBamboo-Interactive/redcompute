@@ -12,4 +12,5 @@ public class OpenCodeMessageRecord
     public string? ToolResult { get; set; }
     public string? MessageId { get; set; }
     public DateTimeOffset Timestamp { get; set; }
+    public string? AttachmentsJson { get; set; }
 }

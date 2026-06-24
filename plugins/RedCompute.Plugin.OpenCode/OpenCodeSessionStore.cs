@@ -37,6 +37,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
         Timestamp = m.Timestamp,
+        AttachmentsJson = m.AttachmentsJson,
     };
 
     public OpenCodeSessionRecord? FindSession(string sessionId)

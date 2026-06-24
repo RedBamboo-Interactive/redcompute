@@ -27,7 +27,7 @@ public interface ISessionProvider
     InterruptResult InterruptSession(string sessionId);
 
     // Configuration (ConfigUpdate / PermissionMode)
-    Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort);
+    Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null);
     bool SetPermissionMode(string sessionId, string mode);
 
     // Querying
@@ -50,7 +50,7 @@ public interface ISessionProvider
     List<ModelInfo> GetAvailableModels();
 
     // Message injection (without triggering inference)
-    Task<bool> InjectMessageAsync(string sessionId, string role, string content)
+    Task<bool> InjectMessageAsync(string sessionId, string role, string content, string? attachmentsJson = null)
         => Task.FromResult(false);
 
     // Events

@@ -551,7 +551,7 @@ public class OpenCodeSessionService
         SessionEnded?.Invoke(sessionId, "force_killed");
     }
 
-    public async Task<OpenCodeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort)
+    public async Task<OpenCodeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort, int? thinkingBudget = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return null;
@@ -577,6 +577,15 @@ public class OpenCodeSessionService
                     configId = "effort", value = effort,
                 });
                 session.Info.Effort = effort;
+            }
+
+            if (thinkingBudget != null && session.AcpSessionId != null)
+            {
+                await SendRequest(session, "session/set_config_option", new
+                {
+                    sessionId = session.AcpSessionId,
+                    configId = "thinking_budget", value = thinkingBudget.Value,
+                });
             }
 
             PersistSessionRecord(session.Info);
@@ -867,16 +876,33 @@ public class OpenCodeSessionService
                 if (status is "completed" or "failed")
                 {
                     string? resultContent = null;
+                    var attachments = new List<OpenCodeAttachment>();
                     if (update.TryGetProperty("content", out var contentArr) && contentArr.ValueKind == JsonValueKind.Array)
                     {
                         var sb = new StringBuilder();
                         foreach (var item in contentArr.EnumerateArray())
                         {
                             if (item.TryGetProperty("type", out var itemType) && itemType.GetString() == "content"
-                                && item.TryGetProperty("content", out var innerContent)
-                                && innerContent.TryGetProperty("text", out var text))
+                                && item.TryGetProperty("content", out var innerContent))
                             {
-                                sb.Append(text.GetString());
+                                if (innerContent.TryGetProperty("text", out var text))
+                                {
+                                    sb.Append(text.GetString());
+                                }
+                                else if (innerContent.TryGetProperty("type", out var ct) && ct.GetString() == "image")
+                                {
+                                    var mimeType = innerContent.TryGetProperty("mimeType", out var mt) ? mt.GetString() : null;
+                                    var data = innerContent.TryGetProperty("data", out var d) ? d.GetString() : null;
+                                    if (mimeType != null && data != null)
+                                    {
+                                        attachments.Add(new OpenCodeAttachment
+                                        {
+                                            Type = "image",
+                                            MimeType = mimeType,
+                                            Data = data
+                                        });
+                                    }
+                                }
                             }
                         }
                         if (sb.Length > 0) resultContent = sb.ToString();
@@ -889,6 +915,7 @@ public class OpenCodeSessionService
                         ToolResult = resultContent,
                         ToolName = update.TryGetProperty("title", out var title) ? title.GetString() : null,
                         MessageId = toolCallId,
+                        Attachments = attachments.Count > 0 ? attachments : null,
                     });
                 }
                 break;
@@ -935,6 +962,7 @@ public class OpenCodeSessionService
             ToolResult = evt.ToolResult,
             MessageId = evt.MessageId,
             Timestamp = DateTimeOffset.UtcNow,
+            AttachmentsJson = evt.Attachments != null && evt.Attachments.Count > 0 ? JsonSerializer.Serialize(evt.Attachments) : null,
         });
     }
 
@@ -1047,7 +1075,7 @@ public class OpenCodeSessionService
                     startInfo.EnvironmentVariables[k] = v;
         }
 
-        BuildExecArgs(startInfo, model);
+        BuildExecArgs(startInfo, model, prompt);
 
         var sw = Stopwatch.StartNew();
         using var process = Process.Start(startInfo);
@@ -1062,7 +1090,6 @@ public class OpenCodeSessionService
 
         try
         {
-            await process.StandardInput.WriteAsync(prompt);
             process.StandardInput.Close();
 
             var stdoutBuilder = new StringBuilder();
@@ -1092,6 +1119,7 @@ public class OpenCodeSessionService
                             ToolResult = evt.ToolResult,
                             MessageId = evt.MessageId,
                             Timestamp = DateTimeOffset.UtcNow,
+                            AttachmentsJson = evt.Attachments != null && evt.Attachments.Count > 0 ? JsonSerializer.Serialize(evt.Attachments) : null,
                         });
                     }
                 }
@@ -1123,16 +1151,21 @@ public class OpenCodeSessionService
         }
     }
 
-    private void BuildExecArgs(ProcessStartInfo startInfo, string? model)
+    private void BuildExecArgs(ProcessStartInfo startInfo, string? model, string prompt)
     {
-        startInfo.ArgumentList.Add("--json");
+        startInfo.ArgumentList.Add("run");
+        startInfo.ArgumentList.Add("--format");
+        startInfo.ArgumentList.Add("json");
+        startInfo.ArgumentList.Add("--dangerously-skip-permissions");
 
         var resolvedModel = model ?? _config.Model ?? _config.DefaultModel;
         if (!string.IsNullOrEmpty(resolvedModel))
         {
-            startInfo.ArgumentList.Add("--model");
+            startInfo.ArgumentList.Add("-m");
             startInfo.ArgumentList.Add(resolvedModel);
         }
+
+        startInfo.ArgumentList.Add(prompt);
     }
 
     internal static List<OpenCodeStreamEvent> ParseStreamLine(string line)
@@ -1142,61 +1175,132 @@ public class OpenCodeSessionService
         var root = doc.RootElement;
         var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
 
+        // opencode v1.17+ nests the payload in "part"
+        JsonElement part = default;
+        var hasPart = root.TryGetProperty("part", out part) && part.ValueKind == JsonValueKind.Object;
+
+        string? GetString(params string[][] paths)
+        {
+            foreach (var p in paths)
+            {
+                JsonElement cur = root;
+                var ok = true;
+                foreach (var seg in p)
+                {
+                    if (!cur.TryGetProperty(seg, out cur)) { ok = false; break; }
+                }
+                if (ok && cur.ValueKind == JsonValueKind.String)
+                    return cur.GetString();
+            }
+            return null;
+        }
+
+        bool TryGetObject(string[] path, out JsonElement result)
+        {
+            result = default;
+            JsonElement cur = root;
+            foreach (var seg in path)
+            {
+                if (!cur.TryGetProperty(seg, out cur)) return false;
+            }
+            result = cur;
+            return true;
+        }
+
         switch (type)
         {
             case "text":
             case "content":
             {
-                var content = root.TryGetProperty("content", out var c) ? c.GetString()
-                    : root.TryGetProperty("text", out var tx) ? tx.GetString() : null;
-                if (content != null)
+                var content = GetString(
+                    new[] { "part", "text" },
+                    new[] { "content" },
+                    new[] { "text" });
+                if (!string.IsNullOrEmpty(content))
                     events.Add(new OpenCodeStreamEvent { Type = "text", Content = content });
                 break;
             }
             case "thinking":
             case "reasoning":
             {
-                var content = root.TryGetProperty("content", out var c) ? c.GetString()
-                    : root.TryGetProperty("thinking", out var th) ? th.GetString() : null;
-                if (content != null)
+                var content = GetString(
+                    new[] { "part", "text" },
+                    new[] { "content" },
+                    new[] { "thinking" });
+                if (!string.IsNullOrEmpty(content))
                     events.Add(new OpenCodeStreamEvent { Type = "thinking", Content = content });
                 break;
             }
             case "tool_use":
             case "tool_call":
             {
-                var toolName = root.TryGetProperty("name", out var n) ? n.GetString()
-                    : root.TryGetProperty("tool", out var tl) ? tl.GetString() : null;
-                var input = root.TryGetProperty("input", out var i) ? (object)i.Clone()
-                    : root.TryGetProperty("arguments", out var a) ? (object)a.Clone() : null;
+                var toolName = GetString(
+                    new[] { "part", "tool" },
+                    new[] { "name" },
+                    new[] { "tool" });
+                object? input = null;
+                if (TryGetObject(new[] { "part", "state", "input" }, out var i)) input = i.Clone();
+                else if (TryGetObject(new[] { "input" }, out i)) input = i.Clone();
+                else if (TryGetObject(new[] { "arguments" }, out i)) input = i.Clone();
                 events.Add(new OpenCodeStreamEvent { Type = "tool_use", ToolName = toolName, ToolInput = input });
                 break;
             }
             case "tool_result":
             {
-                var content = root.TryGetProperty("content", out var c) ? c.GetString()
-                    : root.TryGetProperty("output", out var o) ? o.GetString() : null;
-                events.Add(new OpenCodeStreamEvent { Type = "tool_result", Content = content, ToolResult = content });
+                var content = GetString(
+                    new[] { "part", "text" },
+                    new[] { "content" },
+                    new[] { "output" });
+
+                var attachments = new List<OpenCodeAttachment>();
+                JsonElement atts;
+                if (TryGetObject(new[] { "attachments" }, out atts) && atts.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var a in atts.EnumerateArray())
+                    {
+                        var mime = a.TryGetProperty("mime", out var mimeEl) ? mimeEl.GetString() : a.TryGetProperty("mimeType", out var mt) ? mt.GetString() : null;
+                        var data = a.TryGetProperty("data", out var d) ? d.GetString() : null;
+                        var url = a.TryGetProperty("url", out var u) ? u.GetString() : null;
+                        if (url != null && url.StartsWith("data:") && data == null)
+                        {
+                            var match = System.Text.RegularExpressions.Regex.Match(url, @"^data:([^;,]+)(?:;[^,]*)*;base64,(.*)$");
+                            if (match.Success)
+                            {
+                                mime ??= match.Groups[1].Value;
+                                data = match.Groups[2].Value;
+                            }
+                        }
+                        if (mime != null && data != null)
+                            attachments.Add(new OpenCodeAttachment { Type = "image", MimeType = mime, Data = data, Url = url });
+                    }
+                }
+
+                events.Add(new OpenCodeStreamEvent { Type = "tool_result", Content = content, ToolResult = content, Attachments = attachments.Count > 0 ? attachments : null });
                 break;
             }
             case "assistant":
             {
-                var content = root.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var mc)
-                    ? ExtractTextFromContent(mc) : null;
-                if (content != null)
+                var content = GetString(
+                    new[] { "part", "text" },
+                    new[] { "message", "content" });
+                if (content == null && root.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var mc))
+                    content = ExtractTextFromContent(mc);
+                if (!string.IsNullOrEmpty(content))
                     events.Add(new OpenCodeStreamEvent { Type = "text", Content = content });
                 break;
             }
             case "error":
             {
-                var message = root.TryGetProperty("message", out var m) ? m.GetString()
-                    : root.TryGetProperty("error", out var e) ? e.GetString() : null;
+                var message = GetString(
+                    new[] { "part", "text" },
+                    new[] { "message" },
+                    new[] { "error" });
                 events.Add(new OpenCodeStreamEvent { Type = "error", Content = message });
                 break;
             }
             case "status":
             {
-                var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
+                var status = GetString(new[] { "status" });
                 events.Add(new OpenCodeStreamEvent { Type = "status", Content = status });
                 break;
             }
@@ -1245,6 +1349,21 @@ public class OpenCodeSessionService
                 var root = doc.RootElement;
                 var evtType = root.TryGetProperty("type", out var t) ? t.GetString() : null;
 
+                // Parse usage from step_finish events
+                if (evtType == "step_finish")
+                {
+                    if (root.TryGetProperty("part", out var part) && part.ValueKind == JsonValueKind.Object)
+                    {
+                        if (part.TryGetProperty("tokens", out var tokens))
+                        {
+                            if (tokens.TryGetProperty("input", out var it)) inputTokens += it.GetInt32();
+                            if (tokens.TryGetProperty("output", out var ot)) outputTokens += ot.GetInt32();
+                        }
+                        if (part.TryGetProperty("cost", out var cost)) costUsd = (costUsd ?? 0) + cost.GetDouble();
+                    }
+                }
+
+                // Legacy usage event fallback
                 if (evtType is "usage" or "turn.completed")
                 {
                     var usage = root.TryGetProperty("usage", out var u) ? u : root;
@@ -1254,16 +1373,14 @@ public class OpenCodeSessionService
                         costUsd = (costUsd ?? 0) + cost.GetDouble();
                 }
 
-                if (evtType is "text" or "content" or "assistant")
+                var events = ParseStreamLine(line);
+                foreach (var e in events)
                 {
-                    var text = root.TryGetProperty("content", out var c) ? c.GetString()
-                        : root.TryGetProperty("text", out var tx) ? tx.GetString() : null;
-                    if (!string.IsNullOrEmpty(text))
-                        lastText = text;
+                    if (e.Type == "text" && !string.IsNullOrEmpty(e.Content))
+                        lastText = e.Content;
+                    if (e.Type == "tool_use")
+                        hadToolUse = true;
                 }
-
-                if (evtType is "tool_use" or "tool_call")
-                    hadToolUse = true;
 
                 if (root.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String)
                     actualModel = m.GetString() ?? requestedModel;
