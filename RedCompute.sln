@@ -29,6 +29,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedCompute.Plugin.Codex", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedCompute.Plugin.OpenCode", "plugins\RedCompute.Plugin.OpenCode\RedCompute.Plugin.OpenCode.csproj", "{1AB370E8-CCF5-4677-B878-302A2BC10EA1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedCompute.Plugin.TtsElevenLabs", "plugins\RedCompute.Plugin.TtsElevenLabs\RedCompute.Plugin.TtsElevenLabs.csproj", "{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -171,6 +173,18 @@ Global
 		{1AB370E8-CCF5-4677-B878-302A2BC10EA1}.Release|x64.Build.0 = Release|Any CPU
 		{1AB370E8-CCF5-4677-B878-302A2BC10EA1}.Release|x86.ActiveCfg = Release|Any CPU
 		{1AB370E8-CCF5-4677-B878-302A2BC10EA1}.Release|x86.Build.0 = Release|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Debug|x64.Build.0 = Debug|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Debug|x86.Build.0 = Debug|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Release|x64.ActiveCfg = Release|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Release|x64.Build.0 = Release|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Release|x86.ActiveCfg = Release|Any CPU
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -187,5 +201,6 @@ Global
 		{06802FA7-7A86-4952-ADF1-357D441442DC} = {07D57EEB-2F50-60C4-C011-FE4FA775C9A8}
 		{A65BDDC2-647C-4B5B-B36C-079DB5F0A1FF} = {07D57EEB-2F50-60C4-C011-FE4FA775C9A8}
 		{1AB370E8-CCF5-4677-B878-302A2BC10EA1} = {07D57EEB-2F50-60C4-C011-FE4FA775C9A8}
+		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02} = {07D57EEB-2F50-60C4-C011-FE4FA775C9A8}
 	EndGlobalSection
 EndGlobal

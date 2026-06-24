@@ -179,6 +179,12 @@ public class ConfigManager
                             Model = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
                             VoicesBasePath = @"T:\Projects\Qwen3-TTS",
                             StartupTimeoutSeconds = 180
+                        },
+                        ["elevenlabs"] = new()
+                        {
+                            Type = "TtsElevenLabs",
+                            ApiKey = "",
+                            Model = "eleven_multilingual_v2"
                         }
                     }
                 },
