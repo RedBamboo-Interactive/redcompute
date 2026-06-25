@@ -20,7 +20,7 @@ public interface ISessionProvider
     void DismissSession(string sessionId);
 
     // Messaging (SendMessage)
-    Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null);
+    Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null);
     bool SendAnswer(string sessionId, string answer);
 
     // Interrupt

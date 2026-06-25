@@ -29,9 +29,9 @@ public class SessionCallbackRegistry
     }
 
     public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus,
-        string? userId = null, string? stopReason = null)
+        string? userId = null, string? stopReason = null, bool force = false)
     {
-        if (currentStatus is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
+        if (!force && currentStatus is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
         {
             _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), userId: userId, stopReason: stopReason);
             return false;

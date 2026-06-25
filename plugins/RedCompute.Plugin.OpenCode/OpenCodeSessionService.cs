@@ -329,7 +329,7 @@ public class OpenCodeSessionService
         }
     }
 
-    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null)
+    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -376,6 +376,7 @@ public class OpenCodeSessionService
                 EventType = "text",
                 Content = content,
                 Timestamp = DateTimeOffset.UtcNow,
+                AttachmentsJson = attachmentsJson,
             });
 
             _ = HandlePromptResponse(session, tcs.Task);

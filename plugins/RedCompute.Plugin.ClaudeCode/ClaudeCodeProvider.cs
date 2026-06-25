@@ -119,10 +119,10 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     // --- ISessionProvider: Messaging ---
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null)
+    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null)
     {
         var claudeImages = images?.Select(i => new ClaudeCode.ImageAttachment(i.MediaType, i.Base64)).ToArray();
-        return _claude.SendMessage(sessionId, content, claudeImages);
+        return _claude.SendMessage(sessionId, content, claudeImages, attachmentsJson);
     }
 
     public bool SendAnswer(string sessionId, string answer) => _claude.SendAnswer(sessionId, answer);
@@ -290,6 +290,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
         Timestamp = m.Timestamp,
+        AttachmentsJson = m.AttachmentsJson,
     };
 
     // --- Config ---

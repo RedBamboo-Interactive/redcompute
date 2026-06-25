@@ -888,7 +888,7 @@ public class ClaudeSessionService
         return info;
     }
 
-    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null)
+    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -944,7 +944,7 @@ public class ClaudeSessionService
             session.Info.StopReason = null;
             SessionUpdated?.Invoke(session.Info);
 
-            PersistMessage(sessionId, "user", "text", content, null, null, null, null);
+            PersistMessage(sessionId, "user", "text", content, null, null, null, null, attachmentsJson);
 
             return true;
         }
@@ -1854,7 +1854,8 @@ public class ClaudeSessionService
     }
 
     private void PersistMessage(string sessionId, string role, string eventType, string? content,
-        string? toolName, string? toolInput, string? toolResult, string? messageId)
+        string? toolName, string? toolInput, string? toolResult, string? messageId,
+        string? attachmentsJson = null)
     {
         try
         {
@@ -1868,7 +1869,8 @@ public class ClaudeSessionService
                 ToolInput = toolInput,
                 ToolResult = toolResult,
                 MessageId = messageId,
-                Timestamp = DateTimeOffset.UtcNow
+                Timestamp = DateTimeOffset.UtcNow,
+                AttachmentsJson = attachmentsJson,
             });
         }
         catch (Exception ex)

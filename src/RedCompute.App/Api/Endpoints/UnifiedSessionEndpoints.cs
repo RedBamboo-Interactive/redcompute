@@ -195,7 +195,17 @@ public static class UnifiedSessionEndpoints
                     .ToArray();
             }
 
-            var sent = await provider.SendMessageAsync(id, content, images);
+            string? attachmentsJson = null;
+            var hasMetadata = body.TryGetProperty("metadata", out var meta) && meta.ValueKind == JsonValueKind.Object;
+            if (hasMetadata || images is { Length: > 0 })
+            {
+                var attachments = new Dictionary<string, object?>();
+                if (hasMetadata) attachments["metadata"] = meta;
+                if (images is { Length: > 0 }) attachments["images"] = images.Select(i => new { mediaType = i.MediaType, base64 = i.Base64 });
+                attachmentsJson = JsonSerializer.Serialize(attachments);
+            }
+
+            var sent = await provider.SendMessageAsync(id, content, images, attachmentsJson);
             if (!sent)
                 return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
             return Results.Json(new { sent });
@@ -222,6 +232,7 @@ public static class UnifiedSessionEndpoints
                             },
                         },
                     },
+                    metadata = new { type = "object", description = "Arbitrary key-value metadata (display-only, not sent to model)" },
                 },
             });
 
@@ -376,10 +387,12 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(url))
                 return Error(422, "validation_failed", "url is required");
 
-            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason);
+            var force = body.TryGetProperty("force", out var f) && f.GetBoolean();
+            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force);
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         })
-            .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body);
+            .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body)
+            .WithParam("force", "boolean", description: "Register even if session is already idle (for pre-registering before sending a message)", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/config",
             "Update session model and reasoning effort", async (HttpContext ctx, string id) =>

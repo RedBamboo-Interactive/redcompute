@@ -109,8 +109,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Messaging ---
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null)
-        => _opencode.SendMessage(sessionId, content, images);
+    public Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null)
+        => _opencode.SendMessage(sessionId, content, images, attachmentsJson);
 
     public bool SendAnswer(string sessionId, string answer)
         => _opencode.SendAnswer(sessionId, answer);
