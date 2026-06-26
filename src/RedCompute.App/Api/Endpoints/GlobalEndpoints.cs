@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Discovery;
@@ -447,6 +448,244 @@ public static class GlobalEndpoints
             .WithParam("limit", "integer", description: "Max log entries to return", defaultValue: 100, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
+        endpoints.MapGet("/jobs/{id:guid}/events", "Get parsed transcript events for an execute job (text, thinking, tool calls, results)", (Guid id, string? types, int? limit, int? offset) =>
+        {
+            var job = jobTracker.GetJob(id);
+            if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+
+            string? streamOutput = null;
+            if (!string.IsNullOrEmpty(job.ResultJson))
+            {
+                try
+                {
+                    using var rjDoc = JsonDocument.Parse(job.ResultJson);
+                    if (rjDoc.RootElement.TryGetProperty("streamOutput", out var so) && so.ValueKind == JsonValueKind.String)
+                        streamOutput = so.GetString();
+                }
+                catch { }
+            }
+
+            if (streamOutput == null)
+                return Results.NotFound(new { error = "no_transcript", message = "No transcript available for this job (not an execute job or still running)" });
+
+            var events = ParseStreamOutputToEvents(streamOutput, job.StartedAt ?? job.QueuedAt);
+
+            HashSet<string>? typeFilter = null;
+            if (!string.IsNullOrEmpty(types))
+                typeFilter = new HashSet<string>(types.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+
+            if (typeFilter != null)
+                events = events.Where(e => typeFilter.Contains(e.EventType)).ToList();
+
+            var totalCount = events.Count;
+            var pageOffset = offset ?? 0;
+            var pageLimit = Math.Clamp(limit ?? 100, 1, 1000);
+            var page = events.Skip(pageOffset).Take(pageLimit).ToList();
+
+            return Results.Ok(new
+            {
+                jobId = id,
+                jobName = job.Name,
+                jobStatus = job.Status.ToString(),
+                totalCount,
+                offset = pageOffset,
+                limit = pageLimit,
+                events = page.Select(e => new
+                {
+                    e.Id,
+                    e.Role,
+                    eventType = e.EventType,
+                    e.Content,
+                    e.ToolName,
+                    e.ToolInput,
+                    e.ToolResult,
+                    e.Timestamp
+                })
+            });
+        })
+            .WithParam("types", "string", description: "Comma-separated event type filter: text, thinking, tool_use, tool_result, result, system, prompt", location: ParamLocation.Query)
+            .WithParam("limit", "integer", description: "Max events to return (max 1000)", defaultValue: 100, location: ParamLocation.Query)
+            .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
+
+    }
+
+    private record TranscriptEvent(int Id, string Role, string EventType, string? Content, string? ToolName, string? ToolInput, string? ToolResult, string Timestamp);
+
+    private static List<TranscriptEvent> ParseStreamOutputToEvents(string streamOutput, DateTimeOffset? baseTime)
+    {
+        var events = new List<TranscriptEvent>();
+        var nextId = 1;
+        var baseMs = (baseTime ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
+        var startedStr = (baseTime ?? DateTimeOffset.UtcNow).ToString("O");
+
+        var thinkingContent = new StringBuilder();
+        string? thinkingTs = null;
+        var textContent = new StringBuilder();
+        string? textTs = null;
+        var hadDeltas = false;
+
+        void FlushDeltas()
+        {
+            if (thinkingContent.Length > 0)
+            {
+                events.Add(new TranscriptEvent(nextId++, "assistant", "thinking", thinkingContent.ToString(), null, null, null, thinkingTs ?? startedStr));
+                thinkingContent.Clear();
+                thinkingTs = null;
+            }
+            if (textContent.Length > 0)
+            {
+                events.Add(new TranscriptEvent(nextId++, "assistant", "text", textContent.ToString(), null, null, null, textTs ?? startedStr));
+                textContent.Clear();
+                textTs = null;
+            }
+        }
+
+        foreach (var line in streamOutput.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (string.IsNullOrEmpty(trimmed)) continue;
+
+            // Lines may be prefixed with ISO8601 timestamp + tab
+            string? ts = null;
+            var json = trimmed;
+            var tabIdx = trimmed.IndexOf('\t');
+            if (tabIdx is >= 20 and <= 40)
+            {
+                var maybeTsStr = trimmed[..tabIdx];
+                if (DateTimeOffset.TryParse(maybeTsStr, out var parsedTs))
+                {
+                    ts = parsedTs.ToString("O");
+                    json = trimmed[(tabIdx + 1)..];
+                }
+            }
+
+            JsonDocument? doc = null;
+            try { doc = JsonDocument.Parse(json); }
+            catch { continue; }
+
+            using (doc)
+            {
+                var root = doc.RootElement;
+                var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+                var fallbackTs = ts ?? DateTimeOffset.FromUnixTimeMilliseconds(baseMs + nextId).ToString("O");
+
+                if (type == "stream_event")
+                {
+                    if (root.TryGetProperty("event", out var evt)
+                        && evt.TryGetProperty("type", out var evtType) && evtType.GetString() == "content_block_delta"
+                        && evt.TryGetProperty("delta", out var delta)
+                        && delta.TryGetProperty("type", out var deltaType))
+                    {
+                        var dt = deltaType.GetString();
+                        if (dt == "thinking_delta" && delta.TryGetProperty("thinking", out var th))
+                        {
+                            thinkingTs ??= ts;
+                            thinkingContent.Append(th.GetString());
+                            hadDeltas = true;
+                        }
+                        else if (dt == "text_delta" && delta.TryGetProperty("text", out var tx))
+                        {
+                            textTs ??= ts;
+                            textContent.Append(tx.GetString());
+                            hadDeltas = true;
+                        }
+                    }
+                    continue;
+                }
+
+                if (type == "assistant" || type == "result") FlushDeltas();
+
+                if (type == "assistant")
+                {
+                    if (!root.TryGetProperty("message", out var msg)) continue;
+                    if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) continue;
+
+                    foreach (var block in content.EnumerateArray())
+                    {
+                        var bt = block.TryGetProperty("type", out var btt) ? btt.GetString() : null;
+                        if (hadDeltas && (bt == "thinking" || bt == "text")) continue;
+
+                        if (bt == "thinking" && block.TryGetProperty("thinking", out var thTxt))
+                            events.Add(new TranscriptEvent(nextId++, "assistant", "thinking", thTxt.GetString(), null, null, null, fallbackTs));
+                        else if (bt == "text" && block.TryGetProperty("text", out var txt))
+                            events.Add(new TranscriptEvent(nextId++, "assistant", "text", txt.GetString(), null, null, null, fallbackTs));
+                        else if (bt == "tool_use")
+                        {
+                            var toolName = block.TryGetProperty("name", out var tn) ? tn.GetString() : null;
+                            string? toolInput = null;
+                            if (block.TryGetProperty("input", out var inp))
+                                toolInput = inp.ValueKind == JsonValueKind.String ? inp.GetString() : inp.GetRawText();
+                            events.Add(new TranscriptEvent(nextId++, "assistant", "tool_use", null, toolName, toolInput, null, fallbackTs));
+                        }
+                    }
+                }
+                else if (type == "user")
+                {
+                    if (!root.TryGetProperty("message", out var msg)) continue;
+                    if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) continue;
+
+                    foreach (var block in content.EnumerateArray())
+                    {
+                        var bt = block.TryGetProperty("type", out var btt) ? btt.GetString() : null;
+                        if (bt != "tool_result") continue;
+                        var rc = block.TryGetProperty("content", out var bc)
+                            ? (bc.ValueKind == JsonValueKind.String ? bc.GetString()! : bc.GetRawText())
+                            : block.GetRawText();
+                        events.Add(new TranscriptEvent(nextId++, "user", "tool_result", rc, null, null, rc, fallbackTs));
+                    }
+                }
+                else if (type == "result")
+                {
+                    var resultText = root.TryGetProperty("result", out var rt) && rt.ValueKind == JsonValueKind.String ? rt.GetString() : null;
+                    var subtype = root.TryGetProperty("subtype", out var st) ? st.GetString() : null;
+                    int inputTok = 0, outputTok = 0;
+                    double? costUsd = null;
+                    if (root.TryGetProperty("usage", out var usage))
+                    {
+                        if (usage.TryGetProperty("input_tokens", out var it)) inputTok = it.GetInt32();
+                        if (usage.TryGetProperty("output_tokens", out var ot)) outputTok = ot.GetInt32();
+                    }
+                    if (root.TryGetProperty("total_cost_usd", out var cost)) costUsd = cost.GetDouble();
+
+                    var summary = $"subtype={subtype} in={inputTok} out={outputTok}" + (costUsd.HasValue ? $" cost=${costUsd:F4}" : "");
+                    events.Add(new TranscriptEvent(nextId++, "system", "result", resultText ?? summary, null, null, null, fallbackTs));
+                }
+                else if (type == "system")
+                {
+                    var model = root.TryGetProperty("model", out var m) ? m.GetString() : null;
+                    var subtype = root.TryGetProperty("subtype", out var st) ? st.GetString() : null;
+                    var content = model != null ? $"model={model}" : (subtype ?? "system");
+                    events.Add(new TranscriptEvent(nextId++, "system", "system", content, null, null, null, fallbackTs));
+                }
+            }
+        }
+
+        FlushDeltas();
+
+        // Aggregate: merge consecutive same-role/same-type text/thinking; collapse tool_result into preceding tool_use
+        var aggregated = new List<TranscriptEvent>();
+        foreach (var evt in events)
+        {
+            // Remap user text to "prompt"
+            var e = evt.Role == "user" && evt.EventType == "text" ? evt with { EventType = "prompt" } : evt;
+            var last = aggregated.Count > 0 ? aggregated[^1] : null;
+
+            if (last != null && last.EventType == e.EventType && last.Role == e.Role
+                && (e.EventType == "text" || e.EventType == "thinking"))
+            {
+                aggregated[^1] = last with { Content = (last.Content ?? "") + (e.Content ?? "") };
+            }
+            else if (last != null && last.EventType == "tool_use" && e.EventType == "tool_result")
+            {
+                aggregated[^1] = last with { ToolResult = e.ToolResult ?? e.Content };
+            }
+            else
+            {
+                aggregated.Add(e);
+            }
+        }
+
+        return aggregated;
     }
 
     private static DateTimeOffset _startTime;
