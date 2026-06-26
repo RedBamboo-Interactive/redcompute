@@ -52,6 +52,20 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("ProcessId"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN ProcessId INTEGER";
+            alter.ExecuteNonQuery();
+        }
+
+        if (!columns.Contains("LastActivity"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN LastActivity TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         using var backfill = conn.CreateCommand();
         backfill.CommandText = "UPDATE Sessions SET Source = 'Nova' WHERE ProjectName = 'nova-workspace' AND Source IS NULL";
         backfill.ExecuteNonQuery();
@@ -96,6 +110,9 @@ public class ClaudeDbContext : DbContext
             entity.Property(s => s.StartedAt).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));
+            entity.Property(s => s.LastActivity).HasConversion(
+                v => v.HasValue ? v.Value.ToString("O") : null,
+                v => v != null ? DateTimeOffset.Parse(v) : null);
         });
     }
 }

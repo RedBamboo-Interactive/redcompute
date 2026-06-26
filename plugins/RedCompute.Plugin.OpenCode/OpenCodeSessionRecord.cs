@@ -18,4 +18,6 @@ public class OpenCodeSessionRecord
     public string? OpenCodeSessionId { get; set; }
     public string? Effort { get; set; }
     public string? Source { get; set; }
+    public int? ProcessId { get; set; }
+    public DateTimeOffset? LastActivity { get; set; }
 }

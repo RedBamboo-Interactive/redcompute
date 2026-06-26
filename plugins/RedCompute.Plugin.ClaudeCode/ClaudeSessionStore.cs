@@ -102,6 +102,9 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
             existing.Source = record.Source;
+            existing.ProcessId = record.ProcessId;
+            if (record.LastActivity.HasValue)
+                existing.LastActivity = record.LastActivity;
         }
         else
         {

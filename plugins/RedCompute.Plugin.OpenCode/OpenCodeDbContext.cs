@@ -41,6 +41,12 @@ public class OpenCodeDbContext : DbContext
             cmd.CommandText = "ALTER TABLE Messages ADD COLUMN AttachmentsJson TEXT";
             try { cmd.ExecuteNonQuery(); }
             catch { }
+            foreach (var col in new[] { "ProcessId INTEGER", "LastActivity TEXT" })
+            {
+                cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";
+                try { cmd.ExecuteNonQuery(); }
+                catch { }
+            }
         }
         finally
         {
@@ -72,6 +78,9 @@ public class OpenCodeDbContext : DbContext
             entity.Property(s => s.StartedAt).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));
+            entity.Property(s => s.LastActivity).HasConversion(
+                v => v.HasValue ? v.Value.ToString("O") : null,
+                v => v != null ? DateTimeOffset.Parse(v) : null);
         });
     }
 }

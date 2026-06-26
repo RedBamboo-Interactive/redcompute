@@ -32,6 +32,9 @@ public class ClaudeSessionService
         _log = log;
     }
 
+    private static readonly TimeSpan IdleTtl = TimeSpan.FromHours(48);
+    private Timer? _reaperTimer;
+
     internal void RecoverSessions()
     {
         try
@@ -39,8 +42,11 @@ public class ClaudeSessionService
             var active = _sessionStore.GetActiveSessions();
             foreach (var s in active)
             {
+                TryKillByPid(s.ProcessId);
                 s.Status = "Stopped";
-                _log($"[Claude] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
+                s.StopReason = "orphaned_on_restart";
+                s.ProcessId = null;
+                _log($"[Claude] Killed orphaned session {s.Id} ({s.ProjectName}, PID {s.ProcessId})", null);
                 BackfillFromJsonl(s);
                 _sessionStore.SaveSession(s);
             }
@@ -49,6 +55,57 @@ public class ClaudeSessionService
         {
             _log($"[Claude] Failed to recover sessions: {ex.Message}", null);
         }
+
+        _reaperTimer = new Timer(_ => ReapExpiredSessions(), null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(24));
+    }
+
+    private void ReapExpiredSessions()
+    {
+        try
+        {
+            var cutoff = DateTimeOffset.UtcNow - IdleTtl;
+            foreach (var (id, session) in _sessions)
+            {
+                var lastActivity = _sessionStore.GetLastMessageTimestamp(id);
+                if (lastActivity == default) lastActivity = session.Info.StartedAt;
+                if (lastActivity >= cutoff) continue;
+
+                _log($"[Claude] Reaping expired session {id} ({session.Info.ProjectName}, idle since {lastActivity:u})", null);
+                _ = StopSession(id, reason: "idle_ttl_expired");
+            }
+
+            var dbActive = _sessionStore.GetActiveSessions();
+            foreach (var s in dbActive)
+            {
+                if (_sessions.ContainsKey(s.Id)) continue;
+
+                var lastActivity = s.LastActivity ?? s.StartedAt;
+                if (lastActivity >= cutoff) continue;
+
+                _log($"[Claude] Reaping stale DB session {s.Id} ({s.ProjectName}, last activity {lastActivity:u})", null);
+                TryKillByPid(s.ProcessId);
+                s.Status = "Stopped";
+                s.StopReason = "idle_ttl_expired";
+                s.ProcessId = null;
+                _sessionStore.SaveSession(s);
+                SessionEnded?.Invoke(s.Id, "stopped", s.StopReason);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Reaper error: {ex.Message}", null);
+        }
+    }
+
+    private static void TryKillByPid(int? pid)
+    {
+        if (pid is not { } p) return;
+        try
+        {
+            var proc = Process.GetProcessById(p);
+            proc.Kill(entireProcessTree: true);
+        }
+        catch { }
     }
 
     private void BackfillFromJsonl(ClaudeSessionRecord session)
@@ -747,6 +804,7 @@ public class ClaudeSessionService
 
         // Process is alive and waiting for input — mark as idle (ready)
         info.Status = SessionStatus.Idle;
+        info.ProcessId = process.Id;
 
         // Create a job record for this session
         var inputJson = System.Text.Json.JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = info.Id });
@@ -865,6 +923,7 @@ public class ClaudeSessionService
         _ = ReadStderr(session);
 
         info.Status = SessionStatus.Idle;
+        info.ProcessId = process.Id;
 
         if (sessionRecord.JobId.HasValue)
         {
@@ -1091,61 +1150,98 @@ public class ClaudeSessionService
         }
     }
 
-    public async Task StopSession(string sessionId)
+    public async Task StopSession(string sessionId, string? reason = null)
     {
-        if (!_sessions.TryGetValue(sessionId, out var session))
-            return;
-
-        _log($"[Claude] Stopping session {sessionId}", null);
-
-        // Try graceful interrupt first, then kill quickly
-        try
+        if (_sessions.TryGetValue(sessionId, out var session))
         {
-            var requestId = $"stop-{++session.ControlRequestCounter}";
-            var msg = new
+            _log($"[Claude] Stopping session {sessionId} (in-memory, PID {session.Process.Id})", null);
+
+            try
             {
-                type = "control_request",
-                request_id = requestId,
-                request = new { subtype = "interrupt" }
-            };
-            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
-            session.Process.StandardInput.Flush();
+                var requestId = $"stop-{++session.ControlRequestCounter}";
+                var msg = new
+                {
+                    type = "control_request",
+                    request_id = requestId,
+                    request = new { subtype = "interrupt" }
+                };
+                session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
+                session.Process.StandardInput.Flush();
+            }
+            catch { }
+
+            var exited = await WaitForExit(session.Process, TimeSpan.FromSeconds(3));
+            if (!exited)
+            {
+                try { session.Process.Kill(entireProcessTree: true); } catch { }
+            }
+
+            session.Cts.Cancel();
+            session.Info.Status = SessionStatus.Stopped;
+            session.Info.StopReason = reason ?? "user_stopped";
+            session.Info.ProcessId = null;
+            _sessions.TryRemove(sessionId, out _);
+            PersistSessionRecord(session.Info);
+
+            if (session.Info.JobId.HasValue)
+                _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
+
+            SessionEnded?.Invoke(sessionId, "stopped", session.Info.StopReason);
+            return;
         }
-        catch { }
 
-        var exited = await WaitForExit(session.Process, TimeSpan.FromSeconds(3));
-        if (!exited)
-        {
-            try { session.Process.Kill(entireProcessTree: true); } catch { }
-        }
+        var record = _sessionStore.FindSession(sessionId);
+        if (record == null) return;
+        if (record.Status is "Stopped" or "Error") return;
 
-        session.Cts.Cancel();
-        session.Info.Status = SessionStatus.Stopped;
-        session.Info.StopReason = "user_stopped";
-        _sessions.TryRemove(sessionId, out _);
-        PersistSessionRecord(session.Info);
+        _log($"[Claude] Stopping unloaded session {sessionId} (PID {record.ProcessId})", null);
 
-        if (session.Info.JobId.HasValue)
-            _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
+        TryKillByPid(record.ProcessId);
 
-        SessionEnded?.Invoke(sessionId, "stopped", session.Info.StopReason);
+        record.Status = "Stopped";
+        record.StopReason = reason ?? "user_stopped";
+        record.ProcessId = null;
+        _sessionStore.SaveSession(record);
+
+        if (record.JobId.HasValue)
+            _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
+
+        SessionEnded?.Invoke(sessionId, "stopped", record.StopReason);
     }
 
     public async Task ForceKill(string sessionId)
     {
-        if (!_sessions.TryRemove(sessionId, out var session))
+        if (_sessions.TryRemove(sessionId, out var session))
+        {
+            try { session.Process.Kill(entireProcessTree: true); } catch { }
+            session.Cts.Cancel();
+            session.Info.Status = SessionStatus.Stopped;
+            session.Info.StopReason = "user_stopped";
+            session.Info.ProcessId = null;
+            PersistSessionRecord(session.Info);
+
+            if (session.Info.JobId.HasValue)
+                _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
+
+            SessionEnded?.Invoke(sessionId, "killed", session.Info.StopReason);
             return;
+        }
 
-        try { session.Process.Kill(entireProcessTree: true); } catch { }
-        session.Cts.Cancel();
-        session.Info.Status = SessionStatus.Stopped;
-        session.Info.StopReason = "user_stopped";
-        PersistSessionRecord(session.Info);
+        var record = _sessionStore.FindSession(sessionId);
+        if (record == null) return;
+        if (record.Status is "Stopped" or "Error") return;
 
-        if (session.Info.JobId.HasValue)
-            _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
+        TryKillByPid(record.ProcessId);
 
-        SessionEnded?.Invoke(sessionId, "killed", session.Info.StopReason);
+        record.Status = "Stopped";
+        record.StopReason = "user_stopped";
+        record.ProcessId = null;
+        _sessionStore.SaveSession(record);
+
+        if (record.JobId.HasValue)
+            _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
+
+        SessionEnded?.Invoke(sessionId, "killed", record.StopReason);
         await Task.CompletedTask;
     }
 
@@ -1844,7 +1940,9 @@ public class ClaudeSessionService
                 ContextWindow = info.ContextWindow,
                 Effort = info.Effort,
                 JobId = info.JobId,
-                Source = info.Source
+                Source = info.Source,
+                ProcessId = info.ProcessId,
+                LastActivity = DateTimeOffset.UtcNow,
             });
         }
         catch (Exception ex)

@@ -56,7 +56,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
     {
         using var db = new OpenCodeDbContext();
         return db.Sessions
-            .Where(s => s.Status == "Active" || s.Status == "Starting")
+            .Where(s => s.Status == "Active" || s.Status == "Starting" || s.Status == "Idle")
             .ToList();
     }
 
@@ -89,6 +89,9 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.OutputTokens = record.OutputTokens;
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
+            existing.ProcessId = record.ProcessId;
+            if (record.LastActivity.HasValue)
+                existing.LastActivity = record.LastActivity;
         }
         else
         {

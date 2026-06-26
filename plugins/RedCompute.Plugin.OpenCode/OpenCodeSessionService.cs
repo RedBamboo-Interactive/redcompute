@@ -57,6 +57,9 @@ public class OpenCodeSessionService
         RecoverSessions();
     }
 
+    private static readonly TimeSpan IdleTtl = TimeSpan.FromHours(48);
+    private Timer? _reaperTimer;
+
     private void RecoverSessions()
     {
         try
@@ -64,14 +67,54 @@ public class OpenCodeSessionService
             var active = _store.GetActiveSessions();
             foreach (var s in active)
             {
+                TryKillByPid(s.ProcessId);
                 s.Status = "Stopped";
-                _log($"[OpenCode] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
+                s.ProcessId = null;
+                _log($"[OpenCode] Killed orphaned session {s.Id} ({s.ProjectName}, PID {s.ProcessId})", null);
                 _store.SaveSession(s);
             }
         }
         catch (Exception ex)
         {
             _log($"[OpenCode] Failed to recover sessions: {ex.Message}", null);
+        }
+
+        _reaperTimer = new Timer(_ => ReapExpiredSessions(), null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(24));
+    }
+
+    private void ReapExpiredSessions()
+    {
+        try
+        {
+            var cutoff = DateTimeOffset.UtcNow - IdleTtl;
+            foreach (var (id, session) in _sessions)
+            {
+                var lastActivity = session.Info.StartedAt;
+                if (lastActivity >= cutoff) continue;
+
+                _log($"[OpenCode] Reaping expired session {id} ({session.Info.ProjectName}, idle since {lastActivity:u})", null);
+                _ = StopSession(id, reason: "idle_ttl_expired");
+            }
+
+            var dbActive = _store.GetActiveSessions();
+            foreach (var s in dbActive)
+            {
+                if (_sessions.ContainsKey(s.Id)) continue;
+
+                var lastActivity = s.LastActivity ?? s.StartedAt;
+                if (lastActivity >= cutoff) continue;
+
+                _log($"[OpenCode] Reaping stale DB session {s.Id} ({s.ProjectName}, last activity {lastActivity:u})", null);
+                TryKillByPid(s.ProcessId);
+                s.Status = "Stopped";
+                s.ProcessId = null;
+                _store.SaveSession(s);
+                SessionEnded?.Invoke(s.Id, "stopped");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[OpenCode] Reaper error: {ex.Message}", null);
         }
     }
 
@@ -117,6 +160,7 @@ public class OpenCodeSessionService
         }
 
         info.Status = "Idle";
+        info.ProcessId = session.Process.Id;
 
         var inputJson = JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = id });
         var job = _jobTracker.CreateJob("ai-session", "OpenCode", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session",
@@ -125,7 +169,7 @@ public class OpenCodeSessionService
         info.JobId = job.Id;
 
         PersistSessionRecord(info);
-        _log($"[OpenCode] Session {id} started for {info.ProjectName} (ACP session {session.AcpSessionId}, Job {job.Id})", null);
+        _log($"[OpenCode] Session {id} started for {info.ProjectName} (PID {session.Process.Id}, ACP session {session.AcpSessionId}, Job {job.Id})", null);
         SessionCreated?.Invoke(info);
 
         return info;
@@ -197,6 +241,7 @@ public class OpenCodeSessionService
         }
 
         info.Status = "Idle";
+        info.ProcessId = session.Process.Id;
 
         if (record.JobId.HasValue)
         {
@@ -213,7 +258,7 @@ public class OpenCodeSessionService
         }
 
         PersistSessionRecord(info);
-        _log($"[OpenCode] Session {sessionId} resumed for {info.ProjectName} (ACP session {session.AcpSessionId}, Job {info.JobId})", null);
+        _log($"[OpenCode] Session {sessionId} resumed for {info.ProjectName} (PID {session.Process.Id}, ACP session {session.AcpSessionId}, Job {info.JobId})", null);
         SessionCreated?.Invoke(info);
 
         return info;
@@ -497,57 +542,92 @@ public class OpenCodeSessionService
         }
     }
 
-    public async Task StopSession(string sessionId)
+    public async Task StopSession(string sessionId, string? reason = null)
     {
-        if (!_sessions.TryRemove(sessionId, out var session))
-            return;
-
-        try
+        if (_sessions.TryRemove(sessionId, out var session))
         {
-            if (session.Info.Status == "Active")
-                await SendNotification(session, "session/cancel", new { sessionId = session.AcpSessionId });
-
-            if (session.AcpSessionId != null)
+            try
             {
-                try { await SendRequest(session, "session/close", new { sessionId = session.AcpSessionId }, timeoutSeconds: 5); }
-                catch (Exception ex) { _log($"[OpenCode] session/close failed for {sessionId}: {ex.Message}", null); }
+                if (session.Info.Status == "Active")
+                    await SendNotification(session, "session/cancel", new { sessionId = session.AcpSessionId });
+
+                if (session.AcpSessionId != null)
+                {
+                    try { await SendRequest(session, "session/close", new { sessionId = session.AcpSessionId }, timeoutSeconds: 5); }
+                    catch (Exception ex) { _log($"[OpenCode] session/close failed for {sessionId}: {ex.Message}", null); }
+                }
             }
+            catch (Exception ex) { _log($"[OpenCode] Error during graceful stop of {sessionId}: {ex.Message}", null); }
+
+            session.Info.Status = "Stopped";
+            session.Info.ProcessId = null;
+
+            foreach (var (_, tcs) in session.PendingRequests)
+                tcs.TrySetCanceled();
+            session.PendingRequests.Clear();
+
+            CleanupSessionResources(session);
+
+            CompleteSessionJob(session);
+            PersistSessionRecord(session.Info);
+
+            _log($"[OpenCode] Session {sessionId} stopped", null);
+            SessionEnded?.Invoke(sessionId, "stopped");
+            return;
         }
-        catch (Exception ex) { _log($"[OpenCode] Error during graceful stop of {sessionId}: {ex.Message}", null); }
 
-        session.Info.Status = "Stopped";
+        var record = _store.FindSession(sessionId);
+        if (record == null) return;
+        if (record.Status is "Stopped" or "Error") return;
 
-        foreach (var (_, tcs) in session.PendingRequests)
-            tcs.TrySetCanceled();
-        session.PendingRequests.Clear();
+        _log($"[OpenCode] Stopping unloaded session {sessionId} (PID {record.ProcessId})", null);
 
-        CleanupSessionResources(session);
+        TryKillByPid(record.ProcessId);
 
-        CompleteSessionJob(session);
-        PersistSessionRecord(session.Info);
+        record.Status = "Stopped";
+        record.ProcessId = null;
+        _store.SaveSession(record);
 
-        _log($"[OpenCode] Session {sessionId} stopped", null);
+        if (record.JobId.HasValue)
+            _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
+
         SessionEnded?.Invoke(sessionId, "stopped");
     }
 
     public void ForceKill(string sessionId)
     {
-        if (!_sessions.TryRemove(sessionId, out var session))
+        if (_sessions.TryRemove(sessionId, out var session))
         {
-            CancelExecution(sessionId);
+            session.Info.Status = "Stopped";
+            session.Info.ProcessId = null;
+
+            foreach (var (_, tcs) in session.PendingRequests)
+                tcs.TrySetCanceled();
+            session.PendingRequests.Clear();
+
+            CleanupSessionResources(session);
+
+            CompleteSessionJob(session);
+            PersistSessionRecord(session.Info);
+
+            SessionEnded?.Invoke(sessionId, "force_killed");
             return;
         }
 
-        session.Info.Status = "Stopped";
+        CancelExecution(sessionId);
 
-        foreach (var (_, tcs) in session.PendingRequests)
-            tcs.TrySetCanceled();
-        session.PendingRequests.Clear();
+        var record = _store.FindSession(sessionId);
+        if (record == null) return;
+        if (record.Status is "Stopped" or "Error") return;
 
-        CleanupSessionResources(session);
+        TryKillByPid(record.ProcessId);
 
-        CompleteSessionJob(session);
-        PersistSessionRecord(session.Info);
+        record.Status = "Stopped";
+        record.ProcessId = null;
+        _store.SaveSession(record);
+
+        if (record.JobId.HasValue)
+            _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "force_killed");
     }
@@ -1026,7 +1106,20 @@ public class OpenCodeSessionService
             OpenCodeSessionId = info.OpenCodeSessionId,
             Effort = info.Effort,
             Source = info.Source,
+            ProcessId = info.ProcessId,
+            LastActivity = DateTimeOffset.UtcNow,
         });
+    }
+
+    private static void TryKillByPid(int? pid)
+    {
+        if (pid is not { } p) return;
+        try
+        {
+            var proc = Process.GetProcessById(p);
+            proc.Kill(entireProcessTree: true);
+        }
+        catch { }
     }
 
     // ===== Stateless Execution (unchanged) =====

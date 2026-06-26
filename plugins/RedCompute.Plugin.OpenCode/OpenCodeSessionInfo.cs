@@ -19,6 +19,7 @@ public class OpenCodeSessionInfo
     public string? Effort { get; set; }
     public string? Source { get; set; }
     public string? UserId { get; set; }
+    public int? ProcessId { get; set; }
 }
 
 public class ProjectInfo
