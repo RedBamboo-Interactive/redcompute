@@ -229,6 +229,7 @@ public class OpenCodeSessionService
             CostUsd = record.CostUsd,
             InputTokens = record.InputTokens,
             OutputTokens = record.OutputTokens,
+            ContextWindow = record.ContextWindow,
             Effort = record.Effort,
             Source = record.Source,
         };
@@ -441,13 +442,8 @@ public class OpenCodeSessionService
         {
             var result = await responseTask.WaitAsync(session.Cts.Token);
 
-            if (result.TryGetProperty("usage", out var usage))
-            {
-                if (usage.TryGetProperty("inputTokens", out var it))
-                    session.Info.InputTokens = (session.Info.InputTokens ?? 0) + it.GetInt32();
-                if (usage.TryGetProperty("outputTokens", out var ot))
-                    session.Info.OutputTokens = (session.Info.OutputTokens ?? 0) + ot.GetInt32();
-            }
+            // Token counts come from usage_update notifications (cumulative),
+            // so we don't accumulate from the prompt response to avoid double-counting.
 
             var stopReason = result.TryGetProperty("stopReason", out var sr) ? sr.GetString() : null;
             if (stopReason == "cancelled")
@@ -1102,6 +1098,7 @@ public class OpenCodeSessionService
             CostUsd = info.CostUsd,
             InputTokens = info.InputTokens,
             OutputTokens = info.OutputTokens,
+            ContextWindow = info.ContextWindow,
             JobId = info.JobId,
             OpenCodeSessionId = info.OpenCodeSessionId,
             Effort = info.Effort,

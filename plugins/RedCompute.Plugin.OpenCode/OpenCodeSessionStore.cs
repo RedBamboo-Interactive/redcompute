@@ -19,6 +19,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
         OutputTokens = r.OutputTokens,
+        ContextWindow = r.ContextWindow,
         Effort = r.Effort,
         JobId = r.JobId,
         Dismissed = r.Dismissed,
@@ -87,6 +88,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.CostUsd = record.CostUsd;
             existing.InputTokens = record.InputTokens;
             existing.OutputTokens = record.OutputTokens;
+            existing.ContextWindow = record.ContextWindow;
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
             existing.ProcessId = record.ProcessId;

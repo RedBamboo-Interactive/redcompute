@@ -61,6 +61,8 @@ public partial class App : Application
         ConfigManager.Load();
         Log("[App] Configuration loaded");
 
+        DefenderExclusionService.EnsureExclusions(s => Log(s));
+
         if (ConfigManager.Config.AutoStartDocker)
             _ = DockerDesktopService.EnsureRunningAsync(s => Log(s));
 
