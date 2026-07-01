@@ -19,7 +19,8 @@ public record QualityMode(
 /// own default model applies.
 /// </summary>
 public record ResolvedMode(string Provider, string? Model, string? Effort,
-    string? Backend = null, string? EndpointUrl = null, string? ApiKey = null);
+    string? Backend = null, string? EndpointUrl = null, string? ApiKey = null,
+    int? ThinkingBudget = null);
 
 /// <summary>
 /// Resolves abstract quality tiers (fast, standard, deep, research) to provider-specific
@@ -145,7 +146,7 @@ public class QualityModeService
     private ResolvedMode ToResolved(QualityMode m)
     {
         var pc = _providerConfig.Resolve(m.Provider);
-        return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+        return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey, m.ThinkingBudget);
     }
 
     private static Dictionary<string, List<QualityMode>> BuildFallbacks()

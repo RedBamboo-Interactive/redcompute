@@ -83,11 +83,11 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     // --- ISessionProvider: Session Lifecycle ---
 
     public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
-        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, null, null);
+        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, null, null, null);
 
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null)
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null)
     {
-        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, endpointUrl, apiKey);
+        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, endpointUrl, apiKey, effort, thinkingBudget);
         return info != null ? ToUnified(info) : null;
     }
 

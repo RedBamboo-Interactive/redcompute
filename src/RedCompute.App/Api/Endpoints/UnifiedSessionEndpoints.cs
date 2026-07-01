@@ -108,9 +108,11 @@ public static class UnifiedSessionEndpoints
 
             var model = q.Model;
             var effort = q.Effort;
+            int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
+            thinkingBudget ??= q.ThinkingBudget;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort, q.EndpointUrl, q.ApiKey);
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort, q.EndpointUrl, q.ApiKey, thinkingBudget);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -120,7 +122,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("provider", "string", description: "Provider to use. Defaults to the active provider.", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("model", "string", description: "Model to use. Overrides qualityTier when both are given.", location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Effort level (e.g. low, normal, high)", location: ParamLocation.Body)
-            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body);
+            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
+            .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body);
 
         endpoints.MapGet("/ai-session/sessions/{id}",
             "Get session details and message history", async (HttpContext ctx, string id) =>
@@ -415,12 +418,13 @@ public static class UnifiedSessionEndpoints
             var qualityTier = body.TryGetProperty("qualityTier", out var qt) && qt.ValueKind == JsonValueKind.String ? qt.GetString() : null;
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
 
-            // Explicit model wins; otherwise a qualityTier resolves to a model (+effort) for this provider.
+            // Explicit model wins; otherwise a qualityTier resolves to a model (+effort+thinkingBudget) for this provider.
             if (string.IsNullOrWhiteSpace(model) && !string.IsNullOrWhiteSpace(qualityTier) && _quality != null)
             {
                 var resolved = _quality.Resolve(qualityTier, provider.ProviderId);
                 model = resolved.Model;
                 if (string.IsNullOrWhiteSpace(effort)) effort = resolved.Effort;
+                thinkingBudget ??= resolved.ThinkingBudget;
             }
 
             var updated = await provider.UpdateSessionConfigAsync(id, model, effort, thinkingBudget);
@@ -852,9 +856,11 @@ public static class UnifiedSessionEndpoints
         if (resolved == null)
             return Error(422, "validation_failed", $"Project '{project}' not found");
 
+        int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
+        thinkingBudget ??= q.ThinkingBudget;
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar, q.Effort, q.EndpointUrl, q.ApiKey);
+        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar, q.Effort, q.EndpointUrl, q.ApiKey, thinkingBudget);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
 
@@ -942,7 +948,8 @@ public static class UnifiedSessionEndpoints
     /// An explicit model always wins; otherwise a qualityTier resolves all three suite-wide.
     /// </summary>
     private record QualityResolution(string? Model, string? Effort, string? ProviderName,
-        string? BackendName = null, string? EndpointUrl = null, string? ApiKey = null);
+        string? BackendName = null, string? EndpointUrl = null, string? ApiKey = null,
+        int? ThinkingBudget = null);
 
     private static QualityResolution ResolveQuality(HttpContext ctx, JsonElement body)
     {
@@ -971,7 +978,8 @@ public static class UnifiedSessionEndpoints
             explicitProvider ?? resolved.Provider,
             resolved.Backend,
             resolved.EndpointUrl,
-            resolved.ApiKey);
+            resolved.ApiKey,
+            resolved.ThinkingBudget);
     }
 
     private static (ISessionProvider? provider, IResult? error) ResolveProviderFromBody(

@@ -16,3 +16,6 @@ videos/
 
 # Temp
 Projectsredcomputetemp_build/
+
+# Scratch test scripts
+acp-test.ps1

@@ -120,7 +120,7 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null, string? effort = null, int? thinkingBudget = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -152,7 +152,7 @@ public class OpenCodeSessionService
             UserId = userId,
         };
 
-        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model);
+        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, effort, thinkingBudget);
         if (session == null)
         {
             LastStartError = error;
@@ -161,6 +161,7 @@ public class OpenCodeSessionService
 
         info.Status = "Idle";
         info.ProcessId = session.Process.Id;
+        info.Effort = effort;
 
         var inputJson = JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = id });
         var job = _jobTracker.CreateJob("ai-session", "OpenCode", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session",
@@ -267,7 +268,7 @@ public class OpenCodeSessionService
 
     private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
         OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId,
-        string? model = null)
+        string? model = null, string? effort = null, int? thinkingBudget = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -351,6 +352,34 @@ public class OpenCodeSessionService
                         configId = "model",
                         value = resolvedModel,
                     });
+                }
+
+                if (!string.IsNullOrEmpty(effort) && session.AcpSessionId != null)
+                {
+                    try
+                    {
+                        await SendRequest(session, "session/set_config_option", new
+                        {
+                            sessionId = session.AcpSessionId,
+                            configId = "effort",
+                            value = effort,
+                        });
+                    }
+                    catch (Exception ex) { _log($"[OpenCode] Failed to set effort for {info.Id}: {ex.Message}", null); }
+                }
+
+                if (thinkingBudget != null && session.AcpSessionId != null)
+                {
+                    try
+                    {
+                        await SendRequest(session, "session/set_config_option", new
+                        {
+                            sessionId = session.AcpSessionId,
+                            configId = "thinking_budget",
+                            value = thinkingBudget.Value,
+                        });
+                    }
+                    catch (Exception ex) { _log($"[OpenCode] Failed to set thinking_budget for {info.Id}: {ex.Message}", null); }
                 }
             }
 
@@ -904,6 +933,13 @@ public class OpenCodeSessionService
         if (!@params.TryGetProperty("update", out var update)) return;
 
         var updateType = update.TryGetProperty("sessionUpdate", out var ut) ? ut.GetString() : null;
+
+        // Debug: log unknown sessionUpdate types to catch reasoning events from non-Claude providers
+        var knownTypes = new HashSet<string> { "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update" };
+        if (updateType != null && !knownTypes.Contains(updateType))
+        {
+            _log($"[OpenCode] Unknown sessionUpdate type: {updateType} - {update}", null);
+        }
 
         switch (updateType)
         {

@@ -12,7 +12,7 @@ public interface ISessionProvider
     Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null);
 
     // Extended start with provider-level endpoint override (default delegates to 7-param above).
-    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null)
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null)
         => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task StopSessionAsync(string sessionId);
