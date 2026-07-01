@@ -24,6 +24,11 @@ public class ProviderConfigService
     private Dictionary<string, ProviderEntityConfig> _providers;
     private string? _defaultProviderSlug;
 
+    // True once a non-empty provider list has been fetched from RedLeaf at least once.
+    // Until then we are serving the hardcoded fallbacks and any provider outside that
+    // set (e.g. a custom Meta/OpenCode endpoint) will 404 at resolution time.
+    private volatile bool _loadedFromRedLeaf;
+
     private static readonly Dictionary<string, string> AliasMap = new(StringComparer.OrdinalIgnoreCase)
     {
         ["claude-code"] = "anthropic-direct",
@@ -55,6 +60,7 @@ public class ProviderConfigService
             {
                 var dict = parsed.ToDictionary(p => p.Slug, StringComparer.OrdinalIgnoreCase);
                 lock (_lock) { _providers = dict; }
+                _loadedFromRedLeaf = true;
                 _log($"[ProviderConfig] Loaded {parsed.Count} provider(s) from RedLeaf", null);
             }
 
@@ -74,6 +80,46 @@ public class ProviderConfigService
         catch (Exception ex)
         {
             _log($"[ProviderConfig] Failed to fetch providers from RedLeaf, using fallbacks: {ex.Message}", null);
+        }
+    }
+
+    /// <summary>
+    /// True once the real provider list has been loaded from RedLeaf. While false, the
+    /// service is serving the hardcoded fallbacks only — surface this in health/status so
+    /// a degraded provider list can't silently pass for the real thing.
+    /// </summary>
+    public bool LoadedFromRedLeaf => _loadedFromRedLeaf;
+
+    /// <summary>
+    /// Load providers from RedLeaf at startup, retrying with capped backoff until the first
+    /// successful non-empty load. This is what keeps a cold-start race (RedCompute up before
+    /// RedLeaf is ready) from latching onto the two-item fallback list for the rest of the
+    /// process lifetime. Safe to fire-and-forget; it self-heals whenever RedLeaf comes online.
+    /// </summary>
+    public async Task EnsureLoadedAsync(CancellationToken ct = default)
+    {
+        var delay = TimeSpan.FromSeconds(2);
+        var maxDelay = TimeSpan.FromSeconds(30);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested && !_loadedFromRedLeaf)
+        {
+            attempt++;
+            await RefreshAsync(ct);
+            if (_loadedFromRedLeaf)
+            {
+                if (attempt > 1)
+                    _log($"[ProviderConfig] Provider list recovered from RedLeaf after {attempt} attempt(s)", null);
+                return;
+            }
+
+            _log($"[ProviderConfig] DEGRADED — serving {_providers.Count} fallback provider(s) only; " +
+                 $"RedLeaf fetch not yet succeeded (attempt {attempt}), retrying in {delay.TotalSeconds:0}s", null);
+
+            try { await Task.Delay(delay, ct); }
+            catch (OperationCanceledException) { return; }
+
+            delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
         }
     }
 

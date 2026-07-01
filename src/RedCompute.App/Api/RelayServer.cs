@@ -356,9 +356,11 @@ public class RelayServer
         _log($"[Relay] Listening at http://localhost:{_config.ApiPort}", null);
 
         // Fetch suite-wide quality modes and provider configs from RedLeaf. Fallbacks seeded
-        // in the constructors keep resolution working if RedLeaf is offline.
+        // in the constructors keep resolution working if RedLeaf is offline. Providers use a
+        // retrying load so a cold-start race with RedLeaf can't strand us on fallbacks (which
+        // would 404 every custom-provider session, e.g. the Spark agent's Meta endpoint).
         _ = _qualityModes.RefreshAsync(ct);
-        _ = _providerConfig.RefreshAsync(ct);
+        _ = _providerConfig.EnsureLoadedAsync(ct);
     }
 
     private void RegisterWsEvents(WebSocketBroadcaster broadcaster)
