@@ -41,6 +41,9 @@ public class OpenCodeDbContext : DbContext
             cmd.CommandText = "ALTER TABLE Messages ADD COLUMN AttachmentsJson TEXT";
             try { cmd.ExecuteNonQuery(); }
             catch { }
+            cmd.CommandText = "ALTER TABLE Messages ADD COLUMN MessageUid TEXT";
+            try { cmd.ExecuteNonQuery(); }
+            catch { }
             foreach (var col in new[] { "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER" })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";

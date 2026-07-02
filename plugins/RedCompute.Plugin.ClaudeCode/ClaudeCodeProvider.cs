@@ -63,7 +63,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         };
     }
 
-    public Task<bool> InjectMessageAsync(string sessionId, string role, string content, string? attachmentsJson = null)
+    public Task<bool> InjectMessageAsync(string sessionId, string role, string content, string? attachmentsJson = null, string? messageUid = null)
     {
         var session = _store.FindSession(sessionId);
         if (session == null) return Task.FromResult(false);
@@ -74,6 +74,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             Role = role,
             EventType = "text",
             Content = content,
+            MessageUid = messageUid,
             Timestamp = DateTimeOffset.UtcNow,
             AttachmentsJson = attachmentsJson,
         });
@@ -119,10 +120,10 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     // --- ISessionProvider: Messaging ---
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null)
+    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
     {
         var claudeImages = images?.Select(i => new ClaudeCode.ImageAttachment(i.MediaType, i.Base64)).ToArray();
-        return _claude.SendMessage(sessionId, content, claudeImages, attachmentsJson);
+        return _claude.SendMessage(sessionId, content, claudeImages, attachmentsJson, messageUid);
     }
 
     public bool SendAnswer(string sessionId, string answer) => _claude.SendAnswer(sessionId, answer);
@@ -276,6 +277,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ToolResult = e.ToolResult,
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
+        MessageUid = e.MessageUid,
     };
 
     private static UnifiedMessageRecord ToUnifiedMessage(ClaudeMessageRecord m) => new()
@@ -289,6 +291,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        MessageUid = m.MessageUid,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
     };

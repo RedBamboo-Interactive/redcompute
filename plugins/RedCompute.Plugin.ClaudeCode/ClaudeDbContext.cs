@@ -84,6 +84,13 @@ public class ClaudeDbContext : DbContext
             alter.CommandText = "ALTER TABLE Messages ADD COLUMN AttachmentsJson TEXT";
             alter.ExecuteNonQuery();
         }
+
+        if (!msgColumns.Contains("MessageUid"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Messages ADD COLUMN MessageUid TEXT";
+            alter.ExecuteNonQuery();
+        }
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)

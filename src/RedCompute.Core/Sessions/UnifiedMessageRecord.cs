@@ -11,6 +11,9 @@ public class UnifiedMessageRecord
     public string? ToolInput { get; set; }
     public string? ToolResult { get; set; }
     public string? MessageId { get; set; }
+    // Provider-neutral message uid (see UnifiedStreamEvent.MessageUid).
+    // Null on records persisted before the uid rollout.
+    public string? MessageUid { get; set; }
     public DateTimeOffset Timestamp { get; set; }
     public string? AttachmentsJson { get; set; }
 }

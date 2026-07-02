@@ -41,6 +41,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        MessageUid = m.MessageUid,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
     };

@@ -97,7 +97,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public void DismissSession(string sessionId) => _codex.DismissSession(sessionId);
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null)
+    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
         => throw new NotSupportedException("Codex does not support interactive messaging");
 
     public bool SendAnswer(string sessionId, string answer)

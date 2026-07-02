@@ -947,7 +947,7 @@ public class ClaudeSessionService
         return info;
     }
 
-    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null)
+    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -1003,7 +1003,10 @@ public class ClaudeSessionService
             session.Info.StopReason = null;
             SessionUpdated?.Invoke(session.Info);
 
-            PersistMessage(sessionId, "user", "text", content, null, null, null, null, attachmentsJson);
+            // A user message ends the previous assistant turn.
+            session.CurrentAssistantUid = null;
+            PersistMessage(sessionId, "user", "text", content, null, null, null, null, attachmentsJson,
+                messageUid ?? Guid.NewGuid().ToString("N"));
 
             return true;
         }
@@ -1035,7 +1038,11 @@ public class ClaudeSessionService
             session.Info.Status = SessionStatus.Active;
             SessionUpdated?.Invoke(session.Info);
 
-            PersistMessage(sessionId, "user", "text", answer, null, null, null, null);
+            // An answer is a user record too — it splits the assistant run on
+            // reload, so the next assistant events must mint a fresh turn uid.
+            session.CurrentAssistantUid = null;
+            PersistMessage(sessionId, "user", "text", answer, null, null, null, null,
+                messageUid: Guid.NewGuid().ToString("N"));
 
             return true;
         }
@@ -1440,11 +1447,20 @@ public class ClaudeSessionService
                     var evt = ParseStreamLine(line, session);
                     if (evt != null)
                     {
+                        // Stamp the turn uid before the event is broadcast or
+                        // persisted so the streamed copy and the stored record
+                        // carry the same identity. status/error close the turn.
+                        if (evt.Type is "status" or "error")
+                            session.CurrentAssistantUid = null;
+                        else
+                            evt.MessageUid = session.CurrentAssistantUid ??= Guid.NewGuid().ToString("N");
+
                         StreamEvent?.Invoke(session.Info.Id, evt);
                         session.MessageHistory.Add(evt);
                         TrimHistory(session);
                         PersistMessage(session.Info.Id, "assistant", evt.Type, evt.Content,
-                            evt.ToolName, evt.ToolInput?.ToString(), evt.ToolResult, evt.MessageId);
+                            evt.ToolName, evt.ToolInput?.ToString(), evt.ToolResult, evt.MessageId,
+                            messageUid: evt.MessageUid);
                     }
 
                     if (session.Info.Title == null && DateTimeOffset.UtcNow - lastTitleCheck > TimeSpan.FromSeconds(3))
@@ -1953,7 +1969,7 @@ public class ClaudeSessionService
 
     private void PersistMessage(string sessionId, string role, string eventType, string? content,
         string? toolName, string? toolInput, string? toolResult, string? messageId,
-        string? attachmentsJson = null)
+        string? attachmentsJson = null, string? messageUid = null)
     {
         try
         {
@@ -1967,6 +1983,7 @@ public class ClaudeSessionService
                 ToolInput = toolInput,
                 ToolResult = toolResult,
                 MessageId = messageId,
+                MessageUid = messageUid,
                 Timestamp = DateTimeOffset.UtcNow,
                 AttachmentsJson = attachmentsJson,
             });
@@ -2016,6 +2033,11 @@ public class ClaudeSessionService
         public bool InterruptPending { get; set; }
         public bool RestartPending { get; set; }
         public int ControlRequestCounter { get; set; }
+        // Provider-neutral uid shared by all events of the current assistant
+        // turn. Minted lazily at the turn's first content event; cleared on
+        // turn boundaries (status/error result, user message, answer) so the
+        // next turn mints a fresh one.
+        public string? CurrentAssistantUid { get; set; }
 
         public ManagedSession(ClaudeSessionInfo info, Process process, CancellationTokenSource cts)
         {

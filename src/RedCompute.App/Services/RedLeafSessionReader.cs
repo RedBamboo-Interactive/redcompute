@@ -104,6 +104,7 @@ public sealed class RedLeafSessionReader
                     ToolInput = Str(d, "tool_input"),
                     ToolResult = Str(d, "tool_result"),
                     MessageId = Str(d, "message_id"),
+                    MessageUid = Str(d, "message_uid"),
                     Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
                         ? t : default,
                     AttachmentsJson = Str(d, "attachments_json"),

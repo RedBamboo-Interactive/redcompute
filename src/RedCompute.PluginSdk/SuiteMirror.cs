@@ -43,6 +43,9 @@ public sealed class AiMessageSnapshot
     public string? ToolInput { get; init; }
     public string? ToolResult { get; init; }
     public string? MessageId { get; init; }
+    // Provider-neutral message uid minted by RedCompute; shared by all
+    // events of one assistant turn and carried into the RedLeaf mirror.
+    public string? MessageUid { get; init; }
     public DateTimeOffset Timestamp { get; init; }
     public string? AttachmentsJson { get; init; }
 }

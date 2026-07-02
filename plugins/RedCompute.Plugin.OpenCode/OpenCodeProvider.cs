@@ -109,8 +109,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Messaging ---
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null)
-        => _opencode.SendMessage(sessionId, content, images, attachmentsJson);
+    public Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
+        => _opencode.SendMessage(sessionId, content, images, attachmentsJson, messageUid);
 
     public bool SendAnswer(string sessionId, string answer)
         => _opencode.SendAnswer(sessionId, answer);
@@ -236,6 +236,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ToolResult = e.ToolResult,
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
+        MessageUid = e.MessageUid,
         Attachments = e.Attachments?.Select(a => new UnifiedAttachment
         {
             Type = a.Type,
@@ -256,6 +257,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        MessageUid = m.MessageUid,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
     };

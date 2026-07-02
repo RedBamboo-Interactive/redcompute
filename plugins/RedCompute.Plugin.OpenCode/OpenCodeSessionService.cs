@@ -32,6 +32,9 @@ public class OpenCodeSessionService
         public Process Process { get; }
         public CancellationTokenSource Cts { get; }
         public List<OpenCodeStreamEvent> MessageHistory { get; } = new();
+        // Provider-neutral uid shared by all events of the current assistant
+        // turn; cleared when a user message starts the next turn.
+        public string? CurrentAssistantUid { get; set; }
         public string? AcpSessionId { get; set; }
         public ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> PendingRequests { get; } = new();
         private int _nextRequestId;
@@ -404,7 +407,7 @@ public class OpenCodeSessionService
         }
     }
 
-    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null)
+    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -444,12 +447,15 @@ public class OpenCodeSessionService
             session.Info.Status = "Active";
             SessionUpdated?.Invoke(session.Info);
 
+            // A user message ends the previous assistant turn.
+            session.CurrentAssistantUid = null;
             _store.AddMessage(new OpenCodeMessageRecord
             {
                 SessionId = sessionId,
                 Role = "user",
                 EventType = "text",
                 Content = content,
+                MessageUid = messageUid ?? Guid.NewGuid().ToString("N"),
                 Timestamp = DateTimeOffset.UtcNow,
                 AttachmentsJson = attachmentsJson,
             });
@@ -1059,6 +1065,13 @@ public class OpenCodeSessionService
 
     private void EmitAndStore(ManagedSession session, OpenCodeStreamEvent evt)
     {
+        // Stamp the turn uid before the event is broadcast or persisted so
+        // the streamed copy and the stored record carry the same identity.
+        if (evt.Type is "status" or "error")
+            session.CurrentAssistantUid = null;
+        else
+            evt.MessageUid = session.CurrentAssistantUid ??= Guid.NewGuid().ToString("N");
+
         StreamEvent?.Invoke(session.Info.Id, evt);
         session.MessageHistory.Add(evt);
         if (session.MessageHistory.Count > 500)
@@ -1074,6 +1087,7 @@ public class OpenCodeSessionService
             ToolInput = evt.ToolInput is string s ? s : evt.ToolInput != null ? JsonSerializer.Serialize(evt.ToolInput) : null,
             ToolResult = evt.ToolResult,
             MessageId = evt.MessageId,
+            MessageUid = evt.MessageUid,
             Timestamp = DateTimeOffset.UtcNow,
             AttachmentsJson = evt.Attachments != null && evt.Attachments.Count > 0 ? JsonSerializer.Serialize(evt.Attachments) : null,
         });

@@ -11,6 +11,7 @@ public class ClaudeMessageRecord
     public string? ToolInput { get; set; }
     public string? ToolResult { get; set; }
     public string? MessageId { get; set; }
+    public string? MessageUid { get; set; }
     public DateTimeOffset Timestamp { get; set; }
     public string? AttachmentsJson { get; set; }
 }

@@ -9,6 +9,9 @@ public class OpenCodeStreamEvent
     public string? ToolResult { get; init; }
     public bool IsPartial { get; init; }
     public string? MessageId { get; init; }
+    // Provider-neutral message uid, stamped in EmitAndStore (settable — the
+    // event constructors don't know the session's current turn).
+    public string? MessageUid { get; set; }
     public List<OpenCodeAttachment>? Attachments { get; init; }
 }
 

@@ -208,10 +208,17 @@ public static class UnifiedSessionEndpoints
                 attachmentsJson = JsonSerializer.Serialize(attachments);
             }
 
-            var sent = await provider.SendMessageAsync(id, content, images, attachmentsJson);
+            // Provider-neutral message identity: honor a caller-supplied uid
+            // (cross-posted messages share it across stores), mint otherwise.
+            var messageUid = body.TryGetProperty("messageUid", out var mu)
+                && mu.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(mu.GetString())
+                    ? mu.GetString()! : Guid.NewGuid().ToString("N");
+
+            var sent = await provider.SendMessageAsync(id, content, images, attachmentsJson, messageUid);
             if (!sent)
                 return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
-            return Results.Json(new { sent });
+            return Results.Json(new { sent, messageUid });
         })
             .WithRequestBody(new
             {
@@ -236,6 +243,7 @@ public static class UnifiedSessionEndpoints
                         },
                     },
                     metadata = new { type = "object", description = "Arbitrary key-value metadata (display-only, not sent to model)" },
+                    messageUid = new { type = "string", description = "Stable message identity to persist with the message. Supply it when the same logical message is also stored elsewhere (cross-stream dedup); minted server-side when omitted. Returned in the response." },
                 },
             });
 
@@ -272,14 +280,20 @@ public static class UnifiedSessionEndpoints
                 attachmentsJson = JsonSerializer.Serialize(attachments);
             }
 
-            var injected = await provider!.InjectMessageAsync(id, role, content, attachmentsJson);
-            return Results.Json(new { injected });
+            var messageUid = body.TryGetProperty("messageUid", out var mu)
+                && mu.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(mu.GetString())
+                    ? mu.GetString()! : Guid.NewGuid().ToString("N");
+
+            var injected = await provider!.InjectMessageAsync(id, role, content, attachmentsJson, messageUid);
+            return Results.Json(new { injected, messageUid });
         })
             .WithParam("role", "string", required: true, description: "Role of the injected message (e.g. user, assistant)", location: ParamLocation.Body)
             .WithParam("content", "string", required: true, description: "Message content to inject", location: ParamLocation.Body)
             .WithParam("audioUrl", "string", required: false, description: "URL to an audio file (display-only, not sent to model)", location: ParamLocation.Body)
             .WithParam("images", "array", required: false, description: "Attached images as [{mediaType, base64}] or [{url}] (display-only)", location: ParamLocation.Body)
-            .WithParam("metadata", "object", required: false, description: "Arbitrary key-value metadata (display-only)", location: ParamLocation.Body);
+            .WithParam("metadata", "object", required: false, description: "Arbitrary key-value metadata (display-only)", location: ParamLocation.Body)
+            .WithParam("messageUid", "string", required: false, description: "Stable message identity to persist with the injected message; minted server-side when omitted. Returned in the response.", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/answer",
             "Answer a pending question from the session", async (HttpContext ctx, string id) =>

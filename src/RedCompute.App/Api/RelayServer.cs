@@ -249,6 +249,7 @@ public class RelayServer
                     tool_input = m.ToolInput,
                     tool_result = m.ToolResult,
                     message_id = m.MessageId,
+                    message_uid = m.MessageUid,
                     timestamp = m.Timestamp.ToString("O"),
                     attachments_json = m.AttachmentsJson,
                 });

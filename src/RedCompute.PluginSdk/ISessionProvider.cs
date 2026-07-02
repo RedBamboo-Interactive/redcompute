@@ -19,8 +19,10 @@ public interface ISessionProvider
     Task ForceKillAsync(string sessionId);
     void DismissSession(string sessionId);
 
-    // Messaging (SendMessage)
-    Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null);
+    // Messaging (SendMessage). messageUid is the provider-neutral message
+    // identity minted by the caller (endpoint layer) — providers persist it
+    // on the user message record verbatim.
+    Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null);
     bool SendAnswer(string sessionId, string answer);
 
     // Interrupt
@@ -50,7 +52,7 @@ public interface ISessionProvider
     List<ModelInfo> GetAvailableModels();
 
     // Message injection (without triggering inference)
-    Task<bool> InjectMessageAsync(string sessionId, string role, string content, string? attachmentsJson = null)
+    Task<bool> InjectMessageAsync(string sessionId, string role, string content, string? attachmentsJson = null, string? messageUid = null)
         => Task.FromResult(false);
 
     // Events
