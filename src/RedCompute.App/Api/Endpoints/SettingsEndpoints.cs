@@ -1,44 +1,31 @@
 using System.IO;
-using System.Security.Cryptography;
-using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Discovery;
-using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 
 namespace RedCompute.App.Api.Endpoints;
 
+// Tunnel and autostart settings are gone: RedCompute runs headless under the Leaf
+// kernel, which owns both. What remains is what the compute plane actually owns —
+// port, log level, and capability/provider configuration.
 public static class SettingsEndpoints
 {
-    private static CloudflareTunnelService _tunnelService = null!;
     private static CapabilityRegistry _registry = null!;
 
-    public static void Map(EndpointRegistry endpoints, ConfigManager configManager, CloudflareTunnelService tunnelService, CapabilityRegistry registry)
+    public static void Map(EndpointRegistry endpoints, ConfigManager configManager, CapabilityRegistry registry)
     {
-        _tunnelService = tunnelService;
         _registry = registry;
 
-        endpoints.MapGet("/settings", "Current settings including tunnel config", () =>
+        endpoints.MapGet("/settings", "Current settings including capability/provider config", () =>
         {
             var config = configManager.Config;
             var sanitized = new
             {
                 config.ApiPort,
                 config.LogLevel,
-                config.AutoStartWithWindows,
                 configPath = GetConfigPath(),
-                tunnel = new
-                {
-                    config.Tunnel.Enabled,
-                    config.Tunnel.AccessToken,
-                    tunnelToken = string.IsNullOrEmpty(config.Tunnel.TunnelToken) ? (string?)null : "***",
-                    config.Tunnel.Hostname,
-                    config.Tunnel.CloudflaredPath,
-                    status = tunnelService.Status.ToString(),
-                    error = tunnelService.ErrorMessage
-                },
                 capabilities = config.Capabilities.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new
@@ -63,27 +50,12 @@ public static class SettingsEndpoints
             var config = configManager.Config;
             if (body.ApiPort.HasValue) config.ApiPort = body.ApiPort.Value;
             if (body.LogLevel != null) config.LogLevel = body.LogLevel;
-            if (body.AutoStartWithWindows.HasValue) config.AutoStartWithWindows = body.AutoStartWithWindows.Value;
-
-            if (body.TunnelAccessToken != null) config.Tunnel.AccessToken = body.TunnelAccessToken;
-            if (body.TunnelToken != null) config.Tunnel.TunnelToken = body.TunnelToken;
-            if (body.TunnelHostname != null) config.Tunnel.Hostname = body.TunnelHostname;
-            if (body.TunnelCloudflaredPath != null) config.Tunnel.CloudflaredPath = body.TunnelCloudflaredPath;
-
-            if (body.TunnelEnabled.HasValue)
-                await ApplyTunnelToggle(config, body.TunnelEnabled.Value, tunnelService);
 
             configManager.Save();
-            return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel, config.AutoStartWithWindows });
+            return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel });
         })
             .WithParam("apiPort", "integer", description: "HTTP port the service listens on (applies after restart)", location: ParamLocation.Body)
-            .WithParam("logLevel", "string", description: "Log verbosity", location: ParamLocation.Body)
-            .WithParam("autoStartWithWindows", "boolean", description: "Launch RedCompute when Windows starts", location: ParamLocation.Body)
-            .WithParam("tunnelEnabled", "boolean", description: "Enable/disable the Cloudflare tunnel (starts or stops it immediately)", location: ParamLocation.Body)
-            .WithParam("tunnelAccessToken", "string", description: "Bearer token required for remote access through the tunnel", location: ParamLocation.Body)
-            .WithParam("tunnelToken", "string", description: "Cloudflare tunnel token", location: ParamLocation.Body)
-            .WithParam("tunnelHostname", "string", description: "Public hostname of the tunnel", location: ParamLocation.Body)
-            .WithParam("tunnelCloudflaredPath", "string", description: "Path to the cloudflared executable", location: ParamLocation.Body);
+            .WithParam("logLevel", "string", description: "Log verbosity", location: ParamLocation.Body);
 
         endpoints.MapPut("/settings/capability/{slug}", "Update capability settings", async (HttpContext ctx, string slug) =>
         {
@@ -188,40 +160,10 @@ public static class SettingsEndpoints
             "RedCompute", "config.json");
     }
 
-    private static async Task ApplyTunnelToggle(RedComputeConfig config, bool enabled, CloudflareTunnelService tunnelService)
-    {
-        if (enabled && !config.Tunnel.Enabled)
-        {
-            if (string.IsNullOrEmpty(config.Tunnel.AccessToken))
-                config.Tunnel.AccessToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-
-            config.Tunnel.Enabled = true;
-            await tunnelService.StartAsync(new RedBamboo.AppHost.Tunnel.TunnelConfig
-            {
-                Enabled = true,
-                TunnelToken = config.Tunnel.TunnelToken,
-                Hostname = config.Tunnel.Hostname,
-                CloudflaredPath = config.Tunnel.CloudflaredPath,
-                AccessToken = config.Tunnel.AccessToken,
-            });
-        }
-        else if (!enabled && config.Tunnel.Enabled)
-        {
-            config.Tunnel.Enabled = false;
-            await tunnelService.StopAsync();
-        }
-    }
-
     private class GeneralSettingsUpdate
     {
         public int? ApiPort { get; set; }
         public string? LogLevel { get; set; }
-        public bool? AutoStartWithWindows { get; set; }
-        public bool? TunnelEnabled { get; set; }
-        public string? TunnelAccessToken { get; set; }
-        public string? TunnelToken { get; set; }
-        public string? TunnelHostname { get; set; }
-        public string? TunnelCloudflaredPath { get; set; }
     }
 
     private class CapabilitySettingsUpdate

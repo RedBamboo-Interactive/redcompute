@@ -2,26 +2,18 @@ using System.Text.Json.Serialization;
 
 namespace RedCompute.Core.Configuration;
 
+// Tunnel and autostart config are gone: RedCompute is a headless child of the Leaf
+// kernel, which owns the one tunnel and the one autostart entry. Stale keys in an
+// existing config.json are simply ignored on load.
 public class RedComputeConfig
 {
     public int ApiPort { get; set; } = 18800;
     public string LogLevel { get; set; } = "Info";
-    public bool AutoStartWithWindows { get; set; }
     public double ElectricityRatePerKwh { get; set; } = 0.15;
     public bool AutoStartDocker { get; set; } = true;
     public string CodeRedUrl { get; set; } = "http://localhost:18801";
     public string RedLeafUrl { get; set; } = "http://localhost:18804";
-    public TunnelConfig Tunnel { get; set; } = new();
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
-}
-
-public class TunnelConfig
-{
-    public bool Enabled { get; set; }
-    public string? AccessToken { get; set; }
-    public string? CloudflaredPath { get; set; }
-    public string? TunnelToken { get; set; }
-    public string? Hostname { get; set; }
 }
 
 public class CapabilityConfig

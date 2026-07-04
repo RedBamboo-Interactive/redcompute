@@ -16,19 +16,15 @@ Or with options:
 .\rebuild.ps1 -NoLaunch        # build without launching
 ```
 
-The rebuild script uses the shared `redbamboo-packages/dotnet/rebuild.ps1`. It stops RedCompute.exe, kills WSL backend processes, builds frontend + solution, and launches.
+The rebuild script uses the shared `redbamboo-packages/dotnet/rebuild.ps1`. It stops RedCompute.exe, kills WSL backend processes, builds the solution, and launches. Normally you should NOT launch manually: RedCompute is a managed child of the Leaf kernel (RedLeaf), which spawns it (or adopts an already-running instance) — prefer `.\rebuild.ps1 -NoLaunch` and let the kernel start it.
 
-**Frontend dev (watch mode):**
-```
-cd web && npm run dev
-```
-Uses `vite build --watch`. The Vite dev server proxies API calls to `localhost:18800`.
+The kernel locates `RedCompute.exe` through the `compute` path in `leaf.workspace.json` (in the `redleaf` repo), which points at this checkout; `src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe` is the probed build output. `computeExePath` in the kernel config overrides it.
 
-There are no tests (C# or frontend) and no CI pipeline.
+There are no tests and no CI pipeline.
 
 ## Architecture
 
-RedCompute is a local AI compute orchestrator: a Windows tray app (.NET 9 WPF) that manages AI backends, exposes a unified REST API, and serves a React dashboard. It uses a plugin architecture where capabilities and providers are pluggable.
+RedCompute is a local AI compute orchestrator: a headless .NET 9 service that manages AI backends and exposes a unified REST API on port 18800. It has no frontend of its own — the dashboard is the `compute-dashboard` Leaf plugin, served by the kernel and talking through the kernel's `/compute/*` proxy. It uses a plugin architecture where capabilities and providers are pluggable.
 
 ### Projects
 
@@ -36,7 +32,6 @@ RedCompute is a local AI compute orchestrator: a Windows tray app (.NET 9 WPF) t
 - **RedCompute.PluginSdk** — References Core + ASP.NET Core. Provides `ICustomEndpointProvider` interface and `ProviderHelpers` utilities for plugin authors.
 - **RedCompute.App** — WPF tray app embedding an ASP.NET Core HTTP server. Contains the generic endpoint engine, discovery, registry, and all orchestration logic.
 - **plugins/** — Individual provider projects, each implementing `IPluginProvider`. Discovered at runtime via assembly scanning.
-- **web/** — React 19 + TypeScript + Vite + Tailwind CSS v4 SPA. Uses `@redbamboo/ui` and `@redbamboo/utility` (linked local packages from `../../redbamboo-packages/`). Path alias `@/` maps to `web/src/`.
 
 ### Plugin System
 
@@ -89,14 +84,7 @@ Cross-cutting: `/status`, `/jobs`, `/logs`, `/control/start|stop/{slug}`, `/sett
 
 ### Frontend
 
-React SPA with HashRouter, served from the same port as the API. Key patterns:
-- `web/src/api/client.ts` — REST client
-- `web/src/api/types.ts` — TypeScript types (CapabilityStatus includes `icon`, `color`, `rerunnable` from backend)
-- `web/src/hooks/use-capabilities.ts` — capability state management
-- `web/src/contexts/ws-events.tsx` — real-time event context
-- UI library: `@redbamboo/ui` (Base UI components), `@redbamboo/utility` (AppShell, JsonHighlight)
-
-Frontend has fallback icon/name maps for known capabilities. Unknown capabilities get default cube icon and slug-based display name.
+None in this repo. The dashboard is the `compute-dashboard` Leaf plugin (its own repo, `T:\Projects\compute-dashboard`), served by the Leaf kernel; it reaches this service through the kernel's `/compute/*` proxy.
 
 ### Database
 

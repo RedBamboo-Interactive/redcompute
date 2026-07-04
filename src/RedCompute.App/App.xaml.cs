@@ -2,8 +2,6 @@ using System.IO;
 using System.Text;
 using System.Windows;
 using RedBamboo.AppHost.Logging;
-using RedBamboo.AppHost.Tray;
-using RedBamboo.AppHost.Tunnel;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
@@ -14,12 +12,14 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.App;
 
+// RedCompute is a headless child service of the Leaf kernel: the kernel spawns it,
+// health-checks /ping, proxies its API at /compute/*, and owns the one tray icon, the
+// one tunnel, and the one autostart entry. This process just runs GPU/AI/media work.
 public partial class App : Application
 {
     private static Mutex? _mutex;
     private CancellationTokenSource? _relayCts;
     private RelayServer? _relayServer;
-    private RedBamboo.AppHost.Tray.TrayIconManager? _trayIcon;
 
     public static SqliteLogPersistence LogPersistence { get; } = new();
     public static LogService LogService { get; } = new(new LogServiceOptions
@@ -35,7 +35,6 @@ public partial class App : Application
     public static ProviderDiscovery ProviderDiscovery { get; private set; } = null!;
     public static CapabilityManifestLoader ManifestLoader { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
-    public static CloudflareTunnelService TunnelService { get; } = new(logger: null);
     public static HardwareMonitorService HardwareMonitor { get; } = new();
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -43,8 +42,10 @@ public partial class App : Application
         _mutex = new Mutex(true, @"Global\RedCompute_SingleInstance", out bool createdNew);
         if (!createdNew)
         {
-            MessageBox.Show("RedCompute is already running.", "RedCompute", MessageBoxButton.OK, MessageBoxImage.Information);
-            Shutdown();
+            // Headless: no message box. A distinctive exit code lets the kernel's process
+            // monitor tell "second instance" apart from a crash.
+            Console.Error.WriteLine("RedCompute is already running — exiting.");
+            Shutdown(64);
             return;
         }
 
@@ -76,35 +77,11 @@ public partial class App : Application
         HardwareMonitor.Start(Registry);
         await StartRelayServer();
         _ = ProbeRunningBackends();
-        _ = StartTunnelIfEnabled();
-
-        _trayIcon = new RedBamboo.AppHost.Tray.TrayIconManager(new TrayIconConfig
-        {
-            AppName = "RedCompute",
-            Port = ConfigManager.Config.ApiPort,
-            EnableAutoStartToggle = true,
-            RebuildScript = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "rebuild.ps1")),
-            LoadIcon = () => IconHelper.CreateTrayIcon(StatusColors.Teal, TrayIcons.Microchip),
-            GetStatusLines = async () =>
-            {
-                var lines = new List<string>();
-                foreach (var (slug, entry) in Registry.Capabilities)
-                {
-                    var status = entry.ActiveProvider != null
-                        ? await entry.ActiveProvider.GetStatusAsync()
-                        : BackendStatus.Stopped;
-                    lines.Add($"{entry.Definition.DisplayName}: {status}");
-                }
-                return lines;
-            },
-        });
-        _trayIcon.Initialize();
     }
 
     protected override async void OnExit(ExitEventArgs e)
     {
         HardwareMonitor.Dispose();
-        await TunnelService.DisposeAsync();
         _relayCts?.Cancel();
         if (_relayServer != null)
             await _relayServer.StopAsync();
@@ -112,7 +89,6 @@ public partial class App : Application
         Logger.Dispose();
         LogPersistence.Dispose();
         await FileLogger.DisposeAsync();
-        _trayIcon?.Dispose();
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();
         base.OnExit(e);
@@ -214,7 +190,7 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, TunnelService, HardwareMonitor, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, HardwareMonitor, (msg, jobId) => Log(msg, jobId));
 
         try
         {
@@ -225,30 +201,6 @@ public partial class App : Application
             Log($"[App] Failed to start relay: {ex.Message}");
         }
     }
-
-    private async Task StartTunnelIfEnabled()
-    {
-        var tunnel = ConfigManager.Config.Tunnel;
-        if (!tunnel.Enabled) return;
-
-        try
-        {
-            await TunnelService.StartAsync(new TunnelConfig
-            {
-                Enabled = true,
-                TunnelToken = tunnel.TunnelToken,
-                Hostname = tunnel.Hostname,
-                CloudflaredPath = tunnel.CloudflaredPath,
-                AccessToken = tunnel.AccessToken,
-            });
-            Log($"[Tunnel] Started (hostname: {tunnel.Hostname ?? "unknown"})");
-        }
-        catch (Exception ex)
-        {
-            Log($"[Tunnel] Failed to start: {ex.Message}");
-        }
-    }
-
 
     public static void Log(string message, Guid? jobId = null)
     {
