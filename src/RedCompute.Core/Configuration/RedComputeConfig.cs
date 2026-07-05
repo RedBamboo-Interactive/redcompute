@@ -11,8 +11,8 @@ public class RedComputeConfig
     public string LogLevel { get; set; } = "Info";
     public double ElectricityRatePerKwh { get; set; } = 0.15;
     public bool AutoStartDocker { get; set; } = true;
-    public string CodeRedUrl { get; set; } = "http://localhost:18801";
-    public string RedLeafUrl { get; set; } = "http://localhost:18804";
+    public string CodeRedUrl { get; set; } = "http://127.0.0.1:18801";
+    public string RedLeafUrl { get; set; } = "http://127.0.0.1:18804";
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
 }
 

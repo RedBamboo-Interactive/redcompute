@@ -25,7 +25,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
     public override string ServiceName => "RedCompute";
     public override string Version => AppVersion;
     public override string Description => "AI-native inference abstraction layer — TTS, STT, image gen, music gen, AI sessions";
-    public override string ApiBase => $"http://localhost:{_config.ApiPort}";
+    public override string ApiBase => $"http://127.0.0.1:{_config.ApiPort}";
     public override string? IconClass => "fa-solid fa-microchip";
     public override string? IconColor => "#26A69A";
 

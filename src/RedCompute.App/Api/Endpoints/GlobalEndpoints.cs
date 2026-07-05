@@ -179,7 +179,7 @@ public static class GlobalEndpoints
 
             var port = ctx.Connection.LocalPort;
             using var client = new HttpClient();
-            var request = new HttpRequestMessage(HttpMethod.Post, $"http://localhost:{port}{generatePath}?async")
+            var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}{generatePath}?async")
             {
                 Content = new StringContent(rerunBody, Encoding.UTF8, "application/json")
             };

@@ -30,7 +30,7 @@ public static class SuiteTelemetryEndpoints
                 {
                     try
                     {
-                        var url = $"http://localhost:{app.Port}/api/telemetry/stats";
+                        var url = $"http://127.0.0.1:{app.Port}/api/telemetry/stats";
                         if (since is not null) url += $"?since={Uri.EscapeDataString(since)}";
 
                         var response = await Http.GetAsync(url);
@@ -77,7 +77,7 @@ public static class SuiteTelemetryEndpoints
                 if (until is not null) qs.Add($"until={Uri.EscapeDataString(until)}");
                 qs.Add($"limit={limit ?? 500}");
 
-                var url = $"http://localhost:{port}/api/telemetry/?{string.Join("&", qs)}";
+                var url = $"http://127.0.0.1:{port}/api/telemetry/?{string.Join("&", qs)}";
                 try
                 {
                     var response = await Http.GetAsync(url);

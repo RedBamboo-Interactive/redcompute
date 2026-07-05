@@ -734,7 +734,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                 {
                     var str = je.GetString();
                     if (!string.IsNullOrEmpty(str) && !str.StartsWith("http"))
-                        assetUrl = $"http://localhost:18804/api/assets/{str}";
+                        assetUrl = $"http://127.0.0.1:18804/api/assets/{str}";
                     else if (!string.IsNullOrEmpty(str))
                         assetUrl = str;
                 }
@@ -743,7 +743,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             if (string.IsNullOrEmpty(assetUrl)) continue;
 
             if (assetUrl.StartsWith("/"))
-                assetUrl = $"http://localhost:18804{assetUrl}";
+                assetUrl = $"http://127.0.0.1:18804{assetUrl}";
 
             var uploadedName = await UploadFileToComfyAsync(assetUrl, ct);
             if (uploadedName != null)

@@ -327,7 +327,7 @@ public class RelayServer
 
         _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);
-        _log($"[Relay] Listening at http://localhost:{_config.ApiPort}", null);
+        _log($"[Relay] Listening at http://127.0.0.1:{_config.ApiPort}", null);
 
         // Fetch suite-wide quality modes and provider configs from RedLeaf. Fallbacks seeded
         // in the constructors keep resolution working if RedLeaf is offline. Providers use a
