@@ -267,6 +267,7 @@ public class ClaudeSessionService
         Dictionary<string, string>? env = null)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
+        var useCliArg = Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
 
         if (!useDocker)
         {
@@ -293,6 +294,7 @@ public class ClaudeSessionService
             DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "claude", workingDir, env);
             var args = new List<string>();
             AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
+            if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }
         else
@@ -305,6 +307,7 @@ public class ClaudeSessionService
                     startInfo.EnvironmentVariables[k] = v;
             var args = new List<string>();
             AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
+            if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }
 
@@ -324,9 +327,16 @@ public class ClaudeSessionService
         {
             var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
-            // Start stdin write immediately (not via Task.Run which is subject to
-            // thread pool scheduling delays — the Claude CLI has a 3s stdin timeout)
-            var stdinTask = WriteStdinAsync(process, prompt, timeoutCts.Token, sw);
+            Task? stdinTask = null;
+            if (useCliArg)
+            {
+                process.StandardInput.Close();
+                _log($"[Claude] TIMING agent prompt passed as CLI arg ({prompt.Length} chars)", null);
+            }
+            else
+            {
+                stdinTask = WriteStdinOnDedicatedThread(process, prompt, timeoutCts.Token, sw);
+            }
 
             // Read stdout line-by-line, broadcasting stream events in real time
             var firstLineLogged = false;
@@ -349,7 +359,8 @@ public class ClaudeSessionService
                 }
             }
 
-            try { await stdinTask; } catch { /* stdin may already be closed */ }
+            if (stdinTask != null)
+                try { await stdinTask; } catch { /* stdin may already be closed */ }
             var stderr = await stderrTask;
             await process.WaitForExitAsync(timeoutCts.Token);
 
@@ -609,6 +620,8 @@ public class ClaudeSessionService
         if (string.IsNullOrWhiteSpace(prompt))
             return new OneshotResult(false, null, null, null, 0, 0, null, "messages produced empty prompt");
 
+        var useCliArg = Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
+
         var startInfo = new ProcessStartInfo
         {
             FileName = claudePath,
@@ -623,6 +636,8 @@ public class ClaudeSessionService
         };
 
         startInfo.ArgumentList.Add("-p");
+        if (useCliArg)
+            startInfo.ArgumentList.Add(prompt);
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("stream-json");
         startInfo.ArgumentList.Add("--model");
@@ -662,7 +677,16 @@ public class ClaudeSessionService
         {
             var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
-            var stdinTask = WriteStdinAsync(process, prompt, timeoutCts.Token, sw);
+            Task? stdinTask = null;
+            if (useCliArg)
+            {
+                process.StandardInput.Close();
+                _log($"[Claude] TIMING oneshot prompt passed as CLI arg ({prompt.Length} chars)", null);
+            }
+            else
+            {
+                stdinTask = WriteStdinOnDedicatedThread(process, prompt, timeoutCts.Token, sw);
+            }
 
             var firstLineLogged = false;
             while (await process.StandardOutput.ReadLineAsync(timeoutCts.Token) is { } line)
@@ -678,7 +702,8 @@ public class ClaudeSessionService
                 tsSb.AppendLine(line);
             }
 
-            try { await stdinTask; } catch { /* stdin may already be closed */ }
+            if (stdinTask != null)
+                try { await stdinTask; } catch { /* stdin may already be closed */ }
             var stderr = await stderrTask;
             await process.WaitForExitAsync(timeoutCts.Token);
 
@@ -1912,6 +1937,36 @@ public class ClaudeSessionService
         await process.StandardInput.WriteAsync(data.AsMemory(), ct);
         process.StandardInput.Close();
         _log($"[Claude] TIMING stdin write took {sw.ElapsedMilliseconds}ms ({data.Length} chars)", null);
+    }
+
+    private Task WriteStdinOnDedicatedThread(Process process, string data, CancellationToken ct, Stopwatch sw)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                process.StandardInput.Write(data);
+                process.StandardInput.Close();
+                _log($"[Claude] TIMING stdin write took {sw.ElapsedMilliseconds}ms ({data.Length} chars, dedicated thread)", null);
+                tcs.TrySetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                tcs.TrySetCanceled(ct);
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "claude-stdin-writer"
+        };
+        thread.Start();
+        return tcs.Task;
     }
 
     private static async Task<bool> WaitForExit(Process process, TimeSpan timeout)
