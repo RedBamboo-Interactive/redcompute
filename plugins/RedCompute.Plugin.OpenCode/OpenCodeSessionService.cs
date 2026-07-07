@@ -320,7 +320,7 @@ public class OpenCodeSessionService
                     fs = new { readTextFile = true, writeTextFile = true },
                 },
                 clientInfo = new { name = "RedCompute", title = "RedCompute", version = "1.0.0" },
-            });
+            }, timeoutSeconds: 60);
 
             JsonElement sessionResult;
             if (existingSessionId != null)
@@ -339,7 +339,7 @@ public class OpenCodeSessionService
                 {
                     cwd = projectPath,
                     mcpServers = Array.Empty<object>(),
-                });
+                }, timeoutSeconds: 60);
 
                 if (sessionResult.TryGetProperty("sessionId", out var sid))
                 {
