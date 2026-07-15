@@ -63,7 +63,7 @@ public class CapabilityManifestLoader
         }
 
         // Fallback defaults
-        definition.Icon ??= "fa-solid fa-cube";
+        definition.Icon ??= "ph-fill ph-cube";
         definition.Color ??= "#6B7280";
 
         return definition;

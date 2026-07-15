@@ -169,10 +169,10 @@ public class QualityModeService
     private static Dictionary<string, QualityTier> BuildTierFallbacks() =>
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["fast"]     = new("fast",     "Fast",     "#22d3ee", "fa-solid fa-rabbit",     0),
-            ["standard"] = new("standard", "Standard", "#a78bfa", "fa-solid fa-bolt",       1),
-            ["deep"]     = new("deep",     "Deep",     "#fb923c", "fa-solid fa-brain",      2),
-            ["research"] = new("research", "Research", "#f43f5e", "fa-solid fa-microscope", 3),
+            ["fast"]     = new("fast",     "Fast",     "#22d3ee", "ph-fill ph-rabbit",     0),
+            ["standard"] = new("standard", "Standard", "#a78bfa", "ph-fill ph-lightning",       1),
+            ["deep"]     = new("deep",     "Deep",     "#fb923c", "ph-fill ph-brain",      2),
+            ["research"] = new("research", "Research", "#f43f5e", "ph-fill ph-microscope", 3),
         };
 
     // ---- RedLeaf response parsing --------------------------------------------------------
@@ -212,7 +212,7 @@ public class QualityModeService
 
                     var label    = GetString(data, "label") ?? GetString(item, "name") ?? slug!;
                     var color    = GetString(data, "color") ?? "#a78bfa";
-                    var icon     = GetString(data, "icon")  ?? "fa-solid fa-bolt";
+                    var icon     = GetString(data, "icon")  ?? "ph-fill ph-lightning";
                     var sortOrder = GetInt(data, "sort_order") ?? GetInt(data, "sortOrder") ?? 99;
 
                     result.Add(new QualityTier(slug!, label, color, icon, sortOrder));

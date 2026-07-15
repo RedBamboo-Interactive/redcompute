@@ -73,7 +73,7 @@ def ensure_schema():
         status, body = api("POST", "/api/entity-types", {
             "name": "AI Session",
             "description": "AI coding/inference session (claude-code, opencode, codex)",
-            "icon": "fa-solid fa-square-terminal",
+            "icon": "ph ph-terminal-window",
             "color": "pink",
             "versioning": False,
         })

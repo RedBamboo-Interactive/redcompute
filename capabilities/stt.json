@@ -2,7 +2,7 @@
   "slug": "stt",
   "displayName": "Speech-to-Text",
   "description": "Transcribe audio to text",
-  "icon": "fa-solid fa-microphone",
+  "icon": "ph-fill ph-microphone",
   "color": "#3B82F6",
   "category": "audio"
 }

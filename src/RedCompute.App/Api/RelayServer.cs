@@ -171,7 +171,7 @@ public class RelayServer
         _streamClient.DefineEntityType(new EntityTypeDefinition(
             "ai-session", "AI Session",
             "AI coding/inference session (claude-code, opencode, codex)",
-            Icon: "fa-solid fa-square-terminal", Color: "pink", Versioning: false,
+            Icon: "ph ph-terminal-window", Color: "pink", Versioning: false,
             Fields:
             [
                 // Field names slugify to the snake_case data keys below.
@@ -256,7 +256,7 @@ public class RelayServer
         _streamClient.DefineEntityType(new EntityTypeDefinition(
             "compute-job", "Compute Job",
             "RedCompute job lifecycle record",
-            Icon: "fa-solid fa-microchip", Color: "pink", Versioning: false,
+            Icon: "ph-fill ph-cpu", Color: "pink", Versioning: false,
             Fields:
             [
                 new { name = "Capability", fieldType = "string", description = "tts, stt, music-gen, image-gen, ai-session…" },

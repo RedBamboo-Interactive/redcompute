@@ -53,7 +53,7 @@ def ensure_type():
         status, body = api("POST", "/api/entity-types", {
             "name": "Compute Job",
             "description": "RedCompute job lifecycle record",
-            "icon": "fa-solid fa-microchip",
+            "icon": "ph-fill ph-cpu",
             "color": "pink",
             "versioning": False,
         })
