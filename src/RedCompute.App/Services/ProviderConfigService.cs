@@ -35,6 +35,13 @@ public class ProviderConfigService
     private Dictionary<string, ProviderEntityConfig> _providers;
     private string? _defaultProviderSlug;
 
+    // Kernel capability slug -> Compute capability slug (capability entity's
+    // compute_slug). A null value means the capability is known but has no compute
+    // backing (e.g. "entities", "auth") and must never key into config.Capabilities.
+    // Provider entities list KERNEL slugs (ai-inference, image-generation) while
+    // config.Capabilities is keyed by COMPUTE slugs (ai-session, image-gen).
+    private Dictionary<string, string?> _capabilitySlugMap = new(StringComparer.OrdinalIgnoreCase);
+
     private volatile bool _loadedFromRedLeaf;
     private volatile bool _loadedFromCache;
 
@@ -57,6 +64,7 @@ public class ProviderConfigService
     {
         string? providersJson = null;
         string? suiteConfigJson = null;
+        string? capabilitiesJson = null;
         try
         {
             var baseUrl = _config.RedLeafUrl.TrimEnd('/');
@@ -87,8 +95,17 @@ public class ProviderConfigService
             }
             catch { /* suite-config is optional */ }
 
+            try
+            {
+                capabilitiesJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=capability&limit=100", ct);
+                var map = ParseCapabilitySlugMap(capabilitiesJson);
+                if (map.Count > 0)
+                    lock (_lock) { _capabilitySlugMap = map; }
+            }
+            catch { /* mapping is best-effort; ApplyToConfig only trusts explicit entries */ }
+
             if (_loadedFromRedLeaf)
-                WriteCache(providersJson!, suiteConfigJson);
+                WriteCache(providersJson!, suiteConfigJson, capabilitiesJson);
         }
         catch (Exception ex)
         {
@@ -160,16 +177,27 @@ public class ProviderConfigService
     public void ApplyToConfig(RedComputeConfig config)
     {
         Dictionary<string, ProviderEntityConfig> snapshot;
-        lock (_lock) { snapshot = _providers; }
+        Dictionary<string, string?> slugMap;
+        lock (_lock) { snapshot = _providers; slugMap = _capabilitySlugMap; }
 
         foreach (var entity in snapshot.Values)
         {
             if (entity.Capabilities.Count == 0 || entity.Settings == null) continue;
 
-            foreach (var capSlug in entity.Capabilities)
+            foreach (var kernelSlug in entity.Capabilities)
             {
+                // Entities carry kernel capability slugs; config.Capabilities is keyed
+                // by compute slugs. Translate via the capability entities' compute_slug.
+                var mapped = slugMap.TryGetValue(kernelSlug, out var mappedSlug);
+                if (mapped && mappedSlug == null) continue; // known non-compute capability
+                var capSlug = mapped ? mappedSlug! : kernelSlug;
+
                 if (!config.Capabilities.TryGetValue(capSlug, out var cap))
                 {
+                    // Without an explicit mapping, an unknown slug must not fabricate a
+                    // capability -- an untranslated kernel slug (ai-inference) would
+                    // otherwise become a phantom entry shadowing the real one (ai-session).
+                    if (!mapped) continue;
                     cap = new CapabilityConfig();
                     config.Capabilities[capSlug] = cap;
                 }
@@ -334,12 +362,12 @@ public class ProviderConfigService
 
     // ---- entity cache --------------------------------------------------------------------------
 
-    private void WriteCache(string providersJson, string? suiteConfigJson)
+    private void WriteCache(string providersJson, string? suiteConfigJson, string? capabilitiesJson)
     {
         try
         {
             Directory.CreateDirectory(CacheDir);
-            var envelope = JsonSerializer.Serialize(new { providers = providersJson, suiteConfig = suiteConfigJson });
+            var envelope = JsonSerializer.Serialize(new { providers = providersJson, suiteConfig = suiteConfigJson, capabilities = capabilitiesJson });
             File.WriteAllText(CachePath, envelope);
             _log($"[ProviderConfig] Entity cache written to {CachePath}", null);
         }
@@ -375,6 +403,15 @@ public class ProviderConfigService
                 var slug = ParseDefaultProviderFromSuiteConfig(suiteConfigRaw, parsed);
                 if (slug != null)
                     lock (_lock) { _defaultProviderSlug = slug; }
+            }
+
+            var capabilitiesRaw = doc.RootElement.TryGetProperty("capabilities", out var cv) && cv.ValueKind == JsonValueKind.String
+                ? cv.GetString() : null;
+            if (capabilitiesRaw != null)
+            {
+                var map = ParseCapabilitySlugMap(capabilitiesRaw);
+                if (map.Count > 0)
+                    lock (_lock) { _capabilitySlugMap = map; }
             }
 
             _log($"[ProviderConfig] Loaded {parsed.Count} provider(s) from entity cache", null);
@@ -558,6 +595,48 @@ public class ProviderConfigService
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// Builds kernel-slug -> compute-slug from capability entities. Entries whose
+    /// entity has no compute_slug map to null: the capability exists in the kernel
+    /// but has no Compute backing, so it must never be created in config.Capabilities.
+    /// </summary>
+    private static Dictionary<string, string?> ParseCapabilitySlugMap(string json)
+    {
+        var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            JsonElement array;
+            if (root.ValueKind == JsonValueKind.Array) array = root;
+            else if (root.ValueKind != JsonValueKind.Object || !TryFindArray(root, out array)) return map;
+
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var slug = GetString(item, "slug");
+                if (string.IsNullOrWhiteSpace(slug)) continue;
+
+                var data = item;
+                if (item.TryGetProperty("data", out var d))
+                {
+                    if (d.ValueKind == JsonValueKind.Object) data = d;
+                    else if (d.ValueKind == JsonValueKind.String)
+                    {
+                        var raw = d.GetString();
+                        if (!string.IsNullOrWhiteSpace(raw))
+                            using (var dd = JsonDocument.Parse(raw)) { data = dd.RootElement.Clone(); }
+                    }
+                }
+
+                var computeSlug = GetString(data, "compute_slug");
+                map[slug] = string.IsNullOrWhiteSpace(computeSlug) ? null : computeSlug;
+            }
+        }
+        catch (JsonException) { }
+        return map;
     }
 
     private static string? GetString(JsonElement el, string prop)
