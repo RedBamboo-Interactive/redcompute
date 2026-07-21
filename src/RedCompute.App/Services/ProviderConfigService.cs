@@ -138,6 +138,13 @@ public class ProviderConfigService
     /// <summary>
     /// Background retry loop — keeps trying until RedLeaf is reached at least once.
     /// Safe to fire-and-forget after InitialSyncAsync.
+    ///
+    /// Deliberate limitation (audit W10): a late first success refreshes the provider
+    /// entity snapshot but does NOT re-run ApplyToConfig — capability provider configs
+    /// keep their boot values (cache or config.json) until the next restart. Mutating
+    /// ProviderConfig objects that running backends already hold (serverPath, ports)
+    /// mid-flight is riskier than one boot of possibly-stale settings; kernel-relayed
+    /// settings PUTs still apply live edits in the meantime.
     /// </summary>
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
@@ -214,6 +221,24 @@ public class ProviderConfigService
                 ApplyEntityToProvider(entity, provider);
             }
         }
+    }
+
+    /// <summary>
+    /// Resolve a provider reference for a capability to the config provider name.
+    /// Accepts either the config name itself (local-wsl) or a provider entity slug
+    /// (tts-local): the kernel keys its settings relays by entity slug, which need
+    /// not match Compute's provider names. Returns null when neither resolves.
+    /// </summary>
+    public string? ResolveProviderName(CapabilityConfig cap, string reference)
+    {
+        if (cap.Providers.ContainsKey(reference)) return reference;
+
+        Dictionary<string, ProviderEntityConfig> snapshot;
+        lock (_lock) { snapshot = _providers; }
+        if (!snapshot.TryGetValue(reference, out var entity)) return null;
+
+        var entityType = entity.ProviderType ?? entity.Backend;
+        return FindMatchingProviderName(cap, entityType, entity);
     }
 
     public ProviderEntityConfig Resolve(string slug)

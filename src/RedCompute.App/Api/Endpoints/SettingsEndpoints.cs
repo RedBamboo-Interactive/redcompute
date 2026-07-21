@@ -86,14 +86,31 @@ public static class SettingsEndpoints
         })
             .WithParam("activeProvider", "string", description: "Provider name to make the capability's default", location: ParamLocation.Body);
 
+        endpoints.MapGet("/settings/capability/{slug}/provider/{providerName}", "Current settings for one provider of a capability (secrets redacted). Accepts the config provider name or a provider entity slug", (string slug, string providerName) =>
+        {
+            var config = configManager.Config;
+            if (!config.Capabilities.TryGetValue(slug, out var cap))
+                return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+
+            var resolved = _providerConfig.ResolveProviderName(cap, providerName);
+            if (resolved == null || !cap.Providers.TryGetValue(resolved, out var provider))
+                return Results.NotFound(new { error = "not_found", message = $"Provider '{providerName}' not found in capability '{slug}'" });
+
+            return Results.Ok(new { slug, providerName = resolved, values = SanitizeProvider(provider) });
+        });
+
         endpoints.MapPut("/settings/capability/{slug}/provider/{providerName}", "Update provider settings for a capability", async (HttpContext ctx, string slug, string providerName) =>
         {
             var config = configManager.Config;
             if (!config.Capabilities.TryGetValue(slug, out var cap))
                 return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
 
-            if (!cap.Providers.TryGetValue(providerName, out var provider))
+            // The kernel relays by provider ENTITY slug (tts-local), which need not
+            // match the config provider name (local-wsl) -- resolve via entities.
+            var resolvedName = _providerConfig.ResolveProviderName(cap, providerName);
+            if (resolvedName == null || !cap.Providers.TryGetValue(resolvedName, out var provider))
                 return Results.NotFound(new { error = "not_found", message = $"Provider '{providerName}' not found in capability '{slug}'" });
+            providerName = resolvedName;
 
             var body = await ctx.Request.ReadFromJsonAsync<ProviderSettingsUpdate>();
             if (body == null)
