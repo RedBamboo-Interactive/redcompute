@@ -36,6 +36,7 @@ public partial class App : Application
     public static CapabilityManifestLoader ManifestLoader { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
     public static HardwareMonitorService HardwareMonitor { get; } = new();
+    public static ProviderConfigService ProviderConfig { get; private set; } = null!;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -60,7 +61,13 @@ public partial class App : Application
         Logger = new LoggingService(LogService);
 
         ConfigManager.Load();
+        ApplyCliArgs(e.Args);
         Log("[App] Configuration loaded");
+
+        ProviderConfig = new ProviderConfigService(ConfigManager.Config, (msg, _) => Log(msg));
+        await ProviderConfig.InitialSyncAsync();
+        ProviderConfig.ApplyToConfig(ConfigManager.Config);
+        Log("[App] Provider entities synced");
 
         DefenderExclusionService.EnsureExclusions(s => Log(s));
 
@@ -190,7 +197,7 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, HardwareMonitor, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, HardwareMonitor, ProviderConfig, (msg, jobId) => Log(msg, jobId));
 
         try
         {
@@ -199,6 +206,25 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log($"[App] Failed to start relay: {ex.Message}");
+        }
+    }
+
+    private static void ApplyCliArgs(string[] args)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            switch (args[i].ToLowerInvariant())
+            {
+                case "--port":
+                    if (int.TryParse(args[i + 1], out var port))
+                        ConfigManager.Config.ApiPort = port;
+                    i++;
+                    break;
+                case "--redleaf-url":
+                    ConfigManager.Config.RedLeafUrl = args[i + 1];
+                    i++;
+                    break;
+            }
         }
     }
 

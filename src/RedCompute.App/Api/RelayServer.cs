@@ -46,7 +46,7 @@ public class RelayServer
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
-        HardwareMonitorService hardwareMonitor, Action<string, Guid?> log)
+        HardwareMonitorService hardwareMonitor, ProviderConfigService providerConfig, Action<string, Guid?> log)
     {
         _config = config;
         _registry = registry;
@@ -55,7 +55,7 @@ public class RelayServer
         _configManager = configManager;
         _hardwareMonitor = hardwareMonitor;
         _docker = new DockerContainerService(log);
-        _providerConfig = new ProviderConfigService(config, log);
+        _providerConfig = providerConfig;
         _qualityModes = new QualityModeService(config, log, _providerConfig);
         _callbacks = new SessionCallbackRegistry(log);  // re-created with auth factory after Build()
         _log = log;
@@ -303,7 +303,7 @@ public class RelayServer
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger);
         HardwareEndpoints.Map(registry, _hardwareMonitor);
-        SettingsEndpoints.Map(registry, _configManager, _registry);
+        SettingsEndpoints.Map(registry, _configManager, _registry, _providerConfig);
 
         SuiteTelemetryEndpoints.Map(registry);
         // Read-path cutover: session list/history reads come from RedLeaf

@@ -13,10 +13,12 @@ namespace RedCompute.App.Api.Endpoints;
 public static class SettingsEndpoints
 {
     private static CapabilityRegistry _registry = null!;
+    private static ProviderConfigService _providerConfig = null!;
 
-    public static void Map(EndpointRegistry endpoints, ConfigManager configManager, CapabilityRegistry registry)
+    public static void Map(EndpointRegistry endpoints, ConfigManager configManager, CapabilityRegistry registry, ProviderConfigService providerConfig)
     {
         _registry = registry;
+        _providerConfig = providerConfig;
 
         endpoints.MapGet("/settings", "Current settings including capability/provider config", () =>
         {
@@ -76,7 +78,7 @@ public static class SettingsEndpoints
                     entry.DefaultProviderName = body.ActiveProvider;
             }
 
-            configManager.Save();
+            _ = _providerConfig.RefreshAsync();
             return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.ActiveProvider });
         })
             .WithParam("activeProvider", "string", description: "Provider name to make the capability's default", location: ParamLocation.Body);
@@ -114,7 +116,7 @@ public static class SettingsEndpoints
                     provider.Extra[kvp.Key] = kvp.Value;
             }
 
-            configManager.Save();
+            _ = _providerConfig.RefreshAsync();
             return Results.Ok(new { message = $"Provider '{providerName}' settings updated", slug, providerName, provider = SanitizeProvider(provider) });
         })
             .WithParam("wslDistro", "string", description: "WSL distribution to run the backend in", location: ParamLocation.Body)

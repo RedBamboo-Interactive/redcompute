@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using RedCompute.Core.Configuration;
@@ -7,12 +8,18 @@ namespace RedCompute.App.Services;
 public record ProviderEntityConfig(
     string Id, string Slug, string Name, string Backend,
     string? Icon, string? EndpointUrl, string? ApiKey, string? DefaultModel,
-    string Status, string? Description);
+    string Status, string? Description)
+{
+    public string? ProviderType { get; init; }
+    public IReadOnlyList<string> Capabilities { get; init; } = Array.Empty<string>();
+    public JsonElement? Settings { get; init; }
+}
 
 /// <summary>
-/// Resolves RedLeaf provider entities (type=provider) to concrete backend configs.
-/// Fetched at startup from RedLeaf; hardcoded fallbacks keep resolution working offline.
-/// Default provider is read from the suite-config entity, not from a boolean on providers.
+/// Authoritative source for provider configuration. Fetches provider entities from RedLeaf
+/// (type=provider) at startup and builds ProviderConfig objects from entity data.settings.
+/// Falls back to config.json values for any field not present in the entity, and to a
+/// read-only entity-cache.json when RedLeaf is unreachable at boot.
 /// </summary>
 public class ProviderConfigService
 {
@@ -20,14 +27,16 @@ public class ProviderConfigService
     private readonly Action<string, Guid?> _log;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
 
+    private static readonly string CacheDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedCompute");
+    private static readonly string CachePath = Path.Combine(CacheDir, "entity-cache.json");
+
     private readonly object _lock = new();
     private Dictionary<string, ProviderEntityConfig> _providers;
     private string? _defaultProviderSlug;
 
-    // True once a non-empty provider list has been fetched from RedLeaf at least once.
-    // Until then we are serving the hardcoded fallbacks and any provider outside that
-    // set (e.g. a custom Meta/OpenCode endpoint) will 404 at resolution time.
     private volatile bool _loadedFromRedLeaf;
+    private volatile bool _loadedFromCache;
 
     private static readonly Dictionary<string, string> AliasMap = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -46,12 +55,14 @@ public class ProviderConfigService
     /// <summary>Re-fetch provider entities and suite-config from RedLeaf.</summary>
     public async Task RefreshAsync(CancellationToken ct = default)
     {
+        string? providersJson = null;
+        string? suiteConfigJson = null;
         try
         {
             var baseUrl = _config.RedLeafUrl.TrimEnd('/');
 
-            var json = await _http.GetStringAsync($"{baseUrl}/api/entities?type=provider&limit=100", ct);
-            var parsed = ParseProviders(json);
+            providersJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=provider&limit=100", ct);
+            var parsed = ParseProviders(providersJson);
             if (parsed.Count == 0)
             {
                 _log("[ProviderConfig] RedLeaf returned no provider entities; keeping current providers", null);
@@ -64,11 +75,10 @@ public class ProviderConfigService
                 _log($"[ProviderConfig] Loaded {parsed.Count} provider(s) from RedLeaf", null);
             }
 
-            // Read suite-config to find the default provider
             try
             {
-                var configJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=suite-config&limit=1", ct);
-                var defaultSlug = ParseDefaultProviderFromSuiteConfig(configJson, parsed);
+                suiteConfigJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=suite-config&limit=1", ct);
+                var defaultSlug = ParseDefaultProviderFromSuiteConfig(suiteConfigJson, parsed);
                 if (defaultSlug != null)
                 {
                     lock (_lock) { _defaultProviderSlug = defaultSlug; }
@@ -76,6 +86,9 @@ public class ProviderConfigService
                 }
             }
             catch { /* suite-config is optional */ }
+
+            if (_loadedFromRedLeaf)
+                WriteCache(providersJson!, suiteConfigJson);
         }
         catch (Exception ex)
         {
@@ -83,21 +96,36 @@ public class ProviderConfigService
         }
     }
 
-    /// <summary>
-    /// True once the real provider list has been loaded from RedLeaf. While false, the
-    /// service is serving the hardcoded fallbacks only — surface this in health/status so
-    /// a degraded provider list can't silently pass for the real thing.
-    /// </summary>
     public bool LoadedFromRedLeaf => _loadedFromRedLeaf;
+    public bool LoadedFromCache => _loadedFromCache;
 
     /// <summary>
-    /// Load providers from RedLeaf at startup, retrying with capped backoff until the first
-    /// successful non-empty load. This is what keeps a cold-start race (RedCompute up before
-    /// RedLeaf is ready) from latching onto the two-item fallback list for the rest of the
-    /// process lifetime. Safe to fire-and-forget; it self-heals whenever RedLeaf comes online.
+    /// Single blocking attempt at entity sync for startup. Tries RedLeaf first, then
+    /// falls back to the entity cache. Returns true if either source provided data.
+    /// </summary>
+    public async Task<bool> InitialSyncAsync(CancellationToken ct = default)
+    {
+        await RefreshAsync(ct);
+        if (_loadedFromRedLeaf) return true;
+
+        if (TryLoadFromCache())
+        {
+            _loadedFromCache = true;
+            return true;
+        }
+
+        _log("[ProviderConfig] No entity data available (RedLeaf offline, no cache); using config.json fallbacks", null);
+        return false;
+    }
+
+    /// <summary>
+    /// Background retry loop — keeps trying until RedLeaf is reached at least once.
+    /// Safe to fire-and-forget after InitialSyncAsync.
     /// </summary>
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
+        if (_loadedFromRedLeaf) return;
+
         var delay = TimeSpan.FromSeconds(2);
         var maxDelay = TimeSpan.FromSeconds(30);
         var attempt = 0;
@@ -113,13 +141,50 @@ public class ProviderConfigService
                 return;
             }
 
-            _log($"[ProviderConfig] DEGRADED — serving {_providers.Count} fallback provider(s) only; " +
+            var source = _loadedFromCache ? "cache" : "fallback";
+            _log($"[ProviderConfig] Serving {_providers.Count} {source} provider(s); " +
                  $"RedLeaf fetch not yet succeeded (attempt {attempt}), retrying in {delay.TotalSeconds:0}s", null);
 
             try { await Task.Delay(delay, ct); }
             catch (OperationCanceledException) { return; }
 
             delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
+        }
+    }
+
+    /// <summary>
+    /// Overlay entity-derived provider settings onto the in-memory config. Entity values
+    /// win; config.json values fill any gaps. Call after InitialSyncAsync and before
+    /// InitializeCapabilities.
+    /// </summary>
+    public void ApplyToConfig(RedComputeConfig config)
+    {
+        Dictionary<string, ProviderEntityConfig> snapshot;
+        lock (_lock) { snapshot = _providers; }
+
+        foreach (var entity in snapshot.Values)
+        {
+            if (entity.Capabilities.Count == 0 || entity.Settings == null) continue;
+
+            foreach (var capSlug in entity.Capabilities)
+            {
+                if (!config.Capabilities.TryGetValue(capSlug, out var cap))
+                {
+                    cap = new CapabilityConfig();
+                    config.Capabilities[capSlug] = cap;
+                }
+
+                var entityType = entity.ProviderType ?? entity.Backend;
+                var providerName = FindMatchingProviderName(cap, entityType, entity);
+                if (providerName == null)
+                {
+                    providerName = entity.Slug;
+                    cap.Providers[providerName] = new ProviderConfig { Type = entityType };
+                }
+
+                var provider = cap.Providers[providerName];
+                ApplyEntityToProvider(entity, provider);
+            }
         }
     }
 
@@ -136,7 +201,6 @@ public class ProviderConfigService
         return new ProviderEntityConfig(slug, slug, slug, slug, "ph-fill ph-plug", null, null, null, "active", null);
     }
 
-    /// <summary>Returns the default provider from suite-config, falling back to first active, then hardcoded.</summary>
     public ProviderEntityConfig GetDefault()
     {
         Dictionary<string, ProviderEntityConfig> snapshot;
@@ -153,7 +217,6 @@ public class ProviderConfigService
             "ph-fill ph-sparkle", null, null, null, "active", "Default Anthropic provider via Claude Code CLI.");
     }
 
-    /// <summary>The slug of the current default provider (from suite-config).</summary>
     public string DefaultProviderSlug
     {
         get { lock (_lock) { return _defaultProviderSlug ?? "anthropic-direct"; } }
@@ -164,6 +227,168 @@ public class ProviderConfigService
         lock (_lock) { return _providers.Values.Where(p => p.Status == "active").ToList(); }
     }
 
+    // ---- entity → ProviderConfig mapping -------------------------------------------------------
+
+    private static string? FindMatchingProviderName(CapabilityConfig cap, string entityType, ProviderEntityConfig entity)
+    {
+        var matches = cap.Providers
+            .Where(p => string.Equals(p.Value.Type, entityType, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matches.Count == 1) return matches[0].Key;
+        if (matches.Count == 0) return null;
+
+        // Multiple providers of the same type — disambiguate by backendPort
+        if (entity.Settings is { } settings)
+        {
+            var entityPort = GetSettingInt(settings, "backendPort");
+            if (entityPort.HasValue)
+            {
+                var portMatch = matches.FirstOrDefault(m => m.Value.BackendPort == entityPort.Value);
+                if (portMatch.Key != null) return portMatch.Key;
+            }
+        }
+
+        return matches[0].Key;
+    }
+
+    private static void ApplyEntityToProvider(ProviderEntityConfig entity, ProviderConfig provider)
+    {
+        if (entity.ProviderType != null) provider.Type = entity.ProviderType;
+        if (entity.ApiKey != null) provider.ApiKey = entity.ApiKey;
+
+        if (entity.Settings is not { } settings) return;
+
+        if (GetSettingString(settings, "serverPath") is { } sp) provider.ServerPath = sp;
+        if (GetSettingString(settings, "venvPath") is { } vp) provider.VenvPath = vp;
+        if (GetSettingInt(settings, "backendPort") is { } bp) provider.BackendPort = bp;
+        if (GetSettingString(settings, "wslDistro") is { } wd) provider.WslDistro = wd;
+        if (GetSettingString(settings, "model") is { } m) provider.Model = m;
+        else if (entity.DefaultModel != null) provider.Model = entity.DefaultModel;
+        if (GetSettingString(settings, "voicesBasePath") is { } vbp) provider.VoicesBasePath = vbp;
+        if (GetSettingString(settings, "healthEndpoint") is { } he) provider.HealthEndpoint = he;
+        if (GetSettingInt(settings, "startupTimeoutSeconds") is { } sts) provider.StartupTimeoutSeconds = sts;
+        if (GetSettingString(settings, "apiKey") is { } ak) provider.ApiKey = ak;
+        if (GetSettingString(settings, "podId") is { } pi) provider.PodId = pi;
+        if (GetSettingInt(settings, "gpuCount") is { } gc) provider.GpuCount = gc;
+        if (GetSettingBool(settings, "autoStopOnExit") is { } ase) provider.AutoStopOnExit = ase;
+
+        if (settings.TryGetProperty("extra", out var extra) && extra.ValueKind == JsonValueKind.Object)
+        {
+            provider.Extra ??= new Dictionary<string, object?>();
+            foreach (var prop in extra.EnumerateObject())
+                provider.Extra[prop.Name] = ExtractJsonValue(prop.Value);
+        }
+
+        // Any settings keys not in the known set go to Extra
+        var knownKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "serverPath", "venvPath", "backendPort", "wslDistro", "model",
+            "voicesBasePath", "healthEndpoint", "startupTimeoutSeconds",
+            "apiKey", "podId", "gpuCount", "autoStopOnExit", "extra"
+        };
+        foreach (var prop in settings.EnumerateObject())
+        {
+            if (knownKeys.Contains(prop.Name)) continue;
+            provider.Extra ??= new Dictionary<string, object?>();
+            provider.Extra[prop.Name] = ExtractJsonValue(prop.Value);
+        }
+    }
+
+    private static object? ExtractJsonValue(JsonElement el) => el.ValueKind switch
+    {
+        JsonValueKind.String => el.GetString(),
+        JsonValueKind.Number when el.TryGetInt32(out var n) => n,
+        JsonValueKind.Number => el.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null => null,
+        _ => el.GetRawText(),
+    };
+
+    private static string? GetSettingString(JsonElement settings, string key)
+        => settings.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static int? GetSettingInt(JsonElement settings, string key)
+    {
+        if (!settings.TryGetProperty(key, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number when v.TryGetInt32(out var n) => n,
+            JsonValueKind.String when int.TryParse(v.GetString(), out var n) => n,
+            _ => null,
+        };
+    }
+
+    private static bool? GetSettingBool(JsonElement settings, string key)
+    {
+        if (!settings.TryGetProperty(key, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(v.GetString(), out var b) => b,
+            _ => null,
+        };
+    }
+
+    // ---- entity cache --------------------------------------------------------------------------
+
+    private void WriteCache(string providersJson, string? suiteConfigJson)
+    {
+        try
+        {
+            Directory.CreateDirectory(CacheDir);
+            var envelope = JsonSerializer.Serialize(new { providers = providersJson, suiteConfig = suiteConfigJson });
+            File.WriteAllText(CachePath, envelope);
+            _log($"[ProviderConfig] Entity cache written to {CachePath}", null);
+        }
+        catch (Exception ex)
+        {
+            _log($"[ProviderConfig] Failed to write entity cache: {ex.Message}", null);
+        }
+    }
+
+    private bool TryLoadFromCache()
+    {
+        try
+        {
+            if (!File.Exists(CachePath)) return false;
+
+            var cacheJson = File.ReadAllText(CachePath);
+            using var doc = JsonDocument.Parse(cacheJson);
+
+            var providersRaw = doc.RootElement.TryGetProperty("providers", out var pv) && pv.ValueKind == JsonValueKind.String
+                ? pv.GetString() : null;
+            if (string.IsNullOrWhiteSpace(providersRaw)) return false;
+
+            var parsed = ParseProviders(providersRaw);
+            if (parsed.Count == 0) return false;
+
+            var dict = parsed.ToDictionary(p => p.Slug, StringComparer.OrdinalIgnoreCase);
+            lock (_lock) { _providers = dict; }
+
+            var suiteConfigRaw = doc.RootElement.TryGetProperty("suiteConfig", out var sv) && sv.ValueKind == JsonValueKind.String
+                ? sv.GetString() : null;
+            if (suiteConfigRaw != null)
+            {
+                var slug = ParseDefaultProviderFromSuiteConfig(suiteConfigRaw, parsed);
+                if (slug != null)
+                    lock (_lock) { _defaultProviderSlug = slug; }
+            }
+
+            _log($"[ProviderConfig] Loaded {parsed.Count} provider(s) from entity cache", null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log($"[ProviderConfig] Failed to read entity cache: {ex.Message}", null);
+            return false;
+        }
+    }
+
+    // ---- fallbacks -----------------------------------------------------------------------------
+
     private static Dictionary<string, ProviderEntityConfig> BuildFallbacks() =>
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -173,12 +398,8 @@ public class ProviderConfigService
                 "ph-fill ph-open-ai-logo", null, null, "gpt-4o", "active", null),
         };
 
-    // ---- suite-config parsing ---------------------------------------------------------------
+    // ---- suite-config parsing ------------------------------------------------------------------
 
-    /// <summary>
-    /// Reads the default_provider entity_ref from suite-config. The field stores a provider
-    /// entity ID (GUID), so we resolve it back to a slug via the providers list.
-    /// </summary>
     private static string? ParseDefaultProviderFromSuiteConfig(string json, List<ProviderEntityConfig> providers)
     {
         try
@@ -206,12 +427,10 @@ public class ProviderConfigService
                 var refValue = GetString(data, "default_provider");
                 if (string.IsNullOrWhiteSpace(refValue)) continue;
 
-                // entity_ref stores the entity ID — find the matching provider by ID
                 var match = providers.FirstOrDefault(p =>
                     string.Equals(p.Id, refValue, StringComparison.OrdinalIgnoreCase));
                 if (match != null) return match.Slug;
 
-                // Maybe it's stored as a slug directly
                 match = providers.FirstOrDefault(p =>
                     string.Equals(p.Slug, refValue, StringComparison.OrdinalIgnoreCase));
                 if (match != null) return match.Slug;
@@ -221,7 +440,7 @@ public class ProviderConfigService
         return null;
     }
 
-    // ---- RedLeaf response parsing -----------------------------------------------------------
+    // ---- RedLeaf response parsing --------------------------------------------------------------
 
     private static List<ProviderEntityConfig> ParseProviders(string json)
     {
@@ -285,6 +504,10 @@ public class ProviderConfigService
             var backend = GetString(data, "backend");
             if (string.IsNullOrWhiteSpace(backend)) return null;
 
+            JsonElement? settings = null;
+            if (data.TryGetProperty("settings", out var s) && s.ValueKind == JsonValueKind.Object)
+                settings = s.Clone();
+
             return new ProviderEntityConfig(
                 Id:           id,
                 Slug:         slug!,
@@ -295,10 +518,46 @@ public class ProviderConfigService
                 ApiKey:       GetString(data, "api_key"),
                 DefaultModel: GetString(data, "default_model"),
                 Status:       GetString(data, "status") ?? "active",
-                Description:  GetString(data, "description"));
+                Description:  GetString(data, "description"))
+            {
+                ProviderType = GetString(data, "provider_type") ?? GetString(data, "kind"),
+                Capabilities = ParseCapabilities(data),
+                Settings = settings,
+            };
         }
         catch (JsonException) { return null; }
         finally { dataDoc?.Dispose(); }
+    }
+
+    private static IReadOnlyList<string> ParseCapabilities(JsonElement data)
+    {
+        if (!data.TryGetProperty("capabilities", out var caps))
+            return Array.Empty<string>();
+
+        if (caps.ValueKind == JsonValueKind.String)
+        {
+            var s = caps.GetString();
+            return string.IsNullOrWhiteSpace(s) ? Array.Empty<string>() : [s];
+        }
+
+        if (caps.ValueKind != JsonValueKind.Array)
+            return Array.Empty<string>();
+
+        var result = new List<string>();
+        foreach (var el in caps.EnumerateArray())
+        {
+            if (el.ValueKind == JsonValueKind.String)
+            {
+                var s = el.GetString();
+                if (!string.IsNullOrWhiteSpace(s)) result.Add(s);
+            }
+            else if (el.ValueKind == JsonValueKind.Object)
+            {
+                var s = GetString(el, "slug") ?? GetString(el, "name");
+                if (!string.IsNullOrWhiteSpace(s)) result.Add(s);
+            }
+        }
+        return result;
     }
 
     private static string? GetString(JsonElement el, string prop)
