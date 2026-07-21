@@ -78,6 +78,9 @@ public static class SettingsEndpoints
                     entry.DefaultProviderName = body.ActiveProvider;
             }
 
+            // ActiveProvider has no entity representation, so config.json is its only
+            // durable store -- without this Save() the selection dies with the process.
+            configManager.Save();
             _ = _providerConfig.RefreshAsync();
             return Results.Ok(new { message = $"Capability '{slug}' settings updated", slug, cap.ActiveProvider });
         })
@@ -116,6 +119,10 @@ public static class SettingsEndpoints
                     provider.Extra[kvp.Key] = kvp.Value;
             }
 
+            // The settings UI writes through this endpoint (via the kernel proxy)
+            // without touching entities, so config.json must keep persisting edits or
+            // they evaporate on restart. The entity sync overlays on the next boot.
+            configManager.Save();
             _ = _providerConfig.RefreshAsync();
             return Results.Ok(new { message = $"Provider '{providerName}' settings updated", slug, providerName, provider = SanitizeProvider(provider) });
         })
