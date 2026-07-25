@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
@@ -1587,15 +1586,6 @@ public class ClaudeSessionService
         return sb.Length > 0 ? sb.ToString() : null;
     }
 
-    private static int? ParseContextFromModelHint(string? model)
-    {
-        if (model == null) return null;
-        var match = Regex.Match(model, @"\[(\d+)([km])\]", RegexOptions.IgnoreCase);
-        if (!match.Success) return null;
-        var n = int.Parse(match.Groups[1].Value);
-        return n * (match.Groups[2].Value.ToLowerInvariant() == "m" ? 1_000_000 : 1_000);
-    }
-
     private void HandleSystemEvent(JsonElement root, ManagedSession session)
     {
         if (root.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "init")
@@ -1603,10 +1593,7 @@ public class ClaudeSessionService
             if (root.TryGetProperty("session_id", out var sid))
                 session.Info.ClaudeSessionId = sid.GetString();
             if (root.TryGetProperty("model", out var model))
-            {
                 session.Info.Model = model.GetString();
-                session.Info.ContextWindow ??= ParseContextFromModelHint(model.GetString());
-            }
             if (root.TryGetProperty("permissionMode", out var pm))
                 session.Info.PermissionMode = pm.GetString() ?? "bypassPermissions";
 
@@ -1858,7 +1845,9 @@ public class ClaudeSessionService
             }
         }
 
-        if (root.TryGetProperty("modelUsage", out var modelUsage))
+        // Only fills a gap, never overwrites: the CLI reports a flat 200k here even for
+        // 1M-context models, so an already-established window is the more reliable value.
+        if (session.Info.ContextWindow == null && root.TryGetProperty("modelUsage", out var modelUsage))
         {
             foreach (var model in modelUsage.EnumerateObject())
             {

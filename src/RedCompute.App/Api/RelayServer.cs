@@ -310,7 +310,7 @@ public class RelayServer
         // (hard dependency by decision); plugin SQLite stays write-only
         // (dual-write) until the verification window closes.
         var redLeafReader = new RedLeafSessionReader(
-            _config.RedLeafUrl, new JwtService(new JwtOptions { SigningKey = signingKey }));
+            _config.RedLeafUrl, new JwtService(new JwtOptions { SigningKey = signingKey }), _qualityModes);
         UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes, redLeafReader, _providerConfig);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 

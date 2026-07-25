@@ -11,7 +11,8 @@ public record QualityTier(string Slug, string Label, string Color, string Icon, 
 public record QualityMode(
     string Id, string Slug, string QualityTier, string Provider,
     string Model, string? Effort, int? ThinkingBudget,
-    int? Timeout, int? MaxTurns, bool IsDefault, string? Description);
+    int? Timeout, int? MaxTurns, bool IsDefault, string? Description,
+    int? ContextWindow = null);
 
 /// <summary>
 /// The concrete settings a quality tier resolves to, handed to the inference backend.
@@ -131,6 +132,25 @@ public class QualityModeService
         return ToResolved(chosen);
     }
 
+    /// <summary>
+    /// The context window a quality mode declares for <paramref name="model"/>, or null when no
+    /// mode declares one. Modes only set this where the inference runtime under-reports the real
+    /// window: Claude Code's `modelUsage.contextWindow` reports a flat 200k for every 1M-context
+    /// model, so a declared value is treated as more trustworthy than what the runtime says.
+    /// </summary>
+    public int? GetContextWindow(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model)) return null;
+        lock (_lock)
+        {
+            return _modes.Values
+                .SelectMany(v => v)
+                .FirstOrDefault(m => m.ContextWindow.HasValue
+                    && string.Equals(m.Model, model, StringComparison.OrdinalIgnoreCase))
+                ?.ContextWindow;
+        }
+    }
+
     /// <summary>All known modes across every tier.</summary>
     public IReadOnlyList<QualityMode> GetAll()
     {
@@ -151,18 +171,19 @@ public class QualityModeService
 
     private static Dictionary<string, List<QualityMode>> BuildFallbacks()
     {
-        static QualityMode M(string tier, string model, string? effort, bool isDefault)
+        static QualityMode M(string tier, string model, string? effort, bool isDefault, int? contextWindow = null)
             => new(
                 Id: $"fallback-{tier}", Slug: tier, QualityTier: tier, Provider: "claude-code",
                 Model: model, Effort: effort, ThinkingBudget: null, Timeout: null, MaxTurns: null,
-                IsDefault: isDefault, Description: $"Built-in {tier} fallback");
+                IsDefault: isDefault, Description: $"Built-in {tier} fallback", ContextWindow: contextWindow);
 
+        // Haiku declares no window: it really is 200k and the runtime reports it correctly.
         return new Dictionary<string, List<QualityMode>>(StringComparer.OrdinalIgnoreCase)
         {
             ["fast"] = [M("fast", "haiku", "low", false)],
-            ["standard"] = [M("standard", "sonnet", null, true)],
-            ["deep"] = [M("deep", "opus", "high", false)],
-            ["research"] = [M("research", "fable", "high", false)],
+            ["standard"] = [M("standard", "sonnet", null, true, 1_000_000)],
+            ["deep"] = [M("deep", "opus", "high", false, 1_000_000)],
+            ["research"] = [M("research", "fable", "high", false, 1_000_000)],
         };
     }
 
@@ -311,7 +332,8 @@ public class QualityModeService
                 Timeout: GetInt(data, "timeout"),
                 MaxTurns: GetInt(data, "max_turns") ?? GetInt(data, "maxTurns"),
                 IsDefault: GetBool(data, "is_default") ?? GetBool(data, "isDefault") ?? false,
-                Description: GetString(data, "description"));
+                Description: GetString(data, "description"),
+                ContextWindow: GetInt(data, "context_window") ?? GetInt(data, "contextWindow"));
         }
         catch (JsonException)
         {

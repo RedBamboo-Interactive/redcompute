@@ -14,9 +14,11 @@ namespace RedCompute.App.Services;
 public sealed class RedLeafSessionReader
 {
     private readonly HttpClient _http;
+    private readonly QualityModeService _qualityModes;
 
-    public RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService)
+    public RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService, QualityModeService qualityModes)
     {
+        _qualityModes = qualityModes;
         var token = jwtService.GenerateAccessToken("system", "system@redsuite", "System", ["admin"]);
         _http = new HttpClient
         {
@@ -115,13 +117,18 @@ public sealed class RedLeafSessionReader
         return history;
     }
 
-    private static UnifiedSessionInfo? MapSession(JsonElement entity)
+    private UnifiedSessionInfo? MapSession(JsonElement entity)
     {
         using var data = JsonDocument.Parse(entity.GetProperty("data").GetString()!);
         var d = data.RootElement;
 
         var sessionId = Str(d, "session_id");
         if (sessionId == null) return null;
+
+        // A quality mode that declares a context window outranks the stored one: Claude Code
+        // reports `modelUsage.contextWindow` as a flat 200k even for 1M-context models, and that
+        // wrong value is what got persisted. Overriding on read also corrects existing sessions.
+        var model = Str(d, "model");
 
         return new UnifiedSessionInfo
         {
@@ -132,7 +139,7 @@ public sealed class RedLeafSessionReader
             Status = Enum.TryParse<SessionStatus>(Str(d, "status"), ignoreCase: true, out var s) ? s : SessionStatus.Stopped,
             StopReason = Str(d, "stop_reason"),
             StartedAt = Str(d, "started_at") is { } sa && DateTimeOffset.TryParse(sa, out var t) ? t : default,
-            Model = Str(d, "model"),
+            Model = model,
             ProviderSessionId = Str(d, "external_session_id"),
             Title = entity.GetProperty("name").GetString(),
             MessageCount = Int(d, "message_count") ?? 0,
@@ -141,7 +148,7 @@ public sealed class RedLeafSessionReader
             OutputTokens = Int(d, "output_tokens"),
             CachedInputTokens = Int(d, "cache_read_input_tokens"),
             ContextTokens = Int(d, "context_tokens"),
-            ContextWindow = Int(d, "context_window"),
+            ContextWindow = _qualityModes.GetContextWindow(model) ?? Int(d, "context_window"),
             Effort = Str(d, "effort"),
             JobId = Str(d, "job_id") is { } j && Guid.TryParse(j, out var g) ? g : null,
             Source = Str(d, "source"),
