@@ -10,7 +10,10 @@ public class RedComputeConfig
     public int ApiPort { get; set; } = 18800;
     public string LogLevel { get; set; } = "Info";
     public double ElectricityRatePerKwh { get; set; } = 0.15;
-    public bool AutoStartDocker { get; set; } = true;
+    /// <summary>Eagerly bring Docker Desktop up at launch. Off by default: Docker is only
+    /// needed for sessions that ask for a container, and those start the daemon on demand.
+    /// Turn this on to pay the daemon's startup cost at boot instead of on first use.</summary>
+    public bool AutoStartDocker { get; set; } = false;
     public string CodeRedUrl { get; set; } = "http://127.0.0.1:18801";
     public string RedLeafUrl { get; set; } = "http://127.0.0.1:18804";
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();

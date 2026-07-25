@@ -71,6 +71,9 @@ public partial class App : Application
 
         DefenderExclusionService.EnsureExclusions(s => Log(s));
 
+        // Docker is started on demand by the session endpoints when a request actually asks
+        // for a container. This flag only forces the daemon up front, to trade a slower boot
+        // for a faster first containerised session.
         if (ConfigManager.Config.AutoStartDocker)
             _ = DockerDesktopService.EnsureRunningAsync(s => Log(s));
 

@@ -688,6 +688,13 @@ public static class UnifiedSessionEndpoints
             if (!string.IsNullOrWhiteSpace(q.Effort))
                 providerParams["effort"] = q.Effort;
 
+            // Docker Desktop is not started at launch. A session naming a container or an image is
+            // the first thing that genuinely needs the daemon, so bring it up here and nowhere else.
+            var namesContainer = providerParams.TryGetValue("container", out var reqContainer) && reqContainer is string { Length: > 0 };
+            var namesImage = providerParams.TryGetValue("dockerImage", out var reqImage) && reqImage is string { Length: > 0 };
+            if (namesContainer || namesImage)
+                await DockerDesktopService.EnsureRunningAsync(s => log(s, null));
+
             if (!providerParams.ContainsKey("container") || providerParams["container"] is not string)
             {
                 if (providerParams.TryGetValue("dockerImage", out var di) && di is string dockerImage && _docker != null)
