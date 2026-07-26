@@ -34,6 +34,16 @@ public class ClaudeSessionService
     private static readonly TimeSpan IdleTtl = TimeSpan.FromHours(48);
     private Timer? _reaperTimer;
 
+    // Last-resort safety net for InterruptSession. The CLI's control_response ack for
+    // subtype:"interrupt" is sent immediately on receipt of the request -- before the
+    // in-flight turn actually unwinds -- so it cannot be used as the "turn is over"
+    // signal. Only the `result` event that follows (handled in ParseResultEvent, which
+    // completes ManagedSession.InterruptCompletion) tells us the turn actually ended.
+    // This timeout only fires if that event never arrives (e.g. a tool ignoring
+    // cancellation), so it's sized for "something is stuck", not "how long does a
+    // normal interrupt take".
+    private static readonly TimeSpan InterruptGraceTimeout = TimeSpan.FromSeconds(10);
+
     internal void RecoverSessions()
     {
         try
@@ -984,7 +994,10 @@ public class ClaudeSessionService
             _log($"[Claude] Session {sessionId} is active, restarting for new message", null);
             session.RestartPending = true;
 
-            StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "interrupted" });
+            // A hard kill, not a graceful interrupt -- use the same "killed" signal
+            // ForceInterruptAfterTimeout uses so clients never mistake this for a
+            // safe-to-write-now acknowledgement (see InterruptSession/ParseResultEvent).
+            StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "killed" });
 
             try { session.Process.Kill(entireProcessTree: true); } catch { }
             try { await session.Process.WaitForExitAsync(); } catch { }
@@ -1020,8 +1033,7 @@ public class ClaudeSessionService
                 message = new { role = "user", content = contentPayload },
                 parent_tool_use_id = (string?)null
             };
-            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
-            session.Process.StandardInput.Flush();
+            await WriteControlLineAsync(session, msg);
             session.Info.MessageCount++;
             session.Info.Status = SessionStatus.Active;
             session.Info.StopReason = null;
@@ -1057,8 +1069,7 @@ public class ClaudeSessionService
                 message = new { role = "user", content = (object)answer },
                 parent_tool_use_id = (string?)null
             };
-            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
-            session.Process.StandardInput.Flush();
+            WriteControlLine(session, msg);
             session.Info.Status = SessionStatus.Active;
             SessionUpdated?.Invoke(session.Info);
 
@@ -1096,9 +1107,16 @@ public class ClaudeSessionService
                 request_id = requestId,
                 request = new { subtype = "interrupt" }
             };
-            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
-            session.Process.StandardInput.Flush();
+
+            // Completed by ParseResultEvent once the `result` event for the
+            // aborted (or already-finishing) turn actually arrives -- that is
+            // the real "the process is idle again" signal, not the control_response
+            // ack below.
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            session.InterruptCompletion = completion;
             session.InterruptPending = true;
+
+            WriteControlLine(session, msg);
 
             _log($"[Claude] Interrupt sent for session {sessionId} (request {requestId})", null);
 
@@ -1108,8 +1126,7 @@ public class ClaudeSessionService
                 Content = "interrupting"
             });
 
-            // CLI often acknowledges but doesn't actually abort — kill after timeout
-            _ = ForceInterruptAfterTimeout(sessionId, session, TimeSpan.FromMilliseconds(500));
+            _ = ForceInterruptAfterTimeout(sessionId, session, completion, InterruptGraceTimeout);
 
             return InterruptResult.Interrupted;
         }
@@ -1120,23 +1137,30 @@ public class ClaudeSessionService
         }
     }
 
-    private async Task ForceInterruptAfterTimeout(string sessionId, ManagedSession session, TimeSpan timeout)
+    private async Task ForceInterruptAfterTimeout(string sessionId, ManagedSession session, TaskCompletionSource<bool> completion, TimeSpan timeout)
     {
         try
         {
-            await Task.Delay(timeout, session.Cts.Token);
+            var timeoutTask = Task.Delay(timeout, session.Cts.Token);
+            var winner = await Task.WhenAny(completion.Task, timeoutTask);
+            if (winner != timeoutTask)
+                return; // graceful interrupt already resolved via the result event
         }
         catch (OperationCanceledException) { return; }
 
         if (!session.InterruptPending)
-            return;
+            return; // resolved between the race above and this check
 
         _log($"[Claude] Interrupt not honored after {timeout.TotalSeconds}s, killing session {sessionId}", null);
 
         session.RestartPending = true;
+        session.InterruptPending = false;
+        session.InterruptCompletion = null;
 
-        // Emit interrupted status so the frontend stops streaming immediately
-        StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "interrupted" });
+        // Distinct from the graceful "interrupted" status: this is a kill, the
+        // process is about to die and be replaced. Clients must not treat this
+        // as safe-to-write; wait for the "idle" status emitted after resume below.
+        StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "killed" });
 
         try { session.Process.Kill(entireProcessTree: true); } catch { }
 
@@ -1144,11 +1168,19 @@ public class ClaudeSessionService
         try { await session.Process.WaitForExitAsync(); } catch { }
         await Task.Delay(300);
 
-        if (!string.IsNullOrEmpty(session.Info.ClaudeSessionId))
+        if (string.IsNullOrEmpty(session.Info.ClaudeSessionId))
+            return;
+
+        _log($"[Claude] Auto-resuming session {sessionId} after forced interrupt", null);
+        var resumed = ResumeSession(sessionId);
+        if (resumed == null)
         {
-            _log($"[Claude] Auto-resuming session {sessionId} after forced interrupt", null);
-            ResumeSession(sessionId);
+            _log($"[Claude] Failed to auto-resume session {sessionId} after forced interrupt: {LastStartError}", null);
+            StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "error", Content = $"Session killed and failed to resume: {LastStartError}" });
+            return;
         }
+
+        StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "idle" });
     }
 
     public bool SetPermissionMode(string sessionId, string mode)
@@ -1165,8 +1197,7 @@ public class ClaudeSessionService
                 request_id = requestId,
                 request = new { subtype = "set_permission_mode", mode }
             };
-            session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
-            session.Process.StandardInput.Flush();
+            WriteControlLine(session, msg);
 
             session.Info.PermissionMode = mode;
             SessionUpdated?.Invoke(session.Info);
@@ -1196,8 +1227,7 @@ public class ClaudeSessionService
                     request_id = requestId,
                     request = new { subtype = "interrupt" }
                 };
-                session.Process.StandardInput.WriteLine(JsonSerializer.Serialize(msg));
-                session.Process.StandardInput.Flush();
+                await WriteControlLineAsync(session, msg);
             }
             catch { }
 
@@ -1728,7 +1758,12 @@ public class ClaudeSessionService
 
         if (subtype == "success")
         {
+            // Turn finished normally, possibly racing a just-sent interrupt that
+            // never got the chance to abort anything -- still a clean, safe-to-write
+            // outcome, so resolve the pending interrupt wait the same as below.
             session.InterruptPending = false;
+            session.InterruptCompletion?.TrySetResult(true);
+            session.InterruptCompletion = null;
             session.Info.Status = SessionStatus.Idle;
             session.Info.StopReason = "completed";
 
@@ -1760,6 +1795,8 @@ public class ClaudeSessionService
             if (session.InterruptPending)
             {
                 session.InterruptPending = false;
+                session.InterruptCompletion?.TrySetResult(true);
+                session.InterruptCompletion = null;
                 session.Info.Status = SessionStatus.Idle;
 
                 if (root.TryGetProperty("total_cost_usd", out var intCost))
@@ -1768,6 +1805,10 @@ public class ClaudeSessionService
 
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
+
+                // Graceful, acknowledged interrupt: the CLI actually aborted the
+                // turn and the process is idle and alive. Distinct from "killed",
+                // which the caller should treat as unsafe to write into.
                 return new ClaudeStreamEvent { Type = "status", Content = "interrupted" };
             }
 
@@ -1958,6 +1999,39 @@ public class ClaudeSessionService
         return tcs.Task;
     }
 
+    // Every ManagedSession stdin write (user messages, answers, control requests)
+    // goes through one of these so a queued-message drain can never interleave its
+    // JSON line with an in-flight interrupt/permission-mode write on the same pipe.
+    private void WriteControlLine(ManagedSession session, object message)
+    {
+        var json = JsonSerializer.Serialize(message);
+        session.WriteLock.Wait(session.Cts.Token);
+        try
+        {
+            session.Process.StandardInput.WriteLine(json);
+            session.Process.StandardInput.Flush();
+        }
+        finally
+        {
+            session.WriteLock.Release();
+        }
+    }
+
+    private async Task WriteControlLineAsync(ManagedSession session, object message)
+    {
+        var json = JsonSerializer.Serialize(message);
+        await session.WriteLock.WaitAsync(session.Cts.Token);
+        try
+        {
+            session.Process.StandardInput.WriteLine(json);
+            session.Process.StandardInput.Flush();
+        }
+        finally
+        {
+            session.WriteLock.Release();
+        }
+    }
+
     private static async Task<bool> WaitForExit(Process process, TimeSpan timeout)
     {
         try
@@ -2075,6 +2149,9 @@ public class ClaudeSessionService
         public CancellationTokenSource Cts { get; }
         public List<ClaudeStreamEvent> MessageHistory { get; } = new();
         public bool InterruptPending { get; set; }
+        // Completed by ParseResultEvent when the result for the interrupted (or
+        // racingly-already-finishing) turn arrives. Null when no interrupt is in flight.
+        public TaskCompletionSource<bool>? InterruptCompletion { get; set; }
         public bool RestartPending { get; set; }
         public int ControlRequestCounter { get; set; }
         // Provider-neutral uid shared by all events of the current assistant
@@ -2082,6 +2159,11 @@ public class ClaudeSessionService
         // turn boundaries (status/error result, user message, answer) so the
         // next turn mints a fresh one.
         public string? CurrentAssistantUid { get; set; }
+        // Guards every StandardInput write so a queued-message drain can never
+        // interleave with a concurrent interrupt/permission-mode control write
+        // (mirrors OpenCodeSessionService.ManagedSession.WriteLock).
+        private readonly SemaphoreSlim _writeLock = new(1, 1);
+        public SemaphoreSlim WriteLock => _writeLock;
 
         public ManagedSession(ClaudeSessionInfo info, Process process, CancellationTokenSource cts)
         {
