@@ -320,6 +320,94 @@ public static class UnifiedSessionEndpoints
         })
             .WithParam("answer", "string", required: true, description: "Answer text", location: ParamLocation.Body);
 
+        endpoints.MapPost("/ai-session/sessions/{id}/question",
+            "Answer a structured question the session is parked on (Claude Code's AskUserQuestion). " +
+            "The requestId comes from the 'question' stream event; unlike /answer this is not a " +
+            "conversation turn — it unblocks the tool call the session is waiting on.",
+            async (HttpContext ctx, string id) =>
+        {
+            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info == null)
+                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+            if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
+                return NotSupported(provider.ProviderId, "interactive messaging");
+
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+
+            var requestId = body.TryGetProperty("requestId", out var r) && r.ValueKind == JsonValueKind.String
+                ? r.GetString() : null;
+            if (string.IsNullOrWhiteSpace(requestId))
+                return Error(422, "validation_failed", "requestId is required");
+
+            var decline = body.TryGetProperty("decline", out var d) && d.ValueKind == JsonValueKind.True;
+
+            // answers accepts either shape: an object keyed by question text, or an array in
+            // question order. The array form is safer for clients — the server holds the
+            // authoritative question text and zips positionally.
+            Dictionary<string, string>? answers = null;
+            List<string>? positional = null;
+            if (body.TryGetProperty("answers", out var a))
+            {
+                if (a.ValueKind == JsonValueKind.Object)
+                {
+                    answers = new Dictionary<string, string>();
+                    foreach (var prop in a.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.String)
+                            answers[prop.Name] = prop.Value.GetString()!;
+                    }
+                }
+                else if (a.ValueKind == JsonValueKind.Array)
+                {
+                    positional = a.EnumerateArray()
+                        .Where(e => e.ValueKind == JsonValueKind.String)
+                        .Select(e => e.GetString()!)
+                        .ToList();
+                }
+            }
+
+            var response = body.TryGetProperty("response", out var resp) && resp.ValueKind == JsonValueKind.String
+                ? resp.GetString() : null;
+
+            if (!decline && answers is not { Count: > 0 } && positional is not { Count: > 0 }
+                && string.IsNullOrWhiteSpace(response))
+                return Error(422, "validation_failed", "answers, response or decline is required");
+
+            var result = provider.SubmitQuestionAnswer(id, new SessionQuestionAnswer
+            {
+                RequestId = requestId,
+                Answers = answers,
+                PositionalAnswers = positional,
+                Response = response,
+                Decline = decline,
+                DeclineReason = body.TryGetProperty("reason", out var rr) && rr.ValueKind == JsonValueKind.String
+                    ? rr.GetString() : null,
+            });
+
+            return result switch
+            {
+                QuestionAnswerResult.Answered or QuestionAnswerResult.Declined
+                    => Results.Json(new { answered = true, outcome = result.ToString().ToLowerInvariant() }),
+                QuestionAnswerResult.SessionNotFound
+                    => Error(404, "not_found", $"Session '{id}' is not running"),
+                // Already answered, expired, or cancelled by the CLI — the question is gone
+                // either way, and the client should have seen a question_resolved event.
+                QuestionAnswerResult.RequestNotFound
+                    => Error(409, "request_not_pending", $"No question is pending for request '{requestId}'"),
+                _ => Error(500, "answer_failed", "Failed to deliver the answer to the session"),
+            };
+        })
+            .WithParam("requestId", "string", required: true, description: "Correlation id from the 'question' stream event", location: ParamLocation.Body)
+            .WithParam("answers", "object", description: "Chosen option labels, either keyed by question text or as an array in question order. Multi-select answers are a single comma-separated string.", location: ParamLocation.Body)
+            .WithParam("response", "string", description: "Freeform text the user typed instead of picking an option", location: ParamLocation.Body)
+            .WithParam("decline", "boolean", description: "Dismiss the question instead of answering it", location: ParamLocation.Body)
+            .WithParam("reason", "string", description: "Message shown to the model when decline is true", location: ParamLocation.Body);
+
         endpoints.MapPost("/ai-session/sessions/{id}/interrupt",
             "Interrupt the session's current operation", (HttpContext ctx, string id) =>
         {

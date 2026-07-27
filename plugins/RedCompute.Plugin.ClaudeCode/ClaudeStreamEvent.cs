@@ -14,4 +14,7 @@ public class ClaudeStreamEvent
     // unlike the init-only parse-time properties.
     public string? MessageUid { get; set; }
     public string? PermissionMode { get; init; }
+    // Correlation id for the CLI control_request this event reports ("question" /
+    // "question_resolved"). Clients echo it back when submitting an answer. Null elsewhere.
+    public string? RequestId { get; init; }
 }

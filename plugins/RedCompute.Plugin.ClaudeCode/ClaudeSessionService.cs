@@ -1238,6 +1238,7 @@ public class ClaudeSessionService
             }
 
             session.Cts.Cancel();
+            DiscardPendingQuestions(session, "session_ended");
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
@@ -1276,6 +1277,7 @@ public class ClaudeSessionService
         {
             try { session.Process.Kill(entireProcessTree: true); } catch { }
             session.Cts.Cancel();
+            DiscardPendingQuestions(session, "session_ended");
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = "user_stopped";
             session.Info.ProcessId = null;
@@ -1462,6 +1464,15 @@ public class ClaudeSessionService
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
             "--input-format", "stream-json", "--include-partial-messages",
             "--permission-mode", "bypassPermissions",
+            // Routes tool asks to us as inbound `control_request`s instead of letting the
+            // CLI self-deny them. This does NOT weaken bypassPermissions: the permission
+            // evaluator short-circuits Bash/Edit/etc to "allow" before the ask path is
+            // reached, so those never produce a request. Only tools that declare
+            // requiresUserInteraction() -- AskUserQuestion, ExitPlanMode -- are exempt from
+            // the bypass and reach us. Without this flag their ask has nowhere to go and
+            // comes back to the model as `<error>Answer questions?</error>` (the ask's own
+            // message text, reused as the denial reason).
+            "--permission-prompt-tool", "stdio",
             // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
             "--thinking-display", "summarized" })
             startInfo.ArgumentList.Add(arg);
@@ -1588,6 +1599,17 @@ public class ClaudeSessionService
                 HandleControlResponse(root, session);
                 return null;
 
+            // The CLI asking US something. Opposite direction to the control_request we
+            // send for interrupt/set_permission_mode -- same envelope, inbound.
+            case "control_request":
+                HandleInboundControlRequest(root, session);
+                return null;
+
+            // The CLI abandoning a request it sent us (turn aborted, session tearing down).
+            case "control_cancel_request":
+                HandleControlCancelRequest(root, session);
+                return null;
+
             case "stream_event":
                 UpdateContextFromStreamEvent(root, session);
                 return ParseStreamEvent(root);
@@ -1650,6 +1672,301 @@ public class ClaudeSessionService
             {
                 _log($"[Claude] Control request {reqId} succeeded", null);
             }
+        }
+    }
+
+    // The only tool whose ask we can actually satisfy: it is a request for data, not a
+    // safety gate, and the answer rides back in the tool's own input. Everything else that
+    // reaches the ask path is a genuine permission prompt with no UI behind it.
+    private const string AskUserQuestionTool = "AskUserQuestion";
+
+    // A parked question holds a turn open, so this is sized for "a human wandered off",
+    // not for "how long does answering take". On expiry we deny explicitly rather than
+    // leaving the CLI blocked on a promise that never settles -- silence is what made the
+    // original bug invisible.
+    private static readonly TimeSpan QuestionAnswerTimeout = TimeSpan.FromMinutes(30);
+
+    private void HandleInboundControlRequest(JsonElement root, ManagedSession session)
+    {
+        var requestId = root.TryGetProperty("request_id", out var rid) ? rid.GetString() : null;
+        if (string.IsNullOrEmpty(requestId))
+        {
+            _log($"[Claude] Inbound control_request without request_id on session {session.Info.Id}, ignoring", null);
+            return;
+        }
+
+        if (!root.TryGetProperty("request", out var request))
+        {
+            RespondControlError(session, requestId, "control_request had no 'request' payload");
+            return;
+        }
+
+        var subtype = request.TryGetProperty("subtype", out var st) ? st.GetString() : null;
+        if (subtype != "can_use_tool")
+        {
+            // request_user_dialog, elicitation, hook_callback, ... Nothing here can service
+            // them, and an unanswered request wedges the turn, so refuse in the shape the
+            // CLI's own bridge uses for requests it cannot handle.
+            _log($"[Claude] Unsupported inbound control_request '{subtype}' on session {session.Info.Id}, refusing", null);
+            RespondControlError(session, requestId, $"RedCompute does not implement control_request subtype '{subtype}'");
+            return;
+        }
+
+        var toolName = request.TryGetProperty("tool_name", out var tn) ? tn.GetString() : null;
+        if (toolName != AskUserQuestionTool)
+        {
+            // Under bypassPermissions this should never fire -- the evaluator allows those
+            // tools long before the ask path. If it does (someone moved the session to a
+            // prompting mode), deny: that is what the session already did before this
+            // handler existed, so it cannot regress behaviour, and it fails closed.
+            _log($"[Claude] Permission ask for '{toolName}' on session {session.Info.Id} has no interactive handler, denying", null);
+            RespondPermissionDeny(session, requestId,
+                $"No interactive permission UI is attached to this session, so '{toolName}' could not be approved.");
+            return;
+        }
+
+        var input = request.TryGetProperty("input", out var inp)
+            ? inp.Clone()   // the JsonDocument is disposed when ParseStreamLine returns
+            : default;
+        var toolUseId = request.TryGetProperty("tool_use_id", out var tui) ? tui.GetString() : null;
+
+        var pending = new PendingQuestion
+        {
+            RequestId = requestId,
+            ToolUseId = toolUseId,
+            Input = input,
+        };
+        pending.ExpiryTimer = new Timer(_ => ExpireQuestion(session, requestId), null,
+            QuestionAnswerTimeout, Timeout.InfiniteTimeSpan);
+
+        if (!session.PendingQuestions.TryAdd(requestId, pending))
+        {
+            pending.ExpiryTimer.Dispose();
+            _log($"[Claude] Duplicate question request {requestId} on session {session.Info.Id}, ignoring", null);
+            return;
+        }
+
+        _log($"[Claude] Session {session.Info.Id} parked on a question (request {requestId})", null);
+
+        // Emitted directly rather than returned from ParseStreamLine: this is transient
+        // control state, not conversation. The AskUserQuestion tool_use block was already
+        // streamed and persisted just before this, so a reload still renders the question
+        // card -- what a reload cannot replay is a live request_id, which is exactly why
+        // this event is not persisted.
+        StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+        {
+            Type = "question",
+            RequestId = requestId,
+            ToolName = AskUserQuestionTool,
+            ToolInput = input.ValueKind == JsonValueKind.Undefined ? null : input.ToString(),
+            MessageId = toolUseId,
+        });
+    }
+
+    private void HandleControlCancelRequest(JsonElement root, ManagedSession session)
+    {
+        var requestId = root.TryGetProperty("request_id", out var rid) ? rid.GetString() : null;
+        if (requestId == null || !session.PendingQuestions.TryRemove(requestId, out var pending))
+            return;
+
+        pending.Dispose();
+        _log($"[Claude] Question {requestId} cancelled by the CLI on session {session.Info.Id}", null);
+
+        // No control_response: the CLI has already abandoned the request. This only tells
+        // clients to drop the card.
+        StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+        {
+            Type = "question_resolved",
+            RequestId = requestId,
+            Content = "cancelled",
+        });
+    }
+
+    private void ExpireQuestion(ManagedSession session, string requestId)
+    {
+        if (!session.PendingQuestions.TryRemove(requestId, out var pending))
+            return;
+        pending.Dispose();
+
+        _log($"[Claude] Question {requestId} on session {session.Info.Id} went unanswered for " +
+             $"{QuestionAnswerTimeout.TotalMinutes:0} minutes, denying", null);
+
+        RespondPermissionDeny(session, requestId,
+            "The question timed out with no answer from the user. Proceed with your best judgement " +
+            "and state the assumption you made.");
+
+        StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+        {
+            Type = "question_resolved",
+            RequestId = requestId,
+            Content = "timeout",
+        });
+    }
+
+    public Core.Sessions.QuestionAnswerResult SubmitQuestionAnswer(string sessionId, Core.Sessions.SessionQuestionAnswer answer)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session))
+            return Core.Sessions.QuestionAnswerResult.SessionNotFound;
+
+        if (!session.PendingQuestions.TryRemove(answer.RequestId, out var pending))
+            return Core.Sessions.QuestionAnswerResult.RequestNotFound;
+
+        pending.Dispose();
+
+        try
+        {
+            if (answer.Decline)
+            {
+                RespondPermissionDeny(session, answer.RequestId,
+                    string.IsNullOrWhiteSpace(answer.DeclineReason)
+                        ? "The user dismissed the question without answering. Proceed with your best " +
+                          "judgement and state the assumption you made."
+                        : answer.DeclineReason);
+                EmitQuestionResolved(session, answer.RequestId, "declined");
+                return Core.Sessions.QuestionAnswerResult.Declined;
+            }
+
+            // updatedInput is validated against the tool's full input schema, so the
+            // questions array has to be echoed back verbatim alongside the answers.
+            var updatedInput = new Dictionary<string, object?>();
+            if (pending.Input.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in pending.Input.EnumerateObject())
+                    updatedInput[prop.Name] = prop.Value;
+            }
+
+            var answers = BuildAnswerMap(pending, answer);
+            if (answers.Count > 0)
+                updatedInput["answers"] = answers;
+
+            // `response` is the "user typed their own thing instead of choosing" channel and
+            // it OUTRANKS answers -- when set, the tool result is just "The user responded:
+            // <text>" and the selections are dropped (verified against the CLI). So only send
+            // it when there is nothing structured to send. Free text that accompanies a
+            // choice belongs in that choice's label, comma-joined, not here.
+            else if (!string.IsNullOrWhiteSpace(answer.Response))
+                updatedInput["response"] = answer.Response;
+
+            WriteControlLine(session, new
+            {
+                type = "control_response",
+                response = new
+                {
+                    subtype = "success",
+                    request_id = answer.RequestId,
+                    response = new { behavior = "allow", updatedInput }
+                }
+            });
+
+            _log($"[Claude] Answered question {answer.RequestId} on session {sessionId}", null);
+            EmitQuestionResolved(session, answer.RequestId, "answered");
+            return Core.Sessions.QuestionAnswerResult.Answered;
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to answer question {answer.RequestId} on {sessionId}: {ex.Message}", null);
+            return Core.Sessions.QuestionAnswerResult.Error;
+        }
+    }
+
+    /// <summary>
+    /// Builds the tool's `answers` map, which is keyed by the exact question text. Explicit
+    /// keys win; anything unmatched falls back to positional order against the questions we
+    /// parked on, so a client that sends answers in order cannot mis-key them (a mis-keyed
+    /// answer is not an error — it renders as "(no option selected)" to the model).
+    /// </summary>
+    private static Dictionary<string, string> BuildAnswerMap(PendingQuestion pending, Core.Sessions.SessionQuestionAnswer answer)
+    {
+        var questions = new List<string>();
+        if (pending.Input.ValueKind == JsonValueKind.Object &&
+            pending.Input.TryGetProperty("questions", out var qs) && qs.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var q in qs.EnumerateArray())
+            {
+                if (q.TryGetProperty("question", out var qt) && qt.GetString() is { } text)
+                    questions.Add(text);
+            }
+        }
+
+        var map = new Dictionary<string, string>();
+
+        if (answer.Answers is { Count: > 0 })
+        {
+            foreach (var (key, value) in answer.Answers)
+            {
+                // Keep a key we recognise; otherwise map it onto the first question still
+                // unanswered so a near-miss on the question text still lands.
+                var target = questions.Contains(key)
+                    ? key
+                    : questions.FirstOrDefault(q => !map.ContainsKey(q)) ?? key;
+                map[target] = value;
+            }
+            return map;
+        }
+
+        if (answer.PositionalAnswers is { Count: > 0 })
+        {
+            for (var i = 0; i < answer.PositionalAnswers.Count && i < questions.Count; i++)
+                map[questions[i]] = answer.PositionalAnswers[i];
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// Drops every parked question without answering. Called when the process is gone, so
+    /// there is nothing left to write a control_response to — this only stops the expiry
+    /// timers firing into a dead pipe half an hour later, and clears the clients' cards.
+    /// </summary>
+    private void DiscardPendingQuestions(ManagedSession session, string outcome)
+    {
+        foreach (var requestId in session.PendingQuestions.Keys)
+        {
+            if (!session.PendingQuestions.TryRemove(requestId, out var pending))
+                continue;
+            pending.Dispose();
+            EmitQuestionResolved(session, requestId, outcome);
+        }
+    }
+
+    private void EmitQuestionResolved(ManagedSession session, string requestId, string outcome) =>
+        StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+        {
+            Type = "question_resolved",
+            RequestId = requestId,
+            Content = outcome,
+        });
+
+    // Outer subtype stays "success" -- it describes the round trip, not the verdict. The
+    // message becomes the tool_result the model reads, with is_error set.
+    private void RespondPermissionDeny(ManagedSession session, string requestId, string message)
+        => TryWriteControlResponse(session, requestId, new
+        {
+            type = "control_response",
+            response = new
+            {
+                subtype = "success",
+                request_id = requestId,
+                response = new { behavior = "deny", message }
+            }
+        });
+
+    private void RespondControlError(ManagedSession session, string requestId, string error)
+        => TryWriteControlResponse(session, requestId, new
+        {
+            type = "control_response",
+            response = new { subtype = "error", request_id = requestId, error }
+        });
+
+    private void TryWriteControlResponse(ManagedSession session, string requestId, object message)
+    {
+        try
+        {
+            WriteControlLine(session, message);
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to respond to control_request {requestId} on {session.Info.Id}: {ex.Message}", null);
         }
     }
 
@@ -1906,6 +2223,7 @@ public class ClaudeSessionService
 
         var exitCode = session.Process.ExitCode;
         session.Cts.Cancel();
+        DiscardPendingQuestions(session, "session_ended");
 
         if (session.RestartPending)
         {
@@ -2142,11 +2460,30 @@ public class ClaudeSessionService
         return FindProjectIcon(projectDir);
     }
 
+    // A control_request from the CLI that we have parked awaiting a client, held open until
+    // answered, cancelled by the CLI, or expired. Mirrors the request-id correlation the
+    // outbound direction does with TaskCompletionSource -- but the CLI is the one blocking
+    // here, so the "completion" is the control_response we write, not a task we await.
+    private sealed class PendingQuestion : IDisposable
+    {
+        public required string RequestId { get; init; }
+        public required string? ToolUseId { get; init; }
+        /// <summary>The tool input as the CLI sent it; echoed back inside updatedInput.</summary>
+        public required JsonElement Input { get; init; }
+        public Timer? ExpiryTimer { get; set; }
+
+        public void Dispose() => ExpiryTimer?.Dispose();
+    }
+
     private class ManagedSession
     {
         public ClaudeSessionInfo Info { get; }
         public Process Process { get; }
         public CancellationTokenSource Cts { get; }
+        // Inbound control_requests awaiting a client answer, keyed by request_id. Removal is
+        // the claim: whoever wins TryRemove owns writing the single control_response, so an
+        // answer racing the expiry timer cannot produce two.
+        public ConcurrentDictionary<string, PendingQuestion> PendingQuestions { get; } = new();
         public List<ClaudeStreamEvent> MessageHistory { get; } = new();
         public bool InterruptPending { get; set; }
         // Completed by ParseResultEvent when the result for the interrupted (or

@@ -128,6 +128,9 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     public bool SendAnswer(string sessionId, string answer) => _claude.SendAnswer(sessionId, answer);
 
+    public QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)
+        => _claude.SubmitQuestionAnswer(sessionId, answer);
+
     // --- ISessionProvider: Interrupt ---
 
     public Core.Sessions.InterruptResult InterruptSession(string sessionId)
@@ -278,6 +281,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
         MessageUid = e.MessageUid,
+        RequestId = e.RequestId,
     };
 
     private static UnifiedMessageRecord ToUnifiedMessage(ClaudeMessageRecord m) => new()

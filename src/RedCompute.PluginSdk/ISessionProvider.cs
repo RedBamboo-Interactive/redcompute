@@ -25,6 +25,13 @@ public interface ISessionProvider
     Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null);
     bool SendAnswer(string sessionId, string answer);
 
+    // Reply to a structured question the session parked on (a provider control request the
+    // session is blocked awaiting, not a conversation turn — hence the request-id
+    // correlation rather than SendAnswer). Providers that never park default to "no such
+    // request", which is what the endpoint reports for an unknown request id anyway.
+    QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)
+        => QuestionAnswerResult.RequestNotFound;
+
     // Interrupt
     InterruptResult InterruptSession(string sessionId);
 
