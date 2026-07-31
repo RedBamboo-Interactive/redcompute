@@ -39,6 +39,15 @@ public static class CodexEventMapper
             "item/agentMessage/delta" => Single("text", Text(@params), partial: true, Str(@params, "itemId")),
             "item/reasoning/textDelta" => Single("thinking", Text(@params), partial: true, Str(@params, "itemId")),
             "item/reasoning/summaryTextDelta" => Single("thinking", Text(@params), partial: true, Str(@params, "itemId")),
+
+            // A reasoning item can hold several summary parts, each its own headline. They
+            // arrive as plain deltas with no separator, and the client concatenates partials
+            // into one block — so without this they render as one run-on line:
+            // "Planning personal reflectionAnalyzing recurring patternsClarifying tone".
+            // Index 0 opens the block and needs no leading break.
+            "item/reasoning/summaryPartAdded" => Int(@params, "summaryIndex") is > 0
+                ? Single("thinking", "\n\n", partial: true, Str(@params, "itemId"))
+                : [],
             "item/plan/delta" => Single("text", Text(@params), partial: true, Str(@params, "itemId")),
 
             "item/commandExecution/outputDelta" => Single("tool_result", Text(@params), partial: true, Str(@params, "itemId")),
@@ -277,7 +286,9 @@ public static class CodexEventMapper
         var parts = arr.EnumerateArray()
             .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : Str(e, "text"))
             .Where(s => !string.IsNullOrEmpty(s));
-        var joined = string.Join("\n", parts);
+        // Blank line between parts, not a single newline: these render as markdown, which
+        // folds a lone newline into the previous line and runs the headlines together.
+        var joined = string.Join("\n\n", parts);
         return joined.Length == 0 ? null : joined;
     }
 
