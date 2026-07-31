@@ -57,6 +57,30 @@ if (-not $NoKernel) {
         if (-not (Get-NetTCPConnection -LocalPort 18800 -State Listen -ErrorAction SilentlyContinue)) { break }
         Start-Sleep -Milliseconds 250
     }
+
+    # Staying down is the thing that matters, not going down. If the kernel is unhealthy
+    # its release can fail while still supervising, and it resurrects Compute ~2s later --
+    # mid-build, holding the DLLs we are about to copy over. Observed 2026-07-31: the
+    # kernel was throwing "Cannot access a disposed object" and the release silently
+    # no-opped.
+    #
+    # Fail here rather than build. A stale deploy that looks successful costs far more
+    # than a refused one: the suite comes back up healthy on old code, and the next hour
+    # goes on wondering why the fix did not take.
+    Get-Process RedCompute -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 4
+    if (Get-Process RedCompute -ErrorAction SilentlyContinue) {
+        throw @"
+RedCompute came back while we were trying to build it -- the kernel is still supervising it.
+
+Anything built now would fail to copy into bin\...\plugins\ and you would end up running
+stale code that looks freshly deployed.
+
+Fix: restart RedLeaf (its tray icon -> Restart), then run this again. If it keeps happening,
+check the kernel log for 'Cannot access a disposed object' -- a half-disposed kernel cannot
+release its managed children.
+"@
+    }
 }
 
 # When the kernel owns the lifecycle, never let the shared script launch the exe itself:
