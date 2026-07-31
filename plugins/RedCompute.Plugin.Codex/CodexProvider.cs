@@ -13,6 +13,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 {
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
+    private readonly CodexInteractiveService _interactive;
+    private readonly CodexModelCatalog _models;
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
 
@@ -32,7 +34,16 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public string ProviderId => "codex";
     public string ProviderDisplayName => "Codex";
     public SessionCapabilities Capabilities =>
-        SessionCapabilities.StatelessExecution | SessionCapabilities.ProjectDiscovery;
+        SessionCapabilities.StatelessExecution
+        | SessionCapabilities.ProjectDiscovery
+        | SessionCapabilities.PersistentSessions
+        | SessionCapabilities.Resume
+        | SessionCapabilities.Interrupt
+        | SessionCapabilities.SendMessage
+        | SessionCapabilities.ConfigUpdate;
+    // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch),
+    // Generate (no completion endpoint), ImageAttachments (every model reports image input support,
+    // but sending them is unproven — claim it once it has been tested, not before).
 
     public string? LastStartError => null;
 
@@ -47,18 +58,34 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var store = new CodexSessionStore();
         var codexConfig = BuildConfig(config);
         _codex = new CodexSessionService(codexConfig, jobTracker, store, log);
+        _models = new CodexModelCatalog(codexConfig, log);
+        _interactive = new CodexInteractiveService(codexConfig, store, _models, _codex, log);
 
         _codex.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _codex.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
         _codex.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
-        _codex.StreamEvent += (sessionId, evt) =>
-        {
-            PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
-            SessionStreamEvent?.Invoke(sessionId, ToUnifiedEvent(evt));
-        };
+        _codex.StreamEvent += (sessionId, evt) => Broadcast(sessionId, evt);
+
+        _interactive.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
+        _interactive.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
+        _interactive.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
+        _interactive.StreamEvent += Broadcast;
     }
 
-    public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
+    private void Broadcast(string sessionId, CodexStreamEvent evt)
+    {
+        PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
+        SessionStreamEvent?.Invoke(sessionId, ToUnifiedEvent(evt));
+    }
+
+    public async Task<bool> StartAsync(CancellationToken ct = default)
+    {
+        // Warm the model catalog so the synchronous GetAvailableModels() has something to serve.
+        // A failure here is not fatal: the CLI may not be logged in yet, and /codex/models will
+        // report that clearly on demand.
+        await _models.PrimeAsync(ct);
+        return true;
+    }
     public Task StopAsync(CancellationToken ct = default) => _codex.StopAllAsync();
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
     public string? GetProxyTargetUrl() => null;
@@ -67,7 +94,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public void MapCustomEndpoints(WebApplication app)
     {
-        CodexSessionEndpoints.Map(app, _codex, _jobTracker, _log);
+        CodexSessionEndpoints.Map(app, _codex, _models, _jobTracker, _log);
     }
 
     public void CancelJob(string jobKey) => _codex.CancelExecution(jobKey);
@@ -78,39 +105,68 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         return statuses.ToDictionary(kv => kv.Key, kv => kv.Value);
     }
 
-    // --- ISessionProvider: Not supported (stateless only) ---
+    // --- ISessionProvider: Interactive sessions ---
 
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
-        => throw new NotSupportedException("Codex does not support persistent sessions");
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
+    {
+        var info = await _interactive.StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
+        return info != null ? ToUnified(info) : null;
+    }
 
-    public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
-        => throw new NotSupportedException("Codex does not support session resume");
+    public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
+    {
+        var info = await _interactive.ResumeSessionAsync(sessionId);
+        return info != null ? ToUnified(info) : null;
+    }
 
-    public Task StopSessionAsync(string sessionId)
-        => throw new NotSupportedException("Codex does not support persistent sessions");
+    public Task StopSessionAsync(string sessionId) => _interactive.StopSessionAsync(sessionId);
 
     public Task ForceKillAsync(string sessionId)
     {
+        // Stateless executions are keyed by job id in the other service; interactive ones by
+        // session id here. Both are safe to attempt — only one will match.
         _codex.CancelExecution(sessionId);
-        return Task.CompletedTask;
+        return _interactive.ForceKillAsync(sessionId);
     }
 
     public void DismissSession(string sessionId) => _codex.DismissSession(sessionId);
 
     public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
-        => throw new NotSupportedException("Codex does not support interactive messaging");
+        => _interactive.SendMessageAsync(sessionId, content, attachmentsJson, messageUid);
 
+    /// <summary>
+    /// Free-text answer to a parked question. Codex keys answers by question id, so a bare string
+    /// can only be applied when exactly one question is outstanding — which is the case that
+    /// actually occurs. Structured multi-question replies go through SubmitQuestionAnswer.
+    /// </summary>
     public bool SendAnswer(string sessionId, string answer)
-        => throw new NotSupportedException("Codex does not support interactive messaging");
+        => _interactive.SubmitSingleAnswer(sessionId, answer);
 
+    public Core.Sessions.QuestionAnswerResult SubmitQuestionAnswer(string sessionId, Core.Sessions.SessionQuestionAnswer answer)
+        => _interactive.SubmitQuestionAnswer(sessionId, answer)
+            ? Core.Sessions.QuestionAnswerResult.Answered
+            : Core.Sessions.QuestionAnswerResult.RequestNotFound;
+
+    // The service reports the real outcome now. Collapsing it to a bool here was half the reason
+    // stop looked broken: "no such session", "no thread" and "nothing running" all arrived as
+    // NotActive, and everything else — including a request the app-server rejected — as success.
     public Core.Sessions.InterruptResult InterruptSession(string sessionId)
-        => throw new NotSupportedException("Codex does not support session interrupts");
+        => _interactive.InterruptSession(sessionId);
 
-    public Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
-        => throw new NotSupportedException("Codex does not support config updates");
+    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
+    {
+        // thinkingBudget has no Codex equivalent — reasoning depth is the `effort` ladder
+        // (low → ultra), which is already carried by the effort parameter.
+        var info = await _interactive.UpdateSessionConfigAsync(sessionId, model, effort);
+        return info != null ? ToUnified(info) : null;
+    }
 
-    public bool SetPermissionMode(string sessionId, string mode)
-        => throw new NotSupportedException("Codex does not support permission modes");
+    /// <summary>
+    /// Not supported, and deliberately not faked. Sessions run with command and file approvals
+    /// auto-accepted, matching Claude Code's --permission-mode bypassPermissions; there are no
+    /// other modes to switch between, so returning true would be a lie the UI acts on.
+    /// </summary>
+    public bool SetPermissionMode(string sessionId, string mode) => false;
 
     public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
@@ -118,12 +174,21 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     // --- ISessionProvider: Querying ---
 
+    /// <summary>
+    /// Both services read the same store, so this would double-count every row. The interactive
+    /// view is the authoritative one — it overlays live in-memory state on the same records — so
+    /// take it and fill in only the ids it does not already have.
+    /// </summary>
+    // Both services read the same Sessions table, so reads go through the interactive one
+    // unconditionally: it overlays live in-memory state on those rows and maps every column,
+    // whereas the stateless mapper predates interactive sessions and silently drops ThreadId,
+    // ContextWindow, Effort and Source — which reads as "the field is empty", not "wrong reader".
     public List<UnifiedSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false)
-        => _codex.GetSessions(limit, includeDismissed).Select(ToUnified).ToList();
+        => _interactive.GetSessions(limit, includeDismissed).Select(ToUnified).ToList();
 
     public (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSession(string sessionId)
     {
-        var (info, history) = _codex.GetSession(sessionId);
+        var (info, history) = _interactive.GetSession(sessionId);
         return (info != null ? ToUnified(info) : null, history.Select(ToUnifiedMessage).ToList());
     }
 
@@ -174,10 +239,22 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             Name = p.Name, Path = p.Path, HasClaudeMd = p.HasClaudeMd,
         }).ToList();
 
-    public List<ModelInfo> GetAvailableModels() =>
-        CodexSessionEndpoints.ModelCatalog
-            .Select(m => new ModelInfo { Id = m.Id, Name = m.Name, Fast = m.Fast })
+    public List<ModelInfo> GetAvailableModels()
+    {
+        var cached = _models.Cached;
+
+        // This is a synchronous interface method serving a UI dropdown, so it cannot block on a
+        // process spawn. If the startup prime lost its race (or failed while the CLI was logged
+        // out), kick a refresh off in the background so the next call is populated rather than
+        // leaving an empty model list forever.
+        if (cached.Count == 0)
+            _ = _models.PrimeAsync();
+
+        return cached
+            .Where(m => !m.Hidden)
+            .Select(m => new ModelInfo { Id = m.Id, Name = m.DisplayName, Fast = m.Fast })
             .ToList();
+    }
 
     // --- ISessionProvider: Process Management ---
 
@@ -203,6 +280,13 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         OutputTokens = s.OutputTokens,
         CachedInputTokens = s.CachedInputTokens,
         JobId = s.JobId,
+        Effort = s.Effort,
+        Source = s.Source,
+        UserId = s.UserId,
+        ContextWindow = s.ContextWindow,
+        // The Codex thread id, which is what makes a session resumable — and resumable from the
+        // Codex CLI and desktop app too, since every surface shares the same thread store.
+        ProviderSessionId = s.ThreadId,
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(CodexStreamEvent e) => new()
@@ -214,6 +298,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ToolResult = e.ToolResult,
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
+        MessageUid = e.MessageUid,
+        RequestId = e.RequestId,
     };
 
     private static UnifiedMessageRecord ToUnifiedMessage(CodexMessageRecord m) => new()
@@ -241,7 +327,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             CodexPath = string.IsNullOrEmpty(codexPath) ? null : codexPath,
             MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
-            DefaultExecModel = ProviderHelpers.GetExtra(config, "DefaultExecModel", "codex-mini-latest"),
+            DefaultExecModel = ProviderHelpers.GetExtra(config, "DefaultExecModel", "") is { Length: > 0 } dem ? dem : null,
+            TitleModel = ProviderHelpers.GetExtra(config, "TitleModel", "") is { Length: > 0 } tm ? tm : null,
             SandboxMode = ProviderHelpers.GetExtra(config, "SandboxMode", "workspace-write"),
         };
     }
@@ -249,7 +336,14 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
         ["prompt"] = new() { Type = "string", Required = true, Description = "Prompt text for agent execution" },
-        ["model"] = new() { Type = "string", Required = false, Default = "codex-mini-latest", Enum = CodexSessionEndpoints.ModelCatalog.Select(m => m.Id).ToList(), Description = "Model to use" },
+        ["model"] = new()
+        {
+            Type = "string",
+            Required = false,
+            Default = _models.Cached.FirstOrDefault(m => m.IsDefault)?.Id,
+            Enum = _models.Cached.Where(m => !m.Hidden).Select(m => m.Id).ToList(),
+            Description = "Model to use"
+        },
         ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
         ["sandbox"] = new() { Type = "string", Required = false, Default = "workspace-write", Enum = ["read-only", "workspace-write", "danger-full-access"], Description = "Sandbox mode" },
         ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }

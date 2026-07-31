@@ -23,4 +23,15 @@ public class CodexSessionInfo
     public int? CachedInputTokens { get; set; }
     public Guid? JobId { get; set; }
     public string? UserId { get; set; }
+    public string? UserName { get; set; }
+    public string? UserAvatarUrl { get; set; }
+
+    /// <summary>App-server thread id — what thread/resume needs to reattach.</summary>
+    public string? ThreadId { get; set; }
+
+    public string? Effort { get; set; }
+    public string? Source { get; set; }
+    public int? ContextWindow { get; set; }
+    public int? ProcessId { get; set; }
+    public DateTimeOffset? LastActivity { get; set; }
 }

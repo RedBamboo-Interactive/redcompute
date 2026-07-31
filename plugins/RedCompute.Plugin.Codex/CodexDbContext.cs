@@ -22,6 +22,45 @@ public class CodexDbContext : DbContext
     public void Initialize()
     {
         Database.EnsureCreated();
+        MigrateSchema();
+    }
+
+    /// <summary>
+    /// Additive column adds for databases created before interactive sessions existed.
+    /// EnsureCreated() only builds a schema from scratch — it will not touch an existing file — so
+    /// without this an older codex.db keeps its original columns and every query throws.
+    /// Each ALTER is tried and ignored, which is the cheap way to make this idempotent in SQLite.
+    /// </summary>
+    private void MigrateSchema()
+    {
+        var conn = Database.GetDbConnection();
+        conn.Open();
+        try
+        {
+            using var cmd = conn.CreateCommand();
+
+            foreach (var col in new[]
+                     {
+                         "ThreadId TEXT", "Effort TEXT", "Source TEXT",
+                         "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER",
+                     })
+            {
+                cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";
+                try { cmd.ExecuteNonQuery(); }
+                catch { }
+            }
+
+            foreach (var col in new[] { "MessageUid TEXT", "AttachmentsJson TEXT" })
+            {
+                cmd.CommandText = $"ALTER TABLE Messages ADD COLUMN {col}";
+                try { cmd.ExecuteNonQuery(); }
+                catch { }
+            }
+        }
+        finally
+        {
+            conn.Close();
+        }
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -48,6 +87,9 @@ public class CodexDbContext : DbContext
             entity.Property(s => s.StartedAt).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));
+            entity.Property(s => s.LastActivity).HasConversion(
+                v => v.HasValue ? v.Value.ToString("O") : null,
+                v => v != null ? DateTimeOffset.Parse(v) : null);
         });
     }
 }

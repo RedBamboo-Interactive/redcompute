@@ -186,6 +186,11 @@ public class CodexSessionService
         startInfo.ArgumentList.Add("-");
         startInfo.ArgumentList.Add("--json");
 
+        // Without this, exec refuses to run anywhere that is not a trusted git repo — "Not inside a
+        // trusted directory" — which kills every call with no working directory and every call
+        // against a plain folder. The sandbox flag below is what actually bounds what it can touch.
+        startInfo.ArgumentList.Add("--skip-git-repo-check");
+
         var resolvedSandbox = sandbox ?? _config.SandboxMode;
         startInfo.ArgumentList.Add("--sandbox");
         startInfo.ArgumentList.Add(resolvedSandbox);
@@ -208,7 +213,8 @@ public class CodexSessionService
         if (type == "item.completed")
         {
             var item = root.TryGetProperty("item", out var i) ? i : root;
-            var itemType = item.TryGetProperty("type", out var it) ? it.GetString() : null;
+            var itemType = CodexEventMapper.NormaliseItemType(
+                item.TryGetProperty("type", out var it) ? it.GetString() : null);
 
             switch (itemType)
             {
@@ -290,7 +296,8 @@ public class CodexSessionService
         else if (type == "item.started")
         {
             var item = root.TryGetProperty("item", out var i) ? i : root;
-            var itemType = item.TryGetProperty("type", out var it) ? it.GetString() : null;
+            var itemType = CodexEventMapper.NormaliseItemType(
+                item.TryGetProperty("type", out var it) ? it.GetString() : null);
 
             if (itemType == "agentMessage")
             {
@@ -365,7 +372,8 @@ public class CodexSessionService
                 if (evtType == "item.completed")
                 {
                     var item = root.TryGetProperty("item", out var i) ? i : root;
-                    var itemType = item.TryGetProperty("type", out var it2) ? it2.GetString() : null;
+                    var itemType = CodexEventMapper.NormaliseItemType(
+                        item.TryGetProperty("type", out var it2) ? it2.GetString() : null);
 
                     if (itemType == "agentMessage")
                     {
@@ -462,27 +470,5 @@ public class CodexSessionService
         JobId = r.JobId,
     };
 
-    public string? ResolveCodexPath()
-    {
-        if (_config.CodexPath != null)
-            return File.Exists(_config.CodexPath) ? _config.CodexPath : null;
-
-        var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
-        foreach (var dir in pathDirs)
-        {
-            foreach (var ext in new[] { ".exe", ".cmd", "" })
-            {
-                var candidate = Path.Combine(dir, $"codex{ext}");
-                if (File.Exists(candidate))
-                    return candidate;
-            }
-        }
-
-        var npmGlobal = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var npmCandidate = Path.Combine(npmGlobal, "npm", "codex.cmd");
-        if (File.Exists(npmCandidate))
-            return npmCandidate;
-
-        return null;
-    }
+    public string? ResolveCodexPath() => CodexCliLocator.Resolve(_config.CodexPath);
 }

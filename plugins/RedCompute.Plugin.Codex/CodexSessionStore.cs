@@ -21,6 +21,12 @@ public class CodexSessionStore : ICodexSessionStore
         CacheReadInputTokens = r.CachedInputTokens,
         JobId = r.JobId,
         Dismissed = r.Dismissed,
+        // Session reads are served from the RedLeaf mirror, not from this database — so a column
+        // missing here is invisible in the API even when the local row is perfectly correct.
+        ExternalSessionId = r.ThreadId,
+        ContextWindow = r.ContextWindow,
+        Effort = r.Effort,
+        Source = r.Source,
     };
 
     private static AiMessageSnapshot ToSnapshot(CodexMessageRecord m) => new()
@@ -34,6 +40,8 @@ public class CodexSessionStore : ICodexSessionStore
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        MessageUid = m.MessageUid,
+        AttachmentsJson = m.AttachmentsJson,
         Timestamp = m.Timestamp,
     };
 
@@ -87,6 +95,16 @@ public class CodexSessionStore : ICodexSessionStore
             existing.CachedInputTokens = record.CachedInputTokens;
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
+            // Interactive-session columns. Omitting them here does not fail loudly: the value
+            // survives the initial INSERT and is then dropped by every subsequent UPDATE, so a
+            // field set at start (ThreadId) looks fine while one set mid-turn (ContextWindow)
+            // silently never persists.
+            existing.ThreadId = record.ThreadId;
+            existing.ProcessId = record.ProcessId;
+            existing.LastActivity = record.LastActivity;
+            existing.Effort = record.Effort;
+            existing.Source = record.Source;
+            existing.ContextWindow = record.ContextWindow;
         }
         else
         {

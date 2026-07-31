@@ -7,16 +7,36 @@ namespace RedCompute.Plugin.Codex;
 
 public static class CodexSessionEndpoints
 {
-    public static void Map(WebApplication app, CodexSessionService codex, IJobTracker jobTracker, Action<string, Guid?> log)
+    public static void Map(WebApplication app, CodexSessionService codex, CodexModelCatalog catalog,
+        IJobTracker jobTracker, Action<string, Guid?> log)
     {
         app.MapGet("/codex/projects", () => Results.Ok(codex.ListProjects()));
 
-        app.MapGet("/codex/models", () =>
+        app.MapGet("/codex/models", async (bool? refresh, CancellationToken ct) =>
         {
+            var models = await catalog.GetAsync(forceRefresh: refresh == true, ct);
+            if (models.Count == 0)
+                return Results.Json(new
+                {
+                    error = "catalog_unavailable",
+                    message = catalog.LastError ?? "Could not read the model catalog from codex app-server. Is the CLI installed and logged in?"
+                }, statusCode: 503);
+
             return Results.Json(new
             {
-                models = ModelCatalog.Select(m => new { id = m.Id, name = m.Name, fast = m.Fast }),
-                @default = "codex-mini-latest"
+                models = models.Where(m => !m.Hidden).Select(m => new
+                {
+                    id = m.Id,
+                    name = m.DisplayName,
+                    description = m.Description,
+                    fast = m.Fast,
+                    isDefault = m.IsDefault,
+                    defaultEffort = m.DefaultReasoningEffort,
+                    efforts = m.SupportedReasoningEfforts.Select(e => new { id = e.Id, description = e.Description }),
+                    serviceTiers = m.ServiceTiers.Select(t => new { id = t.Id, name = t.Name, description = t.Description }),
+                    supportsImages = m.SupportsImages,
+                }),
+                @default = models.FirstOrDefault(m => m.IsDefault)?.Id ?? models[0].Id
             });
         });
 
@@ -67,25 +87,12 @@ public static class CodexSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Results.Json(new { error = "invalid_body", message = "Request body must be valid JSON" }, statusCode: 400); }
 
-            return await HandleExecute(ctx, body, codex, jobTracker, log);
+            return await HandleExecute(ctx, body, codex, catalog, jobTracker, log);
         });
     }
 
-    /// <summary>Single source of truth for Codex models — drives /codex/models and execute validation.</summary>
-    public static readonly (string Id, string Name, bool Fast)[] ModelCatalog =
-    [
-        ("codex-mini-latest", "Codex Mini", true),
-        ("gpt-5.5", "GPT-5.5", false),
-        ("gpt-5.4", "GPT-5.4", false),
-        ("gpt-5.4-mini", "GPT-5.4 Mini", true),
-        ("gpt-5.3-codex", "GPT-5.3 Codex", false),
-        ("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", true),
-    ];
-
-    private static readonly string[] ValidModels = ModelCatalog.Select(m => m.Id).ToArray();
-
     private static async Task<IResult> HandleExecute(HttpContext ctx, JsonElement body,
-        CodexSessionService codex, IJobTracker jobTracker, Action<string, Guid?> log)
+        CodexSessionService codex, CodexModelCatalog catalog, IJobTracker jobTracker, Action<string, Guid?> log)
     {
         var prompt = body.TryGetProperty("prompt", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
         if (string.IsNullOrWhiteSpace(prompt))
@@ -97,8 +104,15 @@ public static class CodexSessionEndpoints
         if (body.TryGetProperty("model", out var mod) && mod.ValueKind == JsonValueKind.String)
         {
             model = mod.GetString();
-            if (model != null && !ValidModels.Contains(model))
-                return Results.Json(new { error = "validation_failed", message = $"model must be one of: {string.Join(", ", ValidModels)}" }, statusCode: 422);
+            if (model != null && !await catalog.IsValidModelAsync(model, ctx.RequestAborted))
+            {
+                var known = await catalog.GetAsync(ct: ctx.RequestAborted);
+                return Results.Json(new
+                {
+                    error = "validation_failed",
+                    message = $"model must be one of: {string.Join(", ", known.Where(m => !m.Hidden).Select(m => m.Id))}"
+                }, statusCode: 422);
+            }
         }
 
         string? sandbox = null;

@@ -49,6 +49,7 @@ public class ProviderConfigService
     {
         ["claude-code"] = "anthropic-direct",
         ["opencode"]    = "opencode-default",
+        ["codex"]       = "codex-default",
     };
 
     public ProviderConfigService(RedComputeConfig config, Action<string, Guid?> log)
@@ -458,6 +459,10 @@ public class ProviderConfigService
                 "ph-fill ph-sparkle", null, null, null, "active", "Default Anthropic provider via Claude Code CLI."),
             ["opencode-default"] = new("opencode-default", "opencode-default", "OpenCode (Default)", "opencode",
                 "ph-fill ph-open-ai-logo", null, null, "gpt-4o", "active", null),
+            // No default model: the Codex catalog is account-scoped and resolved at runtime via
+            // model/list, so naming one here is how it goes stale.
+            ["codex-default"] = new("codex-default", "codex-default", "Codex (Default)", "codex",
+                "ph-fill ph-open-ai-logo", null, null, null, "active", "OpenAI Codex CLI via its app-server."),
         };
 
     // ---- suite-config parsing ------------------------------------------------------------------
