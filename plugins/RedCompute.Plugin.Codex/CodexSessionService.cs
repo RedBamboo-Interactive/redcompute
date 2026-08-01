@@ -57,7 +57,41 @@ public class CodexSessionService
         string? model, string? sandbox, int timeout,
         CancellationToken ct,
         string? streamKey = null,
-        Dictionary<string, string>? env = null)
+        Dictionary<string, string>? env = null,
+        IReadOnlyCollection<string>? networkDomains = null,
+        string? effort = null)
+    {
+        ExecuteResult? last = null;
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            last = await ExecuteExecOnceAsync(prompt, container, workingDir, model, sandbox,
+                timeout, ct, streamKey, env, networkDomains, effort);
+            if (last.Success || !IsTransientWorkspaceLock(last) || attempt == 3)
+                return last;
+
+            var delay = TimeSpan.FromMilliseconds(400 * attempt);
+            _log($"[Codex] Workspace file was temporarily locked; retrying in {delay.TotalMilliseconds:0}ms " +
+                 $"(attempt {attempt + 1}/3)", null);
+            await Task.Delay(delay, ct);
+        }
+
+        return last!;
+    }
+
+    private static bool IsTransientWorkspaceLock(ExecuteResult result)
+    {
+        var detail = string.Join('\n', result.Error, result.Text, result.StreamOutput);
+        return detail.Contains("being used by another process", StringComparison.OrdinalIgnoreCase)
+            || detail.Contains("process cannot access the file", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<ExecuteResult> ExecuteExecOnceAsync(
+        string prompt, string? container, string? workingDir,
+        string? model, string? sandbox, int timeout,
+        CancellationToken ct, string? streamKey,
+        Dictionary<string, string>? env,
+        IReadOnlyCollection<string>? networkDomains,
+        string? effort)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
 
@@ -95,7 +129,7 @@ public class CodexSessionService
                     startInfo.EnvironmentVariables[k] = v;
         }
 
-        BuildExecArgs(startInfo, model, sandbox);
+        BuildExecArgs(startInfo, model, sandbox, networkDomains, effort);
 
         var sw = Stopwatch.StartNew();
         using var process = Process.Start(startInfo);
@@ -181,7 +215,8 @@ public class CodexSessionService
         }
     }
 
-    private void BuildExecArgs(ProcessStartInfo startInfo, string? model, string? sandbox)
+    private void BuildExecArgs(ProcessStartInfo startInfo, string? model, string? sandbox,
+        IReadOnlyCollection<string>? networkDomains, string? effort)
     {
         startInfo.ArgumentList.Add("exec");
         startInfo.ArgumentList.Add("-");
@@ -193,8 +228,31 @@ public class CodexSessionService
         startInfo.ArgumentList.Add("--skip-git-repo-check");
 
         var resolvedSandbox = sandbox ?? _config.SandboxMode;
-        startInfo.ArgumentList.Add("--sandbox");
-        startInfo.ArgumentList.Add(resolvedSandbox);
+        var allowedDomains = networkDomains?
+            .Where(IsSafeNetworkDomain)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? [];
+
+        if (resolvedSandbox == "workspace-write" && allowedDomains.Length > 0)
+        {
+            // --sandbox and permission profiles do not compose: the legacy flag wins. Use a
+            // request-scoped profile so unattended agents retain workspace isolation while being
+            // able to reach the explicitly named local services they orchestrate.
+            AddConfig(startInfo, "default_permissions=\"redcompute_local\"");
+            AddConfig(startInfo, "permissions.redcompute_local.extends=\":workspace\"");
+            AddConfig(startInfo, "permissions.redcompute_local.network.enabled=true");
+            foreach (var domain in allowedDomains)
+                AddConfig(startInfo,
+                    $"permissions.redcompute_local.network.domains.\"{domain}\"=\"allow\"");
+        }
+        else
+        {
+            startInfo.ArgumentList.Add("--sandbox");
+            startInfo.ArgumentList.Add(resolvedSandbox);
+        }
+
+        if (IsSafeEffort(effort))
+            AddConfig(startInfo, $"model_reasoning_effort=\"{effort}\"");
 
         var resolvedModel = model ?? _config.Model ?? _config.DefaultExecModel;
         if (!string.IsNullOrEmpty(resolvedModel))
@@ -203,6 +261,18 @@ public class CodexSessionService
             startInfo.ArgumentList.Add(resolvedModel);
         }
     }
+
+    private static void AddConfig(ProcessStartInfo startInfo, string value)
+    {
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(value);
+    }
+
+    private static bool IsSafeNetworkDomain(string? domain)
+        => domain is "localhost" or "127.0.0.1" or "::1";
+
+    private static bool IsSafeEffort(string? effort)
+        => effort is "none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max" or "ultra";
 
     internal static List<CodexStreamEvent> ParseExecStreamLine(string line)
     {

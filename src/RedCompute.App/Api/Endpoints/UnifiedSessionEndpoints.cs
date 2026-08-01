@@ -758,7 +758,7 @@ public static class UnifiedSessionEndpoints
                 env = envProp.EnumerateObject().ToDictionary(ep => ep.Name, ep => ep.Value.GetString() ?? "");
 
             var providerParams = new Dictionary<string, object?>();
-            foreach (var key in new[] { "effort", "maxTurns", "allowedTools", "addDirs", "container", "dockerImage", "sandbox" })
+            foreach (var key in new[] { "effort", "maxTurns", "allowedTools", "addDirs", "container", "dockerImage", "sandbox", "networkDomains" })
             {
                 if (body.TryGetProperty(key, out var val))
                 {
@@ -912,6 +912,7 @@ public static class UnifiedSessionEndpoints
                     container = new { type = "string", description = "Existing Docker container to run in" },
                     dockerImage = new { type = "string", description = "Docker image — a container is created/reused automatically when no container is given" },
                     sandbox = new { type = "string", description = "Sandbox mode (provider-specific, e.g. read-only, workspace-write, danger-full-access)" },
+                    networkDomains = new { type = "array", items = new { type = "string" }, description = "Exact network domains allowed for workspace-write executions" },
                 },
             });
 

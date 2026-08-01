@@ -35,6 +35,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public string ProviderDisplayName => "Codex";
     public SessionCapabilities Capabilities =>
         SessionCapabilities.StatelessExecution
+        | SessionCapabilities.Generate
         | SessionCapabilities.ProjectDiscovery
         | SessionCapabilities.PersistentSessions
         | SessionCapabilities.Resume
@@ -42,8 +43,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.SendMessage
         | SessionCapabilities.ConfigUpdate;
     // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch),
-    // Generate (no completion endpoint), ImageAttachments (every model reports image input support,
-    // but sending them is unproven — claim it once it has been tested, not before).
+    // ImageAttachments (sending them through the CLI is not proven yet).
 
     public string? LastStartError => null;
 
@@ -168,9 +168,51 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     /// </summary>
     public bool SetPermissionMode(string sessionId, string mode) => false;
 
-    public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
+    public async Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
-        => throw new NotSupportedException("Codex does not support LLM completion");
+    {
+        string prompt;
+        try
+        {
+            prompt = BuildGeneratePrompt(system, messagesJson, maxTokens);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return new SessionGenerateResult(false, null, null, model, 0, 0, null,
+                $"Invalid completion messages: {ex.Message}");
+        }
+
+        var result = await _codex.ExecuteExecAsync(prompt, null, null, model, "read-only",
+            timeout ?? 120, ct, effort: effort);
+        return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput,
+            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+    }
+
+    private static string BuildGeneratePrompt(string? system, string messagesJson, int maxTokens)
+    {
+        using var doc = JsonDocument.Parse(messagesJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("messages must be an array");
+
+        var prompt = new System.Text.StringBuilder();
+        prompt.AppendLine("Act as a stateless text completion. Return only the requested response.");
+        prompt.AppendLine("Do not inspect files, run commands, call tools, or explain this wrapper.");
+        prompt.AppendLine($"Keep the response within approximately {Math.Clamp(maxTokens, 1, 8192)} tokens.");
+        if (!string.IsNullOrWhiteSpace(system))
+            prompt.AppendLine($"\nSYSTEM:\n{system}");
+
+        foreach (var message in doc.RootElement.EnumerateArray())
+        {
+            var role = message.TryGetProperty("role", out var r) ? r.GetString() : "user";
+            var content = message.TryGetProperty("content", out var c)
+                ? c.ValueKind == JsonValueKind.String ? c.GetString() : c.GetRawText()
+                : "";
+            prompt.AppendLine($"\n{role?.ToUpperInvariant() ?? "USER"}:\n{content}");
+        }
+
+        prompt.AppendLine("\nRESPONSE:");
+        return prompt.ToString();
+    }
 
     // --- ISessionProvider: Querying ---
 
@@ -218,15 +260,27 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     {
         string? sandbox = null;
         string? container = null;
+        string? effort = null;
+        IReadOnlyCollection<string>? networkDomains = null;
         if (providerParams != null)
         {
             if (providerParams.TryGetValue("sandbox", out var sb) && sb is string sbs)
                 sandbox = sbs;
             if (providerParams.TryGetValue("container", out var c) && c is string cs)
                 container = cs;
+            if (providerParams.TryGetValue("effort", out var e) && e is string es)
+                effort = es;
+            if (providerParams.TryGetValue("networkDomains", out var nd))
+                networkDomains = nd switch
+                {
+                    string[] values => values,
+                    IEnumerable<string> values => values.ToArray(),
+                    _ => null,
+                };
         }
 
-        var result = await _codex.ExecuteExecAsync(prompt, container, workingDir, model, sandbox, timeout, ct, streamKey, env);
+        var result = await _codex.ExecuteExecAsync(prompt, container, workingDir, model, sandbox,
+            timeout, ct, streamKey, env, networkDomains, effort);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }
@@ -345,6 +399,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             Description = "Model to use"
         },
         ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
+        ["networkDomains"] = new() { Type = "array", Required = false, Description = "Exact network domains allowed for workspace-write executions" },
         ["sandbox"] = new() { Type = "string", Required = false, Default = "workspace-write", Enum = ["read-only", "workspace-write", "danger-full-access"], Description = "Sandbox mode" },
         ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }
     };
