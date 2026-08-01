@@ -261,7 +261,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         string? sandbox = null;
         string? container = null;
         string? effort = null;
-        IReadOnlyCollection<string>? networkDomains = null;
+        var networkAccess = false;
         if (providerParams != null)
         {
             if (providerParams.TryGetValue("sandbox", out var sb) && sb is string sbs)
@@ -270,17 +270,12 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
                 container = cs;
             if (providerParams.TryGetValue("effort", out var e) && e is string es)
                 effort = es;
-            if (providerParams.TryGetValue("networkDomains", out var nd))
-                networkDomains = nd switch
-                {
-                    string[] values => values,
-                    IEnumerable<string> values => values.ToArray(),
-                    _ => null,
-                };
+            if (providerParams.TryGetValue("networkAccess", out var na) && na is bool enabled)
+                networkAccess = enabled;
         }
 
         var result = await _codex.ExecuteExecAsync(prompt, container, workingDir, model, sandbox,
-            timeout, ct, streamKey, env, networkDomains, effort);
+            timeout, ct, streamKey, env, networkAccess, effort);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }
@@ -399,7 +394,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             Description = "Model to use"
         },
         ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
-        ["networkDomains"] = new() { Type = "array", Required = false, Description = "Exact network domains allowed for workspace-write executions" },
+        ["networkAccess"] = new() { Type = "boolean", Required = false, Default = false, Description = "Enable command network access for workspace-write executions" },
         ["sandbox"] = new() { Type = "string", Required = false, Default = "workspace-write", Enum = ["read-only", "workspace-write", "danger-full-access"], Description = "Sandbox mode" },
         ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }
     };

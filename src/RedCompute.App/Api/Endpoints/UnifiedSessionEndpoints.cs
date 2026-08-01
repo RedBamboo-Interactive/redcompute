@@ -758,7 +758,7 @@ public static class UnifiedSessionEndpoints
                 env = envProp.EnumerateObject().ToDictionary(ep => ep.Name, ep => ep.Value.GetString() ?? "");
 
             var providerParams = new Dictionary<string, object?>();
-            foreach (var key in new[] { "effort", "maxTurns", "allowedTools", "addDirs", "container", "dockerImage", "sandbox", "networkDomains" })
+            foreach (var key in new[] { "effort", "maxTurns", "allowedTools", "addDirs", "container", "dockerImage", "sandbox", "networkAccess" })
             {
                 if (body.TryGetProperty(key, out var val))
                 {
@@ -767,6 +767,7 @@ public static class UnifiedSessionEndpoints
                         JsonValueKind.String => val.GetString(),
                         JsonValueKind.Number => val.TryGetInt32(out var i) ? i : (object)val.GetDouble(),
                         JsonValueKind.Array => val.EnumerateArray().Select(x => x.GetString()!).Where(x => x != null).ToArray(),
+                        JsonValueKind.True or JsonValueKind.False => val.GetBoolean(),
                         _ => null
                     };
                 }
@@ -912,7 +913,7 @@ public static class UnifiedSessionEndpoints
                     container = new { type = "string", description = "Existing Docker container to run in" },
                     dockerImage = new { type = "string", description = "Docker image — a container is created/reused automatically when no container is given" },
                     sandbox = new { type = "string", description = "Sandbox mode (provider-specific, e.g. read-only, workspace-write, danger-full-access)" },
-                    networkDomains = new { type = "array", items = new { type = "string" }, description = "Exact network domains allowed for workspace-write executions" },
+                    networkAccess = new { type = "boolean", description = "Enable command network access for workspace-write executions" },
                 },
             });
 

@@ -58,14 +58,14 @@ public class CodexSessionService
         CancellationToken ct,
         string? streamKey = null,
         Dictionary<string, string>? env = null,
-        IReadOnlyCollection<string>? networkDomains = null,
+        bool networkAccess = false,
         string? effort = null)
     {
         ExecuteResult? last = null;
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             last = await ExecuteExecOnceAsync(prompt, container, workingDir, model, sandbox,
-                timeout, ct, streamKey, env, networkDomains, effort);
+                timeout, ct, streamKey, env, networkAccess, effort);
             if (last.Success || !IsTransientWorkspaceLock(last) || attempt == 3)
                 return last;
 
@@ -90,7 +90,7 @@ public class CodexSessionService
         string? model, string? sandbox, int timeout,
         CancellationToken ct, string? streamKey,
         Dictionary<string, string>? env,
-        IReadOnlyCollection<string>? networkDomains,
+        bool networkAccess,
         string? effort)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
@@ -129,7 +129,7 @@ public class CodexSessionService
                     startInfo.EnvironmentVariables[k] = v;
         }
 
-        BuildExecArgs(startInfo, model, sandbox, networkDomains, effort);
+        BuildExecArgs(startInfo, model, sandbox, networkAccess, effort);
 
         var sw = Stopwatch.StartNew();
         using var process = Process.Start(startInfo);
@@ -216,7 +216,7 @@ public class CodexSessionService
     }
 
     private void BuildExecArgs(ProcessStartInfo startInfo, string? model, string? sandbox,
-        IReadOnlyCollection<string>? networkDomains, string? effort)
+        bool networkAccess, string? effort)
     {
         startInfo.ArgumentList.Add("exec");
         startInfo.ArgumentList.Add("-");
@@ -228,28 +228,14 @@ public class CodexSessionService
         startInfo.ArgumentList.Add("--skip-git-repo-check");
 
         var resolvedSandbox = sandbox ?? _config.SandboxMode;
-        var allowedDomains = networkDomains?
-            .Where(IsSafeNetworkDomain)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray() ?? [];
+        startInfo.ArgumentList.Add("--sandbox");
+        startInfo.ArgumentList.Add(resolvedSandbox);
 
-        if (resolvedSandbox == "workspace-write" && allowedDomains.Length > 0)
-        {
-            // --sandbox and permission profiles do not compose: the legacy flag wins. Use a
-            // request-scoped profile so unattended agents retain workspace isolation while being
-            // able to reach the explicitly named local services they orchestrate.
-            AddConfig(startInfo, "default_permissions=\"redcompute_local\"");
-            AddConfig(startInfo, "permissions.redcompute_local.extends=\":workspace\"");
-            AddConfig(startInfo, "permissions.redcompute_local.network.enabled=true");
-            foreach (var domain in allowedDomains)
-                AddConfig(startInfo,
-                    $"permissions.redcompute_local.network.domains.\"{domain}\"=\"allow\"");
-        }
-        else
-        {
-            startInfo.ArgumentList.Add("--sandbox");
-            startInfo.ArgumentList.Add(resolvedSandbox);
-        }
+        // Unattended Nova jobs need the same localhost and outbound command access Claude Code
+        // had. This stable legacy setting composes with --sandbox workspace-write; permission
+        // profiles do not, and Codex 0.146 cannot express dotted IP keys through inline -c.
+        if (resolvedSandbox == "workspace-write" && networkAccess)
+            AddConfig(startInfo, "sandbox_workspace_write.network_access=true");
 
         if (IsSafeEffort(effort))
             AddConfig(startInfo, $"model_reasoning_effort=\"{effort}\"");
@@ -267,9 +253,6 @@ public class CodexSessionService
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(value);
     }
-
-    private static bool IsSafeNetworkDomain(string? domain)
-        => domain is "localhost" or "127.0.0.1" or "::1";
 
     private static bool IsSafeEffort(string? effort)
         => effort is "none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max" or "ultra";
