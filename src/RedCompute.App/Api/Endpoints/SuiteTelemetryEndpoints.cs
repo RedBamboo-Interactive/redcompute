@@ -13,11 +13,11 @@ public static class SuiteTelemetryEndpoints
 
     private static readonly (string Name, int Port, string Color)[] SuiteApps =
     [
-        ("RedCompute", 18800, "#26A69A"),
-        ("CodeRed", 18801, "#E55B5B"),
-        ("RedMatter", 18802, "#D4A03C"),
+        ("RedCompute", 18800, "#5B8BC4"),
+        ("CodeRed", 18801, "#5B8BC4"),
+        ("RedMatter", 18802, "#7C4DFF"),
         ("Nova", 18803, "#C74B7A"),
-        ("RedLeaf", 18804, "#66BB6A"),
+        ("RedLeaf", 18804, "#4A9D5B"),
     ];
 
     public static void Map(EndpointRegistry endpoints)

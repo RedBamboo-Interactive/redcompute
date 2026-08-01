@@ -27,7 +27,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
     public override string Description => "AI-native inference abstraction layer — TTS, STT, image gen, music gen, AI sessions";
     public override string ApiBase => $"http://127.0.0.1:{_config.ApiPort}";
     public override string? IconClass => "ph-fill ph-cpu";
-    public override string? IconColor => "#26A69A";
+    public override string? IconColor => "#5B8BC4";
 
     public override async Task<IReadOnlyList<CapabilityDescriptor>> GetCapabilitiesAsync()
     {
