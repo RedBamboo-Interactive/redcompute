@@ -11,6 +11,34 @@ public sealed class CodexImageInputTests
     public void ProviderAdvertisesImageAttachments()
     {
         Assert.True(CodexProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.ImageAttachments));
+        Assert.True(CodexProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.FileAttachments));
+    }
+
+    [Fact]
+    public void TypedAttachmentsLowerToLocalImageAndCompactFileReference()
+    {
+        var input = CodexInteractiveService.BuildTurnInput([
+            SessionInputPart.TextPart("Review both"),
+            SessionInputPart.AttachmentPart(new InputAttachment
+            {
+                Id = "att_image", Kind = "image", Name = "diagram.png", MediaType = "image/png",
+                Size = 10, Sha256 = "abc", StoredPath = @"C:\attachments\image.bin", DownloadUrl = "/image",
+            }),
+            SessionInputPart.AttachmentPart(new InputAttachment
+            {
+                Id = "att_file", Kind = "file", Name = "proposal.pdf", MediaType = "application/pdf",
+                Size = 20, Sha256 = "def", StoredPath = @"C:\attachments\file.bin", DownloadUrl = "/file",
+            }),
+        ]);
+
+        var json = JsonSerializer.SerializeToElement(input);
+        Assert.Equal("localImage", json[1].GetProperty("type").GetString());
+        Assert.Equal(@"C:\attachments\image.bin", json[1].GetProperty("path").GetString());
+        Assert.Equal("text", json[2].GetProperty("type").GetString());
+        var reference = json[2].GetProperty("text").GetString();
+        Assert.Contains("proposal.pdf", reference);
+        Assert.Contains(@"C:\attachments\file.bin", reference);
+        Assert.DoesNotContain("mention", json[2].GetRawText(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

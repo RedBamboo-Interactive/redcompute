@@ -39,6 +39,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         SessionCapabilities.SendMessage |
         SessionCapabilities.ConfigUpdate |
         SessionCapabilities.ImageAttachments |
+        SessionCapabilities.FileAttachments |
         SessionCapabilities.ProjectDiscovery;
 
     public string? LastStartError => _opencode.LastStartError;
@@ -109,8 +110,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Messaging ---
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
-        => _opencode.SendMessage(sessionId, content, images, attachmentsJson, messageUid);
+    public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
+        => _opencode.SendInput(sessionId, input, attachmentsJson, messageUid);
 
     public bool SendAnswer(string sessionId, string answer)
         => _opencode.SendAnswer(sessionId, answer);

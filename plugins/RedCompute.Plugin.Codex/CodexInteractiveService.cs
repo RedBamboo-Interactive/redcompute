@@ -347,11 +347,21 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string sessionId, string content, ImageAttachment[]? images = null,
         string? attachmentsJson = null, string? messageUid = null)
     {
+        var input = new List<SessionInputPart>();
+        if (!string.IsNullOrWhiteSpace(content)) input.Add(SessionInputPart.TextPart(content));
+        if (images is not null) input.AddRange(images.Select(SessionInputPart.LegacyImagePart));
+        return await SendInputAsync(sessionId, input, attachmentsJson, messageUid);
+    }
+
+    public async Task<bool> SendInputAsync(
+        string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson = null, string? messageUid = null)
+    {
         var session = await EnsureLiveAsync(sessionId);
         if (session == null) return false;
 
         var info = session.Info;
-        if (images is { Length: > 0 })
+        if (input.Any(p => p.LegacyImage is not null || p.Attachment?.Kind == "image"))
         {
             var support = GetImageAttachmentSupport(info.Model, _catalog.Cached);
             if (!support.Supported)
@@ -363,8 +373,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             }
         }
 
-        var turnInput = BuildTurnInput(content, images);
+        var turnInput = BuildTurnInput(input);
         if (turnInput.Length == 0) return false;
+        var content = SessionInputFormatting.UserText(input);
 
         // A user message opens a new turn, so the previous turn's uid must not leak into it.
         session.CurrentTurnUid = null;
@@ -428,30 +439,40 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Build the app-server's multimodal <c>UserInput[]</c>. Inline data URLs keep the image tied
-    /// to the turn without creating temporary files whose lifetime would need to span persistence
-    /// and resume. The installed app-server schema accepts <c>text</c>, <c>image</c>, and
-    /// <c>localImage</c> variants here.
+    /// Build the app-server's multimodal <c>UserInput[]</c>. Staged images use the verified
+    /// <c>localImage</c> shape. The installed schema also exposes <c>mention</c> {name,path}, but
+    /// does not define arbitrary-file semantics, so files use a generated path reference.
     /// </summary>
-    internal static object[] BuildTurnInput(string content, ImageAttachment[]? images)
+    internal static object[] BuildTurnInput(IReadOnlyList<SessionInputPart> parts)
     {
         var input = new List<object>();
-        if (!string.IsNullOrWhiteSpace(content))
-            input.Add(new { type = "text", text = content });
-
-        if (images is not null)
+        foreach (var part in parts)
         {
-            foreach (var image in images)
+            if (part.Type == "text" && !string.IsNullOrWhiteSpace(part.Text))
+                input.Add(new { type = "text", text = part.Text });
+            else if (part.LegacyImage is { } legacy)
             {
                 input.Add(new
                 {
                     type = "image",
-                    url = $"data:{image.MediaType};base64,{image.Base64}",
+                    url = $"data:{legacy.MediaType};base64,{legacy.Base64}",
                 });
             }
+            else if (part.Attachment is { Kind: "image" } image)
+                input.Add(new { type = "localImage", path = image.StoredPath });
+            else if (part.Attachment is { } file)
+                input.Add(new { type = "text", text = SessionInputFormatting.FileReference(file) });
         }
 
         return [.. input];
+    }
+
+    internal static object[] BuildTurnInput(string content, ImageAttachment[]? images)
+    {
+        var parts = new List<SessionInputPart>();
+        if (!string.IsNullOrWhiteSpace(content)) parts.Add(SessionInputPart.TextPart(content));
+        if (images is not null) parts.AddRange(images.Select(SessionInputPart.LegacyImagePart));
+        return BuildTurnInput(parts);
     }
 
     internal static ImageAttachmentSupport GetImageAttachmentSupport(
@@ -686,7 +707,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 if (evt.IsPartial) session.StreamedItems.Add(itemId);
                 // Still persisted — the live client already has this content from the deltas, but
                 // partials are never written, so the store would otherwise lose the message.
-                else if (session.StreamedItems.Contains(itemId)) broadcast = false;
+                else if (session.StreamedItems.Contains(itemId) && evt.Type != "tool_result") broadcast = false;
             }
 
             Emit(session, evt, broadcast);

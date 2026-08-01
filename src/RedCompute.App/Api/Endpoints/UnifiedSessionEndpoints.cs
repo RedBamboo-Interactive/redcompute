@@ -25,21 +25,80 @@ public static class UnifiedSessionEndpoints
     private static QualityModeService? _quality;
     private static RedLeafSessionReader? _redLeafReader;
     private static ProviderConfigService? _providerConfig;
+    private static InputAttachmentStore? _attachmentStore;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
         DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null,
         QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null,
-        ProviderConfigService? providerConfig = null)
+        ProviderConfigService? providerConfig = null, InputAttachmentStore? attachmentStore = null)
     {
         _docker = docker;
         _callbacks = callbacks;
         _quality = quality;
         _redLeafReader = redLeafReader;
         _providerConfig = providerConfig;
+        _attachmentStore = attachmentStore ?? new InputAttachmentStore(config);
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
+
+        endpoints.MapPost("/ai-session/input-attachments",
+            "Stage one provider input attachment before a session or message exists", async (HttpContext ctx) =>
+        {
+            var userId = ResolveUserId(ctx);
+            if (userId == null)
+                return Error(401, "unauthorized", "Authentication required to upload attachments");
+            if (!ctx.Request.HasFormContentType)
+                return Error(415, "unsupported_media_type", "Upload must use multipart/form-data");
+            try
+            {
+                var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
+                if (form.Files.Count != 1)
+                    return Error(400, "invalid_attachment_count", "Upload exactly one file per request");
+                var file = form.Files[0];
+                await using var stream = file.OpenReadStream();
+                var staged = await _attachmentStore.UploadAsync(stream, file.FileName, file.ContentType, userId, ctx.RequestAborted);
+                return Results.Json(PublicAttachment(staged));
+            }
+            catch (AttachmentStoreException ex)
+            {
+                return AttachmentError(ex);
+            }
+            catch (InvalidDataException ex)
+            {
+                return Error(400, "invalid_upload", ex.Message);
+            }
+        });
+
+        endpoints.MapGet("/ai-session/input-attachments/{id}",
+            "Download or preview an authorized staged or claimed input attachment", async (HttpContext ctx, string id) =>
+        {
+            var userId = ResolveUserId(ctx);
+            if (userId == null) return Error(401, "unauthorized", "Authentication required");
+            try
+            {
+                var attachment = await _attachmentStore.GetAuthorizedAsync(id, userId, ctx.RequestAborted);
+                if (attachment is null) return Error(404, "attachment_not_found", $"Attachment '{id}' was not found");
+                var download = ctx.Request.Query["download"] == "true";
+                return Results.File(attachment.StoredPath, attachment.MediaType,
+                    fileDownloadName: download ? attachment.Name : null, enableRangeProcessing: true);
+            }
+            catch (AttachmentStoreException ex) { return AttachmentError(ex); }
+        });
+
+        endpoints.MapDelete("/ai-session/input-attachments/{id}",
+            "Delete an unclaimed draft attachment", async (HttpContext ctx, string id) =>
+        {
+            var userId = ResolveUserId(ctx);
+            if (userId == null) return Error(401, "unauthorized", "Authentication required");
+            try
+            {
+                await _attachmentStore.DeleteDraftAsync(id, userId, ctx.RequestAborted);
+                return Results.NoContent();
+            }
+            catch (AttachmentStoreException ex) { return AttachmentError(ex); }
+        });
 
         endpoints.MapGet("/ai-session/providers",
             "List all registered AI session providers with their capabilities and models", () =>
@@ -200,77 +259,6 @@ public static class UnifiedSessionEndpoints
             if (body.ValueKind != JsonValueKind.Object)
                 return Error(400, "invalid_body", "Request body must be a JSON object");
 
-            var content = body.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
-                ? c.GetString() ?? ""
-                : "";
-
-            ImageAttachment[]? images = null;
-            if (TryGetNonNullImages(body, out var imagesEl))
-            {
-                if (imagesEl.ValueKind != JsonValueKind.Array)
-                    return Error(400, "invalid_images", "images must be an array");
-
-                var parsed = new List<ImageAttachment>();
-                foreach (var image in imagesEl.EnumerateArray())
-                {
-                    if (image.ValueKind != JsonValueKind.Object)
-                        return Error(400, "invalid_image", "Each image must be an object");
-
-                    var mediaType = image.TryGetProperty("mediaType", out var mt)
-                        && mt.ValueKind == JsonValueKind.String
-                            ? mt.GetString() ?? "image/png"
-                            : "image/png";
-                    if (!SupportedImageMediaTypes.Contains(mediaType))
-                        return Error(400, "unsupported_image_type", $"Unsupported image media type '{mediaType}'");
-
-                    var base64 = image.TryGetProperty("base64", out var b)
-                        && b.ValueKind == JsonValueKind.String
-                            ? b.GetString()
-                            : null;
-                    if (string.IsNullOrWhiteSpace(base64))
-                        return Error(400, "invalid_image", "Each image requires non-empty base64 data");
-
-                    try
-                    {
-                        if (Convert.FromBase64String(base64).Length == 0)
-                            return Error(400, "invalid_image", "Image data cannot be empty");
-                    }
-                    catch (FormatException)
-                    {
-                        return Error(400, "invalid_image", "Image data must be valid base64");
-                    }
-
-                    parsed.Add(new ImageAttachment(mediaType, base64));
-                }
-                images = parsed.Count > 0 ? [.. parsed] : null;
-            }
-
-            if (string.IsNullOrWhiteSpace(content) && images is not { Length: > 0 })
-                return Error(400, "missing_content", "content or at least one image is required");
-
-            if (images is { Length: > 0 }
-                && !provider.Capabilities.HasFlag(SessionCapabilities.ImageAttachments))
-                return Error(422, "image_attachments_not_supported",
-                    $"Provider '{provider.ProviderId}' does not support image attachments");
-            if (images is { Length: > 0 }
-                && provider is IImageAttachmentSupportProvider sessionImageSupport)
-            {
-                var support = sessionImageSupport.GetImageAttachmentSupport(id);
-                if (!support.Supported)
-                    return Error(422, "image_attachments_not_supported",
-                        support.Reason ?? $"Session '{id}' does not support image attachments");
-            }
-
-            string? attachmentsJson = null;
-            var hasMetadata = body.TryGetProperty("metadata", out var meta) && meta.ValueKind == JsonValueKind.Object;
-            if (hasMetadata || images is { Length: > 0 })
-            {
-                var attachments = new Dictionary<string, object?>();
-                if (hasMetadata) attachments["metadata"] = meta;
-                if (images is { Length: > 0 }) attachments["images"] = images.Select(i => new { mediaType = i.MediaType, base64 = i.Base64 });
-                attachmentsJson = JsonSerializer.Serialize(attachments);
-            }
-
             // Provider-neutral message identity: honor a caller-supplied uid
             // (cross-posted messages share it across stores), mint otherwise.
             var messageUid = body.TryGetProperty("messageUid", out var mu)
@@ -278,16 +266,158 @@ public static class UnifiedSessionEndpoints
                 && !string.IsNullOrWhiteSpace(mu.GetString())
                     ? mu.GetString()! : Guid.NewGuid().ToString("N");
 
-            var sent = await provider.SendMessageAsync(id, content, images, attachmentsJson, messageUid);
-            if (!sent)
-                return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
-            return Results.Json(new { sent, messageUid });
+            var inputSpec = new List<(string Type, string Value)>();
+            var attachmentIds = new List<string>();
+            var hasTypedInput = body.TryGetProperty("input", out var inputEl) && inputEl.ValueKind != JsonValueKind.Null;
+            try
+            {
+                if (hasTypedInput)
+                {
+                    if (inputEl.ValueKind != JsonValueKind.Array)
+                        return Error(400, "invalid_input", "input must be an array");
+                    if (body.TryGetProperty("content", out _) || body.TryGetProperty("images", out _))
+                        return Error(400, "mixed_input_contracts", "Use either typed input or legacy content/images, not both");
+                    foreach (var part in inputEl.EnumerateArray())
+                    {
+                        if (part.ValueKind != JsonValueKind.Object
+                            || !part.TryGetProperty("type", out var typeEl)
+                            || typeEl.ValueKind != JsonValueKind.String)
+                            return Error(400, "invalid_input_part", "Every input part requires a string type");
+                        var type = typeEl.GetString();
+                        if (type == "text")
+                        {
+                            if (!part.TryGetProperty("text", out var textEl) || textEl.ValueKind != JsonValueKind.String)
+                                return Error(400, "invalid_text_part", "Text input parts require text");
+                            inputSpec.Add(("text", textEl.GetString() ?? ""));
+                        }
+                        else if (type == "attachment")
+                        {
+                            if (!part.TryGetProperty("attachmentId", out var idEl) || idEl.ValueKind != JsonValueKind.String
+                                || string.IsNullOrWhiteSpace(idEl.GetString()))
+                                return Error(400, "invalid_attachment_part", "Attachment input parts require attachmentId");
+                            var attachmentId = idEl.GetString()!;
+                            inputSpec.Add(("attachment", attachmentId));
+                            attachmentIds.Add(attachmentId);
+                        }
+                        else return Error(400, "unsupported_input_part", $"Unsupported input part type '{type}'");
+                    }
+                }
+                else
+                {
+                    var content = body.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
+                        ? c.GetString() ?? "" : "";
+                    if (!string.IsNullOrWhiteSpace(content)) inputSpec.Add(("text", content));
+
+                    if (TryGetNonNullImages(body, out var imagesEl))
+                    {
+                        if (imagesEl.ValueKind != JsonValueKind.Array)
+                            return Error(400, "invalid_images", "images must be an array");
+                        var imageIndex = 0;
+                        foreach (var image in imagesEl.EnumerateArray())
+                        {
+                            if (image.ValueKind != JsonValueKind.Object)
+                                return Error(400, "invalid_image", "Each image must be an object");
+                            var mediaType = image.TryGetProperty("mediaType", out var mt) && mt.ValueKind == JsonValueKind.String
+                                ? mt.GetString() ?? "image/png" : "image/png";
+                            if (!SupportedImageMediaTypes.Contains(mediaType))
+                                return Error(400, "unsupported_image_type", $"Unsupported image media type '{mediaType}'");
+                            var base64 = image.TryGetProperty("base64", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() : null;
+                            if (string.IsNullOrWhiteSpace(base64))
+                                return Error(400, "invalid_image", "Each image requires non-empty base64 data");
+                            byte[] bytes;
+                            try { bytes = Convert.FromBase64String(base64); }
+                            catch (FormatException) { return Error(400, "invalid_image", "Image data must be valid base64"); }
+                            var staged = await _attachmentStore!.UploadBytesAsync(bytes,
+                                $"legacy-image-{++imageIndex}{ImageExtension(mediaType)}", mediaType, userId ?? "local-user", ctx.RequestAborted);
+                            inputSpec.Add(("attachment", staged.Id));
+                            attachmentIds.Add(staged.Id);
+                        }
+                    }
+                }
+
+                if (!inputSpec.Any(p => p.Type == "text" && !string.IsNullOrWhiteSpace(p.Value)) && attachmentIds.Count == 0)
+                    return Error(400, "missing_content", "At least one non-empty text or attachment input part is required");
+
+                var claimed = attachmentIds.Count > 0
+                    ? await _attachmentStore!.ClaimAsync(attachmentIds, userId ?? "local-user", id, messageUid, ctx.RequestAborted)
+                    : Array.Empty<StagedInputAttachment>();
+                var claimedById = claimed.ToDictionary(a => a.Id, StringComparer.Ordinal);
+
+                if (claimed.Any(a => a.Kind == "file") && !provider.Capabilities.HasFlag(SessionCapabilities.FileAttachments))
+                {
+                    await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                    return Error(422, "file_attachments_not_supported", $"Provider '{provider.ProviderId}' does not support file attachments");
+                }
+                if (claimed.Any(a => a.Kind == "image") && !provider.Capabilities.HasFlag(SessionCapabilities.ImageAttachments))
+                {
+                    await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                    return Error(422, "image_attachments_not_supported", $"Provider '{provider.ProviderId}' does not support image attachments");
+                }
+                if (claimed.Any(a => a.Kind == "image") && provider is IImageAttachmentSupportProvider sessionImageSupport)
+                {
+                    var support = sessionImageSupport.GetImageAttachmentSupport(id);
+                    if (!support.Supported)
+                    {
+                        await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                        return Error(422, "image_attachments_not_supported", support.Reason ?? $"Session '{id}' does not support image attachments");
+                    }
+                }
+
+                var input = inputSpec.Select(part => part.Type == "text"
+                    ? SessionInputPart.TextPart(part.Value)
+                    : SessionInputPart.AttachmentPart(claimedById[part.Value].ToProviderAttachment())).ToArray();
+                var publicAttachments = claimed.Select(PublicAttachment).ToArray();
+                var hasMetadata = body.TryGetProperty("metadata", out var meta) && meta.ValueKind == JsonValueKind.Object;
+                string? attachmentsJson = null;
+                if (hasMetadata || publicAttachments.Length > 0)
+                {
+                    var envelope = new Dictionary<string, object?> { ["attachments"] = publicAttachments };
+                    if (hasMetadata) envelope["metadata"] = meta;
+                    attachmentsJson = JsonSerializer.Serialize(envelope);
+                }
+
+                bool sent;
+                try
+                {
+                    sent = await provider.SendInputAsync(id, input, attachmentsJson, messageUid);
+                }
+                catch (Exception ex)
+                {
+                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, CancellationToken.None);
+                    if (ctx.RequestAborted.IsCancellationRequested) throw;
+                    return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}': {ex.Message}");
+                }
+                if (!sent)
+                {
+                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                    return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
+                }
+                return Results.Json(new { sent, messageUid, attachments = publicAttachments });
+            }
+            catch (AttachmentStoreException ex)
+            {
+                await _attachmentStore!.ReleaseClaimAsync(id, messageUid, CancellationToken.None);
+                return AttachmentError(ex);
+            }
         })
             .WithRequestBody(new
             {
                 type = "object",
                 properties = new
                 {
+                    input = new
+                    {
+                        type = "array",
+                        description = "Provider-neutral ordered input parts. Use instead of legacy content/images.",
+                        items = new
+                        {
+                            oneOf = new object[]
+                            {
+                                new { type = "object", required = new[] { "type", "text" }, properties = new { type = new { type = "string", @enum = new[] { "text" } }, text = new { type = "string" } } },
+                                new { type = "object", required = new[] { "type", "attachmentId" }, properties = new { type = new { type = "string", @enum = new[] { "attachment" } }, attachmentId = new { type = "string" } } },
+                            },
+                        },
+                    },
                     content = new { type = "string", description = "Message text to send. Optional when at least one image is supplied." },
                     images = new
                     {
@@ -1249,6 +1379,37 @@ public static class UnifiedSessionEndpoints
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
+
+    private static object PublicAttachment(StagedInputAttachment attachment) => new
+    {
+        id = attachment.Id,
+        kind = attachment.Kind,
+        name = attachment.Name,
+        mediaType = attachment.MediaType,
+        size = attachment.Size,
+        sha256 = attachment.Sha256,
+        downloadUrl = $"/ai-session/input-attachments/{Uri.EscapeDataString(attachment.Id)}",
+        expiresAt = attachment.ExpiresAt?.ToString("O"),
+    };
+
+    private static IResult AttachmentError(AttachmentStoreException ex) => ex.Code switch
+    {
+        "unauthorized" => Error(401, ex.Code, ex.Message),
+        "forbidden" => Error(403, ex.Code, ex.Message),
+        "attachment_not_found" or "attachment_missing" => Error(404, ex.Code, ex.Message),
+        "attachment_already_claimed" or "attachment_claimed" => Error(409, ex.Code, ex.Message),
+        "attachment_expired" => Error(410, ex.Code, ex.Message),
+        "attachment_too_large" or "attachments_too_large" => Error(413, ex.Code, ex.Message),
+        _ => Error(422, ex.Code, ex.Message),
+    };
+
+    private static string ImageExtension(string mediaType) => mediaType.ToLowerInvariant() switch
+    {
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        _ => ".png",
+    };
 
     private static readonly string[] IconCandidates =
     [

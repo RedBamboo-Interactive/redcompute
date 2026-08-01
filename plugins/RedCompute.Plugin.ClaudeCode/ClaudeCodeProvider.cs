@@ -36,7 +36,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.StatelessExecution | SessionCapabilities.PersistentSessions |
         SessionCapabilities.Resume | SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
-        SessionCapabilities.ConfigUpdate | SessionCapabilities.ImageAttachments |
+        SessionCapabilities.ConfigUpdate | SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
         SessionCapabilities.ProjectDiscovery | SessionCapabilities.Generate;
 
     public string? LastStartError => _claude.LastStartError;
@@ -126,11 +126,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     // --- ISessionProvider: Messaging ---
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
-    {
-        var claudeImages = images?.Select(i => new ClaudeCode.ImageAttachment(i.MediaType, i.Base64)).ToArray();
-        return _claude.SendMessage(sessionId, content, claudeImages, attachmentsJson, messageUid);
-    }
+    public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
+        => _claude.SendInput(sessionId, input, attachmentsJson, messageUid);
 
     public bool SendAnswer(string sessionId, string answer) => _claude.SendAnswer(sessionId, answer);
 

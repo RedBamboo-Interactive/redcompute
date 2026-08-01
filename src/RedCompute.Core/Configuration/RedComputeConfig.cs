@@ -16,6 +16,10 @@ public class RedComputeConfig
     public bool AutoStartDocker { get; set; } = false;
     public string CodeRedUrl { get; set; } = "http://127.0.0.1:18801";
     public string RedLeafUrl { get; set; } = "http://127.0.0.1:18804";
+    public long InputAttachmentMaxFileSizeBytes { get; set; } = 25 * 1024 * 1024;
+    public int InputAttachmentMaxCount { get; set; } = 10;
+    public long InputAttachmentMaxTurnSizeBytes { get; set; } = 50 * 1024 * 1024;
+    public int InputAttachmentTtlMinutes { get; set; } = 24 * 60;
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
 }
 

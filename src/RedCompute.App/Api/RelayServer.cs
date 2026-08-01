@@ -37,6 +37,7 @@ public class RelayServer
     private readonly DockerContainerService _docker;
     private readonly QualityModeService _qualityModes;
     private readonly ProviderConfigService _providerConfig;
+    private readonly InputAttachmentStore _inputAttachments;
     private SessionCallbackRegistry _callbacks;
     private readonly Action<string, Guid?> _log;
     private RedLeafStreamClient? _streamClient;
@@ -56,6 +57,7 @@ public class RelayServer
         _hardwareMonitor = hardwareMonitor;
         _docker = new DockerContainerService(log);
         _providerConfig = providerConfig;
+        _inputAttachments = new InputAttachmentStore(config);
         _qualityModes = new QualityModeService(config, log, _providerConfig);
         _callbacks = new SessionCallbackRegistry(log);  // re-created with auth factory after Build()
         _log = log;
@@ -317,7 +319,8 @@ public class RelayServer
         // (dual-write) until the verification window closes.
         var redLeafReader = new RedLeafSessionReader(
             _config.RedLeafUrl, new JwtService(new JwtOptions { SigningKey = signingKey }), _qualityModes);
-        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes, redLeafReader, _providerConfig);
+        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes, redLeafReader, _providerConfig, _inputAttachments);
+        _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
@@ -431,6 +434,26 @@ public class RelayServer
                     });
                 }
                 catch { }
+            }
+        }
+    }
+
+    private async Task RunAttachmentCleanupAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var removed = await _inputAttachments.CleanupExpiredAsync(ct);
+                if (removed > 0) _log($"[Attachments] Removed {removed} expired upload(s)", null);
+                await Task.Delay(TimeSpan.FromMinutes(15), ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (Exception ex)
+            {
+                _log($"[Attachments] Cleanup failed: {ex.Message}", null);
+                try { await Task.Delay(TimeSpan.FromMinutes(1), ct); }
+                catch (OperationCanceledException) { return; }
             }
         }
     }

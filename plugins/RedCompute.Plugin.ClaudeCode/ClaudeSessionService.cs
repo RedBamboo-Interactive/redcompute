@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
@@ -985,7 +986,7 @@ public class ClaudeSessionService
         return info;
     }
 
-    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
+    public async Task<bool> SendInput(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -1016,20 +1017,8 @@ public class ClaudeSessionService
 
         try
         {
-            object contentPayload;
-            if (images != null && images.Length > 0)
-            {
-                var blocks = new List<object>();
-                if (!string.IsNullOrWhiteSpace(content))
-                    blocks.Add(new { type = "text", text = content });
-                foreach (var img in images)
-                    blocks.Add(new { type = "image", source = new { type = "base64", media_type = img.MediaType, data = img.Base64 } });
-                contentPayload = blocks;
-            }
-            else
-            {
-                contentPayload = content;
-            }
+            var content = SessionInputFormatting.UserText(input);
+            var contentPayload = BuildContentPayload(input);
 
             var msg = new
             {
@@ -1055,6 +1044,35 @@ public class ClaudeSessionService
             _log($"[Claude] Failed to send message to {sessionId}: {ex.Message}", null);
             return false;
         }
+    }
+
+    internal static object BuildContentPayload(IReadOnlyList<SessionInputPart> input)
+    {
+        if (!input.Any(part => part.Attachment is not null || part.LegacyImage is not null))
+            return SessionInputFormatting.UserText(input);
+
+        var blocks = new List<object>();
+        foreach (var part in input)
+        {
+            if (part.Type == "text" && !string.IsNullOrWhiteSpace(part.Text))
+                blocks.Add(new { type = "text", text = part.Text });
+            else if (part.LegacyImage is { } legacy)
+                blocks.Add(new { type = "image", source = new { type = "base64", media_type = legacy.MediaType, data = legacy.Base64 } });
+            else if (part.Attachment is { Kind: "image" } image)
+                blocks.Add(new { type = "image", source = new { type = "base64", media_type = image.MediaType, data = Convert.ToBase64String(File.ReadAllBytes(image.StoredPath)) } });
+            else if (part.Attachment is { } file)
+                blocks.Add(new { type = "text", text = SessionInputFormatting.FileReference(file) });
+        }
+        return blocks;
+    }
+
+    public Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
+    {
+        var input = new List<SessionInputPart>();
+        if (!string.IsNullOrWhiteSpace(content)) input.Add(SessionInputPart.TextPart(content));
+        if (images is not null)
+            input.AddRange(images.Select(i => SessionInputPart.LegacyImagePart(new RedCompute.Core.Sessions.ImageAttachment(i.MediaType, i.Base64))));
+        return SendInput(sessionId, input, attachmentsJson, messageUid);
     }
 
     public bool SendAnswer(string sessionId, string answer)

@@ -15,5 +15,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <ProjectReference Include="..\..\src\RedCompute.App\RedCompute.App.csproj" />
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ClaudeCode\RedCompute.Plugin.ClaudeCode.csproj" />
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenCode\RedCompute.Plugin.OpenCode.csproj" />
   </ItemGroup>
 </Project>

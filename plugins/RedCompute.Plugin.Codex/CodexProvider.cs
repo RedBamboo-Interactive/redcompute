@@ -43,6 +43,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.Interrupt
         | SessionCapabilities.SendMessage
         | SessionCapabilities.ImageAttachments
+        | SessionCapabilities.FileAttachments
         | SessionCapabilities.ConfigUpdate;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
     // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch).
@@ -152,8 +153,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public void DismissSession(string sessionId) => _codex.DismissSession(sessionId);
 
-    public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
-        => _interactive.SendMessageAsync(sessionId, content, images, attachmentsJson, messageUid);
+    public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
+        => _interactive.SendInputAsync(sessionId, input, attachmentsJson, messageUid);
 
     public ImageAttachmentSupport GetImageAttachmentSupport(string sessionId)
     {

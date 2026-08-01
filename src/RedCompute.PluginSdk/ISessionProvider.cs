@@ -22,7 +22,18 @@ public interface ISessionProvider
     // Messaging (SendMessage). messageUid is the provider-neutral message
     // identity minted by the caller (endpoint layer) — providers persist it
     // on the user message record verbatim.
-    Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null);
+    Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null);
+
+    // Provider API compatibility for callers that still construct {content, images}.
+    // The public HTTP endpoint stages legacy images before it reaches providers;
+    // this default exists for binary/source compatibility during the migration.
+    Task<bool> SendMessageAsync(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
+    {
+        var input = new List<SessionInputPart>();
+        if (!string.IsNullOrWhiteSpace(content)) input.Add(SessionInputPart.TextPart(content));
+        if (images is not null) input.AddRange(images.Select(SessionInputPart.LegacyImagePart));
+        return SendInputAsync(sessionId, input, attachmentsJson, messageUid);
+    }
     bool SendAnswer(string sessionId, string answer);
 
     // Reply to a structured question the session parked on (a provider control request the

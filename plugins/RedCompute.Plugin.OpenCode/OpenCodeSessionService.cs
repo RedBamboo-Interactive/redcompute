@@ -411,7 +411,7 @@ public class OpenCodeSessionService
         }
     }
 
-    public async Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
+    public async Task<bool> SendInput(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -428,12 +428,8 @@ public class OpenCodeSessionService
 
         try
         {
-            var promptBlocks = new List<object>();
-            if (!string.IsNullOrWhiteSpace(content))
-                promptBlocks.Add(new { type = "text", text = content });
-            if (images != null)
-                foreach (var img in images)
-                    promptBlocks.Add(new { type = "image", data = img.Base64, mimeType = img.MediaType });
+            var content = SessionInputFormatting.UserText(input);
+            var promptBlocks = BuildPromptBlocks(input);
 
             var requestId = session.GetNextRequestId();
             var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -473,6 +469,33 @@ public class OpenCodeSessionService
             _log($"[OpenCode] Failed to send message to {sessionId}: {ex.Message}", null);
             return false;
         }
+    }
+
+    internal static List<object> BuildPromptBlocks(IReadOnlyList<SessionInputPart> input)
+    {
+        var promptBlocks = new List<object>();
+        foreach (var part in input)
+        {
+            if (part.Type == "text" && !string.IsNullOrWhiteSpace(part.Text))
+                promptBlocks.Add(new { type = "text", text = part.Text });
+            else if (part.LegacyImage is { } legacy)
+                promptBlocks.Add(new { type = "image", data = legacy.Base64, mimeType = legacy.MediaType });
+            else if (part.Attachment is { Kind: "image" } image)
+                promptBlocks.Add(new { type = "image", data = Convert.ToBase64String(File.ReadAllBytes(image.StoredPath)), mimeType = image.MediaType });
+            else if (part.Attachment is { } file)
+                // OpenCode 1.17.15's installed ACP surface does not expose a verified
+                // resource/file prompt block, so use the portable generated path reference.
+                promptBlocks.Add(new { type = "text", text = SessionInputFormatting.FileReference(file) });
+        }
+        return promptBlocks;
+    }
+
+    public Task<bool> SendMessage(string sessionId, string content, ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
+    {
+        var input = new List<SessionInputPart>();
+        if (!string.IsNullOrWhiteSpace(content)) input.Add(SessionInputPart.TextPart(content));
+        if (images is not null) input.AddRange(images.Select(SessionInputPart.LegacyImagePart));
+        return SendInput(sessionId, input, attachmentsJson, messageUid);
     }
 
     private async Task HandlePromptResponse(ManagedSession session, Task<JsonElement> responseTask)
