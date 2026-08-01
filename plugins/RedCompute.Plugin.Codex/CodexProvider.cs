@@ -351,6 +351,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         InputTokens = s.InputTokens,
         OutputTokens = s.OutputTokens,
         CachedInputTokens = s.CachedInputTokens,
+        ContextTokens = s.ContextTokens,
         JobId = s.JobId,
         Effort = s.Effort,
         Source = s.Source,

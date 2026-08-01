@@ -20,6 +20,7 @@ public class CodexSessionStore : ICodexSessionStore
         InputTokens = r.InputTokens,
         OutputTokens = r.OutputTokens,
         CacheReadInputTokens = r.CachedInputTokens,
+        ContextTokens = r.ContextTokens,
         JobId = r.JobId,
         Dismissed = r.Dismissed,
         // Session reads are served from the RedLeaf mirror, not from this database — so a column
@@ -104,6 +105,7 @@ public class CodexSessionStore : ICodexSessionStore
             existing.InputTokens = record.InputTokens;
             existing.OutputTokens = record.OutputTokens;
             existing.CachedInputTokens = record.CachedInputTokens;
+            existing.ContextTokens = record.ContextTokens;
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
             // Interactive-session columns. Omitting them here does not fail loudly: the value

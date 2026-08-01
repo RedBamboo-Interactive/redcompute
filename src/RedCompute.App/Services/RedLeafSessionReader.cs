@@ -125,10 +125,14 @@ public sealed class RedLeafSessionReader
         var sessionId = Str(d, "session_id");
         if (sessionId == null) return null;
 
-        // A quality mode that declares a context window outranks the stored one: Claude Code
-        // reports `modelUsage.contextWindow` as a flat 200k even for 1M-context models, and that
-        // wrong value is what got persisted. Overriding on read also corrects existing sessions.
         var model = Str(d, "model");
+        var inputTokens = Int(d, "input_tokens");
+        var outputTokens = Int(d, "output_tokens");
+        var cachedInputTokens = Int(d, "cache_read_input_tokens");
+        var reportedCost = Dbl(d, "cost_usd");
+        var estimatedCost = reportedCost.HasValue
+            ? null
+            : _qualityModes.EstimateCostUsd(model, inputTokens, cachedInputTokens, outputTokens);
 
         return new UnifiedSessionInfo
         {
@@ -143,12 +147,15 @@ public sealed class RedLeafSessionReader
             ProviderSessionId = Str(d, "external_session_id"),
             Title = entity.GetProperty("name").GetString(),
             MessageCount = Int(d, "message_count") ?? 0,
-            CostUsd = Dbl(d, "cost_usd"),
-            InputTokens = Int(d, "input_tokens"),
-            OutputTokens = Int(d, "output_tokens"),
-            CachedInputTokens = Int(d, "cache_read_input_tokens"),
+            CostUsd = reportedCost ?? estimatedCost,
+            CostEstimated = !reportedCost.HasValue && estimatedCost.HasValue,
+            InputTokens = inputTokens,
+            OutputTokens = outputTokens,
+            CachedInputTokens = cachedInputTokens,
             ContextTokens = Int(d, "context_tokens"),
-            ContextWindow = _qualityModes.GetContextWindow(model) ?? Int(d, "context_window"),
+            // Provider runtime metadata is authoritative. The quality mode is only a fallback for
+            // sessions whose provider did not report a live account/model-specific window.
+            ContextWindow = Int(d, "context_window") ?? _qualityModes.GetContextWindow(model),
             Effort = Str(d, "effort"),
             JobId = Str(d, "job_id") is { } j && Guid.TryParse(j, out var g) ? g : null,
             Source = Str(d, "source"),

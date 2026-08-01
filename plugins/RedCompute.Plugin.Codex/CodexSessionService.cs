@@ -521,6 +521,7 @@ public class CodexSessionService
         InputTokens = r.InputTokens,
         OutputTokens = r.OutputTokens,
         CachedInputTokens = r.CachedInputTokens,
+        ContextTokens = r.ContextTokens,
         JobId = r.JobId,
     };
 

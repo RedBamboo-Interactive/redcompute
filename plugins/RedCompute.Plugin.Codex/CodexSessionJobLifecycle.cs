@@ -160,6 +160,7 @@ internal sealed class CodexSessionJobLifecycle
         InputTokens = r.InputTokens,
         OutputTokens = r.OutputTokens,
         CachedInputTokens = r.CachedInputTokens,
+        ContextTokens = r.ContextTokens,
         JobId = r.JobId,
         ThreadId = r.ThreadId,
         ProcessId = r.ProcessId,

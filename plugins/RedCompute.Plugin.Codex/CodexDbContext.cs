@@ -42,7 +42,8 @@ public class CodexDbContext : DbContext
             foreach (var col in new[]
                      {
                          "ThreadId TEXT", "Effort TEXT", "Source TEXT",
-                         "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER",
+                         "ProcessId INTEGER", "LastActivity TEXT", "ContextTokens INTEGER",
+                         "ContextWindow INTEGER",
                          "UserId TEXT", "UserName TEXT", "UserAvatarUrl TEXT",
                          "StopReason TEXT",
                      })

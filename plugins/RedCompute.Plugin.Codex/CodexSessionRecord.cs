@@ -14,6 +14,7 @@ public class CodexSessionRecord
     public int? InputTokens { get; set; }
     public int? OutputTokens { get; set; }
     public int? CachedInputTokens { get; set; }
+    public int? ContextTokens { get; set; }
     public Guid? JobId { get; set; }
     public bool Dismissed { get; set; }
 

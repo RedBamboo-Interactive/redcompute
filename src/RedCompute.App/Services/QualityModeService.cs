@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Text.Json;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Sessions;
 
 namespace RedCompute.App.Services;
 
@@ -39,6 +40,7 @@ public class QualityModeService
     private readonly object _lock = new();
     private Dictionary<string, List<QualityMode>> _modes;
     private Dictionary<string, QualityTier> _tiers;
+    private Dictionary<string, ModelTokenPricing> _modelPricing;
     private string? _defaultTierSlug;
 
     public QualityModeService(RedComputeConfig config, Action<string, Guid?> log, ProviderConfigService providerConfig)
@@ -48,6 +50,7 @@ public class QualityModeService
         _providerConfig = providerConfig;
         _modes = new Dictionary<string, List<QualityMode>>(StringComparer.OrdinalIgnoreCase);
         _tiers = new Dictionary<string, QualityTier>(StringComparer.OrdinalIgnoreCase);
+        _modelPricing = new Dictionary<string, ModelTokenPricing>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -86,6 +89,18 @@ public class QualityModeService
                     .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
                 lock (_lock) { _modes = grouped; }
                 _log($"[QualityModes] Loaded {parsed.Count} quality mode(s) across {grouped.Count} tier(s) from RedLeaf", null);
+            }
+
+            var pricingJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=inference-model&limit=200", ct);
+            var parsedPricing = ParseModelPricing(pricingJson);
+            if (parsedPricing.Count == 0)
+            {
+                _log("[QualityModes] RedLeaf returned no complete model pricing; keeping current rates", null);
+            }
+            else
+            {
+                lock (_lock) { _modelPricing = parsedPricing; }
+                _log($"[QualityModes] Loaded API-equivalent pricing for {parsedPricing.Count} model id(s)", null);
             }
 
             try
@@ -184,6 +199,20 @@ public class QualityModeService
     public IReadOnlyList<QualityTier> GetTiers()
     {
         lock (_lock) { return _tiers.Values.OrderBy(t => t.SortOrder).ToList(); }
+    }
+
+    /// <summary>
+    /// Estimate API-equivalent cost from cumulative tokens when the provider did not report an
+    /// actual monetary charge. Cached input is removed from regular input before applying rates.
+    /// </summary>
+    public double? EstimateCostUsd(string? model, int? inputTokens, int? cachedInputTokens, int? outputTokens)
+    {
+        if (string.IsNullOrWhiteSpace(model) || !inputTokens.HasValue || !outputTokens.HasValue)
+            return null;
+
+        ModelTokenPricing? pricing;
+        lock (_lock) { _modelPricing.TryGetValue(model, out pricing); }
+        return pricing?.EstimateUsd(inputTokens.Value, cachedInputTokens ?? 0, outputTokens.Value);
     }
 
     public string? DefaultTierSlug
@@ -307,6 +336,53 @@ public class QualityModeService
         catch (JsonException) { return null; }
     }
 
+    private static Dictionary<string, ModelTokenPricing> ParseModelPricing(string json)
+    {
+        var result = new Dictionary<string, ModelTokenPricing>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            JsonElement array;
+            if (root.ValueKind == JsonValueKind.Array) array = root;
+            else if (root.ValueKind != JsonValueKind.Object || !TryFindArray(root, out array)) return result;
+
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var slug = GetString(item, "slug");
+                JsonDocument? dataDoc = null;
+                try
+                {
+                    var data = item;
+                    if (item.TryGetProperty("data", out var d))
+                    {
+                        if (d.ValueKind == JsonValueKind.Object) data = d;
+                        else if (d.ValueKind == JsonValueKind.String && d.GetString() is { Length: > 0 } raw)
+                        {
+                            dataDoc = JsonDocument.Parse(raw);
+                            data = dataDoc.RootElement;
+                        }
+                    }
+
+                    var input = GetDouble(data, "cost_input");
+                    var cached = GetDouble(data, "cost_cached_input");
+                    var output = GetDouble(data, "cost_output");
+                    if (!input.HasValue || !cached.HasValue || !output.HasValue) continue;
+
+                    var pricing = new ModelTokenPricing(input.Value, cached.Value, output.Value);
+                    var modelId = GetString(data, "model_id");
+                    if (!string.IsNullOrWhiteSpace(slug)) result[slug] = pricing;
+                    if (!string.IsNullOrWhiteSpace(modelId)) result[modelId] = pricing;
+                }
+                catch (JsonException) { }
+                finally { dataDoc?.Dispose(); }
+            }
+        }
+        catch (JsonException) { }
+        return result;
+    }
+
     /// <summary>RedLeaf may wrap the list in a paging envelope — find the entity array.</summary>
     private static bool TryFindArray(JsonElement obj, out JsonElement array)
     {
@@ -410,6 +486,17 @@ public class QualityModeService
             JsonValueKind.True => true,
             JsonValueKind.False => false,
             JsonValueKind.String when bool.TryParse(v.GetString(), out var b) => b,
+            _ => null,
+        };
+    }
+
+    private static double? GetDouble(JsonElement el, string prop)
+    {
+        if (el.ValueKind != JsonValueKind.Object || !el.TryGetProperty(prop, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number when v.TryGetDouble(out var n) => n,
+            JsonValueKind.String when double.TryParse(v.GetString(), out var n) => n,
             _ => null,
         };
     }

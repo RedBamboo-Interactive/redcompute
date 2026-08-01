@@ -697,20 +697,29 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     /// the session counters want the cumulative one. Note <c>turn/completed</c> carries no usage at
     /// all, so this notification is the only source.
     /// </summary>
-    private void ApplyUsage(ManagedSession session, JsonElement p)
+    private static void ApplyUsage(ManagedSession session, JsonElement p) =>
+        ApplyUsage(session.Info, p);
+
+    internal static void ApplyUsage(CodexSessionInfo info, JsonElement p)
     {
         if (!p.TryGetProperty("tokenUsage", out var usage)) return;
 
         if (usage.TryGetProperty("total", out var total))
         {
-            if (Int(total, "inputTokens") is { } i) session.Info.InputTokens = i;
-            if (Int(total, "outputTokens") is { } o) session.Info.OutputTokens = o;
-            if (Int(total, "cachedInputTokens") is { } c) session.Info.CachedInputTokens = c;
+            if (Int(total, "inputTokens") is { } i) info.InputTokens = i;
+            if (Int(total, "outputTokens") is { } o) info.OutputTokens = o;
+            if (Int(total, "cachedInputTokens") is { } c) info.CachedInputTokens = c;
         }
+
+        // `total` is cumulative billing usage across the thread. `last.totalTokens` is the
+        // active model invocation's actual working set, which is what the context-fill meter needs.
+        if (usage.TryGetProperty("last", out var last) &&
+            Int(last, "totalTokens") is { } contextTokens)
+            info.ContextTokens = contextTokens;
 
         // The real window for this model on this account — smaller than the published spec figure,
         // so trust it over anything a quality mode declares.
-        if (Int(usage, "modelContextWindow") is { } w) session.Info.ContextWindow = w;
+        if (Int(usage, "modelContextWindow") is { } w) info.ContextWindow = w;
     }
 
     private static int? Int(JsonElement e, string name) =>
@@ -1089,6 +1098,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         InputTokens = info.InputTokens,
         OutputTokens = info.OutputTokens,
         CachedInputTokens = info.CachedInputTokens,
+        ContextTokens = info.ContextTokens,
         JobId = info.JobId,
         ThreadId = info.ThreadId,
         ProcessId = info.ProcessId,
@@ -1116,6 +1126,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         InputTokens = r.InputTokens,
         OutputTokens = r.OutputTokens,
         CachedInputTokens = r.CachedInputTokens,
+        ContextTokens = r.ContextTokens,
         JobId = r.JobId,
         ThreadId = r.ThreadId,
         ProcessId = r.ProcessId,

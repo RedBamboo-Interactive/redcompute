@@ -14,6 +14,7 @@ public class UnifiedSessionInfo
     public string? Title { get; set; }
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
+    public bool CostEstimated { get; set; }
     public int? InputTokens { get; set; }
     public int? OutputTokens { get; set; }
     public int? CachedInputTokens { get; set; }

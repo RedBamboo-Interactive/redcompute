@@ -21,6 +21,7 @@ public class CodexSessionInfo
     public int? InputTokens { get; set; }
     public int? OutputTokens { get; set; }
     public int? CachedInputTokens { get; set; }
+    public int? ContextTokens { get; set; }
     public Guid? JobId { get; set; }
     public string? UserId { get; set; }
     public string? UserName { get; set; }
