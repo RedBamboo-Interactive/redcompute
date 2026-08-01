@@ -11,6 +11,8 @@ public record ProviderEntityConfig(
     string Status, string? Description)
 {
     public string? ProviderType { get; init; }
+    public string? Color { get; init; }
+    public string? IconSvgPath { get; init; }
     public IReadOnlyList<string> Capabilities { get; init; } = Array.Empty<string>();
     public JsonElement? Settings { get; init; }
 }
@@ -56,8 +58,7 @@ public class ProviderConfigService
     {
         _config = config;
         _log = log;
-        _providers = BuildFallbacks();
-        _defaultProviderSlug = "anthropic-direct";
+        _providers = new Dictionary<string, ProviderEntityConfig>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>Re-fetch provider entities and suite-config from RedLeaf.</summary>
@@ -110,7 +111,7 @@ public class ProviderConfigService
         }
         catch (Exception ex)
         {
-            _log($"[ProviderConfig] Failed to fetch providers from RedLeaf, using fallbacks: {ex.Message}", null);
+            _log($"[ProviderConfig] Failed to fetch provider entities; keeping the current entity snapshot: {ex.Message}", null);
         }
     }
 
@@ -132,7 +133,7 @@ public class ProviderConfigService
             return true;
         }
 
-        _log("[ProviderConfig] No entity data available (RedLeaf offline, no cache); using config.json fallbacks", null);
+        _log("[ProviderConfig] No entity data available (RedLeaf offline, no cache); provider catalog remains empty", null);
         return false;
     }
 
@@ -166,8 +167,10 @@ public class ProviderConfigService
                 return;
             }
 
-            var source = _loadedFromCache ? "cache" : "fallback";
-            _log($"[ProviderConfig] Serving {_providers.Count} {source} provider(s); " +
+            var snapshotState = _loadedFromCache
+                ? $"Serving {_providers.Count} cached provider(s)"
+                : "Provider entity catalog is empty";
+            _log($"[ProviderConfig] {snapshotState}; " +
                  $"RedLeaf fetch not yet succeeded (attempt {attempt}), retrying in {delay.TotalSeconds:0}s", null);
 
             try { await Task.Delay(delay, ct); }
@@ -252,7 +255,21 @@ public class ProviderConfigService
         if (AliasMap.TryGetValue(slug, out var aliasSlug) && snapshot.TryGetValue(aliasSlug, out var aliased))
             return aliased;
 
-        return new ProviderEntityConfig(slug, slug, slug, slug, "ph-fill ph-plug", null, null, null, "active", null);
+        return new ProviderEntityConfig(slug, slug, slug, slug, null, null, null, null, "active", null);
+    }
+
+    /// <summary>Normalize an entity reference (ID, slug, or legacy backend alias) to its provider slug.</summary>
+    public string ResolveReference(string reference)
+    {
+        Dictionary<string, ProviderEntityConfig> snapshot;
+        lock (_lock) { snapshot = _providers; }
+
+        var entity = snapshot.Values.FirstOrDefault(p =>
+            string.Equals(p.Id, reference, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(p.Slug, reference, StringComparison.OrdinalIgnoreCase));
+        if (entity != null) return entity.Slug;
+
+        return AliasMap.TryGetValue(reference, out var aliasSlug) ? aliasSlug : reference;
     }
 
     public ProviderEntityConfig GetDefault()
@@ -267,13 +284,20 @@ public class ProviderConfigService
         var first = snapshot.Values.FirstOrDefault(p => p.Status == "active");
         if (first != null) return first;
 
-        return new ProviderEntityConfig("anthropic-direct", "anthropic-direct", "Anthropic (Direct)", "claude-code",
-            "ph-fill ph-sparkle", null, null, null, "active", "Default Anthropic provider via Claude Code CLI.");
+        return new ProviderEntityConfig("", "", "", "", null, null, null, null, "disabled", null);
     }
 
     public string DefaultProviderSlug
     {
-        get { lock (_lock) { return _defaultProviderSlug ?? "anthropic-direct"; } }
+        get
+        {
+            lock (_lock)
+            {
+                return _defaultProviderSlug
+                    ?? _providers.Values.FirstOrDefault(p => p.Status == "active")?.Slug
+                    ?? "";
+            }
+        }
     }
 
     public IReadOnlyList<ProviderEntityConfig> GetAll()
@@ -450,21 +474,6 @@ public class ProviderConfigService
         }
     }
 
-    // ---- fallbacks -----------------------------------------------------------------------------
-
-    private static Dictionary<string, ProviderEntityConfig> BuildFallbacks() =>
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["anthropic-direct"] = new("anthropic-direct", "anthropic-direct", "Anthropic (Direct)", "claude-code",
-                "ph-fill ph-sparkle", null, null, null, "active", "Default Anthropic provider via Claude Code CLI."),
-            ["opencode-default"] = new("opencode-default", "opencode-default", "OpenCode (Default)", "opencode",
-                "ph-fill ph-open-ai-logo", null, null, "gpt-4o", "active", null),
-            // No default model: the Codex catalog is account-scoped and resolved at runtime via
-            // model/list, so naming one here is how it goes stale.
-            ["codex-default"] = new("codex-default", "codex-default", "Codex (Default)", "codex",
-                "ph-fill ph-open-ai-logo", null, null, null, "active", "OpenAI Codex CLI via its app-server."),
-        };
-
     // ---- suite-config parsing ------------------------------------------------------------------
 
     private static string? ParseDefaultProviderFromSuiteConfig(string json, List<ProviderEntityConfig> providers)
@@ -580,7 +589,7 @@ public class ProviderConfigService
                 Slug:         slug!,
                 Name:         name!,
                 Backend:      backend!,
-                Icon:         GetString(data, "icon") ?? "ph-fill ph-plug",
+                Icon:         GetString(data, "icon"),
                 EndpointUrl:  GetString(data, "endpoint_url"),
                 ApiKey:       GetString(data, "api_key"),
                 DefaultModel: GetString(data, "default_model"),
@@ -588,6 +597,8 @@ public class ProviderConfigService
                 Description:  GetString(data, "description"))
             {
                 ProviderType = GetString(data, "provider_type") ?? GetString(data, "kind"),
+                Color = GetString(data, "color"),
+                IconSvgPath = GetString(data, "icon_svg_path"),
                 Capabilities = ParseCapabilities(data),
                 Settings = settings,
             };

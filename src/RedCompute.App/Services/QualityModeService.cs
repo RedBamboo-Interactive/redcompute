@@ -5,7 +5,7 @@ using RedCompute.Core.Configuration;
 namespace RedCompute.App.Services;
 
 /// <summary>An abstract quality tier with display properties.</summary>
-public record QualityTier(string Slug, string Label, string Color, string Icon, int SortOrder);
+public record QualityTier(string Id, string Slug, string Label, string? Color, string? Icon, int SortOrder);
 
 /// <summary>An abstract quality tier resolved to a concrete provider + model + params.</summary>
 public record QualityMode(
@@ -24,10 +24,10 @@ public record ResolvedMode(string Provider, string? Model, string? Effort,
     int? ThinkingBudget = null);
 
 /// <summary>
-/// Resolves abstract quality tiers (fast, standard, deep, research) to provider-specific
+/// Resolves entity-defined quality tiers to provider-specific
 /// model + params for the whole Red Suite. Modes are defined as RedLeaf entities
-/// (type=quality-mode) and fetched at startup; hardcoded fallbacks keep resolution working
-/// when RedLeaf is offline.
+/// (type=quality-mode) and fetched from RedLeaf. Display and model choices are not duplicated
+/// in code; when RedLeaf is offline the current entity-derived snapshot is retained.
 /// </summary>
 public class QualityModeService
 {
@@ -39,15 +39,15 @@ public class QualityModeService
     private readonly object _lock = new();
     private Dictionary<string, List<QualityMode>> _modes;
     private Dictionary<string, QualityTier> _tiers;
+    private string? _defaultTierSlug;
 
     public QualityModeService(RedComputeConfig config, Action<string, Guid?> log, ProviderConfigService providerConfig)
     {
         _config = config;
         _log = log;
         _providerConfig = providerConfig;
-        // Seed with fallbacks so Resolve() works before (and if) RedLeaf is ever reached.
-        _modes = BuildFallbacks();
-        _tiers = BuildTierFallbacks();
+        _modes = new Dictionary<string, List<QualityMode>>(StringComparer.OrdinalIgnoreCase);
+        _tiers = new Dictionary<string, QualityTier>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -59,21 +59,6 @@ public class QualityModeService
         try
         {
             var baseUrl = _config.RedLeafUrl.TrimEnd('/');
-
-            var modesJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-mode&limit=100", ct);
-            var parsed = ParseModes(modesJson);
-            if (parsed.Count == 0)
-            {
-                _log("[QualityModes] RedLeaf returned no usable quality-mode entities; keeping current modes", null);
-            }
-            else
-            {
-                var grouped = parsed
-                    .GroupBy(m => m.QualityTier, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
-                lock (_lock) { _modes = grouped; }
-                _log($"[QualityModes] Loaded {parsed.Count} quality mode(s) across {grouped.Count} tier(s) from RedLeaf", null);
-            }
 
             var tiersJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-tier&limit=100", ct);
             var parsedTiers = ParseTiers(tiersJson);
@@ -87,35 +72,73 @@ public class QualityModeService
                 lock (_lock) { _tiers = tiersDict; }
                 _log($"[QualityModes] Loaded {parsedTiers.Count} quality tier(s) from RedLeaf", null);
             }
+
+            var modesJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-mode&limit=100", ct);
+            var parsed = ParseModes(modesJson, parsedTiers);
+            if (parsed.Count == 0)
+            {
+                _log("[QualityModes] RedLeaf returned no usable quality-mode entities; keeping current modes", null);
+            }
+            else
+            {
+                var grouped = parsed
+                    .GroupBy(m => m.QualityTier, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+                lock (_lock) { _modes = grouped; }
+                _log($"[QualityModes] Loaded {parsed.Count} quality mode(s) across {grouped.Count} tier(s) from RedLeaf", null);
+            }
+
+            try
+            {
+                var suiteConfigJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=suite-config&limit=1", ct);
+                var defaultTierRef = ParseDefaultTierReference(suiteConfigJson);
+                if (!string.IsNullOrWhiteSpace(defaultTierRef))
+                {
+                    var defaultTier = parsedTiers.FirstOrDefault(t =>
+                        string.Equals(t.Id, defaultTierRef, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(t.Slug, defaultTierRef, StringComparison.OrdinalIgnoreCase));
+                    if (defaultTier != null)
+                        lock (_lock) { _defaultTierSlug = defaultTier.Slug; }
+                }
+            }
+            catch { /* suite-config is optional; tier entities remain authoritative */ }
         }
         catch (Exception ex)
         {
-            _log($"[QualityModes] Failed to fetch quality modes from RedLeaf, using fallbacks: {ex.Message}", null);
+            _log($"[QualityModes] Failed to fetch quality mode entities; keeping the current entity snapshot: {ex.Message}", null);
         }
     }
 
     /// <summary>
-    /// Resolve a quality tier to concrete settings. A null/blank tier defaults to "standard".
+    /// Resolve a quality tier to concrete settings. A null/blank tier uses the suite-config entity default.
     /// When <paramref name="preferredProvider"/> is given, only that provider's modes are
     /// considered — if the tier has none for it, the model is left unset so the provider's own
-    /// default applies (never another provider's model). An unknown tier resolves as "standard".
+    /// default applies (never another provider's model). An unknown tier resolves as the entity default.
     /// </summary>
     public ResolvedMode Resolve(string? qualityTier = null, string? preferredProvider = null)
     {
-        var tier = string.IsNullOrWhiteSpace(qualityTier) ? "standard" : qualityTier.Trim();
-
         Dictionary<string, List<QualityMode>> snapshot;
-        lock (_lock) { snapshot = _modes; }
+        string? defaultTier;
+        lock (_lock) { snapshot = _modes; defaultTier = _defaultTierSlug; }
 
-        if (!snapshot.TryGetValue(tier, out var candidates) || candidates.Count == 0)
+        var tier = string.IsNullOrWhiteSpace(qualityTier) ? defaultTier : qualityTier.Trim();
+        List<QualityMode>? candidates = null;
+
+        if (string.IsNullOrWhiteSpace(tier)
+            || !snapshot.TryGetValue(tier, out candidates)
+            || candidates.Count == 0)
         {
-            _log($"[QualityModes] Unknown quality tier '{tier}' requested; resolving as standard", null);
-            if (!snapshot.TryGetValue("standard", out candidates) || candidates.Count == 0)
+            if (!string.IsNullOrWhiteSpace(tier))
+                _log($"[QualityModes] Unknown quality tier '{tier}' requested; resolving as the suite default", null);
+
+            if (string.IsNullOrWhiteSpace(defaultTier)
+                || !snapshot.TryGetValue(defaultTier, out candidates)
+                || candidates.Count == 0)
             {
-                if (string.IsNullOrWhiteSpace(preferredProvider))
-                    return new ResolvedMode("claude-code", "sonnet", null, "claude-code");
-                var pc = _providerConfig.Resolve(preferredProvider);
-                return new ResolvedMode(preferredProvider, pc.DefaultModel, null, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+                var pc = string.IsNullOrWhiteSpace(preferredProvider)
+                    ? _providerConfig.GetDefault()
+                    : _providerConfig.Resolve(preferredProvider);
+                return new ResolvedMode(pc.Slug, pc.DefaultModel, null, pc.Backend, pc.EndpointUrl, pc.ApiKey);
             }
         }
 
@@ -163,38 +186,16 @@ public class QualityModeService
         lock (_lock) { return _tiers.Values.OrderBy(t => t.SortOrder).ToList(); }
     }
 
+    public string? DefaultTierSlug
+    {
+        get { lock (_lock) { return _defaultTierSlug; } }
+    }
+
     private ResolvedMode ToResolved(QualityMode m)
     {
         var pc = _providerConfig.Resolve(m.Provider);
         return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey, m.ThinkingBudget);
     }
-
-    private static Dictionary<string, List<QualityMode>> BuildFallbacks()
-    {
-        static QualityMode M(string tier, string model, string? effort, bool isDefault, int? contextWindow = null)
-            => new(
-                Id: $"fallback-{tier}", Slug: tier, QualityTier: tier, Provider: "claude-code",
-                Model: model, Effort: effort, ThinkingBudget: null, Timeout: null, MaxTurns: null,
-                IsDefault: isDefault, Description: $"Built-in {tier} fallback", ContextWindow: contextWindow);
-
-        // Haiku declares no window: it really is 200k and the runtime reports it correctly.
-        return new Dictionary<string, List<QualityMode>>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["fast"] = [M("fast", "haiku", "low", false)],
-            ["standard"] = [M("standard", "sonnet", null, true, 1_000_000)],
-            ["deep"] = [M("deep", "opus", "high", false, 1_000_000)],
-            ["research"] = [M("research", "fable", "high", false, 1_000_000)],
-        };
-    }
-
-    private static Dictionary<string, QualityTier> BuildTierFallbacks() =>
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["fast"]     = new("fast",     "Fast",     "#22d3ee", "ph-fill ph-rabbit",     0),
-            ["standard"] = new("standard", "Standard", "#a78bfa", "ph-fill ph-lightning",       1),
-            ["deep"]     = new("deep",     "Deep",     "#fb923c", "ph-fill ph-brain",      2),
-            ["research"] = new("research", "Research", "#f43f5e", "ph-fill ph-microscope", 3),
-        };
 
     // ---- RedLeaf response parsing --------------------------------------------------------
 
@@ -214,6 +215,7 @@ public class QualityModeService
             foreach (var item in array.EnumerateArray())
             {
                 if (item.ValueKind != JsonValueKind.Object) continue;
+                var id = GetString(item, "id") ?? GetString(item, "slug") ?? "";
                 var slug = GetString(item, "slug") ?? GetString(item, "id");
                 if (string.IsNullOrWhiteSpace(slug)) continue;
 
@@ -232,11 +234,11 @@ public class QualityModeService
                     }
 
                     var label    = GetString(data, "label") ?? GetString(item, "name") ?? slug!;
-                    var color    = GetString(data, "color") ?? "#a78bfa";
-                    var icon     = GetString(data, "icon")  ?? "ph-fill ph-lightning";
+                    var color    = GetString(data, "color");
+                    var icon     = GetString(data, "icon");
                     var sortOrder = GetInt(data, "sort_order") ?? GetInt(data, "sortOrder") ?? 99;
 
-                    result.Add(new QualityTier(slug!, label, color, icon, sortOrder));
+                    result.Add(new QualityTier(id, slug!, label, color, icon, sortOrder));
                 }
                 catch (JsonException) { }
                 finally { dataDoc?.Dispose(); }
@@ -246,7 +248,7 @@ public class QualityModeService
         return result;
     }
 
-    private static List<QualityMode> ParseModes(string json)
+    private List<QualityMode> ParseModes(string json, IReadOnlyList<QualityTier> tiers)
     {
         var result = new List<QualityMode>();
 
@@ -262,9 +264,47 @@ public class QualityModeService
         foreach (var item in array.EnumerateArray())
         {
             var mode = ParseOne(item);
-            if (mode != null) result.Add(mode);
+            if (mode == null) continue;
+
+            var tier = tiers.FirstOrDefault(t =>
+                string.Equals(t.Id, mode.QualityTier, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(t.Slug, mode.QualityTier, StringComparison.OrdinalIgnoreCase));
+
+            result.Add(mode with
+            {
+                QualityTier = tier?.Slug ?? mode.QualityTier,
+                Provider = _providerConfig.ResolveReference(mode.Provider),
+            });
         }
         return result;
+    }
+
+    private static string? ParseDefaultTierReference(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            JsonElement array;
+            if (root.ValueKind == JsonValueKind.Array) array = root;
+            else if (root.ValueKind != JsonValueKind.Object || !TryFindArray(root, out array)) return null;
+
+            var item = array.EnumerateArray().FirstOrDefault();
+            if (item.ValueKind != JsonValueKind.Object) return null;
+
+            if (!item.TryGetProperty("data", out var data))
+                data = item;
+            else if (data.ValueKind == JsonValueKind.String)
+            {
+                var raw = data.GetString();
+                if (string.IsNullOrWhiteSpace(raw)) return null;
+                using var dataDoc = JsonDocument.Parse(raw);
+                return GetString(dataDoc.RootElement, "default_quality_tier");
+            }
+
+            return GetString(data, "default_quality_tier");
+        }
+        catch (JsonException) { return null; }
     }
 
     /// <summary>RedLeaf may wrap the list in a paging envelope — find the entity array.</summary>

@@ -129,7 +129,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("provider", "string", description: "Provider to use. Defaults to the active provider.", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("model", "string", description: "Model to use. Overrides qualityTier when both are given.", location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Effort level (e.g. low, normal, high)", location: ParamLocation.Body)
-            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
+            .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
             .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body);
 
         endpoints.MapGet("/ai-session/sessions/{id}",
@@ -541,7 +541,7 @@ public static class UnifiedSessionEndpoints
         })
             .WithParam("model", "string", description: "Model to switch to. Overrides qualityTier when both are given.", location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level", location: ParamLocation.Body)
-            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved to a model+effort for this session's provider. Ignored when model is set.", location: ParamLocation.Body)
+            .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort for this session's provider. Ignored when model is set.", location: ParamLocation.Body)
             .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
@@ -662,16 +662,18 @@ public static class UnifiedSessionEndpoints
             .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
 
         endpoints.MapGet("/ai-session/quality-modes",
-            "List the suite-wide quality tiers (fast, standard, deep, research) and the provider+model+effort each resolves to. Lets any suite app build a tier picker without talking to RedLeaf directly.", () =>
+            "List entity-defined quality tiers and the provider+model+effort each resolves to. Lets any suite app build a tier picker without duplicating entity data.", () =>
         {
             if (_quality == null)
                 return Error(503, "not_configured", "Quality mode service is not available");
 
+            var defaultTier = _quality.DefaultTierSlug;
             return Results.Json(new
             {
                 tiers = _quality.GetTiers().Select(t => new
                 {
                     t.Slug, t.Label, t.Color, t.Icon, t.SortOrder,
+                    isDefault = string.Equals(t.Slug, defaultTier, StringComparison.OrdinalIgnoreCase),
                 }),
                 modes = _quality.GetAll().Select(m => new
                 {
@@ -682,7 +684,7 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapPost("/ai-session/quality-modes/refresh",
-            "Re-fetch quality mode definitions from RedLeaf and return the refreshed set. Falls back to the cached/built-in modes if RedLeaf is unreachable.", async () =>
+            "Re-fetch quality mode definitions from RedLeaf and return the refreshed entity snapshot.", async () =>
         {
             if (_quality == null)
                 return Error(503, "not_configured", "Quality mode service is not available");
@@ -691,12 +693,14 @@ public static class UnifiedSessionEndpoints
                 _quality.RefreshAsync(),
                 _providerConfig?.RefreshAsync() ?? Task.CompletedTask);
 
+            var defaultTier = _quality.DefaultTierSlug;
             return Results.Json(new
             {
                 refreshed = true,
                 tiers = _quality.GetTiers().Select(t => new
                 {
                     t.Slug, t.Label, t.Color, t.Icon, t.SortOrder,
+                    isDefault = string.Equals(t.Slug, defaultTier, StringComparison.OrdinalIgnoreCase),
                 }),
                 modes = _quality.GetAll().Select(m => new
                 {
@@ -719,6 +723,8 @@ public static class UnifiedSessionEndpoints
                 p.Name,
                 p.Backend,
                 p.Icon,
+                p.Color,
+                iconSvgPath = p.IconSvgPath,
                 endpointUrl = p.EndpointUrl,
                 hasApiKey = !string.IsNullOrEmpty(p.ApiKey),
                 defaultModel = p.DefaultModel,
@@ -908,7 +914,7 @@ public static class UnifiedSessionEndpoints
                 {
                     prompt = new { type = "string", description = "Prompt text for the agent task" },
                     model = new { type = "string", description = "Model to use (provider default if omitted). Overrides qualityTier when both are given." },
-                    qualityTier = new { type = "string", description = "Abstract quality tier (fast, standard, deep, research) resolved suite-wide to a provider+model+effort. Ignored when model is set." },
+                    qualityTier = new { type = "string", description = "Quality-tier entity slug resolved suite-wide to a provider+model+effort. Ignored when model is set." },
                     workingDir = new { type = "string", description = "Working directory for the agent" },
                     timeout = new { type = "integer", description = "Timeout in seconds, clamped to 1-7200", @default = 1800 },
                     provider = new { type = "string", description = "Session provider to use (defaults to active provider)", @enum = providerEnum },
@@ -954,7 +960,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("maxTokens", "integer", description: "(oneshot mode) Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
-            .WithParam("qualityTier", "string", description: "Abstract quality tier (fast, standard, deep, research) resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
+            .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
     }
 
     private static async Task<IResult> HandleGenerateSession(

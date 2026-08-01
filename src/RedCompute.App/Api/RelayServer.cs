@@ -327,15 +327,16 @@ public class RelayServer
             () => new RedBamboo.AppHost.Tunnel.TunnelConfig { Enabled = false },
             App.LogService, mapRemoteAccess: false, mapAutoStart: false);
 
+        // Quality tiers and modes are entity-owned. Load them before accepting requests so
+        // the first session cannot race an empty catalog after hardcoded fallbacks were removed.
+        await _qualityModes.RefreshAsync(ct);
+
         _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);
         _log($"[Relay] Listening at http://127.0.0.1:{_config.ApiPort}", null);
 
-        // Fetch suite-wide quality modes and provider configs from RedLeaf. Fallbacks seeded
-        // in the constructors keep resolution working if RedLeaf is offline. Providers use a
-        // retrying load so a cold-start race with RedLeaf can't strand us on fallbacks (which
-        // would 404 every custom-provider session, e.g. the Spark agent's Meta endpoint).
-        _ = _qualityModes.RefreshAsync(ct);
+        // Provider entities were synchronously loaded before capability initialization. Keep
+        // retrying only when that initial RedLeaf/cache sync could not supply an entity snapshot.
         _ = _providerConfig.EnsureLoadedAsync(ct);
     }
 
