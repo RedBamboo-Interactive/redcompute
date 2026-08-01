@@ -14,4 +14,12 @@ public interface IJobTracker
     void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null, string? resultJson = null);
     void MarkCancelled(Guid jobId);
     void UpdateName(Guid jobId, string name);
+    JobRecord? GetJob(Guid jobId) => null;
+
+    /// <summary>
+    /// Restore a job whose source record survived while the job row did not. Implementations must
+    /// preserve the supplied identity and timestamps, and must return the existing row when the
+    /// idempotency key has already been imported.
+    /// </summary>
+    JobRecord RestoreJob(JobRecord job) => throw new NotSupportedException("Historical job restoration is not supported by this tracker");
 }

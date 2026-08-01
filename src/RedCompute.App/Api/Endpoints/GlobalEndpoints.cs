@@ -148,12 +148,25 @@ public static class GlobalEndpoints
             });
         });
 
-        endpoints.MapDelete("/jobs/{id:guid}", "Cancel a running job", (Guid id) =>
+        endpoints.MapDelete("/jobs/{id:guid}", "Cancel a running job", async (Guid id) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
             if (job.Status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled)
                 return Results.BadRequest(new { error = "invalid_state", message = "Job already finished" });
+
+            if (job.CapabilitySlug == "ai-session")
+            {
+                foreach (var provider in registry.FindProviders<ISessionProvider>())
+                {
+                    var (session, _) = provider.GetSessionByJobId(id);
+                    if (session == null) continue;
+
+                    await provider.ForceKillAsync(session.Id);
+                    jobTracker.MarkCancelled(id);
+                    return Results.Ok(new { id, status = "Cancelled" });
+                }
+            }
 
             jobTracker.MarkCancelled(id);
             foreach (var ext in registry.FindProviders<IJobExtendedProvider>())

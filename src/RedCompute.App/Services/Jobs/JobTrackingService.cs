@@ -45,6 +45,26 @@ public class JobTrackingService : IJobTracker
         return job;
     }
 
+    public JobRecord RestoreJob(JobRecord job)
+    {
+        using var db = new RedComputeDbContext();
+
+        if (job.IdempotencyKey != null)
+        {
+            var existing = db.Jobs.FirstOrDefault(j => j.IdempotencyKey == job.IdempotencyKey);
+            if (existing != null)
+                return existing;
+        }
+
+        if (db.Jobs.Find(job.Id) is { } existingById)
+            return existingById;
+
+        db.Jobs.Add(job);
+        db.SaveChanges();
+        JobCreated?.Invoke(job);
+        return job;
+    }
+
     public void MarkRunning(Guid jobId)
     {
         using var db = new RedComputeDbContext();

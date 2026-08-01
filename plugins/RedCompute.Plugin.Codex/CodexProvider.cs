@@ -59,7 +59,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var codexConfig = BuildConfig(config);
         _codex = new CodexSessionService(codexConfig, jobTracker, store, log);
         _models = new CodexModelCatalog(codexConfig, log);
-        _interactive = new CodexInteractiveService(codexConfig, store, _models, _codex, log);
+        _interactive = new CodexInteractiveService(codexConfig, store, _models, _codex, jobTracker, log);
 
         _codex.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _codex.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
@@ -80,6 +80,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public async Task<bool> StartAsync(CancellationToken ct = default)
     {
+        var restored = _interactive.ReconcileMissingJobs();
+        if (restored > 0)
+            _log($"[Codex] Restored compute jobs for {restored} interactive sessions", null);
+
         // Construction happens before RelayServer installs the RedLeaf mirror hooks. Replay the
         // recovered local state now so sessions orphaned by a restart do not remain Active in the
         // suite-wide read model (and keep Nova's stop button latched forever).
@@ -91,11 +95,15 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         await _models.PrimeAsync(ct);
         return true;
     }
-    public Task StopAsync(CancellationToken ct = default) => _codex.StopAllAsync();
+    public async Task StopAsync(CancellationToken ct = default)
+    {
+        await _interactive.StopAllAsync();
+        await _codex.StopAllAsync();
+    }
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
     public string? GetProxyTargetUrl() => null;
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public async ValueTask DisposeAsync() => await _interactive.DisposeAsync();
 
     public void MapCustomEndpoints(WebApplication app)
     {
@@ -338,6 +346,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Source = s.Source,
         UserId = s.UserId,
         ContextWindow = s.ContextWindow,
+        StopReason = s.StopReason,
         // The Codex thread id, which is what makes a session resumable — and resumable from the
         // Codex CLI and desktop app too, since every surface shares the same thread store.
         ProviderSessionId = s.ThreadId,

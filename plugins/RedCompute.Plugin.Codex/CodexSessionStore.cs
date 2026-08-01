@@ -12,6 +12,7 @@ public class CodexSessionStore : ICodexSessionStore
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         Status = r.Status,
+        StopReason = r.StopReason,
         StartedAt = r.StartedAt,
         Model = r.Model,
         MessageCount = r.MessageCount,
@@ -62,7 +63,16 @@ public class CodexSessionStore : ICodexSessionStore
     {
         using var db = new CodexDbContext();
         return db.Sessions
-            .Where(s => s.Status == "Active" || s.Status == "Starting")
+            .Where(s => s.Status == "Active" || s.Status == "Starting" || s.Status == "Idle" || s.Status == "Waiting")
+            .ToList();
+    }
+
+    public List<CodexSessionRecord> GetSessionsWithoutJobs()
+    {
+        using var db = new CodexDbContext();
+        return db.Sessions
+            .Where(s => s.JobId == null && s.ThreadId != null)
+            .OrderBy(s => s.StartedAt)
             .ToList();
     }
 
@@ -109,6 +119,7 @@ public class CodexSessionStore : ICodexSessionStore
             existing.UserId = record.UserId;
             existing.UserName = record.UserName;
             existing.UserAvatarUrl = record.UserAvatarUrl;
+            existing.StopReason = record.StopReason;
         }
         else
         {

@@ -5,6 +5,7 @@ public interface ICodexSessionStore
     CodexSessionRecord? FindSession(string sessionId);
     CodexSessionRecord? FindSessionByJobId(Guid jobId);
     List<CodexSessionRecord> GetActiveSessions();
+    List<CodexSessionRecord> GetSessionsWithoutJobs();
     List<CodexSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false);
     void SaveSession(CodexSessionRecord record);
     void DismissSession(string sessionId);

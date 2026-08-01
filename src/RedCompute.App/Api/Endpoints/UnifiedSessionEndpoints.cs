@@ -115,6 +115,13 @@ public static class UnifiedSessionEndpoints
             var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort, q.EndpointUrl, q.ApiKey, thinkingBudget);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
+            if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
+            {
+                try { await provider.ForceKillAsync(session.Id); }
+                catch (Exception ex) { log($"Failed to clean up untracked session {session.Id}: {ex.Message}", null); }
+                log($"Provider {provider.ProviderId} created session {session.Id} without a valid compute job", null);
+                return Error(500, "tracking_failed", "Session creation was rolled back because its compute job was not created");
+            }
 
             return Results.Json(session);
         })
@@ -974,6 +981,11 @@ public static class UnifiedSessionEndpoints
         var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar, q.Effort, q.EndpointUrl, q.ApiKey, thinkingBudget);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
+        if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
+        {
+            try { await provider.ForceKillAsync(session.Id); } catch { }
+            return Error(500, "tracking_failed", "Session creation was rolled back because its compute job was not created");
+        }
 
         if (!string.IsNullOrWhiteSpace(prompt) && provider.Capabilities.HasFlag(SessionCapabilities.SendMessage))
         {
@@ -981,7 +993,7 @@ public static class UnifiedSessionEndpoints
             await provider.SendMessageAsync(session.Id, prompt);
         }
 
-        return Results.Json(new { jobId = session.JobId, sessionId = session.Id }, statusCode: 202);
+        return Results.Json(new { jobId, sessionId = session.Id }, statusCode: 202);
     }
 
     private static async Task<IResult> HandleGenerateOneshot(

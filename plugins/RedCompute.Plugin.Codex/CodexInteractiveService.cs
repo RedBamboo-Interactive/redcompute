@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -45,6 +46,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private readonly CodexConfig _config;
     private readonly ICodexSessionStore _store;
     private readonly CodexModelCatalog _catalog;
+    private readonly CodexSessionJobLifecycle _jobLifecycle;
 
     /// <summary>Stateless exec, used only to name sessions with a cheap one-shot.</summary>
     private readonly CodexSessionService _exec;
@@ -58,12 +60,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
     public CodexInteractiveService(
         CodexConfig config, ICodexSessionStore store, CodexModelCatalog catalog,
-        CodexSessionService exec, Action<string, Guid?> log)
+        CodexSessionService exec, IJobTracker jobTracker, Action<string, Guid?> log)
     {
         _config = config;
         _store = store;
         _catalog = catalog;
         _exec = exec;
+        _jobLifecycle = new CodexSessionJobLifecycle(jobTracker);
         _log = log;
         RecoverSessions();
     }
@@ -81,6 +84,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 if (s.ProcessId is { } pid) TryKillByPid(pid);
                 s.Status = "Stopped";
                 s.ProcessId = null;
+                s.StopReason = "orphaned_on_restart";
                 _store.SaveSession(s);
                 _log($"[Codex] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
             }
@@ -101,6 +105,31 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         foreach (var session in _store.GetRecentSessions([], 1_000, includeDismissed: true))
             _store.SaveSession(session);
+    }
+
+    /// <summary>
+    /// Repairs sessions created before interactive Codex sessions were linked to compute jobs.
+    /// The session id is the idempotency key, so startup retries cannot create duplicate jobs.
+    /// </summary>
+    public int ReconcileMissingJobs()
+    {
+        var restored = 0;
+        foreach (var session in _store.GetSessionsWithoutJobs())
+        {
+            try
+            {
+                var job = _jobLifecycle.Restore(session);
+                session.JobId = job.Id;
+                _store.SaveSession(session);
+                restored++;
+            }
+            catch (Exception ex)
+            {
+                _log($"[Codex] Failed to restore compute job for session {session.Id}: {ex.Message}", null);
+            }
+        }
+
+        return restored;
     }
 
     private void TryKillByPid(int pid)
@@ -139,9 +168,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             LastActivity = DateTimeOffset.UtcNow,
         };
 
+        CodexAppServerConnection? conn = null;
         try
         {
-            var conn = await ConnectAsync(id, projectPath);
+            conn = await ConnectAsync(id, projectPath);
             var session = new ManagedSession { Info = info, Connection = conn };
 
             var result = await conn.SendRequestAsync("thread/start", new
@@ -164,6 +194,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
+            _jobLifecycle.Start(info, callerInfo);
             _sessions[id] = session;
             Persist(info);
             SessionCreated?.Invoke(info);
@@ -172,9 +203,14 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            _sessions.TryRemove(id, out _);
+            if (conn != null)
+            {
+                try { await conn.DisposeAsync(); } catch { }
+            }
+            if (info.JobId != null)
+                _jobLifecycle.Fail(info, $"Interactive Codex session failed to start: {ex.Message}");
             _log($"[Codex] Failed to start session for {projectPath}: {ex.Message}", null);
-            info.Status = "Error";
-            Persist(info);
             return null;
         }
     }
@@ -191,9 +227,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
 
         var info = ToInfo(record);
+        CodexAppServerConnection? conn = null;
+        var jobRunning = false;
         try
         {
-            var conn = await ConnectAsync(sessionId, record.ProjectPath);
+            conn = await ConnectAsync(sessionId, record.ProjectPath);
             await conn.SendRequestAsync("thread/resume", new
             {
                 threadId = record.ThreadId,
@@ -203,7 +241,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
+            info.StopReason = null;
             info.LastActivity = DateTimeOffset.UtcNow;
+            _jobLifecycle.Resume(info);
+            jobRunning = true;
             _sessions[sessionId] = new ManagedSession { Info = info, Connection = conn };
             Persist(info);
             SessionUpdated?.Invoke(info);
@@ -212,6 +253,20 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            _sessions.TryRemove(sessionId, out _);
+            if (conn != null)
+            {
+                try { await conn.DisposeAsync(); } catch { }
+            }
+            if (jobRunning)
+            {
+                info.Status = "Error";
+                info.StopReason = "resume_failed";
+                info.ProcessId = null;
+                info.LastActivity = DateTimeOffset.UtcNow;
+                _jobLifecycle.Fail(info, $"Interactive Codex session failed to resume: {ex.Message}");
+                try { Persist(info); } catch { }
+            }
             _log($"[Codex] Failed to resume {sessionId}: {ex.Message}", null);
             return null;
         }
@@ -226,13 +281,43 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         return conn;
     }
 
-    public async Task StopSessionAsync(string sessionId)
+    public Task StopSessionAsync(string sessionId) => StopSessionAsync(sessionId, "user_stopped");
+
+    private async Task StopSessionAsync(string sessionId, string stopReason)
     {
-        if (!_sessions.TryRemove(sessionId, out var session)) return;
-        await session.Connection.DisposeAsync();
-        session.Info.Status = "Stopped";
-        session.Info.ProcessId = null;
-        Persist(session.Info);
+        if (_sessions.TryRemove(sessionId, out var session))
+        {
+            await session.Connection.DisposeAsync();
+            session.Info.Status = "Stopped";
+            session.Info.StopReason = stopReason;
+            session.Info.ProcessId = null;
+            session.Info.LastActivity = DateTimeOffset.UtcNow;
+            _jobLifecycle.Complete(session.Info);
+            Persist(session.Info);
+            SessionEnded?.Invoke(sessionId, "stopped");
+            return;
+        }
+
+        var stored = _store.FindSession(sessionId);
+        if (stored == null || stored.Status is "Stopped" or "Error") return;
+
+        if (stored.ProcessId is { } pid) TryKillByPid(pid);
+        stored.Status = "Stopped";
+        stored.StopReason = stopReason;
+        stored.ProcessId = null;
+        stored.LastActivity = DateTimeOffset.UtcNow;
+
+        if (stored.JobId != null)
+        {
+            var info = ToInfo(stored);
+            _jobLifecycle.Complete(info);
+        }
+        else
+        {
+            stored.JobId = _jobLifecycle.Restore(stored).Id;
+        }
+
+        _store.SaveSession(stored);
         SessionEnded?.Invoke(sessionId, "stopped");
     }
 
@@ -242,7 +327,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         if (!_sessions.TryRemove(sessionId, out var session)) return;
         session.Info.Status = code == 0 ? "Stopped" : "Error";
+        session.Info.StopReason = code == 0 ? "process_exited" : $"process_exited:{code}";
         session.Info.ProcessId = null;
+        session.Info.LastActivity = DateTimeOffset.UtcNow;
+        if (code == 0)
+            _jobLifecycle.Complete(session.Info);
+        else
+            _jobLifecycle.Fail(session.Info, $"Codex app-server exited with code {code}");
         Persist(session.Info);
         SessionEnded?.Invoke(sessionId, code == 0 ? "stopped" : $"exited:{code}");
     }
@@ -427,7 +518,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (resumed == null)
         {
             session.Info.Status = "Error";
+            session.Info.StopReason = "resume_failed_after_interrupt";
             session.Info.ProcessId = null;
+            session.Info.LastActivity = DateTimeOffset.UtcNow;
+            _jobLifecycle.Fail(session.Info, "Turn was force-stopped and the session failed to resume");
             Persist(session.Info);
             SessionUpdated?.Invoke(session.Info);
             StreamEvent?.Invoke(sessionId, new CodexStreamEvent
@@ -514,6 +608,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 if (@params.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
                 {
                     session.Info.Title = n.GetString();
+                    _jobLifecycle.Rename(session.Info);
                     Persist(session.Info);
                     SessionUpdated?.Invoke(session.Info);
                 }
@@ -801,6 +896,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         if (session.Info.Title == title) return;
         session.Info.Title = title;
+        _jobLifecycle.Rename(session.Info);
         Persist(session.Info);
         SessionUpdated?.Invoke(session.Info);
 
@@ -918,7 +1014,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     public async Task StopAllAsync()
     {
         foreach (var id in _sessions.Keys.ToList())
-            await StopSessionAsync(id);
+            await StopSessionAsync(id, "service_shutdown");
     }
 
     // ===== Mapping ===========================================================================
@@ -947,6 +1043,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         UserId = info.UserId,
         UserName = info.UserName,
         UserAvatarUrl = info.UserAvatarUrl,
+        StopReason = info.StopReason,
     });
 
     private static CodexSessionInfo ToInfo(CodexSessionRecord r) => new()
@@ -973,6 +1070,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         UserId = r.UserId,
         UserName = r.UserName,
         UserAvatarUrl = r.UserAvatarUrl,
+        StopReason = r.StopReason,
     };
 
     public async ValueTask DisposeAsync() => await StopAllAsync();
