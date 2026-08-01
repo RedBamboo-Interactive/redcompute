@@ -222,6 +222,68 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { session = info, messages = history });
         });
 
+        endpoints.MapGet("/ai-session/sessions/{id}/messages/{recordId:long}/output",
+            "Stream a payload-backed transcript output. Supports HTTP byte ranges; bytes are loaded only when requested.", async (HttpContext ctx, string id, long recordId) =>
+        {
+            UnifiedSessionInfo? info;
+            string? entityId;
+            try
+            {
+                (info, entityId) = await _redLeafReader!.GetSessionInfoAsync(id);
+            }
+            catch (Exception ex)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for payload reads: {ex.Message}");
+            }
+
+            if (info == null || entityId == null)
+                return Error(404, "not_found", $"Session '{id}' not found");
+
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+
+            HttpResponseMessage upstream;
+            try
+            {
+                upstream = await _redLeafReader.OpenPayloadAsync(
+                    entityId, recordId, ctx.Request.Headers.Range.ToString(), ctx.RequestAborted);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Error(404, "not_found", ex.Message);
+            }
+            catch (Exception ex)
+            {
+                return Error(503, "redleaf_unavailable", $"Could not read transcript payload: {ex.Message}");
+            }
+
+            using (upstream)
+            {
+                ctx.Response.StatusCode = (int)upstream.StatusCode;
+                if (upstream.Content.Headers.ContentType is { } contentType)
+                    ctx.Response.ContentType = contentType.ToString();
+                if (upstream.Content.Headers.ContentLength is { } contentLength)
+                    ctx.Response.ContentLength = contentLength;
+                if (upstream.Content.Headers.ContentRange is { } contentRange)
+                    ctx.Response.Headers.ContentRange = contentRange.ToString();
+                if (upstream.Headers.AcceptRanges.Count > 0)
+                    ctx.Response.Headers.AcceptRanges = string.Join(", ", upstream.Headers.AcceptRanges);
+                if (upstream.Headers.ETag is { } etag)
+                    ctx.Response.Headers.ETag = etag.ToString();
+                if (upstream.Content.Headers.LastModified is { } lastModified)
+                    ctx.Response.Headers.LastModified = lastModified.ToString("R");
+                if (ctx.Request.Query["download"] == "true")
+                    ctx.Response.Headers.ContentDisposition = $"attachment; filename=\"tool-output-{recordId}.txt\"";
+
+                await upstream.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+                return Results.Empty;
+            }
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("recordId", "integer", required: true, location: ParamLocation.Path, description: "Payload-backed transcript record id")
+            .WithParam("download", "boolean", description: "Force a full-output download", defaultValue: false);
+
         endpoints.MapGet("/ai-session/sessions/by-job/{jobId:guid}",
             "Get the session associated with a job ID", async (HttpContext ctx, Guid jobId) =>
         {

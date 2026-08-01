@@ -54,6 +54,16 @@ public sealed class RedLeafSessionReader
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionAsync(string sessionId)
         => await GetByDataFilterAsync($"data.session_id={Uri.EscapeDataString(sessionId)}");
 
+    public async Task<(UnifiedSessionInfo? Info, string? EntityId)> GetSessionInfoAsync(string sessionId)
+    {
+        using var doc = await GetJsonAsync(
+            $"api/entities?type=ai-session&data.session_id={Uri.EscapeDataString(sessionId)}&limit=1");
+        var items = doc.RootElement.GetProperty("items");
+        if (items.GetArrayLength() == 0) return (null, null);
+        var entity = items[0];
+        return (MapSession(entity), entity.GetProperty("id").GetString());
+    }
+
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionByJobIdAsync(Guid jobId)
     {
         // Migrated entities carry the SQLite text form (uppercase), the live
@@ -105,6 +115,7 @@ public sealed class RedLeafSessionReader
                     ToolName = Str(d, "tool_name"),
                     ToolInput = Str(d, "tool_input"),
                     ToolResult = Str(d, "tool_result"),
+                    PayloadRef = MapPayloadRef(rec, id),
                     MessageId = Str(d, "message_id"),
                     MessageUid = Str(d, "message_uid"),
                     Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
@@ -115,6 +126,32 @@ public sealed class RedLeafSessionReader
             if (items.GetArrayLength() < 1000) break;
         }
         return history;
+    }
+
+    public async Task<HttpResponseMessage> OpenPayloadAsync(
+        string entityId, long recordId, string? range, CancellationToken ct)
+    {
+        var afterId = Math.Max(0, recordId - 1);
+        using var doc = await GetJsonAsync(
+            $"api/streams/session-messages/records?entity_id={Uri.EscapeDataString(entityId)}&order=asc&limit=1&after_id={afterId}");
+        var items = doc.RootElement.GetProperty("items");
+        if (items.GetArrayLength() == 0 || items[0].GetProperty("id").GetInt64() != recordId)
+            throw new KeyNotFoundException("Transcript payload record was not found in this session");
+
+        var record = items[0];
+        if (!record.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+            throw new KeyNotFoundException("Transcript record has no payload");
+        using (var data = JsonDocument.Parse(record.GetProperty("data").GetString()!))
+        {
+            if (Str(data.RootElement, "event_type") != "tool_result")
+                throw new KeyNotFoundException("Transcript payload is not a tool result");
+        }
+
+        var request = new HttpRequestMessage(HttpMethod.Get,
+            $"api/streams/session-messages/records/{recordId}/payload");
+        if (!string.IsNullOrWhiteSpace(range))
+            request.Headers.TryAddWithoutValidation("Range", range);
+        return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
     }
 
     private UnifiedSessionInfo? MapSession(JsonElement entity)
@@ -180,4 +217,20 @@ public sealed class RedLeafSessionReader
 
     private static double? Dbl(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+
+    private static TranscriptPayloadRef? MapPayloadRef(JsonElement record, long recordId)
+    {
+        if (!record.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+            return null;
+        return new TranscriptPayloadRef
+        {
+            RecordId = recordId,
+            Kind = "tool-output",
+            Available = payload.TryGetProperty("available", out var available) && available.GetBoolean(),
+            Length = payload.TryGetProperty("length", out var length) ? length.GetInt64() : 0,
+            ContentType = Str(payload, "contentType") ?? "text/plain; charset=utf-8",
+            Encoding = Str(payload, "encoding") ?? "utf-8",
+            Sha256 = Str(payload, "sha256") ?? "",
+        };
+    }
 }

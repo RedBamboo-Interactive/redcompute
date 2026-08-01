@@ -7,6 +7,7 @@ public class UnifiedStreamEvent
     public string? ToolName { get; init; }
     public object? ToolInput { get; init; }
     public string? ToolResult { get; init; }
+    public TranscriptPayloadRef? PayloadRef { get; init; }
     public bool IsPartial { get; init; }
     public string? MessageId { get; init; }
     // Provider-neutral message identity minted by RedCompute (not the

@@ -10,6 +10,7 @@ public class UnifiedMessageRecord
     public string? ToolName { get; set; }
     public string? ToolInput { get; set; }
     public string? ToolResult { get; set; }
+    public TranscriptPayloadRef? PayloadRef { get; set; }
     public string? MessageId { get; set; }
     // Provider-neutral message uid (see UnifiedStreamEvent.MessageUid).
     // Null on records persisted before the uid rollout.

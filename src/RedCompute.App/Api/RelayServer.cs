@@ -202,6 +202,8 @@ public class RelayServer
         _streamClient.DefineStream(new StreamDefinition(
             "session-messages", "Session Messages",
             "Messages and tool events from AI sessions", RetentionDays: 180, ParentType: "ai-session"));
+        var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
+        var transcriptPipeline = new SessionTranscriptPipeline(_streamClient, broadcaster, _log);
 
         SuiteMirror.SessionUpserted = snap => _streamClient.UpsertEntity(
             SessionEntitySlug(snap.Provider, snap.Id),
@@ -236,27 +238,7 @@ public class RelayServer
                 app = "redcompute",
             });
 
-        SuiteMirror.MessagesAdded = messages =>
-        {
-            foreach (var m in messages)
-            {
-                _streamClient.EnqueueForEntity("session-messages", SessionEntitySlug(m.Provider, m.SessionId), new
-                {
-                    provider = m.Provider,
-                    session_id = m.SessionId,
-                    role = m.Role,
-                    event_type = m.EventType,
-                    content = m.Content,
-                    tool_name = m.ToolName,
-                    tool_input = m.ToolInput,
-                    tool_result = m.ToolResult,
-                    message_id = m.MessageId,
-                    message_uid = m.MessageUid,
-                    timestamp = m.Timestamp.ToString("O"),
-                    attachments_json = m.AttachmentsJson,
-                });
-            }
-        };
+        SuiteMirror.MessagesAdded = transcriptPipeline.MirrorMessages;
 
         // Jobs mirror as compute-job entities — the parent type compute-logs
         // records link to. Progress is deliberately excluded (churns per tick;
@@ -323,8 +305,7 @@ public class RelayServer
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
-        var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
-        RegisterWsEvents(broadcaster);
+        RegisterWsEvents(broadcaster, transcriptPipeline);
 
         // Tunnel and autostart endpoints are skipped: the Leaf kernel owns the one tunnel
         // and the one autostart entry. The dormant tunnel service only satisfies the
@@ -347,7 +328,7 @@ public class RelayServer
         _ = _providerConfig.EnsureLoadedAsync(ct);
     }
 
-    private void RegisterWsEvents(WebSocketBroadcaster broadcaster)
+    private void RegisterWsEvents(WebSocketBroadcaster broadcaster, SessionTranscriptPipeline transcriptPipeline)
     {
         broadcaster.RegisterEvent(new WsEventSchema("job.created",
             "Fired when a new job is queued", "JobRecord",
@@ -387,7 +368,7 @@ public class RelayServer
         {
             var providerId = sp.ProviderId;
             sp.SessionStreamEvent += (sessionId, evt) =>
-                broadcaster.Broadcast("ai-session.stream", new { provider = providerId, sessionId, @event = evt });
+                transcriptPipeline.HandleLiveEvent(providerId, sessionId, evt);
         }
 
         _hardwareMonitor.SnapshotUpdated += snapshot => broadcaster.Broadcast("hardware.snapshot", snapshot);
