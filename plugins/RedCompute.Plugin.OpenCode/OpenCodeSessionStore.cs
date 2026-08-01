@@ -7,6 +7,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
     private static AiSessionSnapshot ToSnapshot(OpenCodeSessionRecord r) => new()
     {
         Provider = "opencode",
+        ProviderEntity = r.ProviderEntity,
         Id = r.Id,
         Title = r.Title,
         ProjectName = r.ProjectName,
@@ -21,6 +22,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         OutputTokens = r.OutputTokens,
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
+        QualityTier = r.QualityTier,
         JobId = r.JobId,
         Dismissed = r.Dismissed,
         Source = r.Source,
@@ -93,6 +95,8 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
             existing.ProcessId = record.ProcessId;
+            existing.QualityTier = record.QualityTier;
+            existing.ProviderEntity = record.ProviderEntity;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;
         }

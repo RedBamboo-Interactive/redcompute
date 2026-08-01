@@ -144,7 +144,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     public async Task<CodexSessionInfo?> StartSessionAsync(
         string projectPath, string? callerInfo = null, string? model = null,
         string? userId = null, string? userName = null, string? userAvatarUrl = null,
-        string? effort = null)
+        string? effort = null, string? qualityTier = null, string? providerEntity = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -162,6 +162,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             Status = "Starting",
             Model = model,
             Effort = effort,
+            QualityTier = qualityTier,
+            ProviderEntity = providerEntity,
             Source = callerInfo,
             UserId = userId,
             UserName = userName,
@@ -591,10 +593,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         StreamEvent?.Invoke(sessionId, new CodexStreamEvent { Type = "status", Content = "idle" });
     }
 
-    public Task<CodexSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort)
-        => Task.FromResult(UpdateSessionConfig(sessionId, model, effort));
+    public Task<CodexSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, string? qualityTier)
+        => Task.FromResult(UpdateSessionConfig(sessionId, model, effort, qualityTier));
 
-    private CodexSessionInfo? UpdateSessionConfig(string sessionId, string? model, string? effort)
+    private CodexSessionInfo? UpdateSessionConfig(string sessionId, string? model, string? effort, string? qualityTier)
     {
         var record = _store.FindSession(sessionId);
         if (record == null) return null;
@@ -603,12 +605,14 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         // so this only has to record the intent — the next turn picks it up.
         if (model != null) record.Model = model;
         if (effort != null) record.Effort = effort;
+        record.QualityTier = qualityTier;
         _store.SaveSession(record);
 
         if (_sessions.TryGetValue(sessionId, out var session))
         {
             if (model != null) session.Info.Model = model;
             if (effort != null) session.Info.Effort = effort;
+            session.Info.QualityTier = qualityTier;
             SessionUpdated?.Invoke(session.Info);
             return session.Info;
         }
@@ -1104,6 +1108,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         ProcessId = info.ProcessId,
         LastActivity = info.LastActivity,
         Effort = info.Effort,
+        QualityTier = info.QualityTier,
+        ProviderEntity = info.ProviderEntity,
         Source = info.Source,
         ContextWindow = info.ContextWindow,
         UserId = info.UserId,
@@ -1132,6 +1138,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         ProcessId = r.ProcessId,
         LastActivity = r.LastActivity,
         Effort = r.Effort,
+        QualityTier = r.QualityTier,
+        ProviderEntity = r.ProviderEntity,
         Source = r.Source,
         ContextWindow = r.ContextWindow,
         UserId = r.UserId,

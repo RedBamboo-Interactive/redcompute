@@ -8,6 +8,7 @@ namespace RedCompute.PluginSdk;
 public sealed class AiSessionSnapshot
 {
     public required string Provider { get; init; }
+    public string? ProviderEntity { get; init; }
     public required string Id { get; init; }
     public string? Title { get; init; }
     public string ProjectName { get; init; } = "";
@@ -26,6 +27,7 @@ public sealed class AiSessionSnapshot
     public int? ContextTokens { get; init; }
     public int? ContextWindow { get; init; }
     public string? Effort { get; init; }
+    public string? QualityTier { get; init; }
     public Guid? JobId { get; init; }
     public bool Dismissed { get; init; }
     public string? Source { get; init; }

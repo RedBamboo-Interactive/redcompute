@@ -22,6 +22,8 @@ public class ClaudeSessionInfo
     public int? ContextTokens { get; set; }
     public int? ContextWindow { get; set; }
     public string? Effort { get; set; }
+    public string? QualityTier { get; set; }
+    public string? ProviderEntity { get; set; }
     public Guid? JobId { get; set; }
     public string PermissionMode { get; set; } = "bypassPermissions";
     public string? Source { get; set; }

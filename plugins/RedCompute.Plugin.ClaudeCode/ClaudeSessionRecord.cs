@@ -20,6 +20,8 @@ public class ClaudeSessionRecord
     public int? ContextTokens { get; set; }
     public int? ContextWindow { get; set; }
     public string? Effort { get; set; }
+    public string? QualityTier { get; set; }
+    public string? ProviderEntity { get; set; }
     public Guid? JobId { get; set; }
     public bool Dismissed { get; set; }
     public string? Source { get; set; }

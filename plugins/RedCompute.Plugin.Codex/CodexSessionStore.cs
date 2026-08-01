@@ -7,6 +7,7 @@ public class CodexSessionStore : ICodexSessionStore
     private static AiSessionSnapshot ToSnapshot(CodexSessionRecord r) => new()
     {
         Provider = "codex",
+        ProviderEntity = r.ProviderEntity,
         Id = r.Id,
         Title = r.Title,
         ProjectName = r.ProjectName,
@@ -28,6 +29,7 @@ public class CodexSessionStore : ICodexSessionStore
         ExternalSessionId = r.ThreadId,
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
+        QualityTier = r.QualityTier,
         Source = r.Source,
         UserId = r.UserId,
     };
@@ -116,6 +118,8 @@ public class CodexSessionStore : ICodexSessionStore
             existing.ProcessId = record.ProcessId;
             existing.LastActivity = record.LastActivity;
             existing.Effort = record.Effort;
+            existing.QualityTier = record.QualityTier;
+            existing.ProviderEntity = record.ProviderEntity;
             existing.Source = record.Source;
             existing.ContextWindow = record.ContextWindow;
             existing.UserId = record.UserId;

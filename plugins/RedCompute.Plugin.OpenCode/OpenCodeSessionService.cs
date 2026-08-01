@@ -123,7 +123,7 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null, string? effort = null, int? thinkingBudget = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null, string? effort = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -153,6 +153,8 @@ public class OpenCodeSessionService
             StartedAt = DateTimeOffset.UtcNow,
             Source = callerInfo,
             UserId = userId,
+            QualityTier = qualityTier,
+            ProviderEntity = providerEntity,
         };
 
         var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, effort, thinkingBudget);
@@ -235,6 +237,8 @@ public class OpenCodeSessionService
             OutputTokens = record.OutputTokens,
             ContextWindow = record.ContextWindow,
             Effort = record.Effort,
+            QualityTier = record.QualityTier,
+            ProviderEntity = record.ProviderEntity,
             Source = record.Source,
         };
 
@@ -663,7 +667,7 @@ public class OpenCodeSessionService
         SessionEnded?.Invoke(sessionId, "force_killed");
     }
 
-    public async Task<OpenCodeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort, int? thinkingBudget = null)
+    public async Task<OpenCodeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return null;
@@ -699,6 +703,8 @@ public class OpenCodeSessionService
                     configId = "thinking_budget", value = thinkingBudget.Value,
                 });
             }
+
+            session.Info.QualityTier = qualityTier;
 
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
@@ -1152,6 +1158,8 @@ public class OpenCodeSessionService
             JobId = info.JobId,
             OpenCodeSessionId = info.OpenCodeSessionId,
             Effort = info.Effort,
+            QualityTier = info.QualityTier,
+            ProviderEntity = info.ProviderEntity,
             Source = info.Source,
             ProcessId = info.ProcessId,
             LastActivity = DateTimeOffset.UtcNow,
@@ -1646,6 +1654,8 @@ public class OpenCodeSessionService
         JobId = r.JobId,
         OpenCodeSessionId = r.OpenCodeSessionId,
         Effort = r.Effort,
+        QualityTier = r.QualityTier,
+        ProviderEntity = r.ProviderEntity,
         Source = r.Source,
     };
 

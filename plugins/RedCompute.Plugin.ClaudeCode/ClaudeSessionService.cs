@@ -764,7 +764,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? qualityTier = null, string? providerEntity = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -788,7 +788,9 @@ public class ClaudeSessionService
             StartedAt = DateTimeOffset.UtcNow,
             Source = callerInfo,
             UserId = userId,
-            Effort = effort
+            Effort = effort,
+            QualityTier = qualityTier,
+            ProviderEntity = providerEntity,
         };
 
         var claudePath = ResolveClaudePath();
@@ -917,6 +919,8 @@ public class ClaudeSessionService
             ContextTokens = sessionRecord.ContextTokens,
             ContextWindow = sessionRecord.ContextWindow,
             Effort = sessionRecord.Effort,
+            QualityTier = sessionRecord.QualityTier,
+            ProviderEntity = sessionRecord.ProviderEntity,
             Source = sessionRecord.Source,
         };
 
@@ -1308,7 +1312,7 @@ public class ClaudeSessionService
         await Task.CompletedTask;
     }
 
-    public async Task<ClaudeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort)
+    public async Task<ClaudeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort, string? qualityTier)
     {
         if (_sessions.ContainsKey(sessionId))
             await StopSession(sessionId);
@@ -1318,6 +1322,7 @@ public class ClaudeSessionService
 
         if (model != null) record.Model = model;
         if (effort != null) record.Effort = effort;
+        record.QualityTier = qualityTier;
         _sessionStore.SaveSession(record);
 
         if (!string.IsNullOrEmpty(record.ClaudeSessionId))
@@ -1416,6 +1421,8 @@ public class ClaudeSessionService
         ContextTokens = r.ContextTokens,
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
+        QualityTier = r.QualityTier,
+        ProviderEntity = r.ProviderEntity,
         JobId = r.JobId,
         Source = r.Source
     };
@@ -2391,6 +2398,8 @@ public class ClaudeSessionService
                 ContextTokens = info.ContextTokens,
                 ContextWindow = info.ContextWindow,
                 Effort = info.Effort,
+                QualityTier = info.QualityTier,
+                ProviderEntity = info.ProviderEntity,
                 JobId = info.JobId,
                 Source = info.Source,
                 ProcessId = info.ProcessId,

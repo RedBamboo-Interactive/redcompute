@@ -17,6 +17,8 @@ public class OpenCodeSessionInfo
     public Guid? JobId { get; set; }
     public string? OpenCodeSessionId { get; set; }
     public string? Effort { get; set; }
+    public string? QualityTier { get; set; }
+    public string? ProviderEntity { get; set; }
     public string? Source { get; set; }
     public string? UserId { get; set; }
     public int? ProcessId { get; set; }

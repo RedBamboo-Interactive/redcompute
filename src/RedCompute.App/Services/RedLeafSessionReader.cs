@@ -138,6 +138,7 @@ public sealed class RedLeafSessionReader
         {
             Id = sessionId,
             Provider = Str(d, "provider") ?? "",
+            ProviderEntity = Str(d, "provider_entity"),
             ProjectName = Str(d, "project_name") ?? "",
             ProjectPath = Str(d, "project_path") ?? "",
             Status = Enum.TryParse<SessionStatus>(Str(d, "status"), ignoreCase: true, out var s) ? s : SessionStatus.Stopped,
@@ -157,6 +158,7 @@ public sealed class RedLeafSessionReader
             // sessions whose provider did not report a live account/model-specific window.
             ContextWindow = Int(d, "context_window") ?? _qualityModes.GetContextWindow(model),
             Effort = Str(d, "effort"),
+            QualityTier = Str(d, "quality_tier"),
             JobId = Str(d, "job_id") is { } j && Guid.TryParse(j, out var g) ? g : null,
             Source = Str(d, "source"),
             UserId = Str(d, "user_id"),

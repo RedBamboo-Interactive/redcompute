@@ -176,6 +176,7 @@ public class RelayServer
             [
                 // Field names slugify to the snake_case data keys below.
                 new { name = "Provider", fieldType = "string", description = "Session provider plugin (claude-code, opencode, codex)" },
+                new { name = "Provider Entity", fieldType = "entity_ref", description = "Provider entity selected for this session", constraints = "{\"target_type\":\"provider\"}" },
                 new { name = "Status", fieldType = "string", description = "Lifecycle status (Starting, Active, Idle, Stopped...)" },
                 new { name = "Project Name", fieldType = "string" },
                 new { name = "Project Path", fieldType = "string", description = "Machine-local path to the project directory" },
@@ -185,6 +186,7 @@ public class RelayServer
                 new { name = "Started At", fieldType = "date" },
                 new { name = "Stop Reason", fieldType = "string" },
                 new { name = "Effort", fieldType = "string" },
+                new { name = "Quality Tier", fieldType = "entity_ref", description = "Quality-tier entity selected for this session", constraints = "{\"target_type\":\"quality-tier\"}" },
                 new { name = "Job ID", fieldType = "string", description = "RedCompute job this session belongs to" },
                 new { name = "Dismissed", fieldType = "boolean" },
                 new { name = "Source", fieldType = "string", description = "Origin app (e.g. Nova)" },
@@ -206,6 +208,7 @@ public class RelayServer
             new
             {
                 provider = snap.Provider,
+                provider_entity = snap.ProviderEntity,
                 session_id = snap.Id,
                 project_name = snap.ProjectName,
                 project_path = snap.ProjectPath,
@@ -223,6 +226,7 @@ public class RelayServer
                 context_tokens = snap.ContextTokens,
                 context_window = snap.ContextWindow,
                 effort = snap.Effort,
+                quality_tier = snap.QualityTier,
                 job_id = snap.JobId,
                 dismissed = snap.Dismissed,
                 source = snap.Source,

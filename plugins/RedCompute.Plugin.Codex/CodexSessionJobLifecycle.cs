@@ -166,6 +166,8 @@ internal sealed class CodexSessionJobLifecycle
         ProcessId = r.ProcessId,
         LastActivity = r.LastActivity,
         Effort = r.Effort,
+        QualityTier = r.QualityTier,
+        ProviderEntity = r.ProviderEntity,
         Source = r.Source,
         ContextWindow = r.ContextWindow,
         UserId = r.UserId,

@@ -119,7 +119,7 @@ public static class UnifiedSessionEndpoints
             thinkingBudget ??= q.ThinkingBudget;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort, q.EndpointUrl, q.ApiKey, thinkingBudget);
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
             if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -589,9 +589,14 @@ public static class UnifiedSessionEndpoints
                 model = resolved.Model;
                 if (string.IsNullOrWhiteSpace(effort)) effort = resolved.Effort;
                 thinkingBudget ??= resolved.ThinkingBudget;
+                qualityTier = resolved.QualityTier ?? qualityTier;
             }
+            else if (string.IsNullOrWhiteSpace(model) && string.IsNullOrWhiteSpace(qualityTier))
+                qualityTier = info.QualityTier;
+            else if (!string.IsNullOrWhiteSpace(model))
+                qualityTier = null;
 
-            var updated = await provider.UpdateSessionConfigAsync(id, model, effort, thinkingBudget);
+            var updated = await provider.UpdateSessionConfigAsync(id, model, effort, thinkingBudget, qualityTier);
             return Results.Json(updated);
         })
             .WithParam("model", "string", description: "Model to switch to. Overrides qualityTier when both are given.", location: ParamLocation.Body)
@@ -1142,7 +1147,7 @@ public static class UnifiedSessionEndpoints
     /// </summary>
     private record QualityResolution(string? Model, string? Effort, string? ProviderName,
         string? BackendName = null, string? EndpointUrl = null, string? ApiKey = null,
-        int? ThinkingBudget = null);
+        int? ThinkingBudget = null, string? QualityTier = null);
 
     private static QualityResolution ResolveQuality(HttpContext ctx, JsonElement body)
     {
@@ -1172,7 +1177,8 @@ public static class UnifiedSessionEndpoints
             resolved.Backend,
             resolved.EndpointUrl,
             resolved.ApiKey,
-            resolved.ThinkingBudget);
+            resolved.ThinkingBudget,
+            resolved.QualityTier);
     }
 
     private static (ISessionProvider? provider, IResult? error) ResolveProviderFromBody(

@@ -22,7 +22,7 @@ public record QualityMode(
 /// </summary>
 public record ResolvedMode(string Provider, string? Model, string? Effort,
     string? Backend = null, string? EndpointUrl = null, string? ApiKey = null,
-    int? ThinkingBudget = null);
+    int? ThinkingBudget = null, string? QualityTier = null);
 
 /// <summary>
 /// Resolves entity-defined quality tiers to provider-specific
@@ -153,7 +153,7 @@ public class QualityModeService
                 var pc = string.IsNullOrWhiteSpace(preferredProvider)
                     ? _providerConfig.GetDefault()
                     : _providerConfig.Resolve(preferredProvider);
-                return new ResolvedMode(pc.Slug, pc.DefaultModel, null, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+                return new ResolvedMode(pc.Slug, pc.DefaultModel, null, pc.Backend, pc.EndpointUrl, pc.ApiKey, QualityTier: tier);
             }
         }
 
@@ -163,7 +163,7 @@ public class QualityModeService
                 string.Equals(m.Provider, preferredProvider, StringComparison.OrdinalIgnoreCase));
             if (match != null) return ToResolved(match);
             var ppc = _providerConfig.Resolve(preferredProvider);
-            return new ResolvedMode(preferredProvider, ppc.DefaultModel, null, ppc.Backend, ppc.EndpointUrl, ppc.ApiKey);
+            return new ResolvedMode(preferredProvider, ppc.DefaultModel, null, ppc.Backend, ppc.EndpointUrl, ppc.ApiKey, QualityTier: tier);
         }
 
         var chosen = candidates.FirstOrDefault(m => m.IsDefault) ?? candidates[0];
@@ -223,7 +223,7 @@ public class QualityModeService
     private ResolvedMode ToResolved(QualityMode m)
     {
         var pc = _providerConfig.Resolve(m.Provider);
-        return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey, m.ThinkingBudget);
+        return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey, m.ThinkingBudget, m.QualityTier);
     }
 
     // ---- RedLeaf response parsing --------------------------------------------------------

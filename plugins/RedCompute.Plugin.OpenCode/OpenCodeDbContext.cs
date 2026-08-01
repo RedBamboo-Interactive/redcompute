@@ -32,7 +32,7 @@ public class OpenCodeDbContext : DbContext
         try
         {
             using var cmd = conn.CreateCommand();
-            foreach (var col in new[] { "OpenCodeSessionId", "Effort", "Source" })
+            foreach (var col in new[] { "OpenCodeSessionId", "Effort", "QualityTier", "ProviderEntity", "Source" })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col} TEXT";
                 try { cmd.ExecuteNonQuery(); }

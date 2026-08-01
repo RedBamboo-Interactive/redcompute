@@ -7,6 +7,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     private static AiSessionSnapshot ToSnapshot(ClaudeSessionRecord r) => new()
     {
         Provider = "claude-code",
+        ProviderEntity = r.ProviderEntity,
         Id = r.Id,
         Title = r.Title,
         ProjectName = r.ProjectName,
@@ -25,6 +26,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         ContextTokens = r.ContextTokens,
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
+        QualityTier = r.QualityTier,
         JobId = r.JobId,
         Dismissed = r.Dismissed,
         Source = r.Source,
@@ -100,6 +102,8 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.ContextTokens = record.ContextTokens;
             existing.ContextWindow = record.ContextWindow;
             existing.Effort = record.Effort;
+            existing.QualityTier = record.QualityTier;
+            existing.ProviderEntity = record.ProviderEntity;
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
             existing.Source = record.Source;

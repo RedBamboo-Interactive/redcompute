@@ -83,11 +83,11 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     // --- ISessionProvider: Session Lifecycle ---
 
     public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
-        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, null, null, null);
+        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, null, null, null, null, null);
 
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null)
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
     {
-        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, endpointUrl, apiKey, effort, thinkingBudget);
+        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, endpointUrl, apiKey, effort, thinkingBudget, qualityTier, providerEntity);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -122,9 +122,9 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Configuration ---
 
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
+    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
     {
-        var info = await _opencode.UpdateSessionConfig(sessionId, model, effort, thinkingBudget);
+        var info = await _opencode.UpdateSessionConfig(sessionId, model, effort, thinkingBudget, qualityTier);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -208,6 +208,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     {
         Id = s.Id,
         Provider = "opencode",
+        ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         Status = Enum.TryParse<SessionStatus>(s.Status, out var st)
@@ -222,6 +223,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         OutputTokens = s.OutputTokens,
         ContextWindow = s.ContextWindow,
         Effort = s.Effort,
+        QualityTier = s.QualityTier,
         JobId = s.JobId,
         Source = s.Source,
         UserId = s.UserId,

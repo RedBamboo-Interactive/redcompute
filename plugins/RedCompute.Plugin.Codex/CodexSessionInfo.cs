@@ -32,6 +32,8 @@ public class CodexSessionInfo
     public string? ThreadId { get; set; }
 
     public string? Effort { get; set; }
+    public string? QualityTier { get; set; }
+    public string? ProviderEntity { get; set; }
     public string? Source { get; set; }
     public int? ContextWindow { get; set; }
     public int? ProcessId { get; set; }

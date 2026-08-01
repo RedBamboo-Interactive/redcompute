@@ -30,6 +30,8 @@ public class CodexSessionRecord
 
     public DateTimeOffset? LastActivity { get; set; }
     public string? Effort { get; set; }
+    public string? QualityTier { get; set; }
+    public string? ProviderEntity { get; set; }
     public string? Source { get; set; }
     public int? ContextWindow { get; set; }
     public string? UserId { get; set; }

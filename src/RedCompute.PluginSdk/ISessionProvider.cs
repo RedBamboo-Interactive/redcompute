@@ -12,7 +12,7 @@ public interface ISessionProvider
     Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null);
 
     // Extended start with provider-level endpoint override (default delegates to 7-param above).
-    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null)
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
         => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task StopSessionAsync(string sessionId);
@@ -36,7 +36,7 @@ public interface ISessionProvider
     InterruptResult InterruptSession(string sessionId);
 
     // Configuration (ConfigUpdate / PermissionMode)
-    Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null);
+    Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null);
     bool SetPermissionMode(string sessionId, string mode);
 
     // Querying

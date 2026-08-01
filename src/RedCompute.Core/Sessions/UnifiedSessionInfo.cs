@@ -4,6 +4,7 @@ public class UnifiedSessionInfo
 {
     public required string Id { get; init; }
     public required string Provider { get; init; }
+    public string? ProviderEntity { get; set; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }
     public SessionStatus Status { get; set; }
@@ -21,6 +22,7 @@ public class UnifiedSessionInfo
     public int? ContextTokens { get; set; }
     public int? ContextWindow { get; set; }
     public string? Effort { get; set; }
+    public string? QualityTier { get; set; }
     public Guid? JobId { get; set; }
     public string? PermissionMode { get; set; }
     public string? Source { get; set; }

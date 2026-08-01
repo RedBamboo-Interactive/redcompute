@@ -128,6 +128,12 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         return info != null ? ToUnified(info) : null;
     }
 
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
+    {
+        var info = await _interactive.StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, qualityTier, providerEntity);
+        return info != null ? ToUnified(info) : null;
+    }
+
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
         var info = await _interactive.ResumeSessionAsync(sessionId);
@@ -176,11 +182,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public Core.Sessions.InterruptResult InterruptSession(string sessionId)
         => _interactive.InterruptSession(sessionId);
 
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
+    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
     {
         // thinkingBudget has no Codex equivalent — reasoning depth is the `effort` ladder
         // (low → ultra), which is already carried by the effort parameter.
-        var info = await _interactive.UpdateSessionConfigAsync(sessionId, model, effort);
+        var info = await _interactive.UpdateSessionConfigAsync(sessionId, model, effort, qualityTier);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -339,6 +345,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     {
         Id = s.Id,
         Provider = "codex",
+        ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         Status = Enum.TryParse<Core.Sessions.SessionStatus>(s.Status, out var st)
@@ -354,6 +361,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ContextTokens = s.ContextTokens,
         JobId = s.JobId,
         Effort = s.Effort,
+        QualityTier = s.QualityTier,
         Source = s.Source,
         UserId = s.UserId,
         ContextWindow = s.ContextWindow,

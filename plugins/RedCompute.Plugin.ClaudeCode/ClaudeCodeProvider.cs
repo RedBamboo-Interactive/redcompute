@@ -108,6 +108,12 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         return Task.FromResult(info != null ? ToUnified(info) : null);
     }
 
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
+    {
+        var info = _claude.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, qualityTier, providerEntity);
+        return Task.FromResult(info != null ? ToUnified(info) : null);
+    }
+
     public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
         var info = _claude.ResumeSession(sessionId);
@@ -147,9 +153,9 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     // --- ISessionProvider: Configuration ---
 
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null)
+    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
     {
-        var info = await _claude.UpdateSessionConfig(sessionId, model, effort);
+        var info = await _claude.UpdateSessionConfig(sessionId, model, effort, qualityTier);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -243,6 +249,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     {
         Id = s.Id,
         Provider = "claude-code",
+        ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         Status = (Core.Sessions.SessionStatus)(int)s.Status,
@@ -260,6 +267,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ContextTokens = s.ContextTokens,
         ContextWindow = s.ContextWindow,
         Effort = s.Effort,
+        QualityTier = s.QualityTier,
         JobId = s.JobId,
         PermissionMode = s.PermissionMode,
         Source = s.Source,

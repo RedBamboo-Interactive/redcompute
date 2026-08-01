@@ -66,6 +66,20 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("QualityTier"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN QualityTier TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        if (!columns.Contains("ProviderEntity"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN ProviderEntity TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         using var backfill = conn.CreateCommand();
         backfill.CommandText = "UPDATE Sessions SET Source = 'Nova' WHERE ProjectName = 'nova-workspace' AND Source IS NULL";
         backfill.ExecuteNonQuery();
