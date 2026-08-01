@@ -31,4 +31,7 @@ public class CodexSessionRecord
     public string? Effort { get; set; }
     public string? Source { get; set; }
     public int? ContextWindow { get; set; }
+    public string? UserId { get; set; }
+    public string? UserName { get; set; }
+    public string? UserAvatarUrl { get; set; }
 }

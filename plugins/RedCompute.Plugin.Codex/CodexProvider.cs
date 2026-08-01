@@ -80,6 +80,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public async Task<bool> StartAsync(CancellationToken ct = default)
     {
+        // Construction happens before RelayServer installs the RedLeaf mirror hooks. Replay the
+        // recovered local state now so sessions orphaned by a restart do not remain Active in the
+        // suite-wide read model (and keep Nova's stop button latched forever).
+        _interactive.RepublishStoredSessions();
+
         // Warm the model catalog so the synchronous GetAvailableModels() has something to serve.
         // A failure here is not fatal: the CLI may not be logged in yet, and /codex/models will
         // report that clearly on demand.

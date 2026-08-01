@@ -188,6 +188,7 @@ public class RelayServer
                 new { name = "Job ID", fieldType = "string", description = "RedCompute job this session belongs to" },
                 new { name = "Dismissed", fieldType = "boolean" },
                 new { name = "Source", fieldType = "string", description = "Origin app (e.g. Nova)" },
+                new { name = "User ID", fieldType = "string", description = "Owner of the session" },
                 new { name = "External Session ID", fieldType = "string", description = "Provider-side session identifier" },
                 new { name = "Input Tokens", fieldType = "number" },
                 new { name = "Output Tokens", fieldType = "number" },
@@ -225,6 +226,7 @@ public class RelayServer
                 job_id = snap.JobId,
                 dismissed = snap.Dismissed,
                 source = snap.Source,
+                user_id = snap.UserId,
                 app = "redcompute",
             });
 

@@ -152,6 +152,7 @@ public sealed class RedLeafSessionReader
             Effort = Str(d, "effort"),
             JobId = Str(d, "job_id") is { } j && Guid.TryParse(j, out var g) ? g : null,
             Source = Str(d, "source"),
+            UserId = Str(d, "user_id"),
         };
     }
 

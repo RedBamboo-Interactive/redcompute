@@ -27,6 +27,7 @@ public class CodexSessionStore : ICodexSessionStore
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
         Source = r.Source,
+        UserId = r.UserId,
     };
 
     private static AiMessageSnapshot ToSnapshot(CodexMessageRecord m) => new()
@@ -105,6 +106,9 @@ public class CodexSessionStore : ICodexSessionStore
             existing.Effort = record.Effort;
             existing.Source = record.Source;
             existing.ContextWindow = record.ContextWindow;
+            existing.UserId = record.UserId;
+            existing.UserName = record.UserName;
+            existing.UserAvatarUrl = record.UserAvatarUrl;
         }
         else
         {

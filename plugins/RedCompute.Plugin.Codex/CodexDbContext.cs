@@ -43,6 +43,7 @@ public class CodexDbContext : DbContext
                      {
                          "ThreadId TEXT", "Effort TEXT", "Source TEXT",
                          "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER",
+                         "UserId TEXT", "UserName TEXT", "UserAvatarUrl TEXT",
                      })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";

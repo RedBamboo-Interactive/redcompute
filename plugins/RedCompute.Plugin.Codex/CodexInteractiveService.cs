@@ -91,6 +91,18 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Republish the local lifecycle snapshot after the suite mirror is installed.
+    /// Providers are constructed before RelayServer assigns SuiteMirror's delegates, so
+    /// recovery writes performed in the constructor otherwise never reach RedLeaf and its
+    /// read path keeps reporting dead sessions as Active forever.
+    /// </summary>
+    public void RepublishStoredSessions()
+    {
+        foreach (var session in _store.GetRecentSessions([], 1_000, includeDismissed: true))
+            _store.SaveSession(session);
+    }
+
     private void TryKillByPid(int pid)
     {
         try { System.Diagnostics.Process.GetProcessById(pid).Kill(entireProcessTree: true); }
@@ -285,9 +297,14 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 sandboxPolicy = BuildSandboxPolicy(info.ProjectPath),
             }, timeoutSeconds: 120);
 
-            session.ActiveTurnId = result.TryGetProperty("turn", out var turn) && turn.TryGetProperty("id", out var tid)
+            var returnedTurnId = result.TryGetProperty("turn", out var turn) && turn.TryGetProperty("id", out var tid)
                 ? tid.GetString()
                 : result.TryGetProperty("turnId", out var t2) ? t2.GetString() : null;
+
+            // turn/started is the authoritative live signal and can arrive before this JSON-RPC
+            // response. Never overwrite a newer active id with a late response from an older turn.
+            if (info.Status == "Active" && session.ActiveTurnId == null)
+                session.ActiveTurnId = returnedTurnId;
 
             return true;
         }
@@ -463,6 +480,19 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         switch (method)
         {
+            case "turn/started":
+                if (@params.TryGetProperty("turn", out var startedTurn) &&
+                    startedTurn.TryGetProperty("id", out var startedTurnId) &&
+                    startedTurnId.ValueKind == JsonValueKind.String)
+                {
+                    session.ActiveTurnId = startedTurnId.GetString();
+                    session.Info.Status = "Active";
+                    session.Info.LastActivity = DateTimeOffset.UtcNow;
+                    Persist(session.Info);
+                    SessionUpdated?.Invoke(session.Info);
+                }
+                return;
+
             case "turn/completed":
                 ApplyUsage(session, @params);
                 session.ActiveTurnId = null;
@@ -914,6 +944,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Effort = info.Effort,
         Source = info.Source,
         ContextWindow = info.ContextWindow,
+        UserId = info.UserId,
+        UserName = info.UserName,
+        UserAvatarUrl = info.UserAvatarUrl,
     });
 
     private static CodexSessionInfo ToInfo(CodexSessionRecord r) => new()
@@ -937,6 +970,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Effort = r.Effort,
         Source = r.Source,
         ContextWindow = r.ContextWindow,
+        UserId = r.UserId,
+        UserName = r.UserName,
+        UserAvatarUrl = r.UserAvatarUrl,
     };
 
     public async ValueTask DisposeAsync() => await StopAllAsync();
