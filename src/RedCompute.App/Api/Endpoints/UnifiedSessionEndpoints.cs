@@ -15,6 +15,11 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class UnifiedSessionEndpoints
 {
+    private static readonly HashSet<string> SupportedImageMediaTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+    };
+
     private static DockerContainerService? _docker;
     private static SessionCallbackRegistry? _callbacks;
     private static QualityModeService? _quality;
@@ -94,6 +99,8 @@ public static class UnifiedSessionEndpoints
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            if (body.ValueKind != JsonValueKind.Object)
+                return Error(400, "invalid_body", "Request body must be a JSON object");
 
             var q = ResolveQuality(ctx, body);
             var (provider, error) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
@@ -190,19 +197,68 @@ public static class UnifiedSessionEndpoints
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            if (body.ValueKind != JsonValueKind.Object)
+                return Error(400, "invalid_body", "Request body must be a JSON object");
 
-            var content = body.TryGetProperty("content", out var c) ? c.GetString() : null;
-            if (string.IsNullOrWhiteSpace(content))
-                return Error(400, "missing_content", "content is required");
+            var content = body.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
+                ? c.GetString() ?? ""
+                : "";
 
             ImageAttachment[]? images = null;
-            if (body.TryGetProperty("images", out var imagesEl) && imagesEl.ValueKind == JsonValueKind.Array)
+            if (TryGetNonNullImages(body, out var imagesEl))
             {
-                images = imagesEl.EnumerateArray()
-                    .Select(i => new ImageAttachment(
-                        i.TryGetProperty("mediaType", out var mt) ? mt.GetString()! : "image/png",
-                        i.TryGetProperty("base64", out var b) ? b.GetString()! : ""))
-                    .ToArray();
+                if (imagesEl.ValueKind != JsonValueKind.Array)
+                    return Error(400, "invalid_images", "images must be an array");
+
+                var parsed = new List<ImageAttachment>();
+                foreach (var image in imagesEl.EnumerateArray())
+                {
+                    if (image.ValueKind != JsonValueKind.Object)
+                        return Error(400, "invalid_image", "Each image must be an object");
+
+                    var mediaType = image.TryGetProperty("mediaType", out var mt)
+                        && mt.ValueKind == JsonValueKind.String
+                            ? mt.GetString() ?? "image/png"
+                            : "image/png";
+                    if (!SupportedImageMediaTypes.Contains(mediaType))
+                        return Error(400, "unsupported_image_type", $"Unsupported image media type '{mediaType}'");
+
+                    var base64 = image.TryGetProperty("base64", out var b)
+                        && b.ValueKind == JsonValueKind.String
+                            ? b.GetString()
+                            : null;
+                    if (string.IsNullOrWhiteSpace(base64))
+                        return Error(400, "invalid_image", "Each image requires non-empty base64 data");
+
+                    try
+                    {
+                        if (Convert.FromBase64String(base64).Length == 0)
+                            return Error(400, "invalid_image", "Image data cannot be empty");
+                    }
+                    catch (FormatException)
+                    {
+                        return Error(400, "invalid_image", "Image data must be valid base64");
+                    }
+
+                    parsed.Add(new ImageAttachment(mediaType, base64));
+                }
+                images = parsed.Count > 0 ? [.. parsed] : null;
+            }
+
+            if (string.IsNullOrWhiteSpace(content) && images is not { Length: > 0 })
+                return Error(400, "missing_content", "content or at least one image is required");
+
+            if (images is { Length: > 0 }
+                && !provider.Capabilities.HasFlag(SessionCapabilities.ImageAttachments))
+                return Error(422, "image_attachments_not_supported",
+                    $"Provider '{provider.ProviderId}' does not support image attachments");
+            if (images is { Length: > 0 }
+                && provider is IImageAttachmentSupportProvider sessionImageSupport)
+            {
+                var support = sessionImageSupport.GetImageAttachmentSupport(id);
+                if (!support.Supported)
+                    return Error(422, "image_attachments_not_supported",
+                        support.Reason ?? $"Session '{id}' does not support image attachments");
             }
 
             string? attachmentsJson = null;
@@ -230,10 +286,9 @@ public static class UnifiedSessionEndpoints
             .WithRequestBody(new
             {
                 type = "object",
-                required = new[] { "content" },
                 properties = new
                 {
-                    content = new { type = "string", description = "Message text to send" },
+                    content = new { type = "string", description = "Message text to send. Optional when at least one image is supplied." },
                     images = new
                     {
                         type = "array",
@@ -961,6 +1016,15 @@ public static class UnifiedSessionEndpoints
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
+    }
+
+    internal static bool TryGetNonNullImages(JsonElement body, out JsonElement images)
+    {
+        if (body.TryGetProperty("images", out images) && images.ValueKind != JsonValueKind.Null)
+            return true;
+
+        images = default;
+        return false;
     }
 
     private static async Task<IResult> HandleGenerateSession(

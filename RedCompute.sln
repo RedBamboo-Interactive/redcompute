@@ -35,6 +35,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedCompute.Plugin.Codex.Tests", "tests\RedCompute.Plugin.Codex.Tests\RedCompute.Plugin.Codex.Tests.csproj", "{FC0D1CD9-B4F5-4B99-99F9-12D2D505ED76}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedCompute.App.Tests", "tests\RedCompute.App.Tests\RedCompute.App.Tests.csproj", "{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -201,6 +203,18 @@ Global
 		{FC0D1CD9-B4F5-4B99-99F9-12D2D505ED76}.Release|x64.Build.0 = Release|Any CPU
 		{FC0D1CD9-B4F5-4B99-99F9-12D2D505ED76}.Release|x86.ActiveCfg = Release|Any CPU
 		{FC0D1CD9-B4F5-4B99-99F9-12D2D505ED76}.Release|x86.Build.0 = Release|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Debug|x64.Build.0 = Debug|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Debug|x86.Build.0 = Debug|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Release|x64.ActiveCfg = Release|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Release|x64.Build.0 = Release|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Release|x86.ActiveCfg = Release|Any CPU
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -219,5 +233,6 @@ Global
 		{1AB370E8-CCF5-4677-B878-302A2BC10EA1} = {07D57EEB-2F50-60C4-C011-FE4FA775C9A8}
 		{C3A7F821-9E44-4B8D-A5B3-2F4E6D891C02} = {07D57EEB-2F50-60C4-C011-FE4FA775C9A8}
 		{FC0D1CD9-B4F5-4B99-99F9-12D2D505ED76} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{C2FB1E88-6B17-4ABA-8076-0EE81440DC60} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

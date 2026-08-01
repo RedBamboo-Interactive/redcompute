@@ -9,7 +9,8 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Codex;
 
-public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
+public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider,
+    ISessionProvider, IImageAttachmentSupportProvider
 {
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
@@ -33,7 +34,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     // ISessionProvider
     public string ProviderId => "codex";
     public string ProviderDisplayName => "Codex";
-    public SessionCapabilities Capabilities =>
+    internal const SessionCapabilities DeclaredCapabilities =
         SessionCapabilities.StatelessExecution
         | SessionCapabilities.Generate
         | SessionCapabilities.ProjectDiscovery
@@ -41,9 +42,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.Resume
         | SessionCapabilities.Interrupt
         | SessionCapabilities.SendMessage
+        | SessionCapabilities.ImageAttachments
         | SessionCapabilities.ConfigUpdate;
-    // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch),
-    // ImageAttachments (sending them through the CLI is not proven yet).
+    public SessionCapabilities Capabilities => DeclaredCapabilities;
+    // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch).
 
     public string? LastStartError => null;
 
@@ -145,7 +147,15 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public void DismissSession(string sessionId) => _codex.DismissSession(sessionId);
 
     public Task<bool> SendMessageAsync(string sessionId, string content, Core.Sessions.ImageAttachment[]? images = null, string? attachmentsJson = null, string? messageUid = null)
-        => _interactive.SendMessageAsync(sessionId, content, attachmentsJson, messageUid);
+        => _interactive.SendMessageAsync(sessionId, content, images, attachmentsJson, messageUid);
+
+    public ImageAttachmentSupport GetImageAttachmentSupport(string sessionId)
+    {
+        var (info, _) = _interactive.GetSession(sessionId);
+        return info is null
+            ? new(false, $"Session '{sessionId}' was not found")
+            : CodexInteractiveService.GetImageAttachmentSupport(info.Model, _models.Cached);
+    }
 
     /// <summary>
     /// Free-text answer to a parked question. Codex keys answers by question id, so a bare string

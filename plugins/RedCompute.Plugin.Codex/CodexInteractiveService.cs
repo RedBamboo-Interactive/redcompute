@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Codex;
@@ -341,12 +342,27 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     // ===== Messaging =========================================================================
 
     public async Task<bool> SendMessageAsync(
-        string sessionId, string content, string? attachmentsJson = null, string? messageUid = null)
+        string sessionId, string content, ImageAttachment[]? images = null,
+        string? attachmentsJson = null, string? messageUid = null)
     {
         var session = await EnsureLiveAsync(sessionId);
         if (session == null) return false;
 
         var info = session.Info;
+        if (images is { Length: > 0 })
+        {
+            var support = GetImageAttachmentSupport(info.Model, _catalog.Cached);
+            if (!support.Supported)
+            {
+                var error = support.Reason ?? $"Model '{info.Model}' does not support image input";
+                _log($"[Codex] {error} for session {sessionId}", null);
+                Emit(session, new CodexStreamEvent { Type = "error", Content = error });
+                return false;
+            }
+        }
+
+        var turnInput = BuildTurnInput(content, images);
+        if (turnInput.Length == 0) return false;
 
         // A user message opens a new turn, so the previous turn's uid must not leak into it.
         session.CurrentTurnUid = null;
@@ -374,7 +390,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             var result = await session.Connection.SendRequestAsync("turn/start", new
             {
                 threadId = info.ThreadId,
-                input = new object[] { new { type = "text", text = content } },
+                input = turnInput,
                 model = info.Model,
                 effort = info.Effort,
 
@@ -407,6 +423,46 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             Persist(info);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Build the app-server's multimodal <c>UserInput[]</c>. Inline data URLs keep the image tied
+    /// to the turn without creating temporary files whose lifetime would need to span persistence
+    /// and resume. The installed app-server schema accepts <c>text</c>, <c>image</c>, and
+    /// <c>localImage</c> variants here.
+    /// </summary>
+    internal static object[] BuildTurnInput(string content, ImageAttachment[]? images)
+    {
+        var input = new List<object>();
+        if (!string.IsNullOrWhiteSpace(content))
+            input.Add(new { type = "text", text = content });
+
+        if (images is not null)
+        {
+            foreach (var image in images)
+            {
+                input.Add(new
+                {
+                    type = "image",
+                    url = $"data:{image.MediaType};base64,{image.Base64}",
+                });
+            }
+        }
+
+        return [.. input];
+    }
+
+    internal static ImageAttachmentSupport GetImageAttachmentSupport(
+        string? modelId, IReadOnlyList<CodexModel> catalog)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+            return new(true);
+
+        var model = catalog.FirstOrDefault(m =>
+            m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
+        return model is { SupportsImages: false }
+            ? new(false, $"Model '{modelId}' does not support image input")
+            : new(true);
     }
 
     /// <summary>

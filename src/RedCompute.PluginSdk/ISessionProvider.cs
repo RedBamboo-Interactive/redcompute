@@ -68,3 +68,15 @@ public interface ISessionProvider
     Task StopAllAsync();
     string? LastStartError { get; }
 }
+
+/// <summary>
+/// Optional per-session refinement for providers whose image support varies by selected model.
+/// Provider-level <see cref="SessionCapabilities.ImageAttachments"/> remains the coarse feature
+/// declaration; this hook lets the HTTP boundary reject a known-incompatible model before delivery.
+/// </summary>
+public interface IImageAttachmentSupportProvider
+{
+    ImageAttachmentSupport GetImageAttachmentSupport(string sessionId);
+}
+
+public sealed record ImageAttachmentSupport(bool Supported, string? Reason = null);
