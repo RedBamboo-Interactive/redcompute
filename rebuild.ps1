@@ -22,7 +22,11 @@
 param(
     # Skip the kernel handshake and behave like the old script — for when the kernel is
     # not the thing running Compute.
-    [switch]$NoKernel
+    [switch]$NoKernel,
+
+    # Build the Release output but leave launching to the caller. RedLeaf's full rebuild
+    # uses this while it replaces the kernel that will own Compute afterwards.
+    [switch]$NoLaunch
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +43,7 @@ function Invoke-Kernel($Path, $Body) {
 }
 
 $handedOff = $false
+$hadComputeProcess = [bool](Get-Process RedCompute -ErrorAction SilentlyContinue)
 if (-not $NoKernel) {
     Write-Host "=== Asking the kernel to release RedCompute ===" -ForegroundColor Cyan
     # force:true because the kernel refuses while jobs are running, and a rebuild is an
@@ -48,14 +53,21 @@ if (-not $NoKernel) {
         $handedOff = $true
         Write-Host "  released; the kernel will not restart it until we ask" -ForegroundColor DarkGray
     } elseif ($stop) {
-        Write-Host "  kernel declined: $($stop.error)" -ForegroundColor DarkYellow
+        Write-Host "  kernel is not supervising this instance: $($stop.error)" -ForegroundColor DarkYellow
+        Write-Host "  rebuild has explicit authority and will stop RedCompute directly" -ForegroundColor Cyan
+    } else {
+        Write-Host "  kernel did not answer; rebuild will take direct authority if Compute stays down" -ForegroundColor DarkYellow
     }
 
-    # Wait for the port to actually go quiet before the shared script starts building.
-    $deadline = (Get-Date).AddSeconds(20)
-    while ((Get-Date) -lt $deadline) {
-        if (-not (Get-NetTCPConnection -LocalPort 18800 -State Listen -ErrorAction SilentlyContinue)) { break }
-        Start-Sleep -Milliseconds 250
+    # A managed release is asynchronous, so wait for it. An external instance will not
+    # react to the kernel call; direct authority below stops it immediately instead of
+    # pointlessly waiting twenty seconds for a port that cannot close on its own.
+    if ($handedOff) {
+        $deadline = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $deadline) {
+            if (-not (Get-NetTCPConnection -LocalPort 18800 -State Listen -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Milliseconds 250
+        }
     }
 
     # Staying down is the thing that matters, not going down. If the kernel is unhealthy
@@ -85,8 +97,9 @@ release its managed children.
 
 # When the kernel owns the lifecycle, never let the shared script launch the exe itself:
 # a second instance would be adopted and we would be debugging a process nobody rebuilt.
-$forwarded = $args
-if ($handedOff -and $forwarded -notcontains '-NoLaunch') { $forwarded += '-NoLaunch' }
+$forwarded = @()
+if ($handedOff -or $NoLaunch) { $forwarded += '-NoLaunch' }
+$buildSucceeded = $false
 
 try {
     & "$PSScriptRoot\..\redbamboo-packages\dotnet\rebuild.ps1" `
@@ -98,11 +111,23 @@ try {
         -ExePath "$PSScriptRoot\src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe" `
         -ExtraKill 'wsl -d Ubuntu-24.04 -- pkill -f "uvicorn|server\.py" 2>$null' `
         @forwarded
+    if ($LASTEXITCODE -ne 0) { throw "RedCompute Release build failed" }
+    $buildSucceeded = $true
 } finally {
     # Always hand it back, including when the build failed — leaving the suite without
     # Compute is worse than leaving it on the previous binaries.
     if ($handedOff) {
         Write-Host "=== Handing RedCompute back to the kernel ===" -ForegroundColor Cyan
         Invoke-Kernel '/api/setup/compute/start' '{}' | Out-Null
+    } elseif ($NoLaunch -and -not $buildSucceeded -and $hadComputeProcess -and
+        -not (Get-Process RedCompute -ErrorAction SilentlyContinue)) {
+        # The outer RedLeaf rebuild never gets to its kernel restart when this build
+        # fails. Restore the previous service instead of turning a failed build into a
+        # Compute outage. Its binaries may be old, but the failure receipt will say so.
+        $exe = "$PSScriptRoot\src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe"
+        if (Test-Path $exe) {
+            Write-Host "=== Build failed; restoring the previous RedCompute service ===" -ForegroundColor DarkYellow
+            Start-Process -FilePath $exe -ArgumentList '--port 18800', '--redleaf-url http://127.0.0.1:18804' -WindowStyle Hidden
+        }
     }
 }
