@@ -28,6 +28,12 @@ public sealed class RedLeafSessionReader
         _http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {token}");
     }
 
+    internal RedLeafSessionReader(HttpClient http, QualityModeService qualityModes)
+    {
+        _http = http;
+        _qualityModes = qualityModes;
+    }
+
     public async Task<List<UnifiedSessionInfo>> GetSessionsAsync(string? provider, int limit, bool includeDismissed)
     {
         // Entities can't be server-sorted by a data key; recently-started is a
@@ -51,8 +57,9 @@ public sealed class RedLeafSessionReader
         return sessions.Count > limit ? sessions.Take(limit).ToList() : sessions;
     }
 
-    public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionAsync(string sessionId)
-        => await GetByDataFilterAsync($"data.session_id={Uri.EscapeDataString(sessionId)}");
+    public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionAsync(
+        string sessionId, int? tail = null)
+        => await GetByDataFilterAsync($"data.session_id={Uri.EscapeDataString(sessionId)}", tail);
 
     public async Task<(UnifiedSessionInfo? Info, string? EntityId)> GetSessionInfoAsync(string sessionId)
     {
@@ -74,7 +81,8 @@ public sealed class RedLeafSessionReader
         return result;
     }
 
-    private async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetByDataFilterAsync(string filter)
+    private async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetByDataFilterAsync(
+        string filter, int? tail = null)
     {
         using var doc = await GetJsonAsync($"api/entities?type=ai-session&{filter}&limit=1");
         var items = doc.RootElement.GetProperty("items");
@@ -87,12 +95,48 @@ public sealed class RedLeafSessionReader
             return (null, []);
 
         var entityId = entity.GetProperty("id").GetString()!;
-        return (info, await GetHistoryAsync(entityId, info.Id));
+        return (info, await GetHistoryAsync(entityId, info.Id, tail));
     }
 
-    private async Task<List<UnifiedMessageRecord>> GetHistoryAsync(string entityId, string sessionId)
+    private async Task<List<UnifiedMessageRecord>> GetHistoryAsync(string entityId, string sessionId, int? tail)
     {
         var history = new List<UnifiedMessageRecord>();
+
+        void AddRecord(JsonElement rec)
+        {
+            var id = rec.GetProperty("id").GetInt64();
+            using var data = JsonDocument.Parse(rec.GetProperty("data").GetString()!);
+            var d = data.RootElement;
+            history.Add(new UnifiedMessageRecord
+            {
+                Id = id,
+                SessionId = Str(d, "session_id") ?? sessionId,
+                Role = Str(d, "role") ?? "",
+                EventType = Str(d, "event_type") ?? "",
+                Content = Str(d, "content"),
+                ToolName = Str(d, "tool_name"),
+                ToolInput = Str(d, "tool_input"),
+                ToolResult = Str(d, "tool_result"),
+                PayloadRef = MapPayloadRef(rec, id),
+                MessageId = Str(d, "message_id"),
+                MessageUid = Str(d, "message_uid"),
+                Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
+                    ? t : default,
+                AttachmentsJson = Str(d, "attachments_json"),
+            });
+        }
+
+        if (tail is { } requestedTail)
+        {
+            var pageSize = Math.Clamp(requestedTail, 1, 10_000);
+            using var doc = await GetJsonAsync(
+                $"api/streams/session-messages/records?entity_id={entityId}&order=desc&limit={pageSize}");
+            var records = doc.RootElement.GetProperty("items").EnumerateArray().ToArray();
+            for (var i = records.Length - 1; i >= 0; i--)
+                AddRecord(records[i]);
+            return history;
+        }
+
         long afterId = 0;
         while (true)
         {
@@ -101,27 +145,8 @@ public sealed class RedLeafSessionReader
             var items = doc.RootElement.GetProperty("items");
             foreach (var rec in items.EnumerateArray())
             {
-                var id = rec.GetProperty("id").GetInt64();
-                afterId = id;
-                using var data = JsonDocument.Parse(rec.GetProperty("data").GetString()!);
-                var d = data.RootElement;
-                history.Add(new UnifiedMessageRecord
-                {
-                    Id = id,
-                    SessionId = Str(d, "session_id") ?? sessionId,
-                    Role = Str(d, "role") ?? "",
-                    EventType = Str(d, "event_type") ?? "",
-                    Content = Str(d, "content"),
-                    ToolName = Str(d, "tool_name"),
-                    ToolInput = Str(d, "tool_input"),
-                    ToolResult = Str(d, "tool_result"),
-                    PayloadRef = MapPayloadRef(rec, id),
-                    MessageId = Str(d, "message_id"),
-                    MessageUid = Str(d, "message_uid"),
-                    Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
-                        ? t : default,
-                    AttachmentsJson = Str(d, "attachments_json"),
-                });
+                afterId = rec.GetProperty("id").GetInt64();
+                AddRecord(rec);
             }
             if (items.GetArrayLength() < 1000) break;
         }

@@ -207,11 +207,15 @@ public static class UnifiedSessionEndpoints
         endpoints.MapGet("/ai-session/sessions/{id}",
             "Get session details and message history", async (HttpContext ctx, string id) =>
         {
+            int? tail = null;
+            if (int.TryParse(ctx.Request.Query["tail"].FirstOrDefault(), out var requestedTail))
+                tail = Math.Clamp(requestedTail, 1, 10_000);
+
             UnifiedSessionInfo? info;
             List<UnifiedMessageRecord> history;
             try
             {
-                (info, history) = await _redLeafReader!.GetSessionAsync(id);
+                (info, history) = await _redLeafReader!.GetSessionAsync(id, tail);
             }
             catch (Exception ex)
             {
@@ -226,7 +230,9 @@ public static class UnifiedSessionEndpoints
                 return Error(403, "forbidden", "You do not have access to this session");
 
             return Results.Json(new { session = info, messages = history });
-        });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("tail", "integer", description: "Return only the newest transcript records, in chronological order (max 10000)", location: ParamLocation.Query);
 
         endpoints.MapGet("/ai-session/sessions/{id}/messages/{recordId:long}/output",
             "Stream a payload-backed transcript output. Supports HTTP byte ranges; bytes are loaded only when requested.", async (HttpContext ctx, string id, long recordId) =>
