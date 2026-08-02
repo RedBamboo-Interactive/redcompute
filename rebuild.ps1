@@ -97,21 +97,29 @@ release its managed children.
 
 # When the kernel owns the lifecycle, never let the shared script launch the exe itself:
 # a second instance would be adopted and we would be debugging a process nobody rebuilt.
-$forwarded = @()
-if ($handedOff -or $NoLaunch) { $forwarded += '-NoLaunch' }
+#
+# Use named hashtable splatting here. Array splatting passes strings positionally in
+# Windows PowerShell 5.1, so the old @('-NoLaunch') forwarding silently bound the value
+# to an earlier parameter and the shared rebuild script launched Compute anyway. During
+# a full Leaf rebuild that started Compute several seconds before the kernel/API.
+$sharedArgs = @{
+    AppName      = 'RedCompute'
+    Port         = 18800
+    SkipFrontend = $true
+    FrontendDir  = $PSScriptRoot
+    BuildTarget  = "$PSScriptRoot\RedCompute.sln"
+    ExePath      = "$PSScriptRoot\src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe"
+    ExtraKill    = 'wsl -d Ubuntu-24.04 -- pkill -f "uvicorn|server\.py" 2>$null'
+    NoLaunch     = [bool]($handedOff -or $NoLaunch)
+}
 $buildSucceeded = $false
 
 try {
-    & "$PSScriptRoot\..\redbamboo-packages\dotnet\rebuild.ps1" `
-        -AppName RedCompute `
-        -Port 18800 `
-        -SkipFrontend `
-        -FrontendDir "$PSScriptRoot" `
-        -BuildTarget "$PSScriptRoot\RedCompute.sln" `
-        -ExePath "$PSScriptRoot\src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe" `
-        -ExtraKill 'wsl -d Ubuntu-24.04 -- pkill -f "uvicorn|server\.py" 2>$null' `
-        @forwarded
+    & "$PSScriptRoot\..\redbamboo-packages\dotnet\rebuild.ps1" @sharedArgs
     if ($LASTEXITCODE -ne 0) { throw "RedCompute Release build failed" }
+    if ($sharedArgs.NoLaunch -and (Get-Process RedCompute -ErrorAction SilentlyContinue)) {
+        throw "RedCompute was launched despite the -NoLaunch deployment contract"
+    }
     $buildSucceeded = $true
 } finally {
     # Always hand it back, including when the build failed — leaving the suite without

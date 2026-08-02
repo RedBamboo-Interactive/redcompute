@@ -162,7 +162,8 @@ public static class UnifiedSessionEndpoints
             if (body.ValueKind != JsonValueKind.Object)
                 return Error(400, "invalid_body", "Request body must be a JSON object");
 
-            var q = ResolveQuality(ctx, body);
+            var (q, qualityError) = ResolveQuality(ctx, body);
+            if (qualityError != null) return qualityError;
             var (provider, error) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
             if (error != null) return error;
 
@@ -803,10 +804,13 @@ public static class UnifiedSessionEndpoints
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
 
             // Explicit model wins; otherwise a qualityTier resolves to a model (+effort+thinkingBudget) for this provider.
-            if (string.IsNullOrWhiteSpace(model) && !string.IsNullOrWhiteSpace(qualityTier) && _quality != null)
+            if (string.IsNullOrWhiteSpace(model) && !string.IsNullOrWhiteSpace(qualityTier))
             {
-                var resolved = _quality.Resolve(qualityTier, provider.ProviderId);
-                model = resolved.Model;
+                if (_quality == null)
+                    return QualityResolutionError(qualityTier, provider.ProviderId, QualityResolutionFailure.CatalogUnavailable);
+                if (!_quality.TryResolveRequested(qualityTier, provider.ProviderId, out var resolved, out var failure))
+                    return QualityResolutionError(qualityTier, provider.ProviderId, failure);
+                model = resolved!.Model;
                 if (string.IsNullOrWhiteSpace(effort)) effort = resolved.Effort;
                 thinkingBudget ??= resolved.ThinkingBudget;
                 qualityTier = resolved.QualityTier ?? qualityTier;
@@ -1028,7 +1032,8 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var q = ResolveQuality(ctx, body);
+            var (q, qualityError) = ResolveQuality(ctx, body);
+            if (qualityError != null) return qualityError;
             var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
             if (resolveError != null) return resolveError;
 
@@ -1232,7 +1237,8 @@ public static class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var q = ResolveQuality(ctx, body);
+            var (q, qualityError) = ResolveQuality(ctx, body);
+            if (qualityError != null) return qualityError;
             var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
             if (resolveError != null) return resolveError;
 
@@ -1388,7 +1394,7 @@ public static class UnifiedSessionEndpoints
         string? BackendName = null, string? EndpointUrl = null, string? ApiKey = null,
         int? ThinkingBudget = null, string? QualityTier = null);
 
-    private static QualityResolution ResolveQuality(HttpContext ctx, JsonElement body)
+    private static (QualityResolution Resolution, IResult? Error) ResolveQuality(HttpContext ctx, JsonElement body)
     {
         var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
         var effort = body.TryGetProperty("effort", out var ef) && ef.ValueKind == JsonValueKind.String ? ef.GetString() : null;
@@ -1398,26 +1404,49 @@ public static class UnifiedSessionEndpoints
 
         // Explicit model wins, and no tier means nothing to resolve — leave request values untouched.
         // Still resolve provider config so endpoint/apiKey flow through even without a quality tier.
-        if (!string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(tier) || _quality == null)
+        if (!string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(tier))
         {
             if (explicitProvider != null && _providerConfig != null)
             {
                 var pc = _providerConfig.Resolve(explicitProvider);
-                return new QualityResolution(model ?? pc.DefaultModel, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey);
+                return (new QualityResolution(model ?? pc.DefaultModel, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey), null);
             }
-            return new QualityResolution(model, effort, explicitProvider);
+            return (new QualityResolution(model, effort, explicitProvider), null);
         }
 
-        var resolved = _quality.Resolve(tier, explicitProvider);
-        return new QualityResolution(
-            resolved.Model,
+        if (_quality == null)
+            return (new QualityResolution(null, effort, explicitProvider),
+                Error(503, "quality_catalog_unavailable", "The quality catalog is unavailable; the request was not started"));
+
+        if (!_quality.TryResolveRequested(tier, explicitProvider, out var resolved, out var failure))
+            return (new QualityResolution(null, effort, explicitProvider),
+                QualityResolutionError(tier, explicitProvider, failure));
+
+        return (new QualityResolution(
+            resolved!.Model,
             string.IsNullOrWhiteSpace(effort) ? resolved.Effort : effort,
             explicitProvider ?? resolved.Provider,
             resolved.Backend,
             resolved.EndpointUrl,
             resolved.ApiKey,
             resolved.ThinkingBudget,
-            resolved.QualityTier);
+            resolved.QualityTier), null);
+    }
+
+    private static IResult QualityResolutionError(
+        string qualityTier,
+        string? provider,
+        QualityResolutionFailure failure)
+    {
+        return failure switch
+        {
+            QualityResolutionFailure.UnknownTier => Error(422, "unknown_quality_tier",
+                $"Quality tier '{qualityTier}' is not present in the authoritative catalog; the request was not started"),
+            QualityResolutionFailure.ModelUnavailable => Error(503, "quality_model_unavailable",
+                $"Quality tier '{qualityTier}' has no resolvable model{(string.IsNullOrWhiteSpace(provider) ? "" : $" for provider '{provider}'")}; the request was not started"),
+            _ => Error(503, "quality_catalog_unavailable",
+                "The quality catalog is unavailable; the request was not started"),
+        };
     }
 
     private static (ISessionProvider? provider, IResult? error) ResolveProviderFromBody(

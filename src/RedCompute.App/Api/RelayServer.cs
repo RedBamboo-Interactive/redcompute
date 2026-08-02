@@ -304,9 +304,10 @@ public class RelayServer
             () => new RedBamboo.AppHost.Tunnel.TunnelConfig { Enabled = false },
             App.LogService, mapRemoteAccess: false, mapAutoStart: false);
 
-        // Quality tiers and modes are entity-owned. Load them before accepting requests so
-        // the first session cannot race an empty catalog after hardcoded fallbacks were removed.
-        await _qualityModes.RefreshAsync(ct);
+        // Quality tiers and modes are entity-owned. Load RedLeaf or the last-known-good
+        // disk snapshot before accepting requests. If neither exists, tier-based requests
+        // fail closed while the background retry loop waits for RedLeaf.
+        await _qualityModes.InitialSyncAsync(ct);
 
         _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);
@@ -315,6 +316,7 @@ public class RelayServer
         // Provider entities were synchronously loaded before capability initialization. Keep
         // retrying only when that initial RedLeaf/cache sync could not supply an entity snapshot.
         _ = _providerConfig.EnsureLoadedAsync(ct);
+        _ = _qualityModes.EnsureLoadedAsync(ct);
     }
 
     private void RegisterWsEvents(WebSocketBroadcaster broadcaster, SessionTranscriptPipeline transcriptPipeline)

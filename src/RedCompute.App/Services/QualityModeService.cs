@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using RedCompute.Core.Configuration;
@@ -24,103 +25,178 @@ public record ResolvedMode(string Provider, string? Model, string? Effort,
     string? Backend = null, string? EndpointUrl = null, string? ApiKey = null,
     int? ThinkingBudget = null, string? QualityTier = null);
 
+public enum QualityResolutionFailure
+{
+    None,
+    CatalogUnavailable,
+    UnknownTier,
+    ModelUnavailable,
+}
+
 /// <summary>
 /// Resolves entity-defined quality tiers to provider-specific
 /// model + params for the whole Red Suite. Modes are defined as RedLeaf entities
 /// (type=quality-mode) and fetched from RedLeaf. Display and model choices are not duplicated
-/// in code; when RedLeaf is offline the current entity-derived snapshot is retained.
+/// in code. A last-known-good disk snapshot covers cold-start outages and RedLeaf is
+/// retried in the background until the authoritative entity catalog is available.
 /// </summary>
 public class QualityModeService
 {
     private readonly RedComputeConfig _config;
     private readonly Action<string, Guid?> _log;
     private readonly ProviderConfigService _providerConfig;
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private readonly HttpClient _http;
+    private readonly string _cachePath;
+    private readonly TimeSpan _initialRetryDelay;
+    private readonly TimeSpan _maxRetryDelay;
 
     private readonly object _lock = new();
     private Dictionary<string, List<QualityMode>> _modes;
     private Dictionary<string, QualityTier> _tiers;
     private Dictionary<string, ModelTokenPricing> _modelPricing;
     private string? _defaultTierSlug;
+    private volatile bool _loadedFromRedLeaf;
+    private volatile bool _loadedFromCache;
+
+    private static readonly string DefaultCachePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RedCompute", "quality-mode-cache.json");
 
     public QualityModeService(RedComputeConfig config, Action<string, Guid?> log, ProviderConfigService providerConfig)
+        : this(config, log, providerConfig,
+            new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, DefaultCachePath,
+            TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(30))
+    {
+    }
+
+    internal QualityModeService(
+        RedComputeConfig config,
+        Action<string, Guid?> log,
+        ProviderConfigService providerConfig,
+        HttpClient http,
+        string cachePath,
+        TimeSpan initialRetryDelay,
+        TimeSpan maxRetryDelay)
     {
         _config = config;
         _log = log;
         _providerConfig = providerConfig;
+        _http = http;
+        _cachePath = cachePath;
+        _initialRetryDelay = initialRetryDelay;
+        _maxRetryDelay = maxRetryDelay;
         _modes = new Dictionary<string, List<QualityMode>>(StringComparer.OrdinalIgnoreCase);
         _tiers = new Dictionary<string, QualityTier>(StringComparer.OrdinalIgnoreCase);
         _modelPricing = new Dictionary<string, ModelTokenPricing>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
-    /// Re-fetch quality modes from RedLeaf and replace the in-memory cache. On any failure the
-    /// existing cache (fallbacks or a previous successful fetch) is left untouched.
+    /// Re-fetch quality modes from RedLeaf and atomically replace the in-memory snapshot.
+    /// Tiers and modes are one contract: a partial response never replaces either half.
     /// </summary>
     public async Task RefreshAsync(CancellationToken ct = default)
     {
+        string? tiersJson = null;
+        string? modesJson = null;
+        string? pricingJson = null;
+        string? suiteConfigJson = null;
         try
         {
             var baseUrl = _config.RedLeafUrl.TrimEnd('/');
 
-            var tiersJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-tier&limit=100", ct);
+            tiersJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-tier&limit=100", ct);
             var parsedTiers = ParseTiers(tiersJson);
             if (parsedTiers.Count == 0)
             {
-                _log("[QualityModes] RedLeaf returned no quality-tier entities; keeping current tiers", null);
-            }
-            else
-            {
-                var tiersDict = parsedTiers.ToDictionary(t => t.Slug, StringComparer.OrdinalIgnoreCase);
-                lock (_lock) { _tiers = tiersDict; }
-                _log($"[QualityModes] Loaded {parsedTiers.Count} quality tier(s) from RedLeaf", null);
+                _log("[QualityModes] RedLeaf returned no quality-tier entities; keeping current snapshot", null);
+                return;
             }
 
-            var modesJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-mode&limit=100", ct);
+            modesJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=quality-mode&limit=100", ct);
             var parsed = ParseModes(modesJson, parsedTiers);
             if (parsed.Count == 0)
             {
-                _log("[QualityModes] RedLeaf returned no usable quality-mode entities; keeping current modes", null);
-            }
-            else
-            {
-                var grouped = parsed
-                    .GroupBy(m => m.QualityTier, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
-                lock (_lock) { _modes = grouped; }
-                _log($"[QualityModes] Loaded {parsed.Count} quality mode(s) across {grouped.Count} tier(s) from RedLeaf", null);
-            }
-
-            var pricingJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=inference-model&limit=200", ct);
-            var parsedPricing = ParseModelPricing(pricingJson);
-            if (parsedPricing.Count == 0)
-            {
-                _log("[QualityModes] RedLeaf returned no complete model pricing; keeping current rates", null);
-            }
-            else
-            {
-                lock (_lock) { _modelPricing = parsedPricing; }
-                _log($"[QualityModes] Loaded API-equivalent pricing for {parsedPricing.Count} model id(s)", null);
+                _log("[QualityModes] RedLeaf returned no usable quality-mode entities; keeping current snapshot", null);
+                return;
             }
 
             try
             {
-                var suiteConfigJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=suite-config&limit=1", ct);
-                var defaultTierRef = ParseDefaultTierReference(suiteConfigJson);
-                if (!string.IsNullOrWhiteSpace(defaultTierRef))
-                {
-                    var defaultTier = parsedTiers.FirstOrDefault(t =>
-                        string.Equals(t.Id, defaultTierRef, StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(t.Slug, defaultTierRef, StringComparison.OrdinalIgnoreCase));
-                    if (defaultTier != null)
-                        lock (_lock) { _defaultTierSlug = defaultTier.Slug; }
-                }
+                pricingJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=inference-model&limit=200", ct);
             }
-            catch { /* suite-config is optional; tier entities remain authoritative */ }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                _log($"[QualityModes] Model pricing unavailable; keeping current rates: {ex.Message}", null);
+            }
+
+            try
+            {
+                suiteConfigJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=suite-config&limit=1", ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                _log($"[QualityModes] Suite default unavailable; keeping current default: {ex.Message}", null);
+            }
+
+            ApplySnapshot(parsedTiers, parsed, pricingJson, suiteConfigJson);
+            _loadedFromRedLeaf = true;
+            WriteCache(tiersJson, modesJson, pricingJson, suiteConfigJson);
+
+            _log($"[QualityModes] Loaded {parsedTiers.Count} tier(s) and {parsed.Count} mode(s) from RedLeaf", null);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _log($"[QualityModes] Failed to fetch quality mode entities; keeping the current entity snapshot: {ex.Message}", null);
+        }
+    }
+
+    public bool LoadedFromRedLeaf => _loadedFromRedLeaf;
+    public bool LoadedFromCache => _loadedFromCache;
+    public bool HasSnapshot
+    {
+        get { lock (_lock) { return _tiers.Count > 0 && _modes.Count > 0; } }
+    }
+
+    /// <summary>One bounded startup attempt, followed by last-known-good disk recovery.</summary>
+    public async Task<bool> InitialSyncAsync(CancellationToken ct = default)
+    {
+        await RefreshAsync(ct);
+        if (_loadedFromRedLeaf) return true;
+
+        if (TryLoadFromCache())
+        {
+            _loadedFromCache = true;
+            return true;
+        }
+
+        _log("[QualityModes] No RedLeaf or cached quality catalog is available; tier-based requests will fail explicitly", null);
+        return false;
+    }
+
+    /// <summary>Retry RedLeaf until the authoritative catalog has been loaded at least once.</summary>
+    public async Task EnsureLoadedAsync(CancellationToken ct = default)
+    {
+        if (_loadedFromRedLeaf) return;
+
+        var delay = _initialRetryDelay;
+        var attempt = 0;
+        while (!ct.IsCancellationRequested && !_loadedFromRedLeaf)
+        {
+            attempt++;
+            try { await RefreshAsync(ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            if (_loadedFromRedLeaf)
+            {
+                _log($"[QualityModes] Quality catalog recovered from RedLeaf after {attempt} attempt(s)", null);
+                return;
+            }
+
+            var snapshotState = HasSnapshot ? "Serving the cached quality catalog" : "Quality catalog is empty";
+            _log($"[QualityModes] {snapshotState}; RedLeaf fetch attempt {attempt} failed, retrying in {delay.TotalSeconds:0.###}s", null);
+            try { await Task.Delay(delay, ct); }
+            catch (OperationCanceledException) { return; }
+            delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, _maxRetryDelay.Ticks));
         }
     }
 
@@ -168,6 +244,63 @@ public class QualityModeService
 
         var chosen = candidates.FirstOrDefault(m => m.IsDefault) ?? candidates[0];
         return ToResolved(chosen);
+    }
+
+    /// <summary>
+    /// Resolve a caller-requested quality tier without silently substituting a suite default.
+    /// This is the fail-closed path used by session and execution endpoints.
+    /// </summary>
+    public bool TryResolveRequested(
+        string qualityTier,
+        string? preferredProvider,
+        out ResolvedMode? resolved,
+        out QualityResolutionFailure failure)
+    {
+        resolved = null;
+        failure = QualityResolutionFailure.None;
+
+        Dictionary<string, List<QualityMode>> modes;
+        Dictionary<string, QualityTier> tiers;
+        lock (_lock) { modes = _modes; tiers = _tiers; }
+
+        if (tiers.Count == 0 || modes.Count == 0)
+        {
+            failure = QualityResolutionFailure.CatalogUnavailable;
+            return false;
+        }
+
+        var requested = qualityTier.Trim();
+        if (!tiers.ContainsKey(requested)
+            || !modes.TryGetValue(requested, out var candidates)
+            || candidates.Count == 0)
+        {
+            failure = QualityResolutionFailure.UnknownTier;
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(preferredProvider))
+        {
+            var normalizedProvider = _providerConfig.ResolveReference(preferredProvider);
+            var match = candidates.FirstOrDefault(m =>
+                string.Equals(m.Provider, normalizedProvider, StringComparison.OrdinalIgnoreCase));
+            resolved = match != null
+                ? ToResolved(match)
+                : Resolve(requested, normalizedProvider);
+        }
+        else
+        {
+            var chosen = candidates.FirstOrDefault(m => m.IsDefault) ?? candidates[0];
+            resolved = ToResolved(chosen);
+        }
+
+        if (string.IsNullOrWhiteSpace(resolved.Model))
+        {
+            resolved = null;
+            failure = QualityResolutionFailure.ModelUnavailable;
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -224,6 +357,100 @@ public class QualityModeService
     {
         var pc = _providerConfig.Resolve(m.Provider);
         return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey, m.ThinkingBudget, m.QualityTier);
+    }
+
+    private void ApplySnapshot(
+        IReadOnlyList<QualityTier> tiers,
+        IReadOnlyList<QualityMode> modes,
+        string? pricingJson,
+        string? suiteConfigJson)
+    {
+        var tiersDict = tiers.ToDictionary(t => t.Slug, StringComparer.OrdinalIgnoreCase);
+        var grouped = modes
+            .GroupBy(m => m.QualityTier, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+        var pricing = string.IsNullOrWhiteSpace(pricingJson)
+            ? null
+            : ParseModelPricing(pricingJson);
+
+        string? defaultTierSlug = null;
+        if (!string.IsNullOrWhiteSpace(suiteConfigJson))
+        {
+            var defaultTierRef = ParseDefaultTierReference(suiteConfigJson);
+            defaultTierSlug = tiers.FirstOrDefault(t =>
+                string.Equals(t.Id, defaultTierRef, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(t.Slug, defaultTierRef, StringComparison.OrdinalIgnoreCase))?.Slug;
+        }
+
+        lock (_lock)
+        {
+            _tiers = tiersDict;
+            _modes = grouped;
+            if (pricing is { Count: > 0 }) _modelPricing = pricing;
+            if (!string.IsNullOrWhiteSpace(defaultTierSlug)) _defaultTierSlug = defaultTierSlug;
+        }
+    }
+
+    private void WriteCache(string tiersJson, string modesJson, string? pricingJson, string? suiteConfigJson)
+    {
+        string? tempPath = null;
+        try
+        {
+            var directory = Path.GetDirectoryName(_cachePath);
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+
+            tempPath = _cachePath + ".tmp";
+            var envelope = JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                capturedAt = DateTimeOffset.UtcNow,
+                tiers = tiersJson,
+                modes = modesJson,
+                pricing = pricingJson,
+                suiteConfig = suiteConfigJson,
+            });
+            File.WriteAllText(tempPath, envelope);
+            File.Move(tempPath, _cachePath, overwrite: true);
+            _log($"[QualityModes] Last-known-good catalog written to {_cachePath}", null);
+        }
+        catch (Exception ex)
+        {
+            _log($"[QualityModes] Failed to write catalog cache: {ex.Message}", null);
+            try { if (tempPath != null && File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+        }
+    }
+
+    private bool TryLoadFromCache()
+    {
+        try
+        {
+            if (!File.Exists(_cachePath)) return false;
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(_cachePath));
+            var root = doc.RootElement;
+            var tiersJson = root.TryGetProperty("tiers", out var tiersValue) && tiersValue.ValueKind == JsonValueKind.String
+                ? tiersValue.GetString() : null;
+            var modesJson = root.TryGetProperty("modes", out var modesValue) && modesValue.ValueKind == JsonValueKind.String
+                ? modesValue.GetString() : null;
+            if (string.IsNullOrWhiteSpace(tiersJson) || string.IsNullOrWhiteSpace(modesJson)) return false;
+
+            var tiers = ParseTiers(tiersJson);
+            var modes = ParseModes(modesJson, tiers);
+            if (tiers.Count == 0 || modes.Count == 0) return false;
+
+            var pricingJson = root.TryGetProperty("pricing", out var pricingValue) && pricingValue.ValueKind == JsonValueKind.String
+                ? pricingValue.GetString() : null;
+            var suiteConfigJson = root.TryGetProperty("suiteConfig", out var suiteValue) && suiteValue.ValueKind == JsonValueKind.String
+                ? suiteValue.GetString() : null;
+            ApplySnapshot(tiers, modes, pricingJson, suiteConfigJson);
+            _log($"[QualityModes] Loaded {tiers.Count} tier(s) and {modes.Count} mode(s) from last-known-good cache", null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log($"[QualityModes] Failed to read catalog cache: {ex.Message}", null);
+            return false;
+        }
     }
 
     // ---- RedLeaf response parsing --------------------------------------------------------
