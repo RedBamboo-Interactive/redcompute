@@ -28,6 +28,8 @@ public class ClaudeSessionInfo
     public string PermissionMode { get; set; } = "bypassPermissions";
     public string? Source { get; set; }
     public string? UserId { get; set; }
+    public string? UserName { get; set; }
+    public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
 }
 

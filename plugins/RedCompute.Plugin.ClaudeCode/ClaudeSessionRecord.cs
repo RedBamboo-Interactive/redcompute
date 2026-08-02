@@ -25,6 +25,9 @@ public class ClaudeSessionRecord
     public Guid? JobId { get; set; }
     public bool Dismissed { get; set; }
     public string? Source { get; set; }
+    public string? UserId { get; set; }
+    public string? UserName { get; set; }
+    public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
     public DateTimeOffset? LastActivity { get; set; }
 }

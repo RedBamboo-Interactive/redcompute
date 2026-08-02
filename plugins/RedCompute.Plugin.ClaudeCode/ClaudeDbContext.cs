@@ -80,6 +80,14 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl" })
+        {
+            if (columns.Contains(column)) continue;
+            using var alter = conn.CreateCommand();
+            alter.CommandText = $"ALTER TABLE Sessions ADD COLUMN {column} TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         using var backfill = conn.CreateCommand();
         backfill.CommandText = "UPDATE Sessions SET Source = 'Nova' WHERE ProjectName = 'nova-workspace' AND Source IS NULL";
         backfill.ExecuteNonQuery();

@@ -92,9 +92,25 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         return info != null ? ToUnified(info) : null;
     }
 
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
+        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
+        JobProvenance provenance)
+    {
+        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName,
+            userAvatarUrl, endpointUrl, apiKey, effort, thinkingBudget, qualityTier, providerEntity, provenance);
+        return info != null ? ToUnified(info) : null;
+    }
+
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
         var info = await _opencode.ResumeSession(sessionId);
+        return info != null ? ToUnified(info) : null;
+    }
+
+    public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
+    {
+        var info = await _opencode.ResumeSession(sessionId, provenance);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -228,6 +244,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         JobId = s.JobId,
         Source = s.Source,
         UserId = s.UserId,
+        UserName = s.UserName,
+        UserAvatarUrl = s.UserAvatarUrl,
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(OpenCodeStreamEvent e) => new()

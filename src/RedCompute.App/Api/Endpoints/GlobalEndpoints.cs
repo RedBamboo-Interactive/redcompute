@@ -17,6 +17,8 @@ public static class GlobalEndpoints
 {
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
     {
+        ExternalJobEndpoints.Map(endpoints, jobTracker);
+
         endpoints.MapGet("/status", "Service status with uptime and capability states", async () =>
         {
             var capabilities = new List<object>();
@@ -60,13 +62,15 @@ public static class GlobalEndpoints
             });
         });
 
-        endpoints.MapGet("/jobs", "List jobs with optional filters", (string? capability, string? status, string? caller, string? search, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (string? capability, string? status, string? caller, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, bool? externalExecution, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;
             if (status != null && Enum.TryParse<JobStatus>(status, true, out var parsed))
                 statusFilter = parsed;
 
-            var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, caller, search, limit ?? 50, offset ?? 0);
+            var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, caller, search,
+                limit ?? 50, offset ?? 0, originApp, originApi, actor, beneficiary, assurance, complete,
+                parentJobId, contextKind, contextId, externalExecution);
 
             var sessionStatuses = new Dictionary<Guid, string>();
             var aiSessionJobIds = jobs
@@ -102,6 +106,13 @@ public static class GlobalEndpoints
                     j.UserId,
                     j.UserName,
                     j.UserAvatarUrl,
+                    j.ExternalExecution,
+                    j.ParentJobId,
+                    j.AttemptCount,
+                    j.LeaseOwner,
+                    j.LeaseExpiresAt,
+                    creationProvenance = j.CreationProvenance,
+                    auditComplete = JobTrackingService.IsAuditComplete(j.CreationProvenance),
                     sessionStatus = sessionStatuses.TryGetValue(j.Id, out var ss) ? ss : (string?)null
                 }),
                 total = totalCount
@@ -109,8 +120,18 @@ public static class GlobalEndpoints
         })
             .WithParam("capability", "string", description: "Filter by capability slug", location: ParamLocation.Query)
             .WithParam("status", "string", description: "Filter by job status",
-                enumValues: ["Queued", "Running", "Completed", "Failed", "Cancelled"], location: ParamLocation.Query)
-            .WithParam("caller", "string", description: "Filter by caller info (X-Caller-Info value)", location: ParamLocation.Query)
+                enumValues: ["Queued", "Running", "Completed", "Failed", "Cancelled", "Skipped", "TimedOut"], location: ParamLocation.Query)
+            .WithParam("caller", "string", description: "Legacy filter by asserted X-Caller-Info label", location: ParamLocation.Query)
+            .WithParam("originApp", "string", description: "Filter by structured origin app id", location: ParamLocation.Query)
+            .WithParam("originApi", "string", description: "Filter by structured origin entrypoint route", location: ParamLocation.Query)
+            .WithParam("actor", "string", description: "Filter by structured actor id/entity/name", location: ParamLocation.Query)
+            .WithParam("beneficiary", "string", description: "Filter by beneficiary user id/name", location: ParamLocation.Query)
+            .WithParam("assurance", "string", description: "Filter by provenance assurance", enumValues: ["verified", "asserted", "backfilled-exact", "backfilled-inferred", "unknown"], location: ParamLocation.Query)
+            .WithParam("complete", "boolean", description: "Filter complete provenance (true) or audit gaps (false)", location: ParamLocation.Query)
+            .WithParam("parentJobId", "string", description: "Filter direct children of a Compute job", location: ParamLocation.Query)
+            .WithParam("contextKind", "string", description: "Filter by a structured context reference kind", location: ParamLocation.Query)
+            .WithParam("contextId", "string", description: "Filter by context id or entity id", location: ParamLocation.Query)
+            .WithParam("externalExecution", "boolean", description: "Filter work performed by an external trusted worker", location: ParamLocation.Query)
             .WithParam("search", "string", description: "Substring match over job name, provider, caller and capability", location: ParamLocation.Query)
             .WithParam("limit", "integer", description: "Max jobs to return", defaultValue: 50, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
@@ -144,15 +165,70 @@ public static class GlobalEndpoints
                 job.CostUsd,
                 job.UserId,
                 job.UserName,
-                job.UserAvatarUrl
+                job.UserAvatarUrl,
+                job.ExternalExecution,
+                job.ParentJobId,
+                job.AttemptCount,
+                job.LeaseOwner,
+                job.LeaseExpiresAt,
+                creationProvenance = job.CreationProvenance,
+                auditComplete = JobTrackingService.IsAuditComplete(job.CreationProvenance)
             });
+        });
+
+        endpoints.MapGet("/jobs/{id:guid}/lifecycle-events", "Get the immutable invocation and lifecycle audit timeline", (Guid id) =>
+        {
+            if (jobTracker.GetJob(id) == null)
+                return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            var events = jobTracker.GetJobEvents(id);
+            return Results.Ok(new
+            {
+                jobId = id,
+                items = events.Select(e => new
+                {
+                    e.Id,
+                    kind = $"job.{e.Kind.ToString().ToLowerInvariant()}",
+                    e.OccurredAt,
+                    e.Provenance,
+                    data = JsonSerializer.Deserialize<JsonElement>(e.DataJson),
+                }),
+                count = events.Count,
+            });
+        });
+
+        endpoints.MapPost("/jobs/{id:guid}/backfill-provenance", "Apply conservative RedLeaf evidence to a legacy job", async (Guid id, HttpContext ctx) =>
+        {
+            if (!ProvenanceCapture.IsTrustedRedLeafService(ctx))
+                return Results.Json(new { error = "forbidden", message = "Only the authenticated RedLeaf service may submit backfill evidence" }, statusCode: 403);
+            JobBackfillRequest? request;
+            try
+            {
+                request = await JsonSerializer.DeserializeAsync<JobBackfillRequest>(ctx.Request.Body,
+                    JobProvenance.JsonOptions, ctx.RequestAborted);
+            }
+            catch (JsonException ex)
+            {
+                return Results.BadRequest(new { error = "invalid_json", message = ex.Message });
+            }
+            if (request?.Provenance == null)
+                return Results.BadRequest(new { error = "invalid_request", message = "provenance is required" });
+            try
+            {
+                var changed = jobTracker.ApplyBackfillEvidence(id, request.Provenance,
+                    request.FieldAssurance, request.RuleVersion, request.Source);
+                return Results.Ok(new { id, changed });
+            }
+            catch (JobProvenanceValidationException ex)
+            {
+                return Results.UnprocessableEntity(new { error = "invalid_provenance", message = ex.Message });
+            }
         });
 
         endpoints.MapDelete("/jobs/{id:guid}", "Cancel a running job", async (Guid id) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
-            if (job.Status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled)
+            if (JobTrackingService.IsTerminal(job.Status))
                 return Results.BadRequest(new { error = "invalid_state", message = "Job already finished" });
 
             if (job.CapabilitySlug == "ai-session")
@@ -190,6 +266,22 @@ public static class GlobalEndpoints
             inputDict["rationale"] = $"Rerun of job {id}";
             var rerunBody = System.Text.Json.JsonSerializer.Serialize(inputDict);
 
+            JobProvenance provenance;
+            try
+            {
+                var captured = await ProvenanceCapture.ResolveAsync(ctx, "/jobs/{id}/rerun");
+                provenance = captured with
+                {
+                    Context = [.. captured.Context,
+                        new JobContextReference("compute-job", id.ToString())],
+                    Trace = captured.Trace with { ParentJobId = id.ToString() },
+                };
+            }
+            catch (JobProvenanceValidationException ex)
+            {
+                return Results.UnprocessableEntity(new { error = "invalid_provenance", message = ex.Message });
+            }
+
             var port = ctx.Connection.LocalPort;
             using var client = new HttpClient();
             var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}{generatePath}?async")
@@ -197,6 +289,9 @@ public static class GlobalEndpoints
                 Content = new StringContent(rerunBody, Encoding.UTF8, "application/json")
             };
             request.Headers.Add("X-Caller-Info", $"rerun:{id}");
+            request.Headers.TryAddWithoutValidation("X-Compute-Provenance", provenance.ToJson());
+            if (ctx.Request.Headers.TryGetValue("Authorization", out var authorization))
+                request.Headers.TryAddWithoutValidation("Authorization", authorization.ToArray());
 
             try
             {
@@ -237,6 +332,9 @@ public static class GlobalEndpoints
                 var queued = capJobs.Where(j => j.Status == JobStatus.Queued).ToList();
                 var completed = capJobs.Where(j => j.Status == JobStatus.Completed).ToList();
                 var failed = capJobs.Where(j => j.Status == JobStatus.Failed).ToList();
+                var timedOut = capJobs.Where(j => j.Status == JobStatus.TimedOut).ToList();
+                var skipped = capJobs.Where(j => j.Status == JobStatus.Skipped).ToList();
+                var cancelled = capJobs.Where(j => j.Status == JobStatus.Cancelled).ToList();
 
                 var totalDurationMs = capJobs
                     .Where(j => j.DurationMs.HasValue)
@@ -256,6 +354,9 @@ public static class GlobalEndpoints
                     queuedJobs = queued.Count,
                     completedInWindow = completed.Count,
                     failedInWindow = failed.Count,
+                    timedOutInWindow = timedOut.Count,
+                    skippedInWindow = skipped.Count,
+                    cancelledInWindow = cancelled.Count,
                     totalDurationMs,
                     utilizationPct = windowSeconds > 0
                         ? Math.Round(totalDurationMs / (windowSeconds * 1000.0) * 100, 2)
@@ -310,6 +411,9 @@ public static class GlobalEndpoints
                     jobs = capJobs.Count,
                     completed = capJobs.Count(j => j.Status == JobStatus.Completed),
                     failed = capJobs.Count(j => j.Status == JobStatus.Failed),
+                    timedOut = capJobs.Count(j => j.Status == JobStatus.TimedOut),
+                    skipped = capJobs.Count(j => j.Status == JobStatus.Skipped),
+                    cancelled = capJobs.Count(j => j.Status == JobStatus.Cancelled),
                     running = capJobs.Count(j => j.Status == JobStatus.Running),
                     totalCostUsd = Math.Round(capJobs.Where(j => j.CostUsd.HasValue).Sum(j => j.CostUsd!.Value), 4),
                     totalDurationMs = capJobs.Where(j => j.DurationMs.HasValue).Sum(j => j.DurationMs!.Value),
@@ -335,8 +439,40 @@ public static class GlobalEndpoints
                     caller = g.Key,
                     jobs = g.Count(),
                     completed = g.Count(j => j.Status == JobStatus.Completed),
+                    failed = g.Count(j => j.Status == JobStatus.Failed),
+                    timedOut = g.Count(j => j.Status == JobStatus.TimedOut),
+                    skipped = g.Count(j => j.Status == JobStatus.Skipped),
+                    cancelled = g.Count(j => j.Status == JobStatus.Cancelled),
                     totalCostUsd = Math.Round(g.Where(j => j.CostUsd.HasValue).Sum(j => j.CostUsd!.Value), 4)
                 });
+
+            var byOriginApp = jobs.GroupBy(j => j.CreationProvenance?.Origin.App.Id ?? "(audit-gap)")
+                .OrderByDescending(g => g.Count()).Select(g => new
+                {
+                    originApp = g.Key,
+                    name = g.Select(j => j.CreationProvenance?.Origin.App.NameSnapshot).FirstOrDefault(n => n != null),
+                    jobs = g.Count(),
+                });
+            var byOriginApi = jobs.GroupBy(j => j.CreationProvenance?.Origin.Entrypoint.Route ?? "(audit-gap)")
+                .OrderByDescending(g => g.Count()).Select(g => new { originApi = g.Key, jobs = g.Count() });
+            var byActor = jobs.GroupBy(j => j.CreationProvenance?.Actor.EntityId
+                    ?? j.CreationProvenance?.Actor.Id ?? "(audit-gap)")
+                .OrderByDescending(g => g.Count()).Select(g => new
+                {
+                    actor = g.Key,
+                    name = g.Select(j => j.CreationProvenance?.Actor.NameSnapshot).FirstOrDefault(n => n != null),
+                    jobs = g.Count(),
+                });
+            var byBeneficiary = jobs.GroupBy(j => j.CreationProvenance?.OnBehalfOf.Id
+                    ?? (j.CreationProvenance?.OnBehalfOf.Kind == "system" ? "system" : "(audit-gap)"))
+                .OrderByDescending(g => g.Count()).Select(g => new
+                {
+                    beneficiary = g.Key,
+                    name = g.Select(j => j.CreationProvenance?.OnBehalfOf.NameSnapshot).FirstOrDefault(n => n != null),
+                    jobs = g.Count(),
+                });
+            var byAssurance = jobs.GroupBy(j => JobTrackingService.AssuranceWireValue(j.CreationProvenance?.Assurance))
+                .OrderByDescending(g => g.Count()).Select(g => new { assurance = g.Key, jobs = g.Count() });
 
             return Results.Ok(new
             {
@@ -347,12 +483,22 @@ public static class GlobalEndpoints
                     jobs = jobs.Count,
                     completed = jobs.Count(j => j.Status == JobStatus.Completed),
                     failed = jobs.Count(j => j.Status == JobStatus.Failed),
+                    timedOut = jobs.Count(j => j.Status == JobStatus.TimedOut),
+                    skipped = jobs.Count(j => j.Status == JobStatus.Skipped),
+                    cancelled = jobs.Count(j => j.Status == JobStatus.Cancelled),
                     running = jobs.Count(j => j.Status == JobStatus.Running),
+                    auditComplete = jobs.Count(j => JobTrackingService.IsAuditComplete(j.CreationProvenance)),
+                    auditGaps = jobs.Count(j => !JobTrackingService.IsAuditComplete(j.CreationProvenance)),
                     totalCostUsd = Math.Round(totalCost, 4),
                     totalDurationMs = totalDuration
                 },
                 byCapability,
-                byCaller
+                byCaller,
+                byOriginApp,
+                byOriginApi,
+                byActor,
+                byBeneficiary,
+                byAssurance
             });
         })
             .WithParam("since", "string", description: "ISO8601 start time (defaults to start of today UTC)", location: ParamLocation.Query)
@@ -702,6 +848,9 @@ public static class GlobalEndpoints
     }
 
     private static DateTimeOffset _startTime;
+
+    private sealed record JobBackfillRequest(JobProvenance Provenance,
+        Dictionary<string, string>? FieldAssurance, string? RuleVersion, string? Source);
 
     public static void Initialize() => _startTime = DateTimeOffset.UtcNow;
 }

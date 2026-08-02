@@ -8,6 +8,7 @@ using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
+using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
@@ -178,7 +179,11 @@ public static class UnifiedSessionEndpoints
             thinkingBudget ??= q.ThinkingBudget;
             var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar, effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName);
+            JobProvenance provenance;
+            try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions"); }
+            catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar,
+                effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName, provenance);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
             if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -438,6 +443,24 @@ public static class UnifiedSessionEndpoints
                     attachmentsJson = JsonSerializer.Serialize(envelope);
                 }
 
+                if (info.JobId is not { } invocationJobId || jobTracker.GetJob(invocationJobId) == null)
+                {
+                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                    return Error(500, "tracking_failed", "The session has no tracked Compute job");
+                }
+                JobProvenance invocationProvenance;
+                try
+                {
+                    invocationProvenance = await ProvenanceCapture.ResolveAsync(ctx,
+                        "/ai-session/sessions/{id}/message");
+                }
+                catch (JobProvenanceValidationException ex)
+                {
+                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                    return Error(422, "invalid_provenance", ex.Message);
+                }
+                jobTracker.StartInvocation(invocationJobId, invocationProvenance, JobEventKind.Resumed);
+
                 bool sent;
                 try
                 {
@@ -445,12 +468,14 @@ public static class UnifiedSessionEndpoints
                 }
                 catch (Exception ex)
                 {
+                    jobTracker.MarkFailed(invocationJobId, ex.Message);
                     if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, CancellationToken.None);
                     if (ctx.RequestAborted.IsCancellationRequested) throw;
                     return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}': {ex.Message}");
                 }
                 if (!sent)
                 {
+                    jobTracker.MarkFailed(invocationJobId, $"Provider '{provider.ProviderId}' rejected the input");
                     if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
                     return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
                 }
@@ -690,7 +715,10 @@ public static class UnifiedSessionEndpoints
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Resume))
                 return NotSupported(provider.ProviderId, "session resume");
 
-            var session = await provider.ResumeSessionAsync(id);
+            JobProvenance provenance;
+            try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions/{id}/resume"); }
+            catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+            var session = await provider.ResumeSessionAsync(id, provenance);
             if (session == null)
                 return Error(500, "resume_failed", provider.LastStartError ?? "Failed to resume session");
 
@@ -1088,10 +1116,23 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrEmpty(jobName)) jobName = inputSummary;
 
             var inputJson = JsonSerializer.Serialize(new { prompt, model, workingDir, timeout, provider = provider.ProviderId });
-            var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-            var job = jobTracker.CreateJob("ai-session", provider.ProviderDisplayName, inputJson, callerInfo, idempotencyKey, jobName,
-                userId: uId, userName: uName, userAvatarUrl: uAvatar);
-            jobTracker.MarkRunning(job.Id);
+            JobProvenance provenance;
+            try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/execute"); }
+            catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+            JobRecord job;
+            try
+            {
+                job = jobTracker.CreateJob(new JobSubmission("ai-session", provider.ProviderDisplayName,
+                    inputJson, provenance, callerInfo, idempotencyKey, jobName));
+            }
+            catch (IdempotencyConflictException ex)
+            {
+                return Results.Conflict(new { error = "idempotency_conflict", message = ex.Message, existingJobId = ex.ExistingJobId });
+            }
+            if (job.IsIdempotencyReuse)
+                return Results.Json(new { jobId = job.Id, status = job.Status.ToString(), idempotentReuse = true },
+                    statusCode: job.Status is JobStatus.Running or JobStatus.Queued ? 202 : 200);
+            jobTracker.StartInvocation(job.Id, provenance);
             log($"[{provider.ProviderId}] Execute job {job.Id} started (model={model ?? "default"})", job.Id);
 
             var streamKey = job.Id.ToString();
@@ -1155,8 +1196,8 @@ public static class UnifiedSessionEndpoints
             }
         })
             .WithParam("async", "boolean", description: "Fire-and-forget: returns 202 with a job id instead of waiting for completion (presence flag)", location: ParamLocation.Query)
-            .WithParam("X-Caller-Info", "string", description: "Identifies the calling app/agent for job attribution", location: ParamLocation.Header)
-            .WithParam("X-Idempotency-Key", "string", description: "Dedupe key — repeated requests with the same key reuse the original job", location: ParamLocation.Header)
+            .WithParam("X-Caller-Info", "string", description: "Legacy asserted caller label retained for compatibility; never treated as verified provenance", location: ParamLocation.Header)
+            .WithParam("X-Idempotency-Key", "string", description: "Dedupe key scoped by capability, origin, actor, and beneficiary; conflicting payload reuse is rejected", location: ParamLocation.Header)
             .WithParam("X-Job-Name", "string", description: "Human-readable job name (defaults to a prompt excerpt)", location: ParamLocation.Header)
             .WithRequestBody(new
             {
@@ -1245,7 +1286,11 @@ public static class UnifiedSessionEndpoints
         thinkingBudget ??= q.ThinkingBudget;
         var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar, q.Effort, q.EndpointUrl, q.ApiKey, thinkingBudget);
+        JobProvenance provenance;
+        try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/generate"); }
+        catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar,
+            q.Effort, q.EndpointUrl, q.ApiKey, thinkingBudget, null, null, provenance);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
         if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -1298,10 +1343,12 @@ public static class UnifiedSessionEndpoints
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
 
-        var (gUId, gUName, gUAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-        var job = jobTracker.CreateJob("ai-session", provider.ProviderDisplayName, inputJson, callerInfo, name: jobName,
-            userId: gUId, userName: gUName, userAvatarUrl: gUAvatar);
-        jobTracker.MarkRunning(job.Id);
+        JobProvenance provenance;
+        try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/generate"); }
+        catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+        var job = jobTracker.CreateJob(new JobSubmission("ai-session", provider.ProviderDisplayName,
+            inputJson, provenance, callerInfo, Name: jobName));
+        jobTracker.StartInvocation(job.Id, provenance);
 
         try
         {

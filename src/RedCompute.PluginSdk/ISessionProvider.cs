@@ -1,4 +1,5 @@
 using RedCompute.Core.Sessions;
+using RedCompute.Core.Jobs;
 
 namespace RedCompute.PluginSdk;
 
@@ -14,7 +15,15 @@ public interface ISessionProvider
     // Extended start with provider-level endpoint override (default delegates to 7-param above).
     Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
         => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
+        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
+        JobProvenance provenance)
+        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort,
+            endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
+    Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
+        => ResumeSessionAsync(sessionId);
     Task StopSessionAsync(string sessionId);
     Task ForceKillAsync(string sessionId);
     void DismissSession(string sessionId);

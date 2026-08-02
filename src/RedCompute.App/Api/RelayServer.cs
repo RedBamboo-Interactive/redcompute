@@ -43,7 +43,8 @@ public class RelayServer
     private RedLeafStreamClient? _streamClient;
     private Action<RedBamboo.AppHost.Logging.LogEntry>? _logForwarder;
     private Action<TelemetryEntry>? _telemetryForwarder;
-    private Action<RedCompute.Core.Jobs.JobRecord>? _jobForwarder;
+    private CancellationTokenSource? _jobAuditCts;
+    private Task? _jobAuditTask;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
@@ -256,36 +257,24 @@ public class RelayServer
                 new { name = "Cost USD", fieldType = "float" },
                 new { name = "Caller Info", fieldType = "string" },
                 new { name = "Error Message", fieldType = "string" },
+                new { name = "User ID", fieldType = "string" },
+                new { name = "User Name", fieldType = "string" },
+                new { name = "User Avatar URL", fieldType = "string" },
+                new { name = "Creation Provenance", fieldType = "json", description = "Immutable versioned origin, actor, beneficiary, context, trace and assurance snapshot" },
+                new { name = "Recording Service", fieldType = "string", description = "Recorder/mirror service; never the originating app" },
             ]));
 
-        _jobForwarder = job => _streamClient.UpsertEntity(
-            $"compute-job-{job.Id:N}", "compute-job",
-            job.Name ?? $"{job.CapabilitySlug} ({job.ProviderName})",
-            new
-            {
-                job_id = job.Id,
-                capability = job.CapabilitySlug,
-                provider = job.ProviderName,
-                status = job.Status.ToString(),
-                queued_at = job.QueuedAt.ToString("O"),
-                started_at = job.StartedAt?.ToString("O"),
-                completed_at = job.CompletedAt?.ToString("O"),
-                input_json = job.InputJson,
-                output_location = job.OutputLocation,
-                output_size_bytes = job.OutputSizeBytes,
-                output_content_type = job.OutputContentType,
-                result_json = job.ResultJson,
-                error_message = job.ErrorMessage,
-                caller_info = job.CallerInfo,
-                rationale = job.Rationale,
-                cost_usd = job.CostUsd,
-                duration_ms = job.DurationMs,
-                user_id = job.UserId,
-                user_name = job.UserName,
-                app = "redcompute",
-            });
-        _jobTracker.JobCreated += _jobForwarder;
-        _jobTracker.JobUpdated += _jobForwarder;
+        _streamClient.DefineStream(new StreamDefinition(
+            "compute-job-events", "Compute Job Events",
+            "Append-only Compute invocation and lifecycle audit trail", ParentType: "compute-job"));
+        var legacySessions = _registry.FindProviders<ISessionProvider>()
+            .SelectMany(provider => provider.GetSessions(100_000, includeDismissed: true))
+            .ToList();
+        var backfilledJobs = _jobTracker.BackfillLegacyJobs(legacySessions);
+        if (backfilledJobs > 0)
+            _log($"[Audit] Conservatively backfilled {backfilledJobs} legacy jobs ({legacySessions.Count} exact session snapshots available)", null);
+        _jobAuditCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _jobAuditTask = new JobAuditOutboxService(_streamClient, _log).RunAsync(_jobAuditCts.Token);
 
         var registry = _app.CreateEndpointRegistry();
         registry.MapAuthEndpoints();
@@ -332,10 +321,13 @@ public class RelayServer
     {
         broadcaster.RegisterEvent(new WsEventSchema("job.created",
             "Fired when a new job is queued", "JobRecord",
-            ["id", "capabilitySlug", "providerName", "status", "queuedAt", "inputJson", "callerInfo", "name", "rationale"]));
+            ["id", "capabilitySlug", "providerName", "status", "queuedAt", "inputJson", "callerInfo", "name", "rationale", "creationProvenance", "userId", "userName", "userAvatarUrl"]));
         broadcaster.RegisterEvent(new WsEventSchema("job.updated",
             "Fired when a job's status, progress, or output changes", "JobRecord",
-            ["id", "capabilitySlug", "status", "progress", "startedAt", "completedAt", "errorMessage", "outputSizeBytes", "durationMs"]));
+            ["id", "capabilitySlug", "providerName", "status", "progress", "startedAt", "completedAt", "errorMessage", "outputSizeBytes", "durationMs", "creationProvenance", "userId", "userName", "userAvatarUrl"]));
+        broadcaster.RegisterEvent(new WsEventSchema("job.event",
+            "Fired for each immutable job invocation or lifecycle event", "JobLifecycleEvent",
+            ["id", "jobId", "kind", "occurredAt", "provenance", "dataJson"]));
         broadcaster.RegisterEvent(new WsEventSchema("capability.status",
             "Fired when a capability's backend status changes (polled every 5s)",
             Fields: ["slug", "displayName", "status", "sleeping", "provider"]));
@@ -357,6 +349,7 @@ public class RelayServer
 
         _jobTracker.JobCreated += job => broadcaster.Broadcast("job.created", job);
         _jobTracker.JobUpdated += job => broadcaster.Broadcast("job.updated", job);
+        _jobTracker.JobEventAppended += evt => broadcaster.Broadcast("job.event", evt);
 
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
         {
@@ -446,11 +439,14 @@ public class RelayServer
         SuiteMirror.SessionUpserted = null;
         SuiteMirror.MessagesAdded = null;
 
-        if (_jobForwarder != null)
+        if (_jobAuditCts != null)
         {
-            _jobTracker.JobCreated -= _jobForwarder;
-            _jobTracker.JobUpdated -= _jobForwarder;
-            _jobForwarder = null;
+            _jobAuditCts.Cancel();
+            if (_jobAuditTask != null)
+                try { await _jobAuditTask.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+            _jobAuditTask = null;
+            _jobAuditCts.Dispose();
+            _jobAuditCts = null;
         }
 
         if (_logForwarder != null)

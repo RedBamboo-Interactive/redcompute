@@ -9,4 +9,5 @@ public class JobRequest
     public string? IdempotencyKey { get; init; }
     public string? Name { get; init; }
     public string? Rationale { get; init; }
+    public JobProvenance? Provenance { get; init; }
 }

@@ -15,41 +15,32 @@ internal sealed class CodexSessionJobLifecycle
 
     public CodexSessionJobLifecycle(IJobTracker jobs) => _jobs = jobs;
 
-    public void Start(CodexSessionInfo info, string? callerInfo)
+    public void Start(CodexSessionInfo info, string? callerInfo, JobProvenance? provenance = null)
     {
-        var job = _jobs.CreateJob(
-            "ai-session", "Codex", InputJson(info, resumed: false),
-            callerInfo: callerInfo,
-            idempotencyKey: IdempotencyKey(info.Id),
-            name: info.Title ?? info.ProjectName,
-            rationale: "Interactive session",
-            userId: info.UserId,
-            userName: info.UserName,
-            userAvatarUrl: info.UserAvatarUrl);
+        provenance ??= SessionProvenance(info, "session", "/ai-session/sessions");
+        var job = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", InputJson(info, resumed: false), provenance,
+            callerInfo, IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Interactive session"));
 
-        _jobs.MarkRunning(job.Id);
+        if (!job.IsIdempotencyReuse)
+            _jobs.StartInvocation(job.Id, provenance);
         info.JobId = job.Id;
     }
 
-    public void Resume(CodexSessionInfo info)
+    public void Resume(CodexSessionInfo info, JobProvenance? provenance = null)
     {
+        provenance ??= SessionProvenance(info, "session-resume", "/ai-session/sessions/{id}/resume");
         if (info.JobId is { } linkedId && _jobs.GetJob(linkedId) != null)
         {
-            _jobs.MarkRunning(linkedId);
+            _jobs.StartInvocation(linkedId, provenance, JobEventKind.Resumed);
             return;
         }
 
-        var job = _jobs.CreateJob(
-            "ai-session", "Codex", InputJson(info, resumed: true),
-            callerInfo: info.Source,
-            idempotencyKey: IdempotencyKey(info.Id),
-            name: info.Title ?? info.ProjectName,
-            rationale: "Resumed interactive session",
-            userId: info.UserId,
-            userName: info.UserName,
-            userAvatarUrl: info.UserAvatarUrl);
+        var job = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", InputJson(info, resumed: true), provenance,
+            info.Source, IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Resumed interactive session"));
 
-        _jobs.MarkRunning(job.Id);
+        _jobs.StartInvocation(job.Id, provenance, JobEventKind.Resumed);
         info.JobId = job.Id;
     }
 
@@ -126,6 +117,23 @@ internal sealed class CodexSessionJobLifecycle
     }
 
     internal static string IdempotencyKey(string sessionId) => $"ai-session:codex:{sessionId}";
+
+    private static JobProvenance SessionProvenance(CodexSessionInfo info, string entrypointKind, string route)
+    {
+        var source = string.IsNullOrWhiteSpace(info.Source) ? "Direct RedCompute client" : info.Source;
+        var realUser = !string.IsNullOrWhiteSpace(info.UserId) &&
+            !string.Equals(info.UserId, "local-user", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(info.UserId, "system", StringComparison.OrdinalIgnoreCase);
+        return new JobProvenance(JobProvenance.CurrentSchemaVersion,
+            new JobOrigin("redcompute", new JobAppReference("asserted-client", source!, null, source!),
+                new JobEntrypoint(entrypointKind, route)),
+            new JobActor("app", source!, Id: source),
+            realUser ? new JobBeneficiary("user", info.UserId, info.UserName, info.UserAvatarUrl)
+                : new JobBeneficiary("system", Reason: "Legacy session record has no verifiable beneficiary"),
+            [new JobContextReference("ai-session", info.Id, NameSnapshot: info.Title ?? info.ProjectName)],
+            new JobTrace(), realUser ? JobProvenanceAssurance.Asserted : JobProvenanceAssurance.Unknown,
+            DateTimeOffset.UtcNow);
+    }
 
     private static string InputJson(CodexSessionInfo info, bool resumed) => JsonSerializer.Serialize(new
     {

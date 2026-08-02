@@ -93,13 +93,40 @@ public static class GenericCapabilityEndpoints
                 body.Remove("name");
                 body.Remove("rationale");
 
-                var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-                var job = jobTracker.CreateJob(slug, provider.Name,
-                    JsonSerializer.Serialize(body),
-                    ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
-                    idempotencyKey, name: jobName, rationale: jobRationale,
-                    userId: uId, userName: uName, userAvatarUrl: uAvatar);
-                jobTracker.MarkRunning(job.Id);
+                JobProvenance provenance;
+                try
+                {
+                    provenance = await ProvenanceCapture.ResolveAsync(ctx, $"/{slug}/generate");
+                }
+                catch (JobProvenanceValidationException ex)
+                {
+                    return Error(422, "invalid_provenance", ex.Message);
+                }
+
+                JobRecord job;
+                try
+                {
+                    job = jobTracker.CreateJob(new JobSubmission(
+                        slug, provider.Name, JsonSerializer.Serialize(body), provenance,
+                        ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
+                        idempotencyKey, jobName, jobRationale));
+                }
+                catch (IdempotencyConflictException ex)
+                {
+                    return Results.Conflict(new
+                    {
+                        error = "idempotency_conflict",
+                        message = ex.Message,
+                        existingJobId = ex.ExistingJobId,
+                    });
+                }
+
+                if (job.IsIdempotencyReuse)
+                    return Results.Json(new { jobId = job.Id, status = job.Status.ToString(), idempotentReuse = true },
+                        statusCode: job.Status is JobStatus.Running or JobStatus.Queued ? 202 : 200);
+
+                jobTracker.StartInvocation(job.Id, provenance,
+                    provenance.Trace.ParentJobId != null ? JobEventKind.Rerun : JobEventKind.Started);
 
                 var firstParam = body.GetValueOrDefault("prompt")?.ToString()
                     ?? body.GetValueOrDefault("text")?.ToString() ?? "";
@@ -170,7 +197,8 @@ public static class GenericCapabilityEndpoints
                     CapabilitySlug = slug,
                     Parameters = body,
                     CallerInfo = ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
-                    IdempotencyKey = idempotencyKey
+                    IdempotencyKey = idempotencyKey,
+                    Provenance = provenance,
                 };
 
                 if (isAsync)
@@ -248,7 +276,9 @@ public static class GenericCapabilityEndpoints
             })
                 .WithParam("async", "boolean", description: "Fire-and-forget: returns 202 with a job id instead of streaming the result", location: ParamLocation.Query)
                 .WithParam("X-Async", "string", description: "Set to 'true' as an alternative to ?async", location: ParamLocation.Header)
-                .WithParam("X-Caller-Info", "string", description: "Identifies the calling app/agent for job attribution", location: ParamLocation.Header)
+                .WithParam("X-Caller-Info", "string", description: "Legacy asserted caller label retained for compatibility; never treated as verified provenance", location: ParamLocation.Header)
+                .WithParam("X-Compute-Provenance", "string", description: "Versioned structured origin, actor, beneficiary, context, trace and assurance JSON. Verified only for an authenticated RedLeaf service.", location: ParamLocation.Header)
+                .WithParam("X-System-Reason", "string", description: "Required explicit reason when a direct request has no real user beneficiary", location: ParamLocation.Header)
                 .WithParam("X-Idempotency-Key", "string", description: "Dedupe key — repeated requests with the same key reuse the original job", location: ParamLocation.Header)
                 .WithParam("X-Job-Name", "string", description: "Human-readable job name (body 'name' takes precedence)", location: ParamLocation.Header)
                 .WithParam("X-Job-Rationale", "string", description: "Why the job was queued (body 'rationale' takes precedence)", location: ParamLocation.Header)

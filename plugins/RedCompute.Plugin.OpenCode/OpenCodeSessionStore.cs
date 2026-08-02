@@ -26,6 +26,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         JobId = r.JobId,
         Dismissed = r.Dismissed,
         Source = r.Source,
+        UserId = r.UserId,
     };
 
     private static AiMessageSnapshot ToSnapshot(OpenCodeMessageRecord m) => new()
@@ -97,6 +98,10 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.ProcessId = record.ProcessId;
             existing.QualityTier = record.QualityTier;
             existing.ProviderEntity = record.ProviderEntity;
+            existing.Source = record.Source;
+            existing.UserId = record.UserId;
+            existing.UserName = record.UserName;
+            existing.UserAvatarUrl = record.UserAvatarUrl;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;
         }

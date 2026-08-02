@@ -30,6 +30,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         JobId = r.JobId,
         Dismissed = r.Dismissed,
         Source = r.Source,
+        UserId = r.UserId,
     };
 
     private static AiMessageSnapshot ToSnapshot(ClaudeMessageRecord m) => new()
@@ -107,6 +108,9 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
             existing.Source = record.Source;
+            existing.UserId = record.UserId;
+            existing.UserName = record.UserName;
+            existing.UserAvatarUrl = record.UserAvatarUrl;
             existing.ProcessId = record.ProcessId;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;

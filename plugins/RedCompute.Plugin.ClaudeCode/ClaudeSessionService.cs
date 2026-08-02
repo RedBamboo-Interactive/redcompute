@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
@@ -765,7 +766,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? qualityTier = null, string? providerEntity = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? qualityTier = null, string? providerEntity = null, JobProvenance? provenance = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -789,6 +790,8 @@ public class ClaudeSessionService
             StartedAt = DateTimeOffset.UtcNow,
             Source = callerInfo,
             UserId = userId,
+            UserName = userName,
+            UserAvatarUrl = userAvatarUrl,
             Effort = effort,
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
@@ -845,9 +848,11 @@ public class ClaudeSessionService
 
         // Create a job record for this session
         var inputJson = System.Text.Json.JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = info.Id });
-        var job = _jobTracker.CreateJob("ai-session", "Claude Code", inputJson, callerInfo: callerInfo, name: info.ProjectName, rationale: "Interactive session",
-            userId: userId, userName: userName, userAvatarUrl: userAvatarUrl);
-        _jobTracker.MarkRunning(job.Id);
+        provenance ??= SessionJobProvenance.Create(callerInfo, userId, userName, userAvatarUrl,
+            "/ai-session/sessions", info.Id, info.ProjectName);
+        var job = _jobTracker.CreateJob(new JobSubmission("ai-session", "Claude Code", inputJson,
+            provenance, callerInfo, Name: info.ProjectName, Rationale: "Interactive session"));
+        if (!job.IsIdempotencyReuse) _jobTracker.StartInvocation(job.Id, provenance);
         info.JobId = job.Id;
 
         PersistSessionRecord(info);
@@ -858,7 +863,7 @@ public class ClaudeSessionService
         return info;
     }
 
-    public ClaudeSessionInfo? ResumeSession(string sessionId)
+    public ClaudeSessionInfo? ResumeSession(string sessionId, JobProvenance? provenance = null)
     {
         if (_sessions.ContainsKey(sessionId))
         {
@@ -923,6 +928,9 @@ public class ClaudeSessionService
             QualityTier = sessionRecord.QualityTier,
             ProviderEntity = sessionRecord.ProviderEntity,
             Source = sessionRecord.Source,
+            UserId = sessionRecord.UserId,
+            UserName = sessionRecord.UserName,
+            UserAvatarUrl = sessionRecord.UserAvatarUrl,
         };
 
         var startInfo = new ProcessStartInfo
@@ -964,17 +972,20 @@ public class ClaudeSessionService
         info.Status = SessionStatus.Idle;
         info.ProcessId = process.Id;
 
+        provenance ??= SessionJobProvenance.Create(sessionRecord.Source, sessionRecord.UserId,
+            sessionRecord.UserName, sessionRecord.UserAvatarUrl,
+            "/ai-session/sessions/{id}/resume", sessionRecord.Id, sessionRecord.ProjectName);
         if (sessionRecord.JobId.HasValue)
         {
             info.JobId = sessionRecord.JobId.Value;
-            _jobTracker.MarkRunning(sessionRecord.JobId.Value);
+            _jobTracker.StartInvocation(sessionRecord.JobId.Value, provenance, JobEventKind.Resumed);
         }
         else
         {
-            var job = _jobTracker.CreateJob("ai-session", "Claude Code",
+            var job = _jobTracker.CreateJob(new JobSubmission("ai-session", "Claude Code",
                 System.Text.Json.JsonSerializer.Serialize(new { projectPath = sessionRecord.ProjectPath, projectName = sessionRecord.ProjectName, resumed = true }),
-                callerInfo: "Dashboard", name: sessionRecord.ProjectName, rationale: "Resumed session");
-            _jobTracker.MarkRunning(job.Id);
+                provenance, sessionRecord.Source, Name: sessionRecord.ProjectName, Rationale: "Resumed session"));
+            _jobTracker.StartInvocation(job.Id, provenance, JobEventKind.Resumed);
             info.JobId = job.Id;
         }
 
@@ -2420,6 +2431,9 @@ public class ClaudeSessionService
                 ProviderEntity = info.ProviderEntity,
                 JobId = info.JobId,
                 Source = info.Source,
+                UserId = info.UserId,
+                UserName = info.UserName,
+                UserAvatarUrl = info.UserAvatarUrl,
                 ProcessId = info.ProcessId,
                 LastActivity = DateTimeOffset.UtcNow,
             });

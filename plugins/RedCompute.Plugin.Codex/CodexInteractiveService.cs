@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
@@ -144,7 +145,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     public async Task<CodexSessionInfo?> StartSessionAsync(
         string projectPath, string? callerInfo = null, string? model = null,
         string? userId = null, string? userName = null, string? userAvatarUrl = null,
-        string? effort = null, string? qualityTier = null, string? providerEntity = null)
+        string? effort = null, string? qualityTier = null, string? providerEntity = null,
+        JobProvenance? provenance = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -197,7 +199,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
-            _jobLifecycle.Start(info, callerInfo);
+            _jobLifecycle.Start(info, callerInfo, provenance);
             _sessions[id] = session;
             Persist(info);
             SessionCreated?.Invoke(info);
@@ -218,7 +220,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
     }
 
-    public async Task<CodexSessionInfo?> ResumeSessionAsync(string sessionId)
+    public async Task<CodexSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance? provenance = null)
     {
         if (_sessions.TryGetValue(sessionId, out var live)) return live.Info;
 
@@ -246,7 +248,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             info.Status = "Idle";
             info.StopReason = null;
             info.LastActivity = DateTimeOffset.UtcNow;
-            _jobLifecycle.Resume(info);
+            _jobLifecycle.Resume(info, provenance);
             jobRunning = true;
             _sessions[sessionId] = new ManagedSession { Info = info, Connection = conn };
             Persist(info);

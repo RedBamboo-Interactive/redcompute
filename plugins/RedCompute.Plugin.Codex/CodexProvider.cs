@@ -135,9 +135,25 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         return info != null ? ToUnified(info) : null;
     }
 
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
+        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
+        JobProvenance provenance)
+    {
+        var info = await _interactive.StartSessionAsync(projectPath, callerInfo, model, userId, userName,
+            userAvatarUrl, effort, qualityTier, providerEntity, provenance);
+        return info != null ? ToUnified(info) : null;
+    }
+
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
         var info = await _interactive.ResumeSessionAsync(sessionId);
+        return info != null ? ToUnified(info) : null;
+    }
+
+    public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
+    {
+        var info = await _interactive.ResumeSessionAsync(sessionId, provenance);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -365,6 +381,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         QualityTier = s.QualityTier,
         Source = s.Source,
         UserId = s.UserId,
+        UserName = s.UserName,
+        UserAvatarUrl = s.UserAvatarUrl,
         ContextWindow = s.ContextWindow,
         StopReason = s.StopReason,
         // The Codex thread id, which is what makes a session resumable — and resumable from the

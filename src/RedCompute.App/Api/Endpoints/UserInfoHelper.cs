@@ -28,13 +28,13 @@ public static class UserInfoHelper
     }
 
     /// <summary>
-    /// Resolve the user an upstream suite service is acting for. A loopback-only
-    /// <c>X-User-Id</c> must win over the transport principal: Nova authenticates to
-    /// RedCompute as a service while forwarding the actual discussion owner here.
+    /// Resolve the user an upstream suite service is acting for. Forwarded identity wins
+    /// only for the authenticated RedLeaf service with explicit delegation authority;
+    /// loopback transport alone conveys no trust.
     /// </summary>
     public static string? ResolveUserId(HttpContext ctx)
     {
-        if (IsLocalRequest(ctx) &&
+        if (CanDelegateUser(ctx) &&
             ctx.Request.Headers.TryGetValue("X-User-Id", out var forwarded) &&
             !string.IsNullOrWhiteSpace(forwarded))
             return forwarded.ToString();
@@ -42,14 +42,7 @@ public static class UserInfoHelper
         return ctx.User?.FindFirst("sub")?.Value;
     }
 
-    private static bool IsLocalRequest(HttpContext ctx)
-    {
-        if (ctx.Request.Headers.ContainsKey("Cf-Connecting-Ip") ||
-            ctx.Request.Headers.ContainsKey("Cf-Ray"))
-            return false;
-
-        var remote = ctx.Connection.RemoteIpAddress;
-        return remote == null || System.Net.IPAddress.IsLoopback(remote) ||
-               remote.Equals(ctx.Connection.LocalIpAddress);
-    }
+    private static bool CanDelegateUser(HttpContext ctx)
+        => string.Equals(ctx.User?.FindFirst("client_id")?.Value, "redleaf", StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(ctx.User?.FindFirst("compute_delegate_user")?.Value, "true", StringComparison.OrdinalIgnoreCase);
 }

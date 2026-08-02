@@ -1,3 +1,6 @@
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
+
 namespace RedCompute.Core.Jobs;
 
 public class JobRecord
@@ -23,6 +26,34 @@ public class JobRecord
     public string? ErrorDetails { get; set; }
     public string? CallerInfo { get; set; }
     public string? IdempotencyKey { get; set; }
+    public string? IdempotencyScope { get; set; }
+    public string? IdempotencyFingerprint { get; set; }
+
+    /// <summary>
+    /// True when Compute owns the durable lifecycle envelope while another trusted
+    /// service performs the work. Automation, maintenance, and connector jobs use
+    /// this path instead of pretending their work belongs to a generation provider.
+    /// </summary>
+    public bool ExternalExecution { get; set; }
+    public Guid? ParentJobId { get; set; }
+    public string? LeaseOwner { get; set; }
+    [JsonIgnore]
+    public string? LeaseTokenHash { get; set; }
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public int AttemptCount { get; set; }
+
+    [JsonIgnore]
+    public string? CreationProvenanceJson { get; set; }
+
+    [NotMapped]
+    public JobProvenance? CreationProvenance
+    {
+        get => JobProvenance.FromJson(CreationProvenanceJson);
+        set => CreationProvenanceJson = value?.ToJson();
+    }
+
+    [NotMapped, JsonIgnore]
+    public bool IsIdempotencyReuse { get; set; }
 
     public string? Name { get; set; }
     public string? Rationale { get; set; }

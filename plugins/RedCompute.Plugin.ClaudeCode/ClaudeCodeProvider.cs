@@ -114,9 +114,25 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         return Task.FromResult(info != null ? ToUnified(info) : null);
     }
 
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
+        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
+        JobProvenance provenance)
+    {
+        var info = _claude.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl,
+            effort, qualityTier, providerEntity, provenance);
+        return Task.FromResult(info != null ? ToUnified(info) : null);
+    }
+
     public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
         var info = _claude.ResumeSession(sessionId);
+        return Task.FromResult(info != null ? ToUnified(info) : null);
+    }
+
+    public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
+    {
+        var info = _claude.ResumeSession(sessionId, provenance);
         return Task.FromResult(info != null ? ToUnified(info) : null);
     }
 
@@ -269,6 +285,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         PermissionMode = s.PermissionMode,
         Source = s.Source,
         UserId = s.UserId,
+        UserName = s.UserName,
+        UserAvatarUrl = s.UserAvatarUrl,
         ProviderMetadata = new()
         {
             ["cacheReadInputTokens"] = s.CacheReadInputTokens,

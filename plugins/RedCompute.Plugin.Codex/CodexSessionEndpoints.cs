@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedCompute.Core.Jobs;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Codex;
@@ -140,10 +141,27 @@ public static class CodexSessionEndpoints
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
 
+        JobProvenance provenance;
+        try { provenance = JobProvenanceHttp.Resolve(ctx, "/codex/execute"); }
+        catch (JobProvenanceValidationException ex)
+        {
+            return Results.Json(new { error = "invalid_provenance", message = ex.Message }, statusCode: 422);
+        }
         var providerLabel = model ?? "Codex";
-        var job = jobTracker.CreateJob("ai-session", providerLabel, inputSummary, callerInfo, idempotencyKey, jobName, rationale,
-            userId: ctx.User?.FindFirst("sub")?.Value, userName: ctx.User?.FindFirst("name")?.Value, userAvatarUrl: ctx.User?.FindFirst("picture")?.Value);
-        jobTracker.MarkRunning(job.Id);
+        JobRecord job;
+        try
+        {
+            job = jobTracker.CreateJob(new JobSubmission("ai-session", providerLabel, inputSummary,
+                provenance, callerInfo, idempotencyKey, jobName, rationale));
+        }
+        catch (IdempotencyConflictException ex)
+        {
+            return Results.Conflict(new { error = "idempotency_conflict", message = ex.Message, existingJobId = ex.ExistingJobId });
+        }
+        if (job.IsIdempotencyReuse)
+            return Results.Json(new { jobId = job.Id, status = job.Status.ToString(), idempotentReuse = true },
+                statusCode: job.Status is JobStatus.Running or JobStatus.Queued ? 202 : 200);
+        jobTracker.StartInvocation(job.Id, provenance);
         log($"[Codex] Execute job {job.Id} started (model={model ?? "default"})", job.Id);
 
         var asyncMode = ctx.Request.Query.ContainsKey("async");

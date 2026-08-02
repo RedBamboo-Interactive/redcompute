@@ -21,6 +21,9 @@ public class OpenCodeSessionRecord
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }
     public string? Source { get; set; }
+    public string? UserId { get; set; }
+    public string? UserName { get; set; }
+    public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
     public DateTimeOffset? LastActivity { get; set; }
 }
