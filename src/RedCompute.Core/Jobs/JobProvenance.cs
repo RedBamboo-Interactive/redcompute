@@ -23,7 +23,8 @@ public sealed record JobAppReference(
     string Id,
     string? EntityId,
     string NameSnapshot,
-    string? IconSnapshot = null);
+    string? IconSnapshot = null,
+    string? ColorSnapshot = null);
 
 public sealed record JobEntrypoint(
     string Kind,

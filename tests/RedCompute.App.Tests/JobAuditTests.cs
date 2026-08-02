@@ -36,6 +36,7 @@ public sealed class JobAuditTests : IDisposable
         provenance.ValidateForNewJob();
         var roundTrip = JobProvenance.FromJson(provenance.ToJson())!;
         Assert.Equal(provenance.Origin, roundTrip.Origin);
+        Assert.Equal("#C74B7A", roundTrip.Origin.App.ColorSnapshot);
         Assert.Equal(provenance.Actor, roundTrip.Actor);
         Assert.Equal(provenance.OnBehalfOf, roundTrip.OnBehalfOf);
         Assert.Equal(provenance.Context, roundTrip.Context);
@@ -473,7 +474,7 @@ public sealed class JobAuditTests : IDisposable
     private static JobProvenance Provenance(string appId, string actorId, string userId,
         string route, string actorKind = "agent") => new(
         1,
-        new JobOrigin("redleaf", new JobAppReference("plugin", appId, null, appId, $"/{appId}.png"),
+        new JobOrigin("redleaf", new JobAppReference("plugin", appId, null, appId, $"/{appId}.png", "#C74B7A"),
             new JobEntrypoint("http", route, "POST")),
         new JobActor(actorKind, actorId, actorKind == "agent" ? actorId : null, actorId, $"/{actorId}.png"),
         new JobBeneficiary("user", userId, userId, $"/{userId}.png"),
