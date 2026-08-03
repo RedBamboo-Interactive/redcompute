@@ -13,6 +13,8 @@ public class CapabilityEntry
     public bool IsSleeping { get; set; }
     public bool IsManuallyDisabled { get; set; }
 
+    public bool IsExternal => Definition.ExecutionMode == CapabilityExecutionMode.External;
+
     public IBackendProvider? ActiveProvider =>
         DefaultProviderName != null && Providers.TryGetValue(DefaultProviderName, out var p) ? p : null;
 
@@ -50,6 +52,7 @@ public class CapabilityRegistry
     public async Task<BackendStatus> GetStatus(string slug)
     {
         var entry = Get(slug);
+        if (entry?.IsExternal == true) return BackendStatus.Running;
         if (entry?.ActiveProvider == null) return BackendStatus.Stopped;
         return await entry.ActiveProvider.GetStatusAsync();
     }

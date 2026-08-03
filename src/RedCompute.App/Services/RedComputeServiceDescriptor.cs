@@ -37,9 +37,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
             string status;
             try
             {
-                status = entry.ActiveProvider != null
-                    ? (await entry.ActiveProvider.GetStatusAsync()).ToString()
-                    : "Stopped";
+                status = (await _registry.GetStatus(slug)).ToString();
             }
             catch { status = "Error"; }
 
@@ -69,6 +67,20 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
     private List<EndpointDescriptor> BuildEndpoints(string slug, CapabilityEntry entry)
     {
         var endpoints = new List<EndpointDescriptor>();
+        if (entry.IsExternal)
+        {
+            endpoints.Add(new EndpointDescriptor(
+                "POST", "/jobs/external",
+                $"Create or idempotently reuse a {entry.Definition.DisplayName} job for a trusted external worker"));
+            endpoints.Add(new EndpointDescriptor(
+                "GET", "/jobs/{id}",
+                "Inspect the canonical job, provenance, hierarchy, and terminal result"));
+            endpoints.Add(new EndpointDescriptor(
+                "GET", $"/jobs?capability={slug}",
+                $"List {entry.Definition.DisplayName} jobs"));
+            return endpoints;
+        }
+
         var plugins = entry.Providers.Values.OfType<IPluginProvider>().ToList();
         var schemaPlugin = entry.ActiveProvider as IPluginProvider ?? plugins.FirstOrDefault();
 

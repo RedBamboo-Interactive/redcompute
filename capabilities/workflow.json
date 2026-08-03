@@ -1,0 +1,10 @@
+{
+  "slug": "workflow",
+  "displayName": "Workflow",
+  "description": "Canonical execution and audit envelope for RedLeaf visual workflows",
+  "icon": "ph-fill ph-git-branch",
+  "color": "#14B8A6",
+  "category": "orchestration",
+  "executionMode": "external",
+  "workerDisplayName": "RedLeaf Workflow Engine"
+}

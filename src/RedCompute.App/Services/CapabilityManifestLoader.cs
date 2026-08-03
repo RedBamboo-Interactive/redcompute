@@ -82,6 +82,9 @@ public class CapabilityManifestLoader
             if (manifest.Icon != null) def.Icon = manifest.Icon;
             if (manifest.Color != null) def.Color = manifest.Color;
             if (manifest.Category != null) def.Category = manifest.Category;
+            if (Enum.TryParse<CapabilityExecutionMode>(manifest.ExecutionMode, true, out var executionMode))
+                def.ExecutionMode = executionMode;
+            if (manifest.WorkerDisplayName != null) def.WorkerDisplayName = manifest.WorkerDisplayName;
         }
         catch { }
     }
@@ -99,5 +102,7 @@ public class CapabilityManifestLoader
         public string? Icon { get; set; }
         public string? Color { get; set; }
         public string? Category { get; set; }
+        public string? ExecutionMode { get; set; }
+        public string? WorkerDisplayName { get; set; }
     }
 }

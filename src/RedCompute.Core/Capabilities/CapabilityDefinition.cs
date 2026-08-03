@@ -8,4 +8,12 @@ public class CapabilityDefinition
     public string? Icon { get; set; }
     public string? Color { get; set; }
     public string? Category { get; set; }
+    public CapabilityExecutionMode ExecutionMode { get; set; } = CapabilityExecutionMode.Provider;
+    public string? WorkerDisplayName { get; set; }
+}
+
+public enum CapabilityExecutionMode
+{
+    Provider,
+    External,
 }

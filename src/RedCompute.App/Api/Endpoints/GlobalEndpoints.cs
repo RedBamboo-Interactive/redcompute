@@ -24,9 +24,7 @@ public static class GlobalEndpoints
             var capabilities = new List<object>();
             foreach (var (slug, entry) in registry.Capabilities)
             {
-                var defaultStatus = entry.ActiveProvider != null
-                    ? await entry.ActiveProvider.GetStatusAsync()
-                    : BackendStatus.Stopped;
+                var defaultStatus = await registry.GetStatus(slug);
 
                 var providerStatuses = new List<object>();
                 foreach (var (name, prov) in entry.Providers)
@@ -41,9 +39,12 @@ public static class GlobalEndpoints
                     entry.Definition.DisplayName,
                     type = slug,
                     status = defaultStatus.ToString(),
-                    provider = entry.ActiveProvider?.Name,
+                    provider = entry.IsExternal
+                        ? entry.Definition.WorkerDisplayName
+                        : entry.ActiveProvider?.Name,
                     defaultProvider = entry.DefaultProviderName,
                     providers = providerStatuses,
+                    executionMode = entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
                     sleeping = entry.IsSleeping,
                     disabled = entry.IsManuallyDisabled,
                     icon = entry.Definition.Icon,

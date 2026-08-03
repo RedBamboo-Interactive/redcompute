@@ -73,6 +73,25 @@ public sealed class JobAuditTests : IDisposable
     }
 
     [Fact]
+    public void Explicit_idempotency_scope_prevents_duplicate_roots_across_capabilities()
+    {
+        var provenance = Provenance("redleaf", "automation-scheduler", "user-1", "/automations/tick",
+            actorKind: "app");
+        var scope = $"redleaf:automation:{Guid.NewGuid():N}";
+        var key = "scheduled:638924256000000000";
+
+        var legacy = _jobs.CreateJob(new JobSubmission(
+            "automation", "RedLeaf automation worker", "{\"definition\":1}", provenance,
+            IdempotencyKey: key, ExternalExecution: true, IdempotencyScope: scope));
+
+        var conflict = Assert.Throws<IdempotencyConflictException>(() => _jobs.CreateJob(new JobSubmission(
+            "workflow", "RedLeaf Workflow Engine", "{\"definition\":2}", provenance,
+            IdempotencyKey: key, ExternalExecution: true, IdempotencyScope: scope)));
+
+        Assert.Equal(legacy.Id, conflict.ExistingJobId);
+    }
+
+    [Fact]
     public void Every_work_start_has_immutable_invocation_provenance()
     {
         var createdWith = Provenance("nova", "agent-nova", "user-1", "/nova/create");

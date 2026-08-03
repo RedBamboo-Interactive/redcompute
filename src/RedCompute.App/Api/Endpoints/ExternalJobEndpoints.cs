@@ -18,6 +18,9 @@ public static partial class ExternalJobEndpoints
     [GeneratedRegex("^[a-z0-9][a-z0-9._-]{0,127}$", RegexOptions.CultureInvariant)]
     private static partial Regex CapabilityPattern();
 
+    [GeneratedRegex("^[a-z0-9][a-z0-9:._-]{0,255}$", RegexOptions.CultureInvariant)]
+    private static partial Regex IdempotencyScopePattern();
+
     public static void Map(EndpointRegistry endpoints, JobTrackingService jobs)
     {
         endpoints.MapPost("/jobs/external/backfill",
@@ -129,6 +132,14 @@ public static partial class ExternalJobEndpoints
                 var capability = string.IsNullOrWhiteSpace(body.Capability) ? "automation" : body.Capability.Trim();
                 if (!CapabilityPattern().IsMatch(capability))
                     return Results.BadRequest(new { error = "invalid_capability", message = "capability must be a lowercase slug" });
+                var idempotencyScope = string.IsNullOrWhiteSpace(body.IdempotencyScope)
+                    ? null : body.IdempotencyScope.Trim();
+                if (idempotencyScope is not null && !IdempotencyScopePattern().IsMatch(idempotencyScope))
+                    return Results.BadRequest(new
+                    {
+                        error = "invalid_idempotency_scope",
+                        message = "idempotencyScope must be a lowercase logical namespace using letters, digits, colon, dot, underscore, or hyphen",
+                    });
 
                 JobProvenance provenance;
                 try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/jobs/external"); }
@@ -150,7 +161,8 @@ public static partial class ExternalJobEndpoints
                         body.IdempotencyKey,
                         body.Name,
                         body.Rationale,
-                        ExternalExecution: true));
+                        ExternalExecution: true,
+                        IdempotencyScope: idempotencyScope));
 
                     if (!job.IsIdempotencyReuse)
                         jobs.AppendJobEvent(job.Id, JobEventKind.Scheduled, new
@@ -357,6 +369,7 @@ public static partial class ExternalJobEndpoints
         JsonElement Input,
         string? CallerInfo,
         string? IdempotencyKey,
+        string? IdempotencyScope,
         string? Name,
         string? Rationale,
         DateTimeOffset? ScheduledFor,

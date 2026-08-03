@@ -34,9 +34,9 @@ public static class GenericCapabilityEndpoints
         _registry = registry;
         Directory.CreateDirectory(OutputDir);
 
-        foreach (var (capSlug, _) in registry.Capabilities)
+        foreach (var (capSlug, capability) in registry.Capabilities)
         {
-            if (capSlug == "ai-session") continue;
+            if (capSlug == "ai-session" || capability.IsExternal) continue;
 
             var slug = capSlug;
 

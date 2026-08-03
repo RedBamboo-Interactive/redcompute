@@ -94,7 +94,8 @@ public sealed record JobSubmission(
     string? IdempotencyKey = null,
     string? Name = null,
     string? Rationale = null,
-    bool ExternalExecution = false);
+    bool ExternalExecution = false,
+    string? IdempotencyScope = null);
 
 public sealed record ExternalJobLease(
     Guid JobId,

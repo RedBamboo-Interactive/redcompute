@@ -58,7 +58,9 @@ public class JobTrackingService : IJobTracker
     public JobRecord CreateJob(JobSubmission submission)
     {
         submission.Provenance.ValidateForNewJob();
-        var scope = ComputeIdempotencyScope(submission.CapabilitySlug, submission.Provenance);
+        var scope = string.IsNullOrWhiteSpace(submission.IdempotencyScope)
+            ? ComputeIdempotencyScope(submission.CapabilitySlug, submission.Provenance)
+            : ComputeExplicitIdempotencyScope(submission.IdempotencyScope);
         var fingerprint = ComputeIdempotencyFingerprint(submission);
 
         JobRecord result = null!;
@@ -1093,6 +1095,12 @@ public class JobTrackingService : IJobTracker
             p.Origin.App.Id, p.Origin.Entrypoint.Kind, p.Origin.Entrypoint.Method, p.Origin.Entrypoint.Route,
             p.Actor.Kind, p.Actor.EntityId, p.Actor.Id,
             p.OnBehalfOf.Kind, p.OnBehalfOf.Id, p.OnBehalfOf.Reason, SemanticContext(p));
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
+    }
+
+    private static string ComputeExplicitIdempotencyScope(string scope)
+    {
+        var material = $"external\n{scope}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
     }
 

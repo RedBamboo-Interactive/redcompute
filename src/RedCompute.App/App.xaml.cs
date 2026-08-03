@@ -7,6 +7,8 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Api;
+using RedCompute.Core.Capabilities;
+using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
 
@@ -146,6 +148,18 @@ public partial class App : Application
             Registry.Register(slug, definition, capConfig, providers, capConfig.ActiveProvider);
             var names = providers.Count > 0 ? string.Join(", ", providers.Keys) : "none";
             Log($"[App] Registered capability: {slug} (providers: {names}, default: {capConfig.ActiveProvider ?? "none"})");
+        }
+
+        // Workflow execution is admitted and audited by RedCompute but performed by
+        // RedLeaf's trusted visual-graph worker. It is a capability without a provider.
+        if (Registry.Get("workflow") == null)
+        {
+            var workflowConfig = new CapabilityConfig();
+            var workflow = ManifestLoader.Load("workflow", workflowConfig);
+            workflow.ExecutionMode = CapabilityExecutionMode.External;
+            workflow.WorkerDisplayName ??= "RedLeaf Workflow Engine";
+            Registry.Register("workflow", workflow, workflowConfig, [], null);
+            Log("[App] Registered external capability: workflow (worker: RedLeaf Workflow Engine)");
         }
     }
 

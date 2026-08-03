@@ -381,9 +381,7 @@ public class RelayServer
             {
                 try
                 {
-                    var defaultStatus = entry.ActiveProvider != null
-                        ? (await entry.ActiveProvider.GetStatusAsync()).ToString()
-                        : "Stopped";
+                    var defaultStatus = (await _registry.GetStatus(slug)).ToString();
 
                     var provStatuses = new List<object>();
                     foreach (var (name, prov) in entry.Providers)
@@ -404,8 +402,11 @@ public class RelayServer
                         status = defaultStatus,
                         sleeping = entry.IsSleeping,
                         disabled = entry.IsManuallyDisabled,
-                        provider = entry.ActiveProvider?.Name,
+                        provider = entry.IsExternal
+                            ? entry.Definition.WorkerDisplayName
+                            : entry.ActiveProvider?.Name,
                         defaultProvider = entry.DefaultProviderName,
+                        executionMode = entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
                         providers = provStatuses
                     });
                 }
