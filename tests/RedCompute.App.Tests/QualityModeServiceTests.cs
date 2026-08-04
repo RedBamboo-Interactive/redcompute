@@ -86,6 +86,30 @@ public sealed class QualityModeServiceTests
         }
     }
 
+    [Fact]
+    public async Task LegacyGpt56Pricing_InfersDocumentedCachedInputDiscount()
+    {
+        var cachePath = TempCachePath();
+        try
+        {
+            var service = CreateService(new CatalogHandler(pricingJson: LegacyGpt56PricingJson), cachePath);
+            Assert.True(await service.InitialSyncAsync());
+
+            var estimate = service.EstimateCostUsd(
+                "gpt-5.6-sol",
+                inputTokens: 23_258_687,
+                cachedInputTokens: 22_346_240,
+                outputTokens: 68_985);
+
+            Assert.NotNull(estimate);
+            Assert.Equal(17.804905, estimate.Value, precision: 6);
+        }
+        finally
+        {
+            DeleteCache(cachePath);
+        }
+    }
+
     private static QualityModeService CreateService(HttpMessageHandler handler, string cachePath)
     {
         var config = new RedComputeConfig { RedLeafUrl = "http://127.0.0.1:18804" };
@@ -110,7 +134,7 @@ public sealed class QualityModeServiceTests
         if (File.Exists(cachePath + ".tmp")) File.Delete(cachePath + ".tmp");
     }
 
-    private sealed class CatalogHandler(int failuresRemaining = 0) : HttpMessageHandler
+    private sealed class CatalogHandler(int failuresRemaining = 0, string? pricingJson = null) : HttpMessageHandler
     {
         private int _failuresRemaining = failuresRemaining;
         private int _requestCount;
@@ -128,7 +152,7 @@ public sealed class QualityModeServiceTests
             {
                 var q when q.Contains("type=quality-tier", StringComparison.Ordinal) => TiersJson,
                 var q when q.Contains("type=quality-mode", StringComparison.Ordinal) => ModesJson,
-                var q when q.Contains("type=inference-model", StringComparison.Ordinal) => "{\"items\":[]}",
+                var q when q.Contains("type=inference-model", StringComparison.Ordinal) => pricingJson ?? "{\"items\":[]}",
                 var q when q.Contains("type=suite-config", StringComparison.Ordinal) => SuiteConfigJson,
                 _ => "{\"items\":[]}",
             };
@@ -149,5 +173,11 @@ public sealed class QualityModeServiceTests
 
     private const string SuiteConfigJson = """
         {"items":[{"id":"suite","slug":"suite-config","data":{"default_quality_tier":"tier-deep"}}]}
+        """;
+
+    // Compatibility fixture from provider-codex installations created before the cached-input
+    // field was added to the otherwise-current GPT-5.6 pricing entities.
+    private const string LegacyGpt56PricingJson = """
+        {"items":[{"id":"sol","slug":"gpt-5.6-sol","data":{"model_id":"gpt-5.6-sol","cost_input":5.0,"cost_output":30.0}}]}
         """;
 }

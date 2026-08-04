@@ -187,19 +187,28 @@ public sealed class RedLeafSessionReader
         var sessionId = Str(d, "session_id");
         if (sessionId == null) return null;
 
+        var provider = Str(d, "provider") ?? "";
         var model = Str(d, "model");
         var inputTokens = Int(d, "input_tokens");
         var outputTokens = Int(d, "output_tokens");
         var cachedInputTokens = Int(d, "cache_read_input_tokens");
         var reportedCost = Dbl(d, "cost_usd");
-        var estimatedCost = reportedCost.HasValue
-            ? null
-            : _qualityModes.EstimateCostUsd(model, inputTokens, cachedInputTokens, outputTokens);
+        var hasUsage = inputTokens.GetValueOrDefault() > 0 || outputTokens.GetValueOrDefault() > 0;
+        // Codex subscription sessions may report no monetary charge (or a literal zero). Their
+        // token usage still has an API-equivalent value, which is the useful number for suite
+        // statistics. Never replace a positive provider-reported charge.
+        var shouldEstimateCost = !reportedCost.HasValue
+            || (provider.Equals("codex", StringComparison.OrdinalIgnoreCase)
+                && reportedCost <= 0
+                && hasUsage);
+        var estimatedCost = shouldEstimateCost
+            ? _qualityModes.EstimateCostUsd(model, inputTokens, cachedInputTokens, outputTokens)
+            : null;
 
         return new UnifiedSessionInfo
         {
             Id = sessionId,
-            Provider = Str(d, "provider") ?? "",
+            Provider = provider,
             ProviderEntity = Str(d, "provider_entity"),
             ProjectName = Str(d, "project_name") ?? "",
             ProjectPath = Str(d, "project_path") ?? "",
@@ -210,8 +219,8 @@ public sealed class RedLeafSessionReader
             ProviderSessionId = Str(d, "external_session_id"),
             Title = entity.GetProperty("name").GetString(),
             MessageCount = Int(d, "message_count") ?? 0,
-            CostUsd = reportedCost ?? estimatedCost,
-            CostEstimated = !reportedCost.HasValue && estimatedCost.HasValue,
+            CostUsd = estimatedCost ?? reportedCost,
+            CostEstimated = estimatedCost.HasValue,
             InputTokens = inputTokens,
             OutputTokens = outputTokens,
             CachedInputTokens = cachedInputTokens,

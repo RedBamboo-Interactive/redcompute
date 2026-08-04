@@ -592,13 +592,21 @@ public class QualityModeService
                         }
                     }
 
+                    var modelId = GetString(data, "model_id");
                     var input = GetDouble(data, "cost_input");
-                    var cached = GetDouble(data, "cost_cached_input");
                     var output = GetDouble(data, "cost_output");
-                    if (!input.HasValue || !cached.HasValue || !output.HasValue) continue;
+                    if (!input.HasValue || !output.HasValue) continue;
+
+                    // GPT-5.6 cache reads have a documented 90% discount. Early installed
+                    // provider-codex catalogs predate cost_cached_input even though their input
+                    // and output rates are valid; accepting that legacy shape keeps API-equivalent
+                    // subscription estimates alive until the plugin seed is refreshed. An explicit
+                    // entity value always wins.
+                    var cached = GetDouble(data, "cost_cached_input")
+                        ?? InferCachedInputRate(modelId ?? slug, input.Value);
+                    if (!cached.HasValue) continue;
 
                     var pricing = new ModelTokenPricing(input.Value, cached.Value, output.Value);
-                    var modelId = GetString(data, "model_id");
                     if (!string.IsNullOrWhiteSpace(slug)) result[slug] = pricing;
                     if (!string.IsNullOrWhiteSpace(modelId)) result[modelId] = pricing;
                 }
@@ -609,6 +617,11 @@ public class QualityModeService
         catch (JsonException) { }
         return result;
     }
+
+    private static double? InferCachedInputRate(string? model, double inputRate)
+        => model?.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) == true
+            ? inputRate * 0.10
+            : null;
 
     /// <summary>RedLeaf may wrap the list in a paging envelope — find the entity array.</summary>
     private static bool TryFindArray(JsonElement obj, out JsonElement array)
