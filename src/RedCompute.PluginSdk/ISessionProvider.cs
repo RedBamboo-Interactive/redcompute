@@ -55,8 +55,7 @@ public interface ISessionProvider
     // Interrupt
     InterruptResult InterruptSession(string sessionId);
 
-    // Configuration (ConfigUpdate / PermissionMode)
-    Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null);
+    // Configuration
     bool SetPermissionMode(string sessionId, string mode);
 
     // Querying

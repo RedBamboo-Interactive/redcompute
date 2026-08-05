@@ -788,52 +788,6 @@ public static class UnifiedSessionEndpoints
             .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body)
             .WithParam("force", "boolean", description: "Register even if session is already idle (for pre-registering before sending a message)", location: ParamLocation.Body);
 
-        endpoints.MapPost("/ai-session/sessions/{id}/config",
-            "Update session model and reasoning effort", async (HttpContext ctx, string id) =>
-        {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
-            if (info == null)
-                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
-            var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
-            if (!provider!.Capabilities.HasFlag(SessionCapabilities.ConfigUpdate))
-                return NotSupported(provider.ProviderId, "config updates");
-
-            JsonElement body;
-            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
-            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
-
-            var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
-            var effort = body.TryGetProperty("effort", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
-            var qualityTier = body.TryGetProperty("qualityTier", out var qt) && qt.ValueKind == JsonValueKind.String ? qt.GetString() : null;
-            int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
-
-            // Explicit model wins; otherwise a qualityTier resolves to a model (+effort+thinkingBudget) for this provider.
-            if (string.IsNullOrWhiteSpace(model) && !string.IsNullOrWhiteSpace(qualityTier))
-            {
-                if (_quality == null)
-                    return QualityResolutionError(qualityTier, provider.ProviderId, QualityResolutionFailure.CatalogUnavailable);
-                if (!_quality.TryResolveRequested(qualityTier, provider.ProviderId, out var resolved, out var failure))
-                    return QualityResolutionError(qualityTier, provider.ProviderId, failure);
-                model = resolved!.Model;
-                if (string.IsNullOrWhiteSpace(effort)) effort = resolved.Effort;
-                thinkingBudget ??= resolved.ThinkingBudget;
-                qualityTier = resolved.QualityTier ?? qualityTier;
-            }
-            else if (string.IsNullOrWhiteSpace(model) && string.IsNullOrWhiteSpace(qualityTier))
-                qualityTier = info.QualityTier;
-            else if (!string.IsNullOrWhiteSpace(model))
-                qualityTier = null;
-
-            var updated = await provider.UpdateSessionConfigAsync(id, model, effort, thinkingBudget, qualityTier);
-            return Results.Json(updated);
-        })
-            .WithParam("model", "string", description: "Model to switch to. Overrides qualityTier when both are given.", location: ParamLocation.Body)
-            .WithParam("effort", "string", description: "Reasoning effort level", location: ParamLocation.Body)
-            .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort for this session's provider. Ignored when model is set.", location: ParamLocation.Body)
-            .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget", location: ParamLocation.Body);
-
         endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
             "Set the session's permission mode", async (HttpContext ctx, string id) =>
         {

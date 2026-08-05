@@ -1341,27 +1341,6 @@ public class ClaudeSessionService
         await Task.CompletedTask;
     }
 
-    public async Task<ClaudeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort, string? qualityTier)
-    {
-        if (_sessions.ContainsKey(sessionId))
-            await StopSession(sessionId);
-
-        var record = _sessionStore.FindSession(sessionId);
-        if (record == null) return null;
-
-        if (model != null) record.Model = model;
-        if (effort != null) record.Effort = effort;
-        record.QualityTier = qualityTier;
-        _sessionStore.SaveSession(record);
-
-        if (!string.IsNullOrEmpty(record.ClaudeSessionId))
-            return ResumeSession(sessionId);
-
-        var info = ToSessionInfo(record);
-        SessionUpdated?.Invoke(info);
-        return info;
-    }
-
     public void DismissSession(string sessionId)
     {
         try

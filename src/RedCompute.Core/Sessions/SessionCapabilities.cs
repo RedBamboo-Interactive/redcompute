@@ -10,7 +10,6 @@ public enum SessionCapabilities
     Interrupt = 1 << 3,
     SendMessage = 1 << 4,
     PermissionMode = 1 << 5,
-    ConfigUpdate = 1 << 6,
     ImageAttachments = 1 << 7,
     ProjectDiscovery = 1 << 8,
     Generate = 1 << 9,

@@ -43,8 +43,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.Interrupt
         | SessionCapabilities.SendMessage
         | SessionCapabilities.ImageAttachments
-        | SessionCapabilities.FileAttachments
-        | SessionCapabilities.ConfigUpdate;
+        | SessionCapabilities.FileAttachments;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
     // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch).
 
@@ -198,14 +197,6 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     // NotActive, and everything else — including a request the app-server rejected — as success.
     public Core.Sessions.InterruptResult InterruptSession(string sessionId)
         => _interactive.InterruptSession(sessionId);
-
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
-    {
-        // thinkingBudget has no Codex equivalent — reasoning depth is the `effort` ladder
-        // (low → ultra), which is already carried by the effort parameter.
-        var info = await _interactive.UpdateSessionConfigAsync(sessionId, model, effort, qualityTier);
-        return info != null ? ToUnified(info) : null;
-    }
 
     /// <summary>
     /// Not supported, and deliberately not faked. Sessions run with command and file approvals

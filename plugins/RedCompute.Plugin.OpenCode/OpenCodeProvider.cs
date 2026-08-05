@@ -37,7 +37,6 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         SessionCapabilities.Resume |
         SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage |
-        SessionCapabilities.ConfigUpdate |
         SessionCapabilities.ImageAttachments |
         SessionCapabilities.FileAttachments |
         SessionCapabilities.ProjectDiscovery;
@@ -138,12 +137,6 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         => _opencode.InterruptSession(sessionId);
 
     // --- ISessionProvider: Configuration ---
-
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
-    {
-        var info = await _opencode.UpdateSessionConfig(sessionId, model, effort, thinkingBudget, qualityTier);
-        return info != null ? ToUnified(info) : null;
-    }
 
     public bool SetPermissionMode(string sessionId, string mode)
         => false;

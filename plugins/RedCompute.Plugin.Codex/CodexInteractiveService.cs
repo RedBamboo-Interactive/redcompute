@@ -616,32 +616,6 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         StreamEvent?.Invoke(sessionId, new CodexStreamEvent { Type = "status", Content = "idle" });
     }
 
-    public Task<CodexSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, string? qualityTier)
-        => Task.FromResult(UpdateSessionConfig(sessionId, model, effort, qualityTier));
-
-    private CodexSessionInfo? UpdateSessionConfig(string sessionId, string? model, string? effort, string? qualityTier)
-    {
-        var record = _store.FindSession(sessionId);
-        if (record == null) return null;
-
-        // Model and effort are per-turn overrides on turn/start rather than session-wide state,
-        // so this only has to record the intent — the next turn picks it up.
-        if (model != null) record.Model = model;
-        if (effort != null) record.Effort = effort;
-        record.QualityTier = qualityTier;
-        _store.SaveSession(record);
-
-        if (_sessions.TryGetValue(sessionId, out var session))
-        {
-            if (model != null) session.Info.Model = model;
-            if (effort != null) session.Info.Effort = effort;
-            session.Info.QualityTier = qualityTier;
-            SessionUpdated?.Invoke(session.Info);
-            return session.Info;
-        }
-        return ToInfo(record);
-    }
-
     private async Task<ManagedSession?> EnsureLiveAsync(string sessionId)
     {
         if (_sessions.TryGetValue(sessionId, out var session)) return session;

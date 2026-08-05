@@ -700,56 +700,6 @@ public class OpenCodeSessionService
         SessionEnded?.Invoke(sessionId, "force_killed");
     }
 
-    public async Task<OpenCodeSessionInfo?> UpdateSessionConfig(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var session))
-            return null;
-
-        try
-        {
-            if (model != null && session.AcpSessionId != null)
-            {
-                await SendRequest(session, "session/set_config_option", new
-                {
-                    sessionId = session.AcpSessionId,
-                    configId = "model",
-                    value = model,
-                });
-                session.Info.Model = model;
-            }
-
-            if (effort != null && session.AcpSessionId != null)
-            {
-                await SendRequest(session, "session/set_config_option", new
-                {
-                    sessionId = session.AcpSessionId,
-                    configId = "effort", value = effort,
-                });
-                session.Info.Effort = effort;
-            }
-
-            if (thinkingBudget != null && session.AcpSessionId != null)
-            {
-                await SendRequest(session, "session/set_config_option", new
-                {
-                    sessionId = session.AcpSessionId,
-                    configId = "thinking_budget", value = thinkingBudget.Value,
-                });
-            }
-
-            session.Info.QualityTier = qualityTier;
-
-            PersistSessionRecord(session.Info);
-            SessionUpdated?.Invoke(session.Info);
-            return session.Info;
-        }
-        catch (Exception ex)
-        {
-            _log($"[OpenCode] Failed to update config for {sessionId}: {ex.Message}", null);
-            return null;
-        }
-    }
-
     // ===== JSON-RPC over NDJSON =====
 
     private async Task<JsonElement> SendRequest(ManagedSession session, string method, object? @params = null, int timeoutSeconds = 30)

@@ -36,7 +36,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.StatelessExecution | SessionCapabilities.PersistentSessions |
         SessionCapabilities.Resume | SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
-        SessionCapabilities.ConfigUpdate | SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
+        SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
         SessionCapabilities.ProjectDiscovery | SessionCapabilities.Generate;
 
     public string? LastStartError => _claude.LastStartError;
@@ -165,12 +165,6 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     }
 
     // --- ISessionProvider: Configuration ---
-
-    public async Task<UnifiedSessionInfo?> UpdateSessionConfigAsync(string sessionId, string? model, string? effort, int? thinkingBudget = null, string? qualityTier = null)
-    {
-        var info = await _claude.UpdateSessionConfig(sessionId, model, effort, qualityTier);
-        return info != null ? ToUnified(info) : null;
-    }
 
     public bool SetPermissionMode(string sessionId, string mode) => _claude.SetPermissionMode(sessionId, mode);
 
