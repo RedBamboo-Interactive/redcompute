@@ -1,6 +1,8 @@
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text.Json;
+using RedBamboo.AppHost.Auth;
 using RedCompute.Core.Configuration;
 
 namespace RedCompute.App.Services;
@@ -15,7 +17,10 @@ public record ProviderEntityConfig(
     public string? IconSvgPath { get; init; }
     public IReadOnlyList<string> Capabilities { get; init; } = Array.Empty<string>();
     public JsonElement? Settings { get; init; }
+    public bool ApiKeyAuthoritative { get; init; }
 }
+
+public sealed record VaultedProviderCoordinate(string CapabilitySlug, string ProviderName);
 
 /// <summary>
 /// Authoritative source for provider configuration. Fetches provider entities from RedLeaf
@@ -27,7 +32,8 @@ public class ProviderConfigService
 {
     private readonly RedComputeConfig _config;
     private readonly Action<string, Guid?> _log;
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private readonly HttpClient _http;
+    private readonly Func<string?> _serviceToken;
 
     private static readonly string CacheDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedCompute");
@@ -54,10 +60,21 @@ public class ProviderConfigService
         ["codex"]       = "codex-default",
     };
 
-    public ProviderConfigService(RedComputeConfig config, Action<string, Guid?> log)
+    public ProviderConfigService(RedComputeConfig config, Action<string, Guid?> log, HttpClient? http = null)
     {
         _config = config;
         _log = log;
+        if (http != null)
+        {
+            _http = http;
+            _serviceToken = () => null;
+        }
+        else
+        {
+            var (client, token) = CreateServiceClient();
+            _http = client;
+            _serviceToken = token;
+        }
         _providers = new Dictionary<string, ProviderEntityConfig>(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -70,9 +87,20 @@ public class ProviderConfigService
         try
         {
             var baseUrl = _config.RedLeafUrl.TrimEnd('/');
+            RefreshServiceAuthorization();
 
             providersJson = await _http.GetStringAsync($"{baseUrl}/api/entities?type=provider&limit=100", ct);
             var parsed = ParseProviders(providersJson);
+            try
+            {
+                var secretsJson = await _http.GetStringAsync(
+                    $"{baseUrl}/api/internal/compute/provider-secrets", ct);
+                parsed = ApplyProviderSecrets(parsed, secretsJson);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                _log($"[ProviderConfig] Provider secret snapshot unavailable; keeping current runtime credentials: {ex.Message}", null);
+            }
             if (parsed.Count == 0)
             {
                 _log("[ProviderConfig] RedLeaf returned no provider entities; keeping current providers", null);
@@ -117,6 +145,51 @@ public class ProviderConfigService
 
     public bool LoadedFromRedLeaf => _loadedFromRedLeaf;
     public bool LoadedFromCache => _loadedFromCache;
+
+    /// <summary>
+    /// Transfers any pre-vault API keys to RedLeaf. RedLeaf never overwrites an existing
+    /// vaulted value, and the response never echoes plaintext.
+    /// </summary>
+    public async Task<bool> ImportLegacyApiKeysAsync(CancellationToken ct = default)
+    {
+        var items = _config.Capabilities.SelectMany(capability =>
+            capability.Value.Providers
+                .Where(provider => !string.IsNullOrEmpty(provider.Value.ApiKey))
+                .Select(provider => new
+                {
+                    capabilitySlug = capability.Key,
+                    providerName = provider.Key,
+                    providerType = provider.Value.Type,
+                    apiKey = provider.Value.ApiKey,
+                }))
+            .ToList();
+        if (items.Count == 0) return false;
+
+        try
+        {
+            RefreshServiceAuthorization();
+            var baseUrl = _config.RedLeafUrl.TrimEnd('/');
+            using var response = await _http.PostAsJsonAsync(
+                $"{baseUrl}/api/internal/compute/provider-secrets/import", new { items }, ct);
+            response.EnsureSuccessStatusCode();
+            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            var accepted = result.RootElement.TryGetProperty("accepted", out var acceptedItems)
+                && acceptedItems.ValueKind == JsonValueKind.Array
+                ? acceptedItems.GetArrayLength()
+                : 0;
+            var missing = result.RootElement.TryGetProperty("missing", out var missingItems)
+                && missingItems.ValueKind == JsonValueKind.Array
+                ? missingItems.GetArrayLength()
+                : 0;
+            _log($"[ProviderConfig] Legacy credential migration accepted {accepted} provider(s); {missing} unmatched", null);
+            return accepted > 0;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            _log($"[ProviderConfig] Legacy credential migration deferred: {ex.Message}", null);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Single blocking attempt at entity sync for startup. Tries RedLeaf first, then
@@ -227,6 +300,32 @@ public class ProviderConfigService
         }
     }
 
+    public IReadOnlyList<VaultedProviderCoordinate> GetVaultedConfigProviderCoordinates(
+        RedComputeConfig config)
+    {
+        Dictionary<string, ProviderEntityConfig> snapshot;
+        Dictionary<string, string?> slugMap;
+        lock (_lock) { snapshot = _providers; slugMap = _capabilitySlugMap; }
+        var result = new List<VaultedProviderCoordinate>();
+
+        foreach (var entity in snapshot.Values.Where(provider => !string.IsNullOrEmpty(provider.ApiKey)))
+        {
+            foreach (var kernelSlug in entity.Capabilities)
+            {
+                var mapped = slugMap.TryGetValue(kernelSlug, out var mappedSlug);
+                if (mapped && mappedSlug == null) continue;
+                var capabilitySlug = mapped ? mappedSlug! : kernelSlug;
+                if (!config.Capabilities.TryGetValue(capabilitySlug, out var capability)) continue;
+                var providerName = FindMatchingProviderName(
+                    capability, entity.ProviderType ?? entity.Backend, entity);
+                if (providerName != null)
+                    result.Add(new VaultedProviderCoordinate(capabilitySlug, providerName));
+            }
+        }
+
+        return result.Distinct().ToList();
+    }
+
     /// <summary>
     /// Resolve a provider reference for a capability to the config provider name.
     /// Accepts either the config name itself (local-wsl) or a provider entity slug
@@ -333,7 +432,7 @@ public class ProviderConfigService
     private static void ApplyEntityToProvider(ProviderEntityConfig entity, ProviderConfig provider)
     {
         if (entity.ProviderType != null) provider.Type = entity.ProviderType;
-        if (entity.ApiKey != null) provider.ApiKey = entity.ApiKey;
+        if (entity.ApiKeyAuthoritative) provider.ApiKey = entity.ApiKey;
 
         if (entity.Settings is not { } settings) return;
 
@@ -355,7 +454,13 @@ public class ProviderConfigService
         {
             provider.Extra ??= new Dictionary<string, object?>();
             foreach (var prop in extra.EnumerateObject())
-                provider.Extra[prop.Name] = ExtractJsonValue(prop.Value);
+            {
+                if (string.Equals(prop.Name, "model", StringComparison.OrdinalIgnoreCase)
+                    && prop.Value.ValueKind == JsonValueKind.String)
+                    provider.Model = prop.Value.GetString();
+                else
+                    provider.Extra[prop.Name] = ExtractJsonValue(prop.Value);
+            }
         }
 
         // Any settings keys not in the known set go to Extra
@@ -541,6 +646,53 @@ public class ProviderConfigService
         return result;
     }
 
+    internal static List<ProviderEntityConfig> ApplyProviderSecrets(
+        List<ProviderEntityConfig> providers, string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object
+            || !doc.RootElement.TryGetProperty("items", out var items)
+            || items.ValueKind != JsonValueKind.Array)
+            throw new JsonException("Provider secret snapshot has no items array.");
+
+        var byId = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var bySlug = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items.EnumerateArray())
+        {
+            var apiKey = GetString(item, "apiKey");
+            var id = GetString(item, "id");
+            var slug = GetString(item, "slug");
+            if (!string.IsNullOrEmpty(id)) byId[id] = apiKey;
+            if (!string.IsNullOrEmpty(slug)) bySlug[slug] = apiKey;
+        }
+
+        return providers.Select(provider =>
+        {
+            if (byId.TryGetValue(provider.Id, out var apiKey)
+                || bySlug.TryGetValue(provider.Slug, out apiKey))
+                return provider with { ApiKey = apiKey, ApiKeyAuthoritative = true };
+            return provider;
+        }).ToList();
+    }
+
+    private static (HttpClient Client, Func<string?> Token) CreateServiceClient()
+    {
+        var redSuiteDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite");
+        var signingKey = SigningKeyPersistence.EnsureSigningKey(redSuiteDir);
+        var jwt = new JwtService(new JwtOptions { SigningKey = signingKey });
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        return (client, () => jwt.GenerateServiceAccessToken("redcompute"));
+    }
+
+    private void RefreshServiceAuthorization()
+    {
+        var token = _serviceToken();
+        if (token == null) return;
+        _http.DefaultRequestHeaders.Remove("Authorization");
+        _http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+    }
+
     private static bool TryFindArray(JsonElement obj, out JsonElement array)
     {
         foreach (var key in new[] { "items", "entities", "results", "data" })
@@ -577,12 +729,15 @@ public class ProviderConfigService
                 }
             }
 
-            var backend = GetString(data, "backend");
+            var backend = GetString(data, "backend") ?? GetString(data, "provider_type");
             if (string.IsNullOrWhiteSpace(backend)) return null;
 
             JsonElement? settings = null;
             if (data.TryGetProperty("settings", out var s) && s.ValueKind == JsonValueKind.Object)
                 settings = s.Clone();
+
+            var apiKey = GetString(data, "api_key");
+            if (apiKey is "***" or "[REDACTED]") apiKey = null;
 
             return new ProviderEntityConfig(
                 Id:           id,
@@ -591,7 +746,7 @@ public class ProviderConfigService
                 Backend:      backend!,
                 Icon:         GetString(data, "icon"),
                 EndpointUrl:  GetString(data, "endpoint_url"),
-                ApiKey:       GetString(data, "api_key"),
+                ApiKey:       apiKey,
                 DefaultModel: GetString(data, "default_model"),
                 Status:       GetString(data, "status") ?? "active",
                 Description:  GetString(data, "description"))

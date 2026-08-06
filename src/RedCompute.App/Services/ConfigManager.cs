@@ -21,6 +21,8 @@ public class ConfigManager
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    private readonly HashSet<string> _vaultedApiKeys = new(StringComparer.OrdinalIgnoreCase);
+
     public RedComputeConfig Config { get; private set; } = new();
 
     public void Load()
@@ -49,9 +51,75 @@ public class ConfigManager
     public void Save()
     {
         Directory.CreateDirectory(ConfigDir);
-        var json = JsonSerializer.Serialize(Config, JsonOptions);
+        var json = SerializeForPersistence(Config, _vaultedApiKeys);
         File.WriteAllText(ConfigPath, json);
     }
+
+    public void MarkApiKeyVaulted(string capabilitySlug, string providerName)
+        => _vaultedApiKeys.Add(ApiKeyCoordinate(capabilitySlug, providerName));
+
+    internal static string SerializeForPersistence(
+        RedComputeConfig config, IEnumerable<string> vaultedApiKeys)
+    {
+        // JsonExtensionData is flattened beside ProviderConfig's declared properties.
+        // Older provider manifests sometimes put a now-typed setting (for example
+        // "Model") in Extra. Keep the runtime bag intact, but omit those shadow
+        // entries from persisted JSON so System.Text.Json cannot emit duplicate keys.
+        var shadowedExtensionData = RemoveShadowedProviderExtensionData(config);
+        JsonObject root;
+        try
+        {
+            root = JsonSerializer.SerializeToNode(config, JsonOptions)?.AsObject()
+                ?? new JsonObject();
+        }
+        finally
+        {
+            foreach (var (extra, key, value) in shadowedExtensionData)
+                extra[key] = value;
+        }
+        var capabilities = (root["Capabilities"] ?? root["capabilities"]) as JsonObject;
+        if (capabilities != null)
+        {
+            foreach (var coordinate in vaultedApiKeys)
+            {
+                var separator = coordinate.IndexOf('\0');
+                if (separator <= 0 || separator == coordinate.Length - 1) continue;
+                var capabilitySlug = coordinate[..separator];
+                var providerName = coordinate[(separator + 1)..];
+                var capability = capabilities[capabilitySlug] as JsonObject;
+                var providers = (capability?["Providers"] ?? capability?["providers"]) as JsonObject;
+                var provider = providers?[providerName] as JsonObject;
+                provider?.Remove("ApiKey");
+                provider?.Remove("apiKey");
+            }
+        }
+        return root.ToJsonString(JsonOptions);
+    }
+
+    private static List<(Dictionary<string, object?> Extra, string Key, object? Value)>
+        RemoveShadowedProviderExtensionData(RedComputeConfig config)
+    {
+        var declaredNames = typeof(ProviderConfig).GetProperties()
+            .Where(property => property.Name != nameof(ProviderConfig.Extra))
+            .Select(property => property.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var removed = new List<(Dictionary<string, object?>, string, object?)>();
+
+        foreach (var provider in config.Capabilities.Values.SelectMany(capability => capability.Providers.Values))
+        {
+            if (provider.Extra == null) continue;
+            foreach (var key in provider.Extra.Keys.Where(declaredNames.Contains).ToList())
+            {
+                removed.Add((provider.Extra, key, provider.Extra[key]));
+                provider.Extra.Remove(key);
+            }
+        }
+
+        return removed;
+    }
+
+    internal static string ApiKeyCoordinate(string capabilitySlug, string providerName)
+        => $"{capabilitySlug}\0{providerName}";
 
     private string MigrateClaudeConfig(string json)
     {

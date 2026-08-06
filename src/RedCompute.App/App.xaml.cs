@@ -20,6 +20,7 @@ namespace RedCompute.App;
 public partial class App : Application
 {
     private static Mutex? _mutex;
+    private static readonly SemaphoreSlim ProviderRefreshGate = new(1, 1);
     private CancellationTokenSource? _relayCts;
     private RelayServer? _relayServer;
 
@@ -67,8 +68,14 @@ public partial class App : Application
         Log("[App] Configuration loaded");
 
         ProviderConfig = new ProviderConfigService(ConfigManager.Config, (msg, _) => Log(msg));
+        await ProviderConfig.ImportLegacyApiKeysAsync();
         await ProviderConfig.InitialSyncAsync();
         ProviderConfig.ApplyToConfig(ConfigManager.Config);
+        var vaultedProviderKeys = ProviderConfig.GetVaultedConfigProviderCoordinates(ConfigManager.Config);
+        foreach (var coordinate in vaultedProviderKeys)
+            ConfigManager.MarkApiKeyVaulted(coordinate.CapabilitySlug, coordinate.ProviderName);
+        if (vaultedProviderKeys.Count > 0)
+            ConfigManager.Save();
         Log("[App] Provider entities synced");
 
         DefenderExclusionService.EnsureExclusions(s => Log(s));
@@ -160,6 +167,92 @@ public partial class App : Application
             workflow.WorkerDisplayName ??= "RedLeaf Workflow Engine";
             Registry.Register("workflow", workflow, workflowConfig, [], null);
             Log("[App] Registered external capability: workflow (worker: RedLeaf Workflow Engine)");
+        }
+    }
+
+    public static async Task<int> RefreshProviderSecretsAsync(CancellationToken ct = default)
+    {
+        await ProviderRefreshGate.WaitAsync(ct);
+        try
+        {
+            // RedLeaf starts Compute before extension seeds are materialized. Retry the
+            // one-way import here so providers introduced during plugin startup (for
+            // example Suno) cannot leave a legacy config key stranded indefinitely.
+            await ProviderConfig.ImportLegacyApiKeysAsync(ct);
+
+            var before = ConfigManager.Config.Capabilities
+                .SelectMany(capability => capability.Value.Providers.Select(provider => new
+                {
+                    Coordinate = ConfigManager.ApiKeyCoordinate(capability.Key, provider.Key),
+                    provider.Value.ApiKey,
+                }))
+                .ToDictionary(item => item.Coordinate, item => item.ApiKey,
+                    StringComparer.OrdinalIgnoreCase);
+
+            await ProviderConfig.RefreshAsync(ct);
+            ProviderConfig.ApplyToConfig(ConfigManager.Config);
+            foreach (var coordinate in ProviderConfig.GetVaultedConfigProviderCoordinates(ConfigManager.Config))
+                ConfigManager.MarkApiKeyVaulted(coordinate.CapabilitySlug, coordinate.ProviderName);
+
+            // Persist immediately after an authenticated vault refresh. The runtime keeps
+            // hydrated keys in memory, while serialization removes every coordinate now
+            // owned by RedLeaf. Without this save, a successful late startup refresh leaves
+            // legacy plaintext stranded on disk until an unrelated settings write.
+            ConfigManager.Save();
+
+            var changed = new List<(string Capability, string Provider)>();
+            foreach (var (capabilitySlug, capability) in ConfigManager.Config.Capabilities)
+            foreach (var (providerName, providerConfig) in capability.Providers)
+            {
+                var coordinate = ConfigManager.ApiKeyCoordinate(capabilitySlug, providerName);
+                before.TryGetValue(coordinate, out var previous);
+                if (!string.Equals(previous, providerConfig.ApiKey, StringComparison.Ordinal))
+                    changed.Add((capabilitySlug, providerName));
+            }
+
+            var extraServices = new object?[]
+            {
+                (IJobTracker)JobTracker,
+                (Action<string, Guid?>)((message, jobId) => Log(message, jobId)),
+            };
+            foreach (var (capabilitySlug, providerName) in changed)
+            {
+                var entry = Registry.Get(capabilitySlug);
+                if (entry == null
+                    || !entry.Config.Providers.TryGetValue(providerName, out var providerConfig))
+                    continue;
+
+                var replacement = ProviderDiscovery.Create(
+                    providerConfig.Type, providerConfig, capabilitySlug, message => Log(message), extraServices);
+                if (replacement == null) continue;
+                if (entry.Providers.TryGetValue(providerName, out var previousProvider))
+                {
+                    try
+                    {
+                        await previousProvider.StopAsync();
+                        await previousProvider.DisposeAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[ProviderConfig] Could not cleanly stop {capabilitySlug}/{providerName}: {ex.Message}");
+                    }
+                }
+                entry.Providers[providerName] = replacement;
+                if (entry.DefaultProviderName == providerName && !entry.IsManuallyDisabled)
+                {
+                    try { await replacement.StartAsync(); }
+                    catch (Exception ex)
+                    {
+                        Log($"[ProviderConfig] Could not start refreshed {capabilitySlug}/{providerName}: {ex.Message}");
+                    }
+                }
+            }
+
+            return changed.Count;
+        }
+        finally
+        {
+            ProviderRefreshGate.Release();
         }
     }
 

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Discovery;
@@ -59,6 +60,16 @@ public static class SettingsEndpoints
             .WithParam("apiPort", "integer", description: "HTTP port the service listens on (applies after restart)", location: ParamLocation.Body)
             .WithParam("logLevel", "string", description: "Log verbosity", location: ParamLocation.Body);
 
+        endpoints.MapPost("/settings/provider-secrets/refresh",
+            "Reload vaulted provider credentials from RedLeaf and recreate only providers whose runtime credential changed.",
+            async (HttpContext ctx) =>
+            {
+                if (!IsRedLeafService(ctx.User))
+                    return Results.Json(new { error = "forbidden" }, statusCode: 403);
+                var changed = await App.RefreshProviderSecretsAsync(ctx.RequestAborted);
+                return Results.Ok(new { changed });
+            });
+
         endpoints.MapPut("/settings/capability/{slug}", "Update capability settings", async (HttpContext ctx, string slug) =>
         {
             var config = configManager.Config;
@@ -115,6 +126,12 @@ public static class SettingsEndpoints
             var body = await ctx.Request.ReadFromJsonAsync<ProviderSettingsUpdate>();
             if (body == null)
                 return Results.BadRequest(new { error = "invalid_body", message = "Expected JSON body" });
+            if (body.ApiKey != null)
+                return Results.Conflict(new
+                {
+                    error = "secret_owned_by_redleaf",
+                    message = "Provider API keys must be replaced through the provider entity secret endpoint.",
+                });
 
             if (body.WslDistro != null) provider.WslDistro = body.WslDistro;
             if (body.VenvPath != null) provider.VenvPath = body.VenvPath;
@@ -124,7 +141,6 @@ public static class SettingsEndpoints
             if (body.VoicesBasePath != null) provider.VoicesBasePath = body.VoicesBasePath;
             if (body.HealthEndpoint != null) provider.HealthEndpoint = body.HealthEndpoint;
             if (body.StartupTimeoutSeconds.HasValue) provider.StartupTimeoutSeconds = body.StartupTimeoutSeconds.Value;
-            if (body.ApiKey != null) provider.ApiKey = body.ApiKey;
             if (body.PodId != null) provider.PodId = body.PodId;
             if (body.GpuCount.HasValue) provider.GpuCount = body.GpuCount.Value;
             if (body.AutoStopOnExit.HasValue) provider.AutoStopOnExit = body.AutoStopOnExit.Value;
@@ -151,7 +167,6 @@ public static class SettingsEndpoints
             .WithParam("voicesBasePath", "string", description: "Base path for TTS voice files", location: ParamLocation.Body)
             .WithParam("healthEndpoint", "string", description: "Health-check endpoint path", location: ParamLocation.Body)
             .WithParam("startupTimeoutSeconds", "integer", description: "Seconds to wait for the backend to become healthy", location: ParamLocation.Body)
-            .WithParam("apiKey", "string", description: "API key for cloud providers", location: ParamLocation.Body)
             .WithParam("podId", "string", description: "RunPod pod ID", location: ParamLocation.Body)
             .WithParam("gpuCount", "integer", description: "Number of GPUs to request (RunPod)", location: ParamLocation.Body)
             .WithParam("autoStopOnExit", "boolean", description: "Stop the pod when RedCompute exits (RunPod)", location: ParamLocation.Body)
@@ -185,6 +200,11 @@ public static class SettingsEndpoints
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RedCompute", "config.json");
     }
+
+    internal static bool IsRedLeafService(ClaimsPrincipal user)
+        => user.Identity?.IsAuthenticated == true
+            && string.Equals(user.FindFirst("sub")?.Value, "service:redleaf", StringComparison.Ordinal)
+            && string.Equals(user.FindFirst("client_id")?.Value, "redleaf", StringComparison.Ordinal);
 
     private class GeneralSettingsUpdate
     {
