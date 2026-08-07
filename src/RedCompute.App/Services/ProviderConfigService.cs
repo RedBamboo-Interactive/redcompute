@@ -52,6 +52,7 @@ public class ProviderConfigService
 
     private volatile bool _loadedFromRedLeaf;
     private volatile bool _loadedFromCache;
+    private volatile bool _legacyMigrationComplete;
 
     private static readonly Dictionary<string, string> AliasMap = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -152,6 +153,13 @@ public class ProviderConfigService
     /// </summary>
     public async Task<bool> ImportLegacyApiKeysAsync(CancellationToken ct = default)
     {
+        // Once every legacy coordinate has been accepted by RedLeaf, never offer the
+        // in-memory copies again. ApplyToConfig hydrates those same properties from the
+        // vault, so inspecting ApiKey alone cannot distinguish legacy input from an
+        // authoritative runtime value. Re-importing it would resurrect a credential
+        // after the user deliberately cleared the vault.
+        if (_legacyMigrationComplete) return false;
+
         var items = _config.Capabilities.SelectMany(capability =>
             capability.Value.Providers
                 .Where(provider => !string.IsNullOrEmpty(provider.Value.ApiKey))
@@ -181,6 +189,8 @@ public class ProviderConfigService
                 && missingItems.ValueKind == JsonValueKind.Array
                 ? missingItems.GetArrayLength()
                 : 0;
+            if (accepted == items.Count && missing == 0)
+                _legacyMigrationComplete = true;
             _log($"[ProviderConfig] Legacy credential migration accepted {accepted} provider(s); {missing} unmatched", null);
             return accepted > 0;
         }
