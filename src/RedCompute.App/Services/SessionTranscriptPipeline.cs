@@ -179,7 +179,16 @@ public sealed class SessionTranscriptPipeline
         });
 
     private void Broadcast(string provider, string sessionId, UnifiedStreamEvent evt) =>
-        _broadcaster.Broadcast("ai-session.stream", new { provider, sessionId, @event = evt });
+        _broadcaster.Broadcast("ai-session.stream", new
+        {
+            provider,
+            sessionId,
+            @event = evt,
+            // RedLeaf merges this stream with its own ambient event stream.
+            // Stamp observation at the source so browser receipt races cannot
+            // rewrite the visible chronology.
+            timestamp = DateTimeOffset.UtcNow.ToString("O"),
+        });
 
     private static string? Output(UnifiedStreamEvent evt) => evt.ToolResult ?? evt.Content;
 

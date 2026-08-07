@@ -344,7 +344,7 @@ public class RelayServer
             Fields: ["id", "reason", "stopReason"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.stream",
             "Fired for each streaming event from an active session (text, tool calls, thinking, errors)",
-            Fields: ["sessionId", "event"]));
+            Fields: ["sessionId", "event", "timestamp"]));
         broadcaster.RegisterEvent(new WsEventSchema("hardware.snapshot",
             "Fired every 2 seconds with live system hardware metrics",
             Fields: ["timestamp", "cpu", "ram", "gpus"]));
