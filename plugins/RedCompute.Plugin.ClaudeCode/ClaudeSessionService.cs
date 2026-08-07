@@ -766,7 +766,7 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? qualityTier = null, string? providerEntity = null, JobProvenance? provenance = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? qualityTier = null, string? providerEntity = null, JobProvenance? provenance = null, string? scratchDirectory = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -819,6 +819,9 @@ public class ClaudeSessionService
             StandardErrorEncoding = Encoding.UTF8
         };
         PopulateSessionArgs(startInfo, model: model, effort: effort);
+        if (SessionScratch.Environment(scratchDirectory) is { } scratchEnvironment)
+            foreach (var (key, value) in scratchEnvironment)
+                startInfo.Environment[key] = value;
 
         Process process;
         try

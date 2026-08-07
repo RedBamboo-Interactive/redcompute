@@ -146,7 +146,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string projectPath, string? callerInfo = null, string? model = null,
         string? userId = null, string? userName = null, string? userAvatarUrl = null,
         string? effort = null, string? qualityTier = null, string? providerEntity = null,
-        JobProvenance? provenance = null)
+        JobProvenance? provenance = null, string? scratchDirectory = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -176,7 +176,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         CodexAppServerConnection? conn = null;
         try
         {
-            conn = await ConnectAsync(id, projectPath);
+            conn = await ConnectAsync(id, projectPath, scratchDirectory);
             var session = new ManagedSession { Info = info, Connection = conn };
 
             var result = await conn.SendRequestAsync("thread/start", new
@@ -277,9 +277,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
     }
 
-    private async Task<CodexAppServerConnection> ConnectAsync(string sessionId, string projectPath)
+    private async Task<CodexAppServerConnection> ConnectAsync(string sessionId, string projectPath,
+        string? scratchDirectory = null)
     {
-        var conn = await CodexAppServerConnection.StartAsync(_config.CodexPath, projectPath, _log);
+        var conn = await CodexAppServerConnection.StartAsync(
+            _config.CodexPath, projectPath, _log, SessionScratch.Environment(scratchDirectory));
         conn.Notification += (method, p) => OnNotification(sessionId, method, p);
         conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);
         conn.Exited += code => OnExited(sessionId, code);

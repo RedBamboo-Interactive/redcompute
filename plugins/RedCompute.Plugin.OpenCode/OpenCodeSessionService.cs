@@ -124,7 +124,7 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null, string? effort = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null, JobProvenance? provenance = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null, string? effort = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null, JobProvenance? provenance = null, string? scratchDirectory = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -160,7 +160,8 @@ public class OpenCodeSessionService
             ProviderEntity = providerEntity,
         };
 
-        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, effort, thinkingBudget);
+        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, effort,
+            thinkingBudget, scratchDirectory);
         if (session == null)
         {
             LastStartError = error;
@@ -285,7 +286,8 @@ public class OpenCodeSessionService
 
     private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
         OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId,
-        string? model = null, string? effort = null, int? thinkingBudget = null)
+        string? model = null, string? effort = null, int? thinkingBudget = null,
+        string? scratchDirectory = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -300,6 +302,9 @@ public class OpenCodeSessionService
             StandardErrorEncoding = Encoding.UTF8,
         };
         startInfo.ArgumentList.Add("acp");
+        if (SessionScratch.Environment(scratchDirectory) is { } scratchEnvironment)
+            foreach (var (key, value) in scratchEnvironment)
+                startInfo.Environment[key] = value;
 
         var resolvedModel = model ?? _config.Model;
 

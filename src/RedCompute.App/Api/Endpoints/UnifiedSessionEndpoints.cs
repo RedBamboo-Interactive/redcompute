@@ -174,6 +174,15 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(projectPath))
                 return Error(422, "validation_failed", "projectPath is required");
 
+            string? scratchDirectory = null;
+            if (body.TryGetProperty("scratchDir", out var scratchValue)
+                && scratchValue.ValueKind != JsonValueKind.Null)
+            {
+                if (scratchValue.ValueKind != JsonValueKind.String
+                    || !SessionScratch.TryResolveDirectory(scratchValue.GetString(), out scratchDirectory))
+                    return Error(422, "validation_failed", "scratchDir must be an existing absolute directory");
+            }
+
             var model = q.Model;
             var effort = q.Effort;
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
@@ -184,7 +193,8 @@ public static class UnifiedSessionEndpoints
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
             var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar,
-                effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName, provenance);
+                effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName, provenance,
+                scratchDirectory);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
             if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -202,7 +212,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("model", "string", description: "Model to use. Overrides qualityTier when both are given.", location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Effort level (e.g. low, normal, high)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
-            .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body);
+            .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body)
+            .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body);
 
         endpoints.MapGet("/ai-session/sessions/{id}",
             "Get session details and message history", async (HttpContext ctx, string id) =>

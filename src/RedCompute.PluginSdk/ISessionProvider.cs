@@ -21,6 +21,12 @@ public interface ISessionProvider
         JobProvenance provenance)
         => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort,
             endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity);
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
+        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
+        JobProvenance provenance, string? scratchDirectory)
+        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort,
+            endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity, provenance);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
         => ResumeSessionAsync(sessionId);
