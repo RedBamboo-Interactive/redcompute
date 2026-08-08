@@ -966,13 +966,13 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapGet("/ai-session/providers/configured",
-            "List all active AI provider configurations, resolved from RedLeaf. Use these slugs in the provider field.", () =>
+            "List active AI inference provider configurations referenced by at least one quality mode. Use these slugs in the provider field.", () =>
         {
-            if (_providerConfig == null)
-                return Error(503, "not_configured", "Provider config service is not available");
+            if (_providerConfig == null || _quality == null)
+                return Error(503, "not_configured", "Provider and quality mode services are not available");
 
             var defaultSlug = _providerConfig.DefaultProviderSlug;
-            var providers = _providerConfig.GetAll().Select(p => new
+            var providers = FilterInferenceProviders(_providerConfig.GetAll(), _quality.GetAll()).Select(p => new
             {
                 p.Slug,
                 p.Name,
@@ -1231,6 +1231,20 @@ public static class UnifiedSessionEndpoints
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
+    }
+
+    internal static IReadOnlyList<ProviderEntityConfig> FilterInferenceProviders(
+        IReadOnlyList<ProviderEntityConfig> providers,
+        IReadOnlyList<QualityMode> qualityModes)
+    {
+        var inferenceProviderSlugs = qualityModes
+            .Select(mode => mode.Provider)
+            .Where(slug => !string.IsNullOrWhiteSpace(slug))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return providers
+            .Where(provider => inferenceProviderSlugs.Contains(provider.Slug))
+            .ToList();
     }
 
     internal static bool TryGetNonNullImages(JsonElement body, out JsonElement images)
