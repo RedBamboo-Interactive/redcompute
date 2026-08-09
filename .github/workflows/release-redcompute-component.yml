@@ -1,0 +1,479 @@
+name: Build RedCompute component input
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Exact RedCompute semantic version built into the component input.
+        required: true
+        type: string
+      compatible_product_version:
+        description: Compatible RedLeaf product Phase 1 version range.
+        required: true
+        type: string
+      requires_kernel_api:
+        description: Required RedLeaf kernel API Phase 1 version range.
+        required: true
+        type: string
+      provides_compute_api:
+        description: Exact provided RedCompute API semantic version.
+        required: true
+        type: string
+      release_tag:
+        description: Future central RedBamboo-Interactive/redleaf GitHub Release tag.
+        required: true
+        type: string
+      release_id:
+        description: Immutable RedLeaf suite release ID used as the install root.
+        required: true
+        type: string
+    secrets:
+      CROSS_REPO_TOKEN:
+        description: Optional token with read access to the pinned RedBamboo dependency commit.
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact RedCompute semantic version built into the component input.
+        required: true
+        type: string
+      compatible_product_version:
+        description: Compatible RedLeaf product Phase 1 version range.
+        required: true
+        type: string
+      requires_kernel_api:
+        description: Required RedLeaf kernel API Phase 1 version range.
+        required: true
+        type: string
+      provides_compute_api:
+        description: Exact provided RedCompute API semantic version.
+        required: true
+        type: string
+      release_tag:
+        description: Future central RedBamboo-Interactive/redleaf GitHub Release tag.
+        required: true
+        type: string
+      release_id:
+        description: Immutable RedLeaf suite release ID used as the install root.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned self-contained win-x64 input
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      RELEASE_TOOL_DLL: ${{ runner.temp }}/redcompute-release-tool/RedCompute.ReleaseTool.dll
+      REDLEAF_RELEASE_TOOL_DLL: ${{ runner.temp }}/redleaf-release-tool/RedLeaf.ReleaseTool.dll
+
+    steps:
+      - name: Checkout exact RedCompute commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: RedBamboo-Interactive/redcompute
+          ref: ${{ github.workflow_sha }}
+          path: redcompute
+          persist-credentials: false
+
+      - name: Resolve required audited RedLeaf ReleaseTool input before build
+        id: redleaf-tool
+        working-directory: redcompute
+        shell: pwsh
+        run: ./release/Resolve-RedLeafReleaseToolInput.ps1 -InputPath release/redleaf-release-tool-input.v1.json -GitHubOutput $env:GITHUB_OUTPUT
+
+      - name: Read pinned AppHost source input
+        id: apphost
+        working-directory: redcompute
+        shell: pwsh
+        run: |
+          $source = Get-Content -LiteralPath 'release/redcompute-source-dependencies.v1.json' -Raw | ConvertFrom-Json
+          if ($source.schemaVersion -ne 1 -or @($source.dependencies).Count -ne 1) {
+            throw 'The source input must contain exactly one version-1 dependency.'
+          }
+          $dependency = @($source.dependencies)[0]
+          if ($dependency.id -ne 'redbamboo-apphost' -or $dependency.commit -notmatch '^[a-f0-9]{40}$') {
+            throw 'The AppHost dependency must use one exact commit.'
+          }
+          "commit=$($dependency.commit)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Checkout exact RedBamboo AppHost source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: RedBamboo-Interactive/redbamboo-packages
+          ref: ${{ steps.apphost.outputs.commit }}
+          path: redbamboo-packages
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Checkout exact pinned RedLeaf ReleaseTool source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: RedBamboo-Interactive/redleaf
+          ref: ${{ steps.redleaf-tool.outputs.commit }}
+          path: redleaf-release-tool-source
+          persist-credentials: false
+
+      - name: Set up exact .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 9.0.303
+
+      - name: Validate dispatch data and exact source/toolchain inputs
+        working-directory: redcompute
+        shell: pwsh
+        env:
+          COMPONENT_VERSION: ${{ inputs.version }}
+          COMPATIBLE_PRODUCT_VERSION: ${{ inputs.compatible_product_version }}
+          REQUIRES_KERNEL_API: ${{ inputs.requires_kernel_api }}
+          PROVIDES_COMPUTE_API: ${{ inputs.provides_compute_api }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+        run: |
+          $semver = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+          foreach ($value in @($env:COMPONENT_VERSION, $env:PROVIDES_COMPUTE_API)) {
+            if ($value -notmatch $semver) { throw 'All version inputs must be exact semantic versions.' }
+          }
+          foreach ($range in @($env:COMPATIBLE_PRODUCT_VERSION, $env:REQUIRES_KERNEL_API)) {
+            if ($range -notmatch '^[0-9A-Za-z.*+<>=~^ -]+$') { throw 'Compatibility ranges contain unsupported characters.' }
+          }
+          foreach ($token in @($env:RELEASE_TAG, $env:RELEASE_ID)) {
+            if ($token -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -or $token.EndsWith('.')) {
+              throw 'Release tag and release ID must be safe non-empty tokens.'
+            }
+          }
+          if ((dotnet --version).Trim() -ne '9.0.303') { throw 'Unexpected .NET SDK.' }
+          if ((dotnet msbuild -version -nologo | Select-Object -Last 1).Trim() -ne '17.14.13.31314') { throw 'Unexpected MSBuild version.' }
+          if ((dotnet nuget --version | Select-Object -Last 1).Trim() -ne '6.14.0.116') { throw 'Unexpected NuGet version.' }
+          $runtimes = @(dotnet --list-runtimes)
+          foreach ($runtime in @('Microsoft.NETCore.App', 'Microsoft.AspNetCore.App', 'Microsoft.WindowsDesktop.App')) {
+            if (-not ($runtimes -match "^$([regex]::Escape($runtime)) 9\.0\.7 \[")) { throw "Unexpected $runtime version." }
+          }
+          if ((git rev-parse HEAD).Trim() -ne $env:REDCOMPUTE_SHA) { throw 'RedCompute checkout does not match github.workflow_sha.' }
+          $source = Get-Content -LiteralPath 'release/redcompute-source-dependencies.v1.json' -Raw | ConvertFrom-Json
+          $dependency = @($source.dependencies)[0]
+          if ((git -C ../redbamboo-packages rev-parse HEAD).Trim() -ne $dependency.commit) { throw 'AppHost checkout commit mismatch.' }
+          $toolInput = Get-Content -LiteralPath 'release/redleaf-release-tool-input.v1.json' -Raw | ConvertFrom-Json
+          if ((git -C ../redleaf-release-tool-source rev-parse HEAD).Trim() -ne $toolInput.commit) { throw 'RedLeaf ReleaseTool checkout commit mismatch.' }
+
+      - name: Restore exact NuGet inputs in locked mode
+        working-directory: redcompute
+        shell: pwsh
+        run: |
+          ./release/Test-LockedRestoreModes.ps1 `
+            -ArtifactsPath artifacts/locked-restore-gate `
+            -RedBambooPackagesRoot ../redbamboo-packages
+          dotnet restore RedCompute.sln --locked-mode --runtime win-x64 --nologo
+
+      - name: Restore and build the release producer once
+        working-directory: redcompute
+        shell: pwsh
+        run: |
+          dotnet restore tools/RedCompute.ReleaseTool/RedCompute.ReleaseTool.csproj --locked-mode --nologo
+          $toolOutput = Split-Path -Parent $env:RELEASE_TOOL_DLL
+          dotnet build tools/RedCompute.ReleaseTool/RedCompute.ReleaseTool.csproj `
+            --configuration Release `
+            --no-restore `
+            --output "$toolOutput" `
+            --nologo `
+            -p:ContinuousIntegrationBuild=true `
+            -p:Deterministic=true
+          if (-not (Test-Path -LiteralPath $env:RELEASE_TOOL_DLL -PathType Leaf)) {
+            throw 'The explicitly built Release producer DLL is missing.'
+          }
+
+      - name: Restore and build the exact pinned RedLeaf ReleaseTool once
+        working-directory: redcompute
+        shell: pwsh
+        run: |
+          dotnet restore ../redleaf-release-tool-source/tools/RedLeaf.ReleaseTool/RedLeaf.ReleaseTool.csproj --locked-mode --nologo
+          $toolOutput = Split-Path -Parent $env:REDLEAF_RELEASE_TOOL_DLL
+          dotnet build ../redleaf-release-tool-source/tools/RedLeaf.ReleaseTool/RedLeaf.ReleaseTool.csproj `
+            --configuration Release `
+            --no-restore `
+            --output "$toolOutput" `
+            --nologo `
+            -p:ContinuousIntegrationBuild=true `
+            -p:Deterministic=true
+          if (-not (Test-Path -LiteralPath $env:REDLEAF_RELEASE_TOOL_DLL -PathType Leaf)) {
+            throw 'The exact pinned RedLeaf ReleaseTool DLL is missing.'
+          }
+
+      - name: Assert frontend is not part of this runtime
+        working-directory: redcompute
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath 'web/package.json') {
+            throw 'A frontend now exists; add an exact locked production build before release.'
+          }
+
+      - name: Run complete backend test suite sequentially
+        working-directory: redcompute
+        shell: pwsh
+        run: dotnet test RedCompute.sln --configuration Release --no-restore --maxcpucount:1 --nologo
+
+      - name: Produce two clean self-contained RedCompute runtimes with compact evidence
+        working-directory: redcompute
+        shell: pwsh
+        env:
+          COMPONENT_VERSION: ${{ inputs.version }}
+          REDCOMPUTE_REPOSITORY: https://github.com/RedBamboo-Interactive/redcompute
+          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+        run: |
+          $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
+          $redComputeRoot = (Get-Location).Path
+          $sourceParent = [IO.Path]::GetFullPath((Join-Path $redComputeRoot '..'))
+          $pathMap = "$sourceParent=/_/source"
+          foreach ($name in @('first', 'second')) {
+            $publishRoot = Join-Path $productionRoot "$name/publish"
+            dotnet clean RedCompute.sln --configuration Release --nologo -p:RedBambooPackagesRoot=../redbamboo-packages
+            dotnet clean RedCompute.sln --configuration Release --runtime win-x64 --nologo -p:RedBambooPackagesRoot=../redbamboo-packages
+            dotnet restore RedCompute.sln --locked-mode --runtime win-x64 --nologo -p:RedBambooPackagesRoot=../redbamboo-packages
+            dotnet publish src/RedCompute.App/RedCompute.App.csproj `
+              --configuration Release `
+              --runtime win-x64 `
+              --self-contained true `
+              --no-restore `
+              --output "$publishRoot" `
+              -p:RedBambooPackagesRoot=../redbamboo-packages `
+              -p:PathMap="$pathMap" `
+              -p:Version="$env:COMPONENT_VERSION" `
+              -p:ContinuousIntegrationBuild=true `
+              -p:Deterministic=true
+            dotnet "$env:RELEASE_TOOL_DLL" evidence build `
+              --repository-root . `
+              --publish-root "$publishRoot" `
+              --output "$publishRoot/release/redcompute-build-evidence.v1.json" `
+              --version "$env:COMPONENT_VERSION" `
+              --repository-url "$env:REDCOMPUTE_REPOSITORY" `
+              --source-commit "$env:REDCOMPUTE_SHA" `
+              --source-dependencies release/redcompute-source-dependencies.v1.json `
+              --provider-graph release/redcompute-provider-graph.v1.json `
+              --dotnet-sdk 9.0.303 `
+              --dotnet-runtime 9.0.7 `
+              --msbuild 17.14.13.31314 `
+              --nuget 6.14.0.116
+          }
+
+      - name: Compare independently produced deterministic archives
+        working-directory: redcompute
+        shell: pwsh
+        run: |
+          $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
+          foreach ($name in @('first', 'second')) {
+            dotnet "$env:RELEASE_TOOL_DLL" archive create `
+              --source (Join-Path $productionRoot "$name/publish") `
+              --output (Join-Path $productionRoot "$name/redcompute-win-x64.zip")
+          }
+          $first = (Get-FileHash -LiteralPath (Join-Path $productionRoot 'first/redcompute-win-x64.zip') -Algorithm SHA256).Hash
+          $second = (Get-FileHash -LiteralPath (Join-Path $productionRoot 'second/redcompute-win-x64.zip') -Algorithm SHA256).Hash
+          if ($first -ne $second) { throw 'Deterministic archive reproduction failed.' }
+
+      - name: Build strict channel-neutral component input twice
+        working-directory: redcompute
+        shell: pwsh
+        env:
+          COMPONENT_VERSION: ${{ inputs.version }}
+          COMPATIBLE_PRODUCT_VERSION: ${{ inputs.compatible_product_version }}
+          REQUIRES_KERNEL_API: ${{ inputs.requires_kernel_api }}
+          PROVIDES_COMPUTE_API: ${{ inputs.provides_compute_api }}
+        run: |
+          $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
+          foreach ($name in @('first', 'second')) {
+            $production = Join-Path $productionRoot $name
+            dotnet "$env:RELEASE_TOOL_DLL" descriptor build `
+              --artifact (Join-Path $production 'redcompute-win-x64.zip') `
+              --evidence (Join-Path $production 'publish/release/redcompute-build-evidence.v1.json') `
+              --requires-kernel-api $env:REQUIRES_KERNEL_API `
+              --compatible-product-version $env:COMPATIBLE_PRODUCT_VERSION `
+              --provides-compute-api $env:PROVIDES_COMPUTE_API `
+              --output (Join-Path $production 'redcompute-component-input.v1.json')
+          }
+          $firstDescriptor = Join-Path $productionRoot 'first/redcompute-component-input.v1.json'
+          $secondDescriptor = Join-Path $productionRoot 'second/redcompute-component-input.v1.json'
+          if ((Get-FileHash $firstDescriptor -Algorithm SHA256).Hash -ne (Get-FileHash $secondDescriptor -Algorithm SHA256).Hash) {
+            throw 'Component descriptor reproduction failed.'
+          }
+          dotnet "$env:RELEASE_TOOL_DLL" descriptor validate --input $firstDescriptor
+          Copy-Item -LiteralPath (Join-Path $productionRoot 'first/redcompute-win-x64.zip') -Destination artifacts/redcompute-win-x64.zip
+          Copy-Item -LiteralPath $firstDescriptor -Destination artifacts/redcompute-component-input.v1.json
+
+      - name: Ingest both proven paths into one unsigned generic RedLeaf candidate
+        working-directory: redcompute
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          ARTIFACT_NAME_TEMPLATE: ${{ steps.redleaf-tool.outputs.artifact_name_template }}
+          REDLEAF_REPOSITORY: ${{ steps.redleaf-tool.outputs.repository_url }}
+          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+        run: |
+          $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
+          $artifact = Join-Path $productionRoot 'first/redcompute-win-x64.zip'
+          $artifactSha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+          $artifactName = $env:ARTIFACT_NAME_TEMPLATE.Replace('{artifactSha256}', $artifactSha)
+          if ($artifactName -ne "redcompute-win-x64-$artifactSha.zip" -or
+              $artifactName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') {
+            throw 'The central artifact filename is not the exact safe version-1 contract.'
+          }
+          $artifactUrl = "$env:REDLEAF_REPOSITORY/releases/download/$env:RELEASE_TAG/$artifactName"
+          $expectedUrl = "https://github.com/RedBamboo-Interactive/redleaf/releases/download/$env:RELEASE_TAG/$artifactName"
+          if ($artifactUrl -cne $expectedUrl) { throw 'Candidate artifact URL is not the exact central RedBamboo-Interactive/redleaf Release asset URL.' }
+          $builtAt = [DateTimeOffset]::UtcNow.ToString('O')
+          $buildId = '${{ github.run_id }}.${{ github.run_attempt }}'
+          foreach ($name in @('first', 'second')) {
+            $production = Join-Path $productionRoot $name
+            dotnet "$env:REDLEAF_RELEASE_TOOL_DLL" candidate ingest-redcompute `
+              --descriptor (Join-Path $production 'redcompute-component-input.v1.json') `
+              --artifact (Join-Path $production 'redcompute-win-x64.zip') `
+              --artifact-url $artifactUrl `
+              --release-root "releases/$env:RELEASE_ID" `
+              --build-id $buildId `
+              --built-at $builtAt `
+              --output (Join-Path $production 'redcompute-release-candidate.unsigned.json') `
+              --signature-input (Join-Path $production 'redcompute-release-signature-input.json')
+          }
+          foreach ($fileName in @('redcompute-release-candidate.unsigned.json', 'redcompute-release-signature-input.json')) {
+            $first = Join-Path $productionRoot "first/$fileName"
+            $second = Join-Path $productionRoot "second/$fileName"
+            if ((Get-FileHash -LiteralPath $first -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $second -Algorithm SHA256).Hash) {
+              throw "Generic candidate path reproduction failed for $fileName."
+            }
+          }
+          $candidatePath = Join-Path $productionRoot 'first/redcompute-release-candidate.unsigned.json'
+          $candidate = Get-Content -LiteralPath $candidatePath -Raw | ConvertFrom-Json
+          if ($candidate.status -ne 'unsigned' -or $null -ne $candidate.artifact.signature) {
+            throw 'RedCompute may emit only an unsigned generic RedLeaf candidate.'
+          }
+          if ($candidate.componentId -ne 'redcompute' -or $candidate.componentKind -ne 'compute' -or
+              $candidate.artifact.url -cne $expectedUrl -or
+              $candidate.artifact.provenance.repositoryUrl -cne 'https://github.com/RedBamboo-Interactive/redcompute' -or
+              $candidate.artifact.provenance.sourceCommit -cne $env:REDCOMPUTE_SHA) {
+            throw 'The generic candidate does not bind the exact RedCompute source and central artifact contract.'
+          }
+          Copy-Item -LiteralPath $candidatePath -Destination artifacts/redcompute-release-candidate.unsigned.json
+          Copy-Item -LiteralPath (Join-Path $productionRoot 'first/redcompute-release-signature-input.json') -Destination artifacts/redcompute-release-signature-input.json
+
+      - name: Collect immutable publication inputs
+        working-directory: redcompute
+        shell: pwsh
+        run: |
+          Copy-Item release/redcompute-source-dependencies.v1.json artifacts/
+          Copy-Item release/redleaf-release-tool-input.v1.json artifacts/
+          Copy-Item schemas/redcompute-component-input.v1.schema.json artifacts/
+          Copy-Item schemas/redleaf-release-tool-input.v1.schema.json artifacts/
+          New-Item -ItemType Directory -Path artifacts/dependency-locks -Force | Out-Null
+          Get-ChildItem -Recurse -Filter packages.lock.json |
+            Where-Object { $_.FullName -notmatch '[\\/](bin|obj|artifacts|\.release-deps)[\\/]' } |
+            ForEach-Object {
+              $relative = [IO.Path]::GetRelativePath($PWD, $_.FullName).Replace('\', '/')
+              $name = $relative.Replace('/', '__')
+              Copy-Item -LiteralPath $_.FullName -Destination (Join-Path artifacts/dependency-locks $name)
+            }
+
+      - name: Upload unsigned component and generic candidate bytes for audit
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: redcompute-${{ github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: redcompute/artifacts/**
+          if-no-files-found: error
+          retention-days: 14
+
+  bridge:
+    name: Append unsigned RedCompute bytes to rolling prerelease
+    needs: build
+    concurrency:
+      group: redcompute-unsigned-candidate-bridge
+      cancel-in-progress: false
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download exact unsigned candidate inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: redcompute-${{ github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bridge-input
+
+      - name: Prepare immutable bridge asset names
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+        run: |
+          $descriptor = @(Get-ChildItem bridge-input -Recurse -File -Filter redcompute-release-candidate.unsigned.json)
+          if ($descriptor.Count -ne 1) { throw 'Expected exactly one unsigned RedCompute descriptor.' }
+          $candidate = Get-Content -LiteralPath $descriptor[0].FullName -Raw | ConvertFrom-Json
+          if ($candidate.status -ne 'unsigned' -or $null -ne $candidate.artifact.signature) {
+            throw 'The producer bridge accepts only an unsigned candidate.'
+          }
+          if ($candidate.componentId -ne 'redcompute' -or $candidate.componentKind -ne 'compute' -or
+              $candidate.artifact.provenance.repositoryUrl -cne 'https://github.com/RedBamboo-Interactive/redcompute' -or
+              $candidate.artifact.provenance.sourceCommit -cne $env:REDCOMPUTE_SHA) {
+            throw 'The producer bridge candidate does not identify this exact RedCompute source.'
+          }
+          $candidateId = [string]$candidate.candidateId
+          if ($candidateId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') { throw 'Candidate ID is not a safe asset-name token.' }
+          $artifactSha = [string]$candidate.artifact.sha256
+          if ($artifactSha -notmatch '^[a-f0-9]{64}$') { throw 'Candidate artifact SHA-256 is invalid.' }
+          $centralArtifactName = "redcompute-win-x64-$artifactSha.zip"
+          $expectedUrl = "https://github.com/RedBamboo-Interactive/redleaf/releases/download/$env:RELEASE_TAG/$centralArtifactName"
+          if ($candidate.artifact.url -cne $expectedUrl) {
+            throw 'Candidate artifact URL is not the exact declared central RedBamboo-Interactive/redleaf Release asset.'
+          }
+          $matchingArtifacts = @(Get-ChildItem bridge-input -Recurse -File -Filter *.zip | Where-Object {
+            $_.Length -eq [long]$candidate.artifact.sizeBytes -and
+            (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -eq $artifactSha
+          })
+          if ($matchingArtifacts.Count -ne 1) {
+            throw 'Expected exactly one RedCompute ZIP matching the unsigned descriptor.'
+          }
+          New-Item -ItemType Directory -Path bridge-assets -Force | Out-Null
+          Copy-Item -LiteralPath $descriptor[0].FullName -Destination "bridge-assets/${candidateId}.candidate.json"
+          Copy-Item -LiteralPath $matchingArtifacts[0].FullName -Destination "bridge-assets/${candidateId}.redcompute-win-x64.zip"
+
+      - name: Append and re-verify rolling unsigned prerelease assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: RedBamboo-Interactive/redcompute
+        run: |
+          if ($env:GITHUB_REPOSITORY -cne $env:GH_REPO) { throw 'This bridge publishes only in RedBamboo-Interactive/redcompute.' }
+          $visibility = & gh api "repos/$env:GH_REPO" --jq .visibility
+          if ($LASTEXITCODE -ne 0 -or $visibility -cne 'public') {
+            throw 'Rolling candidate publication requires the producer repository to already be public.'
+          }
+          $tag = 'redcompute-unsigned-candidates'
+          $releaseJson = & gh release view $tag --json isDraft,isPrerelease,assets 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --prerelease --latest=false --target '${{ github.workflow_sha }}' `
+              --title 'Rolling unsigned RedCompute candidates' `
+              --notes 'Public unsigned producer inputs for exact central RedLeaf release plans. Trust comes only from central signed metadata.'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the rolling RedCompute candidate prerelease.' }
+            $releaseJson = gh release view $tag --json isDraft,isPrerelease,assets
+          }
+          $release = $releaseJson | ConvertFrom-Json
+          if ($release.isDraft -or -not $release.isPrerelease) { throw 'Candidate bridge tag must remain a public prerelease.' }
+          $existingNames = @($release.assets | ForEach-Object { $_.name })
+          foreach ($file in @(Get-ChildItem bridge-assets -File | Sort-Object Name)) {
+            if ($existingNames -notcontains $file.Name) {
+              gh release upload $tag $file.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Could not append bridge asset '$($file.Name)'." }
+            }
+            $verifyDirectory = "bridge-verify/$($file.BaseName)"
+            New-Item -ItemType Directory -Path $verifyDirectory -Force | Out-Null
+            gh release download $tag --pattern $file.Name --dir $verifyDirectory
+            if ($LASTEXITCODE -ne 0) { throw "Could not download bridge asset '$($file.Name)' for verification." }
+            $downloaded = Join-Path $verifyDirectory $file.Name
+            if ((Get-FileHash -LiteralPath $downloaded -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash) {
+              throw "Rolling prerelease already contains different bytes for '$($file.Name)'."
+            }
+          }

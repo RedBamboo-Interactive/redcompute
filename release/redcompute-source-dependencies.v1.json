@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+    {
+      "id": "redbamboo-apphost",
+      "repositoryUrl": "https://github.com/RedBamboo-Interactive/redbamboo-packages",
+      "commit": "82f34cd021566fd3193263030eba0e07404a8d20",
+      "sourcePath": "dotnet/RedBamboo.AppHost"
+    }
+  ]
+}

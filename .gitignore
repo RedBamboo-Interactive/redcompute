@@ -16,6 +16,8 @@ videos/
 
 # Temp
 Projectsredcomputetemp_build/
+.release-deps/
+artifacts/
 
 # Scratch test scripts
 acp-test.ps1

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/RedBamboo-Interactive/redcompute/schemas/redleaf-release-tool-input.v1.schema.json",
+  "title": "RedCompute RedLeaf ReleaseTool input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "repositoryUrl",
+    "commit",
+    "centralArtifactFileNameTemplate"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repositoryUrl": {
+      "const": "https://github.com/RedBamboo-Interactive/redleaf"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "centralArtifactFileNameTemplate": {
+      "const": "redcompute-win-x64-{artifactSha256}.zip"
+    }
+  }
+}

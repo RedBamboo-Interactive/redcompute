@@ -10,6 +10,8 @@
     <AssemblyName>RedCompute</AssemblyName>
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationIcon>Resources\redcompute.ico</ApplicationIcon>
+    <RedBambooPackagesRoot Condition="'$(RedBambooPackagesRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\redbamboo-packages</RedBambooPackagesRoot>
+    <RedBambooAppHostLockFile>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\release\locks\redbamboo-apphost\packages.lock.json'))</RedBambooAppHostLockFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,8 +29,9 @@
   <ItemGroup>
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
     <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.0">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.18" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.18">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
@@ -37,7 +40,10 @@
   <ItemGroup>
     <ProjectReference Include="..\RedCompute.PluginSdk\RedCompute.PluginSdk.csproj" />
     <!-- One level deeper than the standalone repo: compute/ lives inside the Leaf monorepo now. -->
-    <ProjectReference Include="..\..\..\redbamboo-packages\dotnet\RedBamboo.AppHost\RedBamboo.AppHost.csproj" />
+    <!-- AppHost is a source input owned by RedBamboo. Give its consumer restore
+         graph the same neutral + win-x64 shape and keep its lock in this repo. -->
+    <ProjectReference Include="$(RedBambooPackagesRoot)\dotnet\RedBamboo.AppHost\RedBamboo.AppHost.csproj"
+                      AdditionalProperties="RuntimeIdentifiers=win-x64;RestorePackagesWithLockFile=true;NuGetLockFilePath=$(RedBambooAppHostLockFile)" />
     <!-- Plugin projects: referenced so they build and copy to output. Not a hard dependency. -->
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ComfyUI\RedCompute.Plugin.ComfyUI.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
@@ -70,7 +76,10 @@
 
   <Target Name="CopyPlugins" AfterTargets="Build">
     <ItemGroup>
-      <PluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\RedCompute.Plugin.*.dll" />
+      <PluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\RedCompute.Plugin.*.dll"
+                   Condition="'$(RuntimeIdentifier)' == ''" />
+      <PluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\$(RuntimeIdentifier)\RedCompute.Plugin.*.dll"
+                   Condition="'$(RuntimeIdentifier)' != ''" />
     </ItemGroup>
     <MakeDir Directories="$(OutputPath)plugins" />
     <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(OutputPath)plugins" SkipUnchangedFiles="true" />
@@ -82,6 +91,21 @@
     </ItemGroup>
     <MakeDir Directories="$(OutputPath)capabilities" />
     <Copy SourceFiles="@(CapabilityFiles)" DestinationFolder="$(OutputPath)capabilities" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- Publish has a separate output root. Keep the installed runtime graph identical
+       to the normal build by copying the same provider binaries and capability files. -->
+  <Target Name="CopyRuntimeContentToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <PublishedPluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\RedCompute.Plugin.*.dll"
+                            Condition="'$(RuntimeIdentifier)' == ''" />
+      <PublishedPluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\$(RuntimeIdentifier)\RedCompute.Plugin.*.dll"
+                            Condition="'$(RuntimeIdentifier)' != ''" />
+      <PublishedCapabilityFiles Include="..\..\capabilities\*.json" />
+    </ItemGroup>
+    <MakeDir Directories="$(PublishDir)plugins;$(PublishDir)capabilities" />
+    <Copy SourceFiles="@(PublishedPluginFiles)" DestinationFolder="$(PublishDir)plugins" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="@(PublishedCapabilityFiles)" DestinationFolder="$(PublishDir)capabilities" SkipUnchangedFiles="false" />
   </Target>
 
 </Project>

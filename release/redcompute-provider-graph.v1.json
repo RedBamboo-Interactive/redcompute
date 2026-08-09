@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "providers": [
+    {
+      "id": "claude-code",
+      "identitySource": "providerId",
+      "runtimeIdentity": "claude-code",
+      "assembly": "RedCompute.Plugin.ClaudeCode.dll",
+      "project": "plugins/RedCompute.Plugin.ClaudeCode/RedCompute.Plugin.ClaudeCode.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "claude-cli",
+          "management": "systemPrerequisite",
+          "requirement": "required",
+          "versionConstraint": "unresolved",
+          "interface": "claude CLI stream-json process protocol",
+          "sourceMarkers": ["Could not find 'claude' CLI", "claude-agent-sdk-win32-x64"]
+        },
+        {
+          "id": "docker-cli",
+          "management": "systemPrerequisite",
+          "requirement": "optionalCapability",
+          "versionConstraint": "unresolved",
+          "interface": "docker exec for caller-selected container execution",
+          "sourceMarkers": ["DockerExecHelper.ConfigureForDockerExec"]
+        }
+      ]
+    },
+    {
+      "id": "codex",
+      "identitySource": "providerId",
+      "runtimeIdentity": "codex",
+      "assembly": "RedCompute.Plugin.Codex.dll",
+      "project": "plugins/RedCompute.Plugin.Codex/RedCompute.Plugin.Codex.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "codex-cli",
+          "management": "systemPrerequisite",
+          "requirement": "required",
+          "versionConstraint": "unresolved",
+          "interface": "@openai/codex app-server stdio JSON-RPC",
+          "sourceMarkers": ["Could not find the 'codex' CLI", "@openai/codex globally"]
+        },
+        {
+          "id": "docker-cli",
+          "management": "systemPrerequisite",
+          "requirement": "optionalCapability",
+          "versionConstraint": "unresolved",
+          "interface": "docker exec for caller-selected container execution",
+          "sourceMarkers": ["DockerExecHelper.ConfigureForDockerExec"]
+        }
+      ]
+    },
+    {
+      "id": "comfyui",
+      "identitySource": "providerType",
+      "runtimeIdentity": "ComfyUI",
+      "assembly": "RedCompute.Plugin.ComfyUI.dll",
+      "project": "plugins/RedCompute.Plugin.ComfyUI/RedCompute.Plugin.ComfyUI.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "comfyui-service",
+          "management": "userExternalService",
+          "requirement": "required",
+          "versionConstraint": "unresolved",
+          "interface": "ComfyUI HTTP/WebSocket API including /system_stats, /prompt, /history and /view",
+          "sourceMarkers": ["/system_stats", "/prompt", "/history/"]
+        },
+        {
+          "id": "comfyui-process",
+          "management": "managedByRedCompute",
+          "requirement": "optionalCapability",
+          "versionConstraint": "unresolved",
+          "interface": "configured Python main.py process; lifecycle only, no installation",
+          "sourceMarkers": ["python main.py", "ServerPath not configured"]
+        },
+        {
+          "id": "python-runtime",
+          "management": "systemPrerequisite",
+          "requirement": "conditional",
+          "versionConstraint": "unresolved",
+          "interface": "configured virtualenv Python or python executable used to launch ComfyUI",
+          "sourceMarkers": ["FileName = pythonExe", "Scripts\", \"python.exe"]
+        },
+        {
+          "id": "windows-subsystem-for-linux",
+          "management": "systemPrerequisite",
+          "requirement": "conditional",
+          "versionConstraint": "unresolved",
+          "interface": "wsl.exe configured distribution",
+          "sourceMarkers": ["wsl.exe", "WslDistro"]
+        }
+      ]
+    },
+    {
+      "id": "localwsl",
+      "identitySource": "providerType",
+      "runtimeIdentity": "LocalWsl",
+      "assembly": "RedCompute.Plugin.LocalWsl.dll",
+      "project": "plugins/RedCompute.Plugin.LocalWsl/RedCompute.Plugin.LocalWsl.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "local-model-service",
+          "management": "managedByRedCompute",
+          "requirement": "required",
+          "versionConstraint": "unresolved",
+          "interface": "configured python3 server.py HTTP service with health endpoint",
+          "sourceMarkers": ["python3 server.py", "HealthEndpoint"]
+        },
+        {
+          "id": "python3-runtime",
+          "management": "systemPrerequisite",
+          "requirement": "conditional",
+          "versionConstraint": "unresolved",
+          "interface": "python3 executable used when RedCompute launches the configured local service",
+          "sourceMarkers": ["python3 server.py", "FileName = \"cmd.exe\""]
+        },
+        {
+          "id": "windows-subsystem-for-linux",
+          "management": "systemPrerequisite",
+          "requirement": "conditional",
+          "versionConstraint": "unresolved",
+          "interface": "wsl.exe configured distribution",
+          "sourceMarkers": ["wsl.exe", "WslDistro"]
+        }
+      ]
+    },
+    {
+      "id": "opencode",
+      "identitySource": "providerId",
+      "runtimeIdentity": "opencode",
+      "assembly": "RedCompute.Plugin.OpenCode.dll",
+      "project": "plugins/RedCompute.Plugin.OpenCode/RedCompute.Plugin.OpenCode.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "opencode-cli",
+          "management": "systemPrerequisite",
+          "requirement": "required",
+          "versionConstraint": "unresolved; source handles v1.17+ payloads but enforces no minimum",
+          "interface": "opencode CLI ACP protocol version 1 and execution stream",
+          "sourceMarkers": ["Could not find 'opencode' CLI", "protocolVersion = 1", "opencode v1.17+"]
+        },
+        {
+          "id": "docker-cli",
+          "management": "systemPrerequisite",
+          "requirement": "optionalCapability",
+          "versionConstraint": "unresolved",
+          "interface": "docker exec for caller-selected container execution",
+          "sourceMarkers": ["DockerExecHelper.ConfigureForDockerExec"]
+        }
+      ]
+    },
+    {
+      "id": "sttlocal",
+      "identitySource": "providerType",
+      "runtimeIdentity": "SttLocal",
+      "assembly": "RedCompute.Plugin.SttLocal.dll",
+      "project": "plugins/RedCompute.Plugin.SttLocal/RedCompute.Plugin.SttLocal.csproj",
+      "dependencies": [
+        "localwsl"
+      ],
+      "runtimeDependencies": [
+        {
+          "id": "stt-local-service",
+          "management": "managedByRedCompute",
+          "requirement": "required",
+          "versionConstraint": "unresolved; inherited localwsl service contract",
+          "interface": "local HTTP speech-to-text service including /models",
+          "sourceMarkers": ["new LocalWslProvider", "/stt/models", "/models"]
+        }
+      ]
+    },
+    {
+      "id": "suno",
+      "identitySource": "providerType",
+      "runtimeIdentity": "Suno",
+      "assembly": "RedCompute.Plugin.Suno.dll",
+      "project": "plugins/RedCompute.Plugin.Suno/RedCompute.Plugin.Suno.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "suno-api",
+          "management": "userExternalService",
+          "requirement": "required",
+          "versionConstraint": "unresolved",
+          "interface": "configurable Suno-compatible HTTP API; default https://api.sunoapi.org/api/v1",
+          "sourceMarkers": ["https://api.sunoapi.org", "/api/v1/generate"]
+        }
+      ]
+    },
+    {
+      "id": "ttselevenlabs",
+      "identitySource": "providerType",
+      "runtimeIdentity": "TtsElevenLabs",
+      "assembly": "RedCompute.Plugin.TtsElevenLabs.dll",
+      "project": "plugins/RedCompute.Plugin.TtsElevenLabs/RedCompute.Plugin.TtsElevenLabs.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "elevenlabs-api",
+          "management": "userExternalService",
+          "requirement": "required",
+          "versionConstraint": "v1 HTTP surface; service version otherwise unresolved",
+          "interface": "ElevenLabs HTTPS API /v1/text-to-speech and /v1/voices",
+          "sourceMarkers": ["https://api.elevenlabs.io/v1/text-to-speech", "https://api.elevenlabs.io/v1/voices"]
+        }
+      ]
+    },
+    {
+      "id": "ttslocal",
+      "identitySource": "providerType",
+      "runtimeIdentity": "TtsLocal",
+      "assembly": "RedCompute.Plugin.TtsLocal.dll",
+      "project": "plugins/RedCompute.Plugin.TtsLocal/RedCompute.Plugin.TtsLocal.csproj",
+      "dependencies": [
+        "localwsl"
+      ],
+      "runtimeDependencies": [
+        {
+          "id": "tts-local-service",
+          "management": "managedByRedCompute",
+          "requirement": "required",
+          "versionConstraint": "unresolved; inherited localwsl service contract",
+          "interface": "local HTTP text-to-speech service including /model/info and /model/reload",
+          "sourceMarkers": ["new LocalWslProvider", "/model/info", "/model/reload"]
+        },
+        {
+          "id": "tts-voice-models",
+          "management": "userExternalService",
+          "requirement": "optionalCapability",
+          "versionConstraint": "unresolved",
+          "interface": "user-provided model/checkpoint/model.safetensors directories",
+          "sourceMarkers": ["model.safetensors", "VoicesBasePath"]
+        }
+      ]
+    }
+  ]
+}

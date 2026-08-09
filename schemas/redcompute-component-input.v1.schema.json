@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/RedBamboo-Interactive/redcompute/main/schemas/redcompute-component-input.v1.schema.json",
+  "title": "RedCompute Component Input",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "descriptorType": { "const": "redcompute-component-input" },
+    "componentId": { "const": "redcompute" },
+    "componentKind": { "const": "compute" },
+    "version": { "$ref": "#/$defs/semver" },
+    "artifact": { "$ref": "#/$defs/artifact" },
+    "compatibility": { "$ref": "#/$defs/compatibility" },
+    "evidence": { "$ref": "#/$defs/evidence" }
+  },
+  "required": [
+    "schemaVersion", "descriptorType", "componentId", "componentKind", "version",
+    "artifact", "compatibility", "evidence"
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "gitCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "versionRange": {
+      "type": "string",
+      "pattern": "^(\\*|((>=|<=|>|<|=|\\^|~)?[0-9A-Za-z.+-]+)( ((>=|<=|>|<|=|\\^|~)?[0-9A-Za-z.+-]+))*)$"
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*[:\\\\])[^/]+(?:/[^/]+)*$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fileName": { "type": "string", "pattern": "^[^/\\\\:]+$" },
+        "sizeBytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "installPath": { "$ref": "#/$defs/relativePath" },
+        "targetRid": { "const": "win-x64" },
+        "selfContained": { "const": true },
+        "webShellIncluded": { "const": false }
+      },
+      "required": ["fileName", "sizeBytes", "sha256", "installPath", "targetRid", "selfContained", "webShellIncluded"]
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requiresKernelApi": { "$ref": "#/$defs/versionRange" },
+        "compatibleProductVersion": { "$ref": "#/$defs/versionRange" },
+        "providesComputeApi": { "$ref": "#/$defs/semver" },
+        "operatingSystem": { "const": "windows" },
+        "architecture": { "const": "x64" }
+      },
+      "required": ["requiresKernelApi", "compatibleProductVersion", "providesComputeApi", "operatingSystem", "architecture"]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "repositoryUrl": { "type": "string", "format": "uri", "pattern": "^https://[^\\s?#@]+(?:/[^\\s?#]*)?$" },
+        "commit": { "$ref": "#/$defs/gitCommit" },
+        "sourcePath": { "anyOf": [{ "const": "." }, { "$ref": "#/$defs/relativePath" }] }
+      },
+      "required": ["id", "repositoryUrl", "commit", "sourcePath"]
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dotnetSdk": { "type": "string", "minLength": 1 },
+        "dotnetRuntime": { "type": "string", "minLength": 1 },
+        "msbuild": { "type": "string", "minLength": 1 },
+        "nuget": { "type": "string", "minLength": 1 }
+      },
+      "required": ["dotnetSdk", "dotnetRuntime", "msbuild", "nuget"]
+    },
+    "dependencyLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "required": ["path", "sha256"]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "evidenceType": { "const": "redcompute-build-evidence" },
+        "componentId": { "const": "redcompute" },
+        "version": { "$ref": "#/$defs/semver" },
+        "configuration": { "const": "Release" },
+        "targetRid": { "const": "win-x64" },
+        "deterministic": { "const": true },
+        "selfContained": { "const": true },
+        "webShellIncluded": { "const": false },
+        "repository": { "$ref": "#/$defs/source" },
+        "pluginSdk": { "$ref": "#/$defs/source" },
+        "appHost": { "$ref": "#/$defs/source" },
+        "toolchain": { "$ref": "#/$defs/toolchain" },
+        "dependencyLocks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/dependencyLock" } }
+      },
+      "required": [
+        "schemaVersion", "evidenceType", "componentId", "version", "configuration", "targetRid",
+        "deterministic", "selfContained", "webShellIncluded", "repository", "pluginSdk", "appHost",
+        "toolchain", "dependencyLocks"
+      ]
+    }
+  }
+}

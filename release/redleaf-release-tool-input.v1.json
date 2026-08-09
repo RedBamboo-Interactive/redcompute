@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "repositoryUrl": "https://github.com/RedBamboo-Interactive/redleaf",
+  "commit": "4bf0894014b392e60cf0b5c6ca85920428ba7516",
+  "centralArtifactFileNameTemplate": "redcompute-win-x64-{artifactSha256}.zip"
+}
