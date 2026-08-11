@@ -19,10 +19,6 @@ on:
         description: Exact provided RedCompute API semantic version.
         required: true
         type: string
-      release_tag:
-        description: Future central RedBamboo-Interactive/redleaf GitHub Release tag.
-        required: true
-        type: string
       release_id:
         description: Immutable RedLeaf suite release ID used as the install root.
         required: true
@@ -47,10 +43,6 @@ on:
         type: string
       provides_compute_api:
         description: Exact provided RedCompute API semantic version.
-        required: true
-        type: string
-      release_tag:
-        description: Future central RedBamboo-Interactive/redleaf GitHub Release tag.
         required: true
         type: string
       release_id:
@@ -130,7 +122,6 @@ jobs:
           COMPATIBLE_PRODUCT_VERSION: ${{ inputs.compatible_product_version }}
           REQUIRES_KERNEL_API: ${{ inputs.requires_kernel_api }}
           PROVIDES_COMPUTE_API: ${{ inputs.provides_compute_api }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_ID: ${{ inputs.release_id }}
           REDCOMPUTE_SHA: ${{ github.workflow_sha }}
         run: |
@@ -141,9 +132,9 @@ jobs:
           foreach ($range in @($env:COMPATIBLE_PRODUCT_VERSION, $env:REQUIRES_KERNEL_API)) {
             if ($range -notmatch '^[0-9A-Za-z.*+<>=~^ -]+$') { throw 'Compatibility ranges contain unsupported characters.' }
           }
-          foreach ($token in @($env:RELEASE_TAG, $env:RELEASE_ID)) {
+          foreach ($token in @($env:RELEASE_ID)) {
             if ($token -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -or $token.EndsWith('.')) {
-              throw 'Release tag and release ID must be safe non-empty tokens.'
+              throw 'Release ID must be a safe non-empty token.'
             }
           }
           if ((dotnet --version).Trim() -ne '9.0.303') { throw 'Unexpected .NET SDK.' }
@@ -306,10 +297,8 @@ jobs:
         working-directory: redcompute
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_ID: ${{ inputs.release_id }}
           ARTIFACT_NAME_TEMPLATE: ${{ steps.redleaf-tool.outputs.artifact_name_template }}
-          REDLEAF_REPOSITORY: ${{ steps.redleaf-tool.outputs.repository_url }}
           REDCOMPUTE_SHA: ${{ github.workflow_sha }}
         run: |
           $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
@@ -318,11 +307,9 @@ jobs:
           $artifactName = $env:ARTIFACT_NAME_TEMPLATE.Replace('{artifactSha256}', $artifactSha)
           if ($artifactName -ne "redcompute-win-x64-$artifactSha.zip" -or
               $artifactName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') {
-            throw 'The central artifact filename is not the exact safe version-1 contract.'
+            throw 'The producer artifact filename is not the exact safe version-1 contract.'
           }
-          $artifactUrl = "$env:REDLEAF_REPOSITORY/releases/download/$env:RELEASE_TAG/$artifactName"
-          $expectedUrl = "https://github.com/RedBamboo-Interactive/redleaf/releases/download/$env:RELEASE_TAG/$artifactName"
-          if ($artifactUrl -cne $expectedUrl) { throw 'Candidate artifact URL is not the exact central RedBamboo-Interactive/redleaf Release asset URL.' }
+          $artifactUrl = "https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/$artifactName"
           $builtAt = [DateTimeOffset]::UtcNow.ToString('O')
           $buildId = '${{ github.run_id }}.${{ github.run_attempt }}'
           foreach ($name in @('first', 'second')) {
@@ -354,7 +341,7 @@ jobs:
               $candidate.artifact.url -cne $expectedUrl -or
               $candidate.artifact.provenance.repositoryUrl -cne 'https://github.com/RedBamboo-Interactive/redcompute' -or
               $candidate.artifact.provenance.sourceCommit -cne $env:REDCOMPUTE_SHA) {
-            throw 'The generic candidate does not bind the exact RedCompute source and central artifact contract.'
+            throw 'The generic candidate does not bind the exact RedCompute source and producer artifact contract.'
           }
           Copy-Item -LiteralPath $candidatePath -Destination artifacts/redcompute-release-candidate.unsigned.json
           Copy-Item -LiteralPath (Join-Path $productionRoot 'first/redcompute-release-signature-input.json') -Destination artifacts/redcompute-release-signature-input.json
@@ -405,7 +392,6 @@ jobs:
       - name: Prepare immutable bridge asset names
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
           REDCOMPUTE_SHA: ${{ github.workflow_sha }}
         run: |
           $descriptor = @(Get-ChildItem bridge-input -Recurse -File -Filter redcompute-release-candidate.unsigned.json)
@@ -423,10 +409,10 @@ jobs:
           if ($candidateId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') { throw 'Candidate ID is not a safe asset-name token.' }
           $artifactSha = [string]$candidate.artifact.sha256
           if ($artifactSha -notmatch '^[a-f0-9]{64}$') { throw 'Candidate artifact SHA-256 is invalid.' }
-          $centralArtifactName = "redcompute-win-x64-$artifactSha.zip"
-          $expectedUrl = "https://github.com/RedBamboo-Interactive/redleaf/releases/download/$env:RELEASE_TAG/$centralArtifactName"
+          $producerArtifactName = "redcompute-win-x64-$artifactSha.zip"
+          $expectedUrl = "https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/$producerArtifactName"
           if ($candidate.artifact.url -cne $expectedUrl) {
-            throw 'Candidate artifact URL is not the exact declared central RedBamboo-Interactive/redleaf Release asset.'
+            throw 'Candidate artifact URL is not the exact declared RedCompute producer asset.'
           }
           $matchingArtifacts = @(Get-ChildItem bridge-input -Recurse -File -Filter *.zip | Where-Object {
             $_.Length -eq [long]$candidate.artifact.sizeBytes -and
@@ -437,7 +423,7 @@ jobs:
           }
           New-Item -ItemType Directory -Path bridge-assets -Force | Out-Null
           Copy-Item -LiteralPath $descriptor[0].FullName -Destination "bridge-assets/${candidateId}.candidate.json"
-          Copy-Item -LiteralPath $matchingArtifacts[0].FullName -Destination "bridge-assets/${candidateId}.redcompute-win-x64.zip"
+          Copy-Item -LiteralPath $matchingArtifacts[0].FullName -Destination "bridge-assets/$producerArtifactName"
 
       - name: Append and re-verify rolling unsigned prerelease assets
         shell: pwsh
@@ -446,21 +432,17 @@ jobs:
           GH_REPO: RedBamboo-Interactive/redcompute
         run: |
           if ($env:GITHUB_REPOSITORY -cne $env:GH_REPO) { throw 'This bridge publishes only in RedBamboo-Interactive/redcompute.' }
-          $visibility = & gh api "repos/$env:GH_REPO" --jq .visibility
-          if ($LASTEXITCODE -ne 0 -or $visibility -cne 'public') {
-            throw 'Rolling candidate publication requires the producer repository to already be public.'
-          }
           $tag = 'redcompute-unsigned-candidates'
           $releaseJson = & gh release view $tag --json isDraft,isPrerelease,assets 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --prerelease --latest=false --target '${{ github.workflow_sha }}' `
               --title 'Rolling unsigned RedCompute candidates' `
-              --notes 'Public unsigned producer inputs for exact central RedLeaf release plans. Trust comes only from central signed metadata.'
+              --notes 'Unsigned producer inputs for exact central component publication. Trust comes only from central signed metadata.'
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the rolling RedCompute candidate prerelease.' }
             $releaseJson = gh release view $tag --json isDraft,isPrerelease,assets
           }
           $release = $releaseJson | ConvertFrom-Json
-          if ($release.isDraft -or -not $release.isPrerelease) { throw 'Candidate bridge tag must remain a public prerelease.' }
+          if ($release.isDraft -or -not $release.isPrerelease) { throw 'Candidate bridge tag must remain a prerelease.' }
           $existingNames = @($release.assets | ForEach-Object { $_.name })
           foreach ($file in @(Get-ChildItem bridge-assets -File | Sort-Object Name)) {
             if ($existingNames -notcontains $file.Name) {

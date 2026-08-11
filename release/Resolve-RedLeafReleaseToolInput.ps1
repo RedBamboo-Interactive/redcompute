@@ -20,7 +20,7 @@ if ($inputDocument.schemaVersion -ne 1) {
     throw 'The RedLeaf ReleaseTool input schemaVersion must be 1.'
 }
 if ($inputDocument.repositoryUrl -ne 'https://github.com/RedBamboo-Interactive/redleaf') {
-    throw 'The ReleaseTool and central artifact repository must be exactly RedBamboo-Interactive/redleaf.'
+    throw 'The ReleaseTool source repository must be exactly RedBamboo-Interactive/redleaf.'
 }
 if ([string]$inputDocument.commit -notmatch '^[a-f0-9]{40}$') {
     throw 'The audited RedLeaf ReleaseTool commit is unresolved; replace the fail-closed placeholder with one exact lowercase commit SHA.'

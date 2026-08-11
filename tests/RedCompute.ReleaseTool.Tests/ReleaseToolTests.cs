@@ -243,22 +243,22 @@ public sealed class ReleaseToolTests
         Assert.DoesNotContain("key derive", workflow, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("$candidate.status -ne 'unsigned' -or $null -ne $candidate.artifact.signature", workflow, StringComparison.Ordinal);
         Assert.Contains("https://github.com/RedBamboo-Interactive/redcompute", workflow, StringComparison.Ordinal);
-        Assert.Contains("https://github.com/RedBamboo-Interactive/redleaf/releases/download/$env:RELEASE_TAG/$artifactName", workflow, StringComparison.Ordinal);
+        Assert.Contains("https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/$artifactName", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("release_tag", workflow, StringComparison.Ordinal);
 
         Assert.Contains("needs: build", workflow, StringComparison.Ordinal);
         Assert.Contains("group: redcompute-unsigned-candidate-bridge", workflow, StringComparison.Ordinal);
         Assert.Contains("actions: read", workflow, StringComparison.Ordinal);
         Assert.Contains("contents: write", workflow, StringComparison.Ordinal);
         Assert.Contains("redcompute-unsigned-candidates", workflow, StringComparison.Ordinal);
-        Assert.Contains("gh api \"repos/$env:GH_REPO\" --jq .visibility", workflow, StringComparison.Ordinal);
-        Assert.Contains("$visibility -cne 'public'", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("$visibility -cne 'public'", workflow, StringComparison.Ordinal);
         Assert.Contains("Expected exactly one RedCompute ZIP matching the unsigned descriptor", workflow, StringComparison.Ordinal);
         Assert.Contains("if ($existingNames -notcontains $file.Name)", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("gh release upload $tag $file.FullName --clobber", workflow, StringComparison.Ordinal);
         Assert.Contains("gh release download $tag --pattern $file.Name", workflow, StringComparison.Ordinal);
         Assert.Contains("Rolling prerelease already contains different bytes", workflow, StringComparison.Ordinal);
         Assert.Contains("bridge-assets/${candidateId}.candidate.json", workflow, StringComparison.Ordinal);
-        Assert.Contains("bridge-assets/${candidateId}.redcompute-win-x64.zip", workflow, StringComparison.Ordinal);
+        Assert.Contains("bridge-assets/$producerArtifactName", workflow, StringComparison.Ordinal);
     }
 
     [Fact]

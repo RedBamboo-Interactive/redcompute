@@ -6,7 +6,7 @@ RedCompute produces deterministic component bytes and an unsigned generic RedLea
 
 The pinned workflow `.github/workflows/release-redcompute-component.yml` builds one version-stamped, self-contained `win-x64` runtime ZIP and one strict `redcompute-component-input` version 1 descriptor. The descriptor schema is `schemas/redcompute-component-input.v1.schema.json`; objects reject unknown properties and the release tool also performs content and cross-field validation. It then invokes `candidate ingest-redcompute` twice against the two already-proved production paths and requires identical unsigned candidate and signature-input bytes. Candidate ingestion never rebuilds RedCompute.
 
-The component input is channel-neutral. It contains no Stable/Nightly value, GitHub run ID, wall-clock build/publication time, artifact URL, candidate ID, signer input, or signature. Compatibility remains explicit: `requiresKernelApi` and `compatibleProductVersion` use RedLeaf's Phase 1 range grammar, while `providesComputeApi` is one exact SemVer. ZIP entries use the fixed DOS epoch. The generic candidate binds that tested ZIP to the required future central tag with the safe immutable filename `redcompute-win-x64-<artifact-sha256>.zip`; Nightly and later Stable promotion reuse that same tag, candidate, and ZIP bytes.
+The component input is channel-neutral. It contains no Stable/Nightly value, GitHub run ID, wall-clock build/publication time, artifact URL, candidate ID, signer input, or signature. Compatibility remains explicit: `requiresKernelApi` and `compatibleProductVersion` use RedLeaf's Phase 1 range grammar, while `providesComputeApi` is one exact SemVer. ZIP entries use the fixed DOS epoch. The generic candidate binds that tested ZIP to the fixed RedCompute producer prerelease with the safe immutable filename `redcompute-win-x64-<artifact-sha256>.zip`; Nightly and later Stable promotion reuse that candidate and those ZIP bytes.
 
 `artifact.installPath` is the component-relative path `redcompute`. RedLeaf's suite assembler must place it under its release-owned `releases/<release-id>/redcompute` root. Binding a suite release ID here would prevent byte reuse across suite assembly and promotion.
 
@@ -51,16 +51,16 @@ The sibling AppHost project uses the consumer-owned lock at `release/locks/redba
 
 `release/redleaf-release-tool-input.v1.json` is the smallest producer-owned pin and filename contract. Its committed `commit` is the audited central RedLeaf source `4bf0894014b392e60cf0b5c6ca85920428ba7516`, whose `ReleaseTool` accepts this compact descriptor without SBOM or rich provenance inputs. `release/Resolve-RedLeafReleaseToolInput.ps1` rejects any unresolved or malformed value before SDK setup, dependency restore, or build.
 
-After the build job, the isolated bridge job has only `actions: read` and `contents: write`. It retains the per-run Actions artifact, verifies exactly one ZIP against the unsigned candidate's size and SHA-256, and appends these two raw public assets to the `redcompute-unsigned-candidates` prerelease:
+After the build job, the isolated bridge job has only `actions: read` and `contents: write`. It retains the per-run Actions artifact, verifies exactly one ZIP against the unsigned candidate's size and SHA-256, and appends these two raw assets to the `redcompute-unsigned-candidates` prerelease:
 
 - `<candidate-id>.candidate.json`
-- `<candidate-id>.redcompute-win-x64.zip`
+- `redcompute-win-x64-<artifact-sha256>.zip`
 
-An existing asset name is reused only when a fresh download hashes to the same bytes; a collision fails and nothing is replaced. A reviewed central plan can therefore use the two direct URLs below as `descriptorUrl` and `artifactSourceUrl`, while the candidate itself already names the future central artifact URL:
+An existing asset name is reused only when a fresh download hashes to the same bytes; a collision fails and nothing is replaced. A reviewed one-component publication can therefore acquire the two direct URLs below, while the candidate already names its producer artifact URL:
 
 ```text
 https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/<candidate-id>.candidate.json
-https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/<candidate-id>.redcompute-win-x64.zip
+https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/redcompute-win-x64-<artifact-sha256>.zip
 ```
 
-These public producer assets remain unsigned and convey no trust. The producer is pinned to the audited central RedLeaf commit above; central RedLeaf alone checks the reviewed source URLs and hashes, copies the exact ZIP to its declared central tag, and signs the candidate. No SBOM, CycloneDX input, provenance graph, package registry, or live service is part of this boundary.
+These producer assets remain unsigned and convey no trust. The producer is pinned to the audited RedLeaf commit above; central RedLeaf alone checks the reviewed source URLs and hashes and signs metadata that continues to reference the exact RedCompute bytes. It does not copy the ZIP into a RedLeaf release. No SBOM, CycloneDX input, provenance graph, package registry, or live service is part of this boundary.
