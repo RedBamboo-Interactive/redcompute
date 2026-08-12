@@ -49,7 +49,7 @@ The sibling AppHost project uses the consumer-owned lock at `release/locks/redba
 
 ## RedLeaf acquisition boundary
 
-`release/redleaf-release-tool-input.v1.json` is the smallest producer-owned pin and filename contract. Its committed `commit` is the audited central RedLeaf source `4bf0894014b392e60cf0b5c6ca85920428ba7516`, whose `ReleaseTool` accepts this compact descriptor without SBOM or rich provenance inputs. `release/Resolve-RedLeafReleaseToolInput.ps1` rejects any unresolved or malformed value before SDK setup, dependency restore, or build.
+`release/redleaf-release-tool-input.v1.json` is the smallest producer-owned pin and filename contract. Its committed `commit` is the audited central RedLeaf source `3d14703d3f98f7c2c99b4bc7ada319eb4fe058c7`, whose `ReleaseTool` accepts this compact descriptor without SBOM, rich provenance, or suite-release inputs and derives `compute/redcompute/<version>` itself. `release/Resolve-RedLeafReleaseToolInput.ps1` rejects any unresolved or malformed value before SDK setup, dependency restore, or build.
 
 After the build job, the isolated bridge job has only `actions: read` and `contents: write`. It retains the per-run Actions artifact, verifies exactly one ZIP against the unsigned candidate's size and SHA-256, and appends these two raw assets to the `redcompute-unsigned-candidates` prerelease:
 

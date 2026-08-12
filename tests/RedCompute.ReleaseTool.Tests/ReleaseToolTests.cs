@@ -194,7 +194,7 @@ public sealed class ReleaseToolTests
         Assert.True(input.EnumerateObject().Count() == 4);
         Assert.Equal(1, input.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("https://github.com/RedBamboo-Interactive/redleaf", input.GetProperty("repositoryUrl").GetString());
-        const string exactCommit = "4bf0894014b392e60cf0b5c6ca85920428ba7516";
+        const string exactCommit = "3d14703d3f98f7c2c99b4bc7ada319eb4fe058c7";
         Assert.Equal(exactCommit, input.GetProperty("commit").GetString());
         Assert.Equal("redcompute-win-x64-{artifactSha256}.zip", input.GetProperty("centralArtifactFileNameTemplate").GetString());
 
@@ -244,8 +244,8 @@ public sealed class ReleaseToolTests
         Assert.Contains("$candidate.status -ne 'unsigned' -or $null -ne $candidate.artifact.signature", workflow, StringComparison.Ordinal);
         Assert.Contains("https://github.com/RedBamboo-Interactive/redcompute", workflow, StringComparison.Ordinal);
         Assert.Contains("https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/$artifactName", workflow, StringComparison.Ordinal);
-        Assert.Contains("$releaseRoot = \"releases/redcompute-$env:COMPONENT_VERSION-win-x64\"", workflow, StringComparison.Ordinal);
         Assert.Contains("$candidate.artifact.url -cne $artifactUrl", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("--release-root", workflow, StringComparison.Ordinal);
         Assert.Contains("RELEASE_TOOL_DLL=$(Join-Path $env:RUNNER_TEMP", workflow, StringComparison.Ordinal);
         Assert.Contains("REDLEAF_RELEASE_TOOL_DLL=$(Join-Path $env:RUNNER_TEMP", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("${{ runner.temp }}", workflow, StringComparison.Ordinal);

@@ -285,7 +285,6 @@ jobs:
         working-directory: redcompute
         shell: pwsh
         env:
-          COMPONENT_VERSION: ${{ inputs.version }}
           ARTIFACT_NAME_TEMPLATE: ${{ steps.redleaf-tool.outputs.artifact_name_template }}
           REDCOMPUTE_SHA: ${{ github.workflow_sha }}
         run: |
@@ -298,7 +297,6 @@ jobs:
             throw 'The producer artifact filename is not the exact safe version-1 contract.'
           }
           $artifactUrl = "https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/$artifactName"
-          $releaseRoot = "releases/redcompute-$env:COMPONENT_VERSION-win-x64"
           $builtAt = [DateTimeOffset]::UtcNow.ToString('O')
           $buildId = '${{ github.run_id }}.${{ github.run_attempt }}'
           foreach ($name in @('first', 'second')) {
@@ -307,7 +305,6 @@ jobs:
               --descriptor (Join-Path $production 'redcompute-component-input.v1.json') `
               --artifact (Join-Path $production 'redcompute-win-x64.zip') `
               --artifact-url $artifactUrl `
-              --release-root $releaseRoot `
               --build-id $buildId `
               --built-at $builtAt `
               --output (Join-Path $production 'redcompute-release-candidate.unsigned.json') `
