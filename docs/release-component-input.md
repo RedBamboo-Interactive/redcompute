@@ -8,7 +8,7 @@ The pinned workflow `.github/workflows/release-redcompute-component.yml` builds 
 
 The component input is channel-neutral. It contains no Stable/Nightly value, GitHub run ID, wall-clock build/publication time, artifact URL, candidate ID, signer input, or signature. Compatibility remains explicit: `requiresKernelApi` and `compatibleProductVersion` use RedLeaf's Phase 1 range grammar, while `providesComputeApi` is one exact SemVer. ZIP entries use the fixed DOS epoch. The generic candidate binds that tested ZIP to the fixed RedCompute producer prerelease with the safe immutable filename `redcompute-win-x64-<artifact-sha256>.zip`; Nightly and later Stable promotion reuse that candidate and those ZIP bytes.
 
-`artifact.installPath` is the component-relative path `redcompute`. RedLeaf's suite assembler must place it under its release-owned `releases/<release-id>/redcompute` root. Binding a suite release ID here would prevent byte reuse across suite assembly and promotion.
+`artifact.installPath` in the producer descriptor is the component-relative path `redcompute`. Candidate ingestion places it under the component-owned, versioned root `releases/redcompute-<version>-win-x64/redcompute`. The workflow derives that root from the component version; it accepts no suite release ID, so the exact candidate bytes remain independently reusable across channel publication and promotion.
 
 The installed ZIP includes the self-contained RedCompute engine and .NET runtime for `win-x64`, capability JSON files, all nine provider/plugin assemblies, and the compact build-evidence JSON. There is no RedCompute web shell: the dashboard is a RedLeaf extension. An installed component needs none of Git, .NET, Node, or pnpm.
 

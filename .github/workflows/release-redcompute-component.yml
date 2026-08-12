@@ -19,10 +19,6 @@ on:
         description: Exact provided RedCompute API semantic version.
         required: true
         type: string
-      release_id:
-        description: Immutable RedLeaf suite release ID used as the install root.
-        required: true
-        type: string
     secrets:
       CROSS_REPO_TOKEN:
         description: Optional token with read access to the pinned RedBamboo dependency commit.
@@ -43,10 +39,6 @@ on:
         type: string
       provides_compute_api:
         description: Exact provided RedCompute API semantic version.
-        required: true
-        type: string
-      release_id:
-        description: Immutable RedLeaf suite release ID used as the install root.
         required: true
         type: string
 
@@ -122,7 +114,6 @@ jobs:
           COMPATIBLE_PRODUCT_VERSION: ${{ inputs.compatible_product_version }}
           REQUIRES_KERNEL_API: ${{ inputs.requires_kernel_api }}
           PROVIDES_COMPUTE_API: ${{ inputs.provides_compute_api }}
-          RELEASE_ID: ${{ inputs.release_id }}
           REDCOMPUTE_SHA: ${{ github.workflow_sha }}
         run: |
           $semver = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
@@ -131,11 +122,6 @@ jobs:
           }
           foreach ($range in @($env:COMPATIBLE_PRODUCT_VERSION, $env:REQUIRES_KERNEL_API)) {
             if ($range -notmatch '^[0-9A-Za-z.*+<>=~^ -]+$') { throw 'Compatibility ranges contain unsupported characters.' }
-          }
-          foreach ($token in @($env:RELEASE_ID)) {
-            if ($token -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -or $token.EndsWith('.')) {
-              throw 'Release ID must be a safe non-empty token.'
-            }
           }
           if ((dotnet --version).Trim() -ne '9.0.303') { throw 'Unexpected .NET SDK.' }
           if ((dotnet msbuild -version -nologo | Select-Object -Last 1).Trim() -ne '17.14.13.31314') { throw 'Unexpected MSBuild version.' }
@@ -297,7 +283,7 @@ jobs:
         working-directory: redcompute
         shell: pwsh
         env:
-          RELEASE_ID: ${{ inputs.release_id }}
+          COMPONENT_VERSION: ${{ inputs.version }}
           ARTIFACT_NAME_TEMPLATE: ${{ steps.redleaf-tool.outputs.artifact_name_template }}
           REDCOMPUTE_SHA: ${{ github.workflow_sha }}
         run: |
@@ -310,6 +296,7 @@ jobs:
             throw 'The producer artifact filename is not the exact safe version-1 contract.'
           }
           $artifactUrl = "https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/$artifactName"
+          $releaseRoot = "releases/redcompute-$env:COMPONENT_VERSION-win-x64"
           $builtAt = [DateTimeOffset]::UtcNow.ToString('O')
           $buildId = '${{ github.run_id }}.${{ github.run_attempt }}'
           foreach ($name in @('first', 'second')) {
@@ -318,7 +305,7 @@ jobs:
               --descriptor (Join-Path $production 'redcompute-component-input.v1.json') `
               --artifact (Join-Path $production 'redcompute-win-x64.zip') `
               --artifact-url $artifactUrl `
-              --release-root "releases/$env:RELEASE_ID" `
+              --release-root $releaseRoot `
               --build-id $buildId `
               --built-at $builtAt `
               --output (Join-Path $production 'redcompute-release-candidate.unsigned.json') `
@@ -338,7 +325,7 @@ jobs:
             throw 'RedCompute may emit only an unsigned generic RedLeaf candidate.'
           }
           if ($candidate.componentId -ne 'redcompute' -or $candidate.componentKind -ne 'compute' -or
-              $candidate.artifact.url -cne $expectedUrl -or
+              $candidate.artifact.url -cne $artifactUrl -or
               $candidate.artifact.provenance.repositoryUrl -cne 'https://github.com/RedBamboo-Interactive/redcompute' -or
               $candidate.artifact.provenance.sourceCommit -cne $env:REDCOMPUTE_SHA) {
             throw 'The generic candidate does not bind the exact RedCompute source and producer artifact contract.'
