@@ -249,6 +249,7 @@ public sealed class ReleaseToolTests
         Assert.Contains("RELEASE_TOOL_DLL=$(Join-Path $env:RUNNER_TEMP", workflow, StringComparison.Ordinal);
         Assert.Contains("REDLEAF_RELEASE_TOOL_DLL=$(Join-Path $env:RUNNER_TEMP", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("${{ runner.temp }}", workflow, StringComparison.Ordinal);
+        Assert.Equal(2, workflow.Split("token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}", StringSplitOptions.None).Length - 1);
         Assert.DoesNotContain("release_id", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("release_tag", workflow, StringComparison.Ordinal);
 

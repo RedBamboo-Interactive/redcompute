@@ -95,6 +95,7 @@ jobs:
           repository: RedBamboo-Interactive/redleaf
           ref: ${{ steps.redleaf-tool.outputs.commit }}
           path: redleaf-release-tool-source
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false
 
       - name: Set up exact .NET SDK
