@@ -207,19 +207,20 @@ jobs:
           $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
           $redComputeRoot = (Get-Location).Path
           $sourceParent = [IO.Path]::GetFullPath((Join-Path $redComputeRoot '..'))
+          $redBambooRoot = (Resolve-Path -LiteralPath '../redbamboo-packages').Path
           $pathMap = "$sourceParent=/_/source"
           foreach ($name in @('first', 'second')) {
             $publishRoot = Join-Path $productionRoot "$name/publish"
-            dotnet clean RedCompute.sln --configuration Release --nologo -p:RedBambooPackagesRoot=../redbamboo-packages
-            dotnet clean RedCompute.sln --configuration Release --runtime win-x64 --nologo -p:RedBambooPackagesRoot=../redbamboo-packages
-            dotnet restore RedCompute.sln --locked-mode --runtime win-x64 --nologo -p:RedBambooPackagesRoot=../redbamboo-packages
+            dotnet clean RedCompute.sln --configuration Release --nologo -p:RedBambooPackagesRoot="$redBambooRoot"
+            dotnet clean RedCompute.sln --configuration Release --runtime win-x64 --nologo -p:RedBambooPackagesRoot="$redBambooRoot"
+            dotnet restore RedCompute.sln --locked-mode --runtime win-x64 --nologo -p:RedBambooPackagesRoot="$redBambooRoot"
             dotnet publish src/RedCompute.App/RedCompute.App.csproj `
               --configuration Release `
               --runtime win-x64 `
               --self-contained true `
               --no-restore `
               --output "$publishRoot" `
-              -p:RedBambooPackagesRoot=../redbamboo-packages `
+              -p:RedBambooPackagesRoot="$redBambooRoot" `
               -p:PathMap="$pathMap" `
               -p:Version="$env:COMPONENT_VERSION" `
               -p:ContinuousIntegrationBuild=true `

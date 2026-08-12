@@ -246,6 +246,8 @@ public sealed class ReleaseToolTests
         Assert.Contains("https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/$artifactName", workflow, StringComparison.Ordinal);
         Assert.Contains("$candidate.artifact.url -cne $artifactUrl", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("--release-root", workflow, StringComparison.Ordinal);
+        Assert.Contains("$redBambooRoot = (Resolve-Path -LiteralPath '../redbamboo-packages').Path", workflow, StringComparison.Ordinal);
+        Assert.Contains("-p:RedBambooPackagesRoot=\"$redBambooRoot\"", workflow, StringComparison.Ordinal);
         Assert.Contains("RELEASE_TOOL_DLL=$(Join-Path $env:RUNNER_TEMP", workflow, StringComparison.Ordinal);
         Assert.Contains("REDLEAF_RELEASE_TOOL_DLL=$(Join-Path $env:RUNNER_TEMP", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("${{ runner.temp }}", workflow, StringComparison.Ordinal);
