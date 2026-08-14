@@ -365,6 +365,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (session == null) return false;
 
         var info = session.Info;
+        if (info.Status is "Active" or "Starting") return false;
         if (input.Any(p => p.LegacyImage is not null || p.Attachment?.Kind == "image"))
         {
             var support = GetImageAttachmentSupport(info.Model, _catalog.Cached);

@@ -1009,25 +1009,7 @@ public class ClaudeSessionService
             return false;
 
         if (session.Info.Status == SessionStatus.Active)
-        {
-            _log($"[Claude] Session {sessionId} is active, restarting for new message", null);
-            session.RestartPending = true;
-
-            // A hard kill, not a graceful interrupt -- use the same "killed" signal
-            // ForceInterruptAfterTimeout uses so clients never mistake this for a
-            // safe-to-write-now acknowledgement (see InterruptSession/ParseResultEvent).
-            StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "killed" });
-
-            try { session.Process.Kill(entireProcessTree: true); } catch { }
-            try { await session.Process.WaitForExitAsync(); } catch { }
-
-            var resumed = ResumeSession(sessionId);
-            if (resumed == null)
-                return false;
-
-            if (!_sessions.TryGetValue(sessionId, out session))
-                return false;
-        }
+            return false;
 
         try
         {

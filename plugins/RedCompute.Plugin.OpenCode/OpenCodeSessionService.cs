@@ -435,11 +435,7 @@ public class OpenCodeSessionService
             return false;
 
         if (session.Info.Status == "Active")
-        {
-            _log($"[OpenCode] Session {sessionId} is active, cancelling for new message", null);
-            await SendNotification(session, "session/cancel", new { sessionId = session.AcpSessionId });
-            await Task.Delay(500);
-        }
+            return false;
 
         try
         {

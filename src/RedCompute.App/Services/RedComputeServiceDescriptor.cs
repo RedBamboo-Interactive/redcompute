@@ -10,6 +10,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
     private readonly RedComputeConfig _config;
     private readonly CapabilityRegistry _registry;
     private readonly LogService? _logService;
+    private readonly EndpointRegistry _endpointRegistry;
 
     public RedComputeServiceDescriptor(RedComputeConfig config, CapabilityRegistry registry, LogService? logService, EndpointRegistry endpointRegistry)
         : base(endpointRegistry)
@@ -17,6 +18,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         _config = config;
         _registry = registry;
         _logService = logService;
+        _endpointRegistry = endpointRegistry;
     }
 
     /// <summary>Single source of truth for the app version (also sent as X-RedCompute-Version).</summary>
@@ -84,10 +86,12 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         var plugins = entry.Providers.Values.OfType<IPluginProvider>().ToList();
         var schemaPlugin = entry.ActiveProvider as IPluginProvider ?? plugins.FirstOrDefault();
 
-        // The unified /ai-session/* surface is registered in the EndpointRegistry and
-        // surfaces via app_endpoints; per-capability entries only carry the generic job
-        // endpoints plus provider-specific custom endpoints.
-        if (slug != "ai-session")
+        if (slug == "ai-session")
+        {
+            endpoints.AddRange(_endpointRegistry.GetEndpoints()
+                .Where(endpoint => endpoint.Path.StartsWith("/ai-session", StringComparison.Ordinal)));
+        }
+        else
         {
             var generateParams = schemaPlugin?.InputParameters
                 .Select(kv => new ParameterDescriptor(
@@ -122,7 +126,9 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         }
 
         // Custom endpoints from ALL registered providers, not just the active one
-        var seen = new HashSet<string>();
+        var seen = endpoints
+            .Select(endpoint => $"{endpoint.Method} {endpoint.Path}")
+            .ToHashSet(StringComparer.Ordinal);
         foreach (var plugin in plugins)
         {
             foreach (var custom in plugin.GetCustomEndpointManifests())

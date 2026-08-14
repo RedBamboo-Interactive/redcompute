@@ -43,6 +43,7 @@ public sealed class InputAttachmentStore
     };
 
     private readonly string _root;
+    private readonly string _databasePath;
     private readonly string _connectionString;
     private readonly RedComputeConfig _config;
 
@@ -53,12 +54,13 @@ public sealed class InputAttachmentStore
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RedCompute", "input-attachments"));
         Directory.CreateDirectory(_root);
-        var dbPath = databasePath ?? Path.Combine(_root, "attachments.db");
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = dbPath, Pooling = false }.ToString();
+        _databasePath = Path.GetFullPath(databasePath ?? Path.Combine(_root, "attachments.db"));
+        _connectionString = new SqliteConnectionStringBuilder { DataSource = _databasePath, Pooling = false }.ToString();
         Initialize();
     }
 
     public string Root => _root;
+    internal string DatabasePath => _databasePath;
 
     public async Task<StagedInputAttachment> UploadAsync(
         Stream source, string? fileName, string? mediaType, string ownerUserId,

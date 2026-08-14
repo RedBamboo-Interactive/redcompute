@@ -290,11 +290,16 @@ public class RelayServer
         // (dual-write) until the verification window closes.
         var redLeafReader = new RedLeafSessionReader(
             _config.RedLeafUrl, new JwtService(new JwtOptions { SigningKey = signingKey }), _qualityModes);
-        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks, _qualityModes, redLeafReader, _providerConfig, _inputAttachments);
+        var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
+        var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
+            _jobTracker, broadcaster, _log);
+        UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks,
+            _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue);
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         RegisterWsEvents(broadcaster, transcriptPipeline);
+        _ = inputQueue.RunAsync(ct);
 
         // Tunnel and autostart endpoints are skipped: the Leaf kernel owns the one tunnel
         // and the one autostart entry. The dormant tunnel service only satisfies the
@@ -345,6 +350,10 @@ public class RelayServer
         broadcaster.RegisterEvent(new WsEventSchema("session.stream",
             "Fired for each streaming event from an active session (text, tool calls, thinking, errors)",
             Fields: ["sessionId", "event", "timestamp"]));
+        broadcaster.RegisterEvent(new WsEventSchema("session.input-queue.updated",
+            "Fired when durable input is queued, delivered, cancelled, retried, or blocked",
+            "SessionInputQueueChanged",
+            ["sessionId", "itemIds", "transition", "depth", "state", "blockedReason", "errorCode", "deliveredMessageUid"]));
         broadcaster.RegisterEvent(new WsEventSchema("hardware.snapshot",
             "Fired every 2 seconds with live system hardware metrics",
             Fields: ["timestamp", "cpu", "ram", "gpus"]));

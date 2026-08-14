@@ -39,6 +39,39 @@ public interface ISessionProvider
     // on the user message record verbatim.
     Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null);
 
+    /// <summary>
+    /// Provider-neutral, non-destructive input admission. Implementations must return
+    /// <see cref="SessionInputDeliveryStatus.Busy"/> while a turn is active and must
+    /// never interrupt that turn as a side effect of this call.
+    /// </summary>
+    async Task<SessionInputDeliveryResult> TrySendInputAsync(
+        string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson = null, string? messageUid = null)
+    {
+        var (info, _) = GetSession(sessionId);
+        if (info is null)
+            return SessionInputDeliveryResult.Unavailable("session_not_found", $"Session '{sessionId}' was not found");
+        if (info.Status is SessionStatus.Active or SessionStatus.Starting)
+            return SessionInputDeliveryResult.Busy();
+        if (info.Status is SessionStatus.Stopped or SessionStatus.Error)
+            return SessionInputDeliveryResult.Unavailable("session_not_writable", $"Session '{sessionId}' is {info.Status.ToString().ToLowerInvariant()}");
+
+          try
+          {
+              if (await SendInputAsync(sessionId, input, attachmentsJson, messageUid))
+                  return SessionInputDeliveryResult.Accepted();
+              var (after, _) = GetSession(sessionId);
+              if (after?.Status is SessionStatus.Active or SessionStatus.Starting)
+                  return SessionInputDeliveryResult.Busy();
+              return SessionInputDeliveryResult.Rejected(
+                  "provider_rejected", $"Provider '{ProviderId}' rejected the input");
+        }
+        catch (Exception ex)
+        {
+            return SessionInputDeliveryResult.Unavailable("provider_unavailable", ex.Message, retryable: true);
+        }
+    }
+
     // Provider API compatibility for callers that still construct {content, images}.
     // The public HTTP endpoint stages legacy images before it reaches providers;
     // this default exists for binary/source compatibility during the migration.

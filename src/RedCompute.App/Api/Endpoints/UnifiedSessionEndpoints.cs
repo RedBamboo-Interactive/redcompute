@@ -27,12 +27,14 @@ public static class UnifiedSessionEndpoints
     private static RedLeafSessionReader? _redLeafReader;
     private static ProviderConfigService? _providerConfig;
     private static InputAttachmentStore? _attachmentStore;
+    private static SessionInputQueueService? _inputQueue;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
         DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null,
         QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null,
-        ProviderConfigService? providerConfig = null, InputAttachmentStore? attachmentStore = null)
+        ProviderConfigService? providerConfig = null, InputAttachmentStore? attachmentStore = null,
+        SessionInputQueueService? inputQueue = null)
     {
         _docker = docker;
         _callbacks = callbacks;
@@ -40,6 +42,7 @@ public static class UnifiedSessionEndpoints
         _redLeafReader = redLeafReader;
         _providerConfig = providerConfig;
         _attachmentStore = attachmentStore ?? new InputAttachmentStore(config);
+        _inputQueue = inputQueue ?? throw new ArgumentNullException(nameof(inputQueue));
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
@@ -240,7 +243,8 @@ public static class UnifiedSessionEndpoints
             if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
                 return Error(403, "forbidden", "You do not have access to this session");
 
-            return Results.Json(new { session = info, messages = history });
+            var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
+            return Results.Json(new { session = info, messages = history, inputQueue = queue });
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("tail", "integer", description: "Return only the newest transcript records, in chronological order (max 10000)", location: ParamLocation.Query);
@@ -423,49 +427,28 @@ public static class UnifiedSessionEndpoints
                 if (!inputSpec.Any(p => p.Type == "text" && !string.IsNullOrWhiteSpace(p.Value)) && attachmentIds.Count == 0)
                     return Error(400, "missing_content", "At least one non-empty text or attachment input part is required");
 
-                var claimed = attachmentIds.Count > 0
-                    ? await _attachmentStore!.ClaimAsync(attachmentIds, userId ?? "local-user", id, messageUid, ctx.RequestAborted)
-                    : Array.Empty<StagedInputAttachment>();
-                var claimedById = claimed.ToDictionary(a => a.Id, StringComparer.Ordinal);
+                var referenced = new List<StagedInputAttachment>(attachmentIds.Count);
+                foreach (var attachmentId in attachmentIds.Distinct(StringComparer.Ordinal))
+                {
+                    var attachment = await _attachmentStore!.GetAuthorizedAsync(
+                        attachmentId, userId ?? "local-user", ctx.RequestAborted)
+                        ?? throw new AttachmentStoreException("attachment_not_found", $"Attachment '{attachmentId}' was not found");
+                    referenced.Add(attachment);
+                }
 
-                if (claimed.Any(a => a.Kind == "file") && !provider.Capabilities.HasFlag(SessionCapabilities.FileAttachments))
-                {
-                    await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                if (referenced.Any(a => a.Kind == "file") && !provider.Capabilities.HasFlag(SessionCapabilities.FileAttachments))
                     return Error(422, "file_attachments_not_supported", $"Provider '{provider.ProviderId}' does not support file attachments");
-                }
-                if (claimed.Any(a => a.Kind == "image") && !provider.Capabilities.HasFlag(SessionCapabilities.ImageAttachments))
-                {
-                    await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
+                if (referenced.Any(a => a.Kind == "image") && !provider.Capabilities.HasFlag(SessionCapabilities.ImageAttachments))
                     return Error(422, "image_attachments_not_supported", $"Provider '{provider.ProviderId}' does not support image attachments");
-                }
-                if (claimed.Any(a => a.Kind == "image") && provider is IImageAttachmentSupportProvider sessionImageSupport)
+                if (referenced.Any(a => a.Kind == "image") && provider is IImageAttachmentSupportProvider sessionImageSupport)
                 {
                     var support = sessionImageSupport.GetImageAttachmentSupport(id);
                     if (!support.Supported)
-                    {
-                        await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
                         return Error(422, "image_attachments_not_supported", support.Reason ?? $"Session '{id}' does not support image attachments");
-                    }
-                }
-
-                var input = inputSpec.Select(part => part.Type == "text"
-                    ? SessionInputPart.TextPart(part.Value)
-                    : SessionInputPart.AttachmentPart(claimedById[part.Value].ToProviderAttachment())).ToArray();
-                var publicAttachments = claimed.Select(PublicAttachment).ToArray();
-                var hasMetadata = body.TryGetProperty("metadata", out var meta) && meta.ValueKind == JsonValueKind.Object;
-                string? attachmentsJson = null;
-                if (hasMetadata || publicAttachments.Length > 0)
-                {
-                    var envelope = new Dictionary<string, object?> { ["attachments"] = publicAttachments };
-                    if (hasMetadata) envelope["metadata"] = meta;
-                    attachmentsJson = JsonSerializer.Serialize(envelope);
                 }
 
                 if (info.JobId is not { } invocationJobId || jobTracker.GetJob(invocationJobId) == null)
-                {
-                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
                     return Error(500, "tracking_failed", "The session has no tracked Compute job");
-                }
                 JobProvenance invocationProvenance;
                 try
                 {
@@ -474,36 +457,62 @@ public static class UnifiedSessionEndpoints
                 }
                 catch (JobProvenanceValidationException ex)
                 {
-                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
                     return Error(422, "invalid_provenance", ex.Message);
                 }
-                jobTracker.StartInvocation(invocationJobId, invocationProvenance, JobEventKind.Resumed);
 
-                bool sent;
-                try
+                var deliveryPolicy = SessionInputDeliveryPolicy.AfterCurrent;
+                if (body.TryGetProperty("delivery", out var deliveryElement)
+                    && deliveryElement.ValueKind != JsonValueKind.Null)
                 {
-                    sent = await provider.SendInputAsync(id, input, attachmentsJson, messageUid);
+                    if (deliveryElement.ValueKind != JsonValueKind.String)
+                        return Error(400, "invalid_delivery_policy", "delivery must be 'after-current' or 'interrupt-current'");
+                    deliveryPolicy = deliveryElement.GetString() switch
+                    {
+                        "after-current" => SessionInputDeliveryPolicy.AfterCurrent,
+                        "interrupt-current" => SessionInputDeliveryPolicy.InterruptCurrent,
+                        _ => throw new SessionInputQueueStoreException("invalid_delivery_policy", "delivery must be 'after-current' or 'interrupt-current'"),
+                    };
                 }
-                catch (Exception ex)
+
+                var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
+                if (idempotencyKey?.Length > 256)
+                    return Error(400, "invalid_idempotency_key", "X-Idempotency-Key cannot exceed 256 characters");
+                var displayContent = body.TryGetProperty("displayContent", out var display)
+                    && display.ValueKind == JsonValueKind.String
+                        ? display.GetString() ?? ""
+                        : string.Join("\n", inputSpec.Where(part => part.Type == "text").Select(part => part.Value));
+                var metadataJson = body.TryGetProperty("metadata", out var metadata)
+                    && metadata.ValueKind == JsonValueKind.Object ? metadata.GetRawText() : null;
+                var submission = new SessionInputQueueSubmission(
+                    id,
+                    userId ?? "local-user",
+                    inputSpec.Select(part => new QueuedSessionInputPart(part.Type, part.Value)).ToArray(),
+                    displayContent,
+                    metadataJson,
+                    invocationProvenance,
+                    deliveryPolicy,
+                    messageUid,
+                    attachmentIds,
+                    idempotencyKey);
+                var admitted = await _inputQueue!.AdmitAsync(submission, ctx.RequestAborted);
+                return Results.Json(new
                 {
-                    jobTracker.MarkFailed(invocationJobId, ex.Message);
-                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, CancellationToken.None);
-                    if (ctx.RequestAborted.IsCancellationRequested) throw;
-                    return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}': {ex.Message}");
-                }
-                if (!sent)
-                {
-                    jobTracker.MarkFailed(invocationJobId, $"Provider '{provider.ProviderId}' rejected the input");
-                    if (claimed.Count > 0) await _attachmentStore!.ReleaseClaimAsync(id, messageUid, ctx.RequestAborted);
-                    return Error(502, "delivery_failed", $"Message could not be delivered to session '{id}'");
-                }
-                return Results.Json(new { sent, messageUid, attachments = publicAttachments });
+                    accepted = true,
+                    existing = admitted.Existing,
+                    disposition = admitted.Disposition,
+                    queueItemId = admitted.Item.Id,
+                    messageUid = admitted.Item.MessageUid,
+                    deliveredMessageUid = admitted.Item.DeliveredMessageUid,
+                    attachments = referenced.Select(PublicAttachment).ToArray(),
+                    queue = admitted.Queue,
+                    item = PublicQueueItem(admitted.Item, referenced),
+                }, statusCode: admitted.Disposition == "delivered" ? 200 : 202);
             }
             catch (AttachmentStoreException ex)
             {
-                await _attachmentStore!.ReleaseClaimAsync(id, messageUid, CancellationToken.None);
                 return AttachmentError(ex);
             }
+            catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
         })
             .WithRequestBody(new
             {
@@ -540,7 +549,122 @@ public static class UnifiedSessionEndpoints
                         },
                     },
                     metadata = new { type = "object", description = "Arbitrary key-value metadata (display-only, not sent to model)" },
+                    displayContent = new { type = "string", description = "Human-readable draft shown in queue views when provider input contains an enriched context envelope" },
+                    delivery = new { type = "string", @enum = new[] { "after-current", "interrupt-current" }, @default = "after-current", description = "Durable delivery policy" },
                     messageUid = new { type = "string", description = "Stable message identity to persist with the message. Supply it when the same logical message is also stored elsewhere (cross-stream dedup); minted server-side when omitted. Returned in the response." },
+                },
+            })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("X-Idempotency-Key", "string", required: false, location: ParamLocation.Header,
+                description: "Retry-safe key scoped to the session, owner, and creation provenance. Reuse with a different payload returns 409.");
+
+        endpoints.MapGet("/ai-session/sessions/{id}/input-queue",
+            "List the durable FIFO for a session. Active items are returned by default; includeTerminal exposes 24-hour delivery and cancellation receipts.",
+            async (HttpContext ctx, string id) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+            var owner = userId ?? "local-user";
+            var includeTerminal = bool.TryParse(ctx.Request.Query["includeTerminal"].FirstOrDefault(), out var include) && include;
+            var items = await _inputQueue!.ListAsync(id, owner, includeTerminal, ctx.RequestAborted);
+            var summary = await _inputQueue.GetSummaryAsync(id, owner, ctx.RequestAborted);
+            var publicItems = await Task.WhenAll(items.Select(item =>
+                PublicQueueItemAsync(item, owner, ctx.RequestAborted)));
+            return Results.Json(new { items = publicItems, queue = summary });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("includeTerminal", "boolean", required: false, location: ParamLocation.Query,
+                defaultValue: false, description: "Include delivered and cancelled receipts retained for 24 hours")
+            .WithResponse(QueueListResponseSchema);
+
+        endpoints.MapGet("/ai-session/sessions/{id}/input-queue/{itemId}",
+            "Get one durable queue item or terminal receipt for exact delivery verification",
+            async (HttpContext ctx, string id, string itemId) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+            var item = await _inputQueue!.GetAsync(id, itemId, userId ?? "local-user", ctx.RequestAborted);
+            return item is null
+                ? Error(404, "queue_item_not_found", $"Queue item '{itemId}' was not found")
+                : Results.Json(await PublicQueueItemAsync(item, userId ?? "local-user", ctx.RequestAborted));
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("itemId", "string", required: true, location: ParamLocation.Path, description: "Queue item id returned by message admission")
+            .WithResponse(QueueItemResponseSchema);
+
+        endpoints.MapDelete("/ai-session/sessions/{id}/input-queue/{itemId}",
+            "Cancel a pending or failed queue item and release its attachments back to draft state",
+            async (HttpContext ctx, string id, string itemId) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+            try
+            {
+                var item = await _inputQueue!.CancelAsync(id, itemId, userId ?? "local-user", ctx.RequestAborted);
+                return item is null
+                    ? Error(404, "queue_item_not_found", $"Queue item '{itemId}' was not found")
+                    : Results.Json(await PublicQueueItemAsync(item, userId ?? "local-user", ctx.RequestAborted));
+            }
+            catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("itemId", "string", required: true, location: ParamLocation.Path, description: "Queue item id")
+            .WithResponse(QueueItemResponseSchema);
+
+        endpoints.MapPost("/ai-session/sessions/{id}/input-queue/{itemId}/retry",
+            "Retry a failed queue head after inspecting its structured error",
+            async (HttpContext ctx, string id, string itemId) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+            try
+            {
+                var item = await _inputQueue!.RetryAsync(id, itemId, userId ?? "local-user", ctx.RequestAborted);
+                return item is null
+                    ? Error(404, "queue_item_not_found", $"Queue item '{itemId}' was not found")
+                    : Results.Json(await PublicQueueItemAsync(item, userId ?? "local-user", ctx.RequestAborted));
+            }
+            catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("itemId", "string", required: true, location: ParamLocation.Path, description: "Failed queue item id")
+            .WithResponse(QueueItemResponseSchema);
+
+        endpoints.MapPost("/ai-session/sessions/{id}/input-queue/send-now",
+            "Request interruption of the active turn and deliver the durable queue once the provider reports a safe idle state",
+            async (HttpContext ctx, string id) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
+            var userId = ResolveUserId(ctx);
+            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
+                return Error(403, "forbidden", "You do not have access to this session");
+            var requested = await _inputQueue!.SendNowAsync(id, userId ?? "local-user", ctx.RequestAborted);
+            if (!requested) return Error(409, "queue_empty", "There is no active queued input to send");
+            var summary = await _inputQueue.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
+            return Results.Json(new { requested = true, queue = summary });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithResponse(new
+            {
+                type = "object",
+                required = new[] { "requested", "queue" },
+                properties = new
+                {
+                    requested = new { type = "boolean" },
+                    queue = QueueSummarySchema,
                 },
             });
 
@@ -758,7 +882,7 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/dismiss",
-            "Mark a session as dismissed (hidden from default listings)", (HttpContext ctx, string id) =>
+            "Mark a session as dismissed (hidden from default listings)", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -768,7 +892,8 @@ public static class UnifiedSessionEndpoints
                 return Error(403, "forbidden", "You do not have access to this session");
 
             provider!.DismissSession(id);
-            return Results.Json(new { dismissed = true });
+            var cancelledQueueItems = await _inputQueue!.CancelSessionAsync(id, ctx.RequestAborted);
+            return Results.Json(new { dismissed = true, cancelledQueueItems });
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/callback",
@@ -1502,6 +1627,114 @@ public static class UnifiedSessionEndpoints
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
+
+    private static async Task<object> PublicQueueItemAsync(
+        SessionInputQueueItem item, string ownerUserId, CancellationToken ct)
+    {
+        var attachments = new List<StagedInputAttachment>();
+        foreach (var attachmentId in item.AttachmentIds)
+        {
+            var attachment = await _attachmentStore!.GetAuthorizedAsync(attachmentId, ownerUserId, ct);
+            if (attachment is not null) attachments.Add(attachment);
+        }
+        return PublicQueueItem(item, attachments);
+    }
+
+    private static object PublicQueueItem(
+        SessionInputQueueItem item, IEnumerable<StagedInputAttachment>? attachments = null) => new
+    {
+        id = item.Id,
+        clientId = item.ClientId,
+        sessionId = item.SessionId,
+        sequence = item.Sequence,
+        state = item.State.ToString().ToLowerInvariant(),
+        delivery = item.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent
+            ? "interrupt-current" : "after-current",
+        input = item.Input.Select(part => part.Type == "text"
+            ? (object)new { type = "text", text = part.Value }
+            : new { type = "attachment", attachmentId = part.Value }),
+        displayContent = item.DisplayContent,
+        metadata = item.MetadataJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(item.MetadataJson),
+        messageUid = item.MessageUid,
+        attachmentIds = item.AttachmentIds,
+        attachments = (attachments ?? []).Select(PublicAttachment).ToArray(),
+        createdAt = item.CreatedAt.ToString("O"),
+        updatedAt = item.UpdatedAt.ToString("O"),
+        attemptCount = item.AttemptCount,
+        nextAttemptAt = item.NextAttemptAt?.ToString("O"),
+        error = item.ErrorCode is null ? null : new
+        {
+            code = item.ErrorCode,
+            message = item.ErrorMessage,
+            retryable = item.ErrorRetryable,
+        },
+        deliveredMessageUid = item.DeliveredMessageUid,
+        completedAt = item.CompletedAt?.ToString("O"),
+    };
+
+    private static IResult QueueError(SessionInputQueueStoreException ex) => ex.Code switch
+    {
+        "forbidden" => Error(403, ex.Code, ex.Message),
+        "attachment_not_found" or "attachment_missing" => Error(404, ex.Code, ex.Message),
+        "attachment_expired" => Error(410, ex.Code, ex.Message),
+        "idempotency_conflict" or "attachment_already_claimed" or "delivery_in_progress"
+            or "not_retryable_state" => Error(409, ex.Code, ex.Message),
+        "attachments_too_large" or "attachment_too_large" => Error(413, ex.Code, ex.Message),
+        _ => Error(422, ex.Code, ex.Message),
+    };
+
+    private static readonly object QueueSummarySchema = new
+    {
+        type = "object",
+        required = new[] { "depth", "state" },
+        properties = new
+        {
+            depth = new { type = "integer" },
+            state = new { type = "string", @enum = new[] { "empty", "ready", "delivering", "waiting_for_session", "failed" } },
+            blockedReason = new { type = new[] { "string", "null" } },
+            headItemId = new { type = new[] { "string", "null" } },
+            errorCode = new { type = new[] { "string", "null" } },
+        },
+    };
+
+    private static readonly object QueueItemResponseSchema = new
+    {
+        type = "object",
+        required = new[] { "id", "sessionId", "sequence", "state", "delivery", "input", "displayContent", "messageUid", "createdAt", "updatedAt", "attemptCount" },
+        properties = new
+        {
+            id = new { type = "string" },
+            clientId = new { type = new[] { "string", "null" }, description = "Authorized caller idempotency key used to reconcile an uncertain admission" },
+            sessionId = new { type = "string" },
+            sequence = new { type = "integer" },
+            state = new { type = "string", @enum = new[] { "pending", "delivering", "failed", "delivered", "cancelled" } },
+            delivery = new { type = "string", @enum = new[] { "after-current", "interrupt-current" } },
+            input = new { type = "array", items = new { type = "object" } },
+            displayContent = new { type = "string" },
+            metadata = new { type = new[] { "object", "null" } },
+            messageUid = new { type = "string" },
+            attachmentIds = new { type = "array", items = new { type = "string" } },
+            attachments = new { type = "array", items = new { type = "object" }, description = "Authorized staged attachment metadata for queue UIs" },
+            createdAt = new { type = "string", format = "date-time" },
+            updatedAt = new { type = "string", format = "date-time" },
+            attemptCount = new { type = "integer" },
+            nextAttemptAt = new { type = new[] { "string", "null" }, format = "date-time" },
+            error = new { type = new[] { "object", "null" } },
+            deliveredMessageUid = new { type = new[] { "string", "null" } },
+            completedAt = new { type = new[] { "string", "null" }, format = "date-time" },
+        },
+    };
+
+    private static readonly object QueueListResponseSchema = new
+    {
+        type = "object",
+        required = new[] { "items", "queue" },
+        properties = new
+        {
+            items = new { type = "array", items = QueueItemResponseSchema },
+            queue = QueueSummarySchema,
+        },
+    };
 
     private static object PublicAttachment(StagedInputAttachment attachment) => new
     {
