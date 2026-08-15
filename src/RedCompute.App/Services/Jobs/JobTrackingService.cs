@@ -684,7 +684,7 @@ public class JobTrackingService : IJobTracker
         string? originApp = null, string? originApi = null, string? actor = null,
         string? beneficiary = null, string? assurance = null, bool? complete = null,
         Guid? parentJobId = null, string? contextKind = null, string? contextId = null,
-        bool? externalExecution = null)
+        bool? externalExecution = null, string? executionId = null)
     {
         using var db = _dbFactory();
         IQueryable<JobRecord> query = db.Jobs.OrderByDescending(j => j.QueuedAt);
@@ -724,6 +724,9 @@ public class JobTrackingService : IJobTracker
             j.CreationProvenance?.Context.Any(c =>
                 (contextKind == null || Eq(c.Kind, contextKind)) &&
                 (contextId == null || Eq(c.Id, contextId) || Eq(c.EntityId, contextId))) == true);
+        if (executionId != null) filtered = filtered.Where(j =>
+            j.CreationProvenance?.Context.Any(c =>
+                Eq(c.Kind, "execution") && Eq(c.Id, executionId)) == true);
 
         var materialized = filtered.ToList();
         return (materialized.Skip(offset).Take(limit).ToList(), materialized.Count);

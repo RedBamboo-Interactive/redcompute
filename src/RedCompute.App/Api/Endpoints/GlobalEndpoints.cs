@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Helpers;
 using RedCompute.App.Services;
@@ -63,7 +65,7 @@ public static class GlobalEndpoints
             });
         });
 
-        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (string? capability, string? status, string? caller, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, bool? externalExecution, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (string? capability, string? status, string? caller, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, string? executionId, bool? externalExecution, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;
             if (status != null && Enum.TryParse<JobStatus>(status, true, out var parsed))
@@ -71,7 +73,7 @@ public static class GlobalEndpoints
 
             var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, caller, search,
                 limit ?? 50, offset ?? 0, originApp, originApi, actor, beneficiary, assurance, complete,
-                parentJobId, contextKind, contextId, externalExecution);
+                parentJobId, contextKind, contextId, externalExecution, executionId);
 
             var sessionStatuses = new Dictionary<Guid, string>();
             var aiSessionJobIds = jobs
@@ -132,6 +134,7 @@ public static class GlobalEndpoints
             .WithParam("parentJobId", "string", description: "Filter direct children of a Compute job", location: ParamLocation.Query)
             .WithParam("contextKind", "string", description: "Filter by a structured context reference kind", location: ParamLocation.Query)
             .WithParam("contextId", "string", description: "Filter by context id or entity id", location: ParamLocation.Query)
+            .WithParam("executionId", "string", description: "Filter by the signed suite execution id. This is the direct audit lookup for an app, agent, automation, or child process execution.", location: ParamLocation.Query)
             .WithParam("externalExecution", "boolean", description: "Filter work performed by an external trusted worker", location: ParamLocation.Query)
             .WithParam("search", "string", description: "Substring match over job name, provider, caller and capability", location: ParamLocation.Query)
             .WithParam("limit", "integer", description: "Max jobs to return", defaultValue: 50, location: ParamLocation.Query)
@@ -290,9 +293,7 @@ public static class GlobalEndpoints
                 Content = new StringContent(rerunBody, Encoding.UTF8, "application/json")
             };
             request.Headers.Add("X-Caller-Info", $"rerun:{id}");
-            request.Headers.TryAddWithoutValidation("X-Compute-Provenance", provenance.ToJson());
-            if (ctx.Request.Headers.TryGetValue("Authorization", out var authorization))
-                request.Headers.TryAddWithoutValidation("Authorization", authorization.ToArray());
+            ApplyRerunCredentials(ctx, request, provenance, id);
 
             try
             {
@@ -667,6 +668,41 @@ public static class GlobalEndpoints
             .WithParam("limit", "integer", description: "Max events to return (max 1000)", defaultValue: 100, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
+    }
+
+    internal static void ApplyRerunCredentials(
+        HttpContext context,
+        HttpRequestMessage request,
+        JobProvenance provenance,
+        Guid parentJobId)
+    {
+        var parent = ExecutionContextScope.Current;
+        if (parent is not null)
+        {
+            var child = parent with
+            {
+                ExecutionId = Guid.NewGuid().ToString(),
+                ParentExecutionId = parent.ExecutionId,
+                Context =
+                [
+                    .. parent.Context.Take(15),
+                    new ExecutionContextReference("compute-job", parentJobId.ToString()),
+                ],
+                Trace = (parent.Trace ?? new ExecutionTrace()) with
+                {
+                    ParentJobId = parentJobId.ToString(),
+                },
+            };
+            var issuer = context.RequestServices.GetRequiredService<IExecutionTokenIssuer>();
+            var issued = issuer.Issue(child, context.User);
+            request.Headers.TryAddWithoutValidation(
+                "Authorization", $"Bearer {issued.AccessToken}");
+            return;
+        }
+
+        request.Headers.TryAddWithoutValidation("X-Compute-Provenance", provenance.ToJson());
+        if (context.Request.Headers.TryGetValue("Authorization", out var authorization))
+            request.Headers.TryAddWithoutValidation("Authorization", authorization.ToArray());
     }
 
     private record TranscriptEvent(int Id, string Role, string EventType, string? Content, string? ToolName, string? ToolInput, string? ToolResult, string Timestamp);

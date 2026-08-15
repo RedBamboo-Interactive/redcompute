@@ -129,7 +129,10 @@ public sealed class JobAuditTests : IDisposable
     public void Structured_filters_are_role_specific_and_completeness_is_honest()
     {
         _jobs.CreateJob(new JobSubmission("tts", "Local", "{}",
-            Provenance("nova", "agent-nova", "user-1", "/nova/speak")));
+            Provenance("nova", "agent-nova", "user-1", "/nova/speak") with
+            {
+                Context = [new JobContextReference("execution", "execution-1")],
+            }));
         _jobs.CreateJob(new JobSubmission("tts", "Local", "{}",
             Provenance("codered", "codered", "user-2", "/codered/review", actorKind: "app")));
 
@@ -137,6 +140,8 @@ public sealed class JobAuditTests : IDisposable
         Assert.Single(_jobs.GetJobs(originApi: "/codered/review").Items);
         Assert.Single(_jobs.GetJobs(actor: "agent-nova").Items);
         Assert.Single(_jobs.GetJobs(beneficiary: "user-2").Items);
+        Assert.Single(_jobs.GetJobs(executionId: "execution-1").Items);
+        Assert.Empty(_jobs.GetJobs(executionId: "execution-missing").Items);
         Assert.Equal(2, _jobs.GetJobs(assurance: "Verified", complete: true).TotalCount);
     }
 

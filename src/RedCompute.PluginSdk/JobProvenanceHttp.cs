@@ -9,6 +9,9 @@ public static class JobProvenanceHttp
 {
     public static JobProvenance Resolve(HttpContext ctx, string route)
     {
+        if (ExecutionJobProvenance.TryResolve(ctx, route, out var executionProvenance))
+            return executionProvenance!;
+
         var userId = ctx.User?.FindFirst("sub")?.Value;
         var realUser = !string.IsNullOrWhiteSpace(userId) &&
             !string.Equals(userId, "local-user", StringComparison.OrdinalIgnoreCase) &&

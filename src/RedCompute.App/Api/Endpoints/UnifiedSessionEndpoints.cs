@@ -153,7 +153,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("excludeSource", "string", description: "Exclude sessions whose source matches this value", location: ParamLocation.Query);
 
         endpoints.MapPost("/ai-session/sessions",
-            "Start a new interactive session in a project directory", async (HttpContext ctx) =>
+            "Start a new interactive session in a project directory. Signed execution callers launch the provider process with a derived child identity in REDLEAF_EXECUTION_TOKEN so AI tools can authenticate, inspect, and verify subsequent suite API calls.", async (HttpContext ctx) =>
         {
             var userId = ResolveUserId(ctx);
             if (userId == null)
@@ -195,9 +195,11 @@ public static class UnifiedSessionEndpoints
             JobProvenance provenance;
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
-            var session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar,
-                effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName, provenance,
-                scratchDirectory);
+            UnifiedSessionInfo? session;
+            using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
+                session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar,
+                    effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName, provenance,
+                    scratchDirectory);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
             if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -860,7 +862,9 @@ public static class UnifiedSessionEndpoints
             JobProvenance provenance;
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions/{id}/resume"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
-            var session = await provider.ResumeSessionAsync(id, provenance);
+            UnifiedSessionInfo? session;
+            using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
+                session = await provider.ResumeSessionAsync(id, provenance);
             if (session == null)
                 return Error(500, "resume_failed", provider.LastStartError ?? "Failed to resume session");
 

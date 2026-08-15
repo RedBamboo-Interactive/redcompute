@@ -27,6 +27,20 @@ public sealed class SessionScratchTests : IDisposable
         Assert.False(SessionScratch.TryResolveDirectory(_directory, out _));
     }
 
+    [Fact]
+    public void ExecutionTokenIsAvailableWithoutAScratchDirectoryAndScopeRestores()
+    {
+        Assert.Null(SessionScratch.Environment(null));
+        using (SessionScratch.PushExecutionToken("outer-token"))
+        {
+            Assert.Equal("outer-token", SessionScratch.Environment(null)!["REDLEAF_EXECUTION_TOKEN"]);
+            using (SessionScratch.PushExecutionToken("inner-token"))
+                Assert.Equal("inner-token", SessionScratch.Environment(null)!["REDLEAF_EXECUTION_TOKEN"]);
+            Assert.Equal("outer-token", SessionScratch.Environment(null)!["REDLEAF_EXECUTION_TOKEN"]);
+        }
+        Assert.Null(SessionScratch.Environment(null));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);

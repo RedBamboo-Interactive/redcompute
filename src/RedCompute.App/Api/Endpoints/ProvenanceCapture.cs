@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using RedCompute.Core.Jobs;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
 
@@ -15,6 +16,9 @@ public static class ProvenanceCapture
             ?? (ctx.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText
             ?? ctx.Request.Path.Value
             ?? "unknown";
+
+        if (ExecutionJobProvenance.TryResolve(ctx, routeTemplate, out var executionProvenance))
+            return executionProvenance!;
 
         if (ctx.Request.Headers.TryGetValue(HeaderName, out var raw) && !string.IsNullOrWhiteSpace(raw))
         {
