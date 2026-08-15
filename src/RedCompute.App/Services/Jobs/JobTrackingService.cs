@@ -1011,6 +1011,10 @@ public class JobTrackingService : IJobTracker
         JobEventKind kind, JobProvenance? provenance = null, object? data = null,
         DateTimeOffset? occurredAt = null)
     {
+        // A lifecycle transition without a more specific caller identity still belongs to
+        // the immutable execution that created the job. Explicit event provenance wins for
+        // worker claims, resumes, reruns, and backfill evidence.
+        provenance ??= job.CreationProvenance;
         var evt = new JobLifecycleEvent
         {
             JobId = job.Id,

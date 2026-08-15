@@ -113,8 +113,9 @@ public sealed class JobAuditTests : IDisposable
         var events = _jobs.GetJobEvents(job.Id);
         Assert.Equal([JobEventKind.Created, JobEventKind.Started, JobEventKind.Resumed,
             JobEventKind.Retried, JobEventKind.Rerun, JobEventKind.Completed], events.Select(e => e.Kind));
-        Assert.All(events.Where(e => e.Kind is JobEventKind.Started or JobEventKind.Resumed
-            or JobEventKind.Retried or JobEventKind.Rerun), e => Assert.NotNull(e.Provenance));
+        Assert.All(events, e => Assert.NotNull(e.Provenance));
+        Assert.Equal(createdWith.ToJson(),
+            events.Single(e => e.Kind == JobEventKind.Completed).Provenance!.ToJson());
 
         events[1].DataJson = "mutated";
         Assert.NotEqual("mutated", _jobs.GetJobEvents(job.Id)[1].DataJson);
@@ -123,6 +124,43 @@ public sealed class JobAuditTests : IDisposable
         var persisted = db.JobEvents.Single(e => e.Id == events[1].Id);
         persisted.DataJson = "mutated";
         Assert.Throws<DbUpdateException>(() => db.SaveChanges());
+    }
+
+    [Theory]
+    [InlineData(JobStatus.Completed, JobEventKind.Completed)]
+    [InlineData(JobStatus.Failed, JobEventKind.Failed)]
+    [InlineData(JobStatus.Cancelled, JobEventKind.Cancelled)]
+    [InlineData(JobStatus.Skipped, JobEventKind.Skipped)]
+    [InlineData(JobStatus.TimedOut, JobEventKind.TimedOut)]
+    public void Terminal_events_inherit_immutable_creation_provenance(
+        JobStatus status, JobEventKind eventKind)
+    {
+        var provenance = Provenance("nova", "nova", "user-1", "/image-gen/generate");
+        var job = _jobs.CreateJob(new JobSubmission("image-gen", "ComfyUI", "{}", provenance));
+
+        switch (status)
+        {
+            case JobStatus.Completed:
+                _jobs.MarkCompleted(job.Id);
+                break;
+            case JobStatus.Failed:
+                _jobs.MarkFailed(job.Id, "provider failure");
+                break;
+            case JobStatus.Cancelled:
+                _jobs.MarkCancelled(job.Id);
+                break;
+            case JobStatus.Skipped:
+                _jobs.MarkSkipped(job.Id, "not needed");
+                break;
+            case JobStatus.TimedOut:
+                _jobs.MarkTimedOut(job.Id, "deadline exceeded");
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(status));
+        }
+
+        var terminal = Assert.Single(_jobs.GetJobEvents(job.Id), e => e.Kind == eventKind);
+        Assert.Equal(provenance.ToJson(), terminal.Provenance!.ToJson());
     }
 
     [Fact]
