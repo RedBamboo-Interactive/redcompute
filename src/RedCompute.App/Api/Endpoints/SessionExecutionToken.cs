@@ -26,7 +26,8 @@ internal static class SessionExecutionToken
             ],
         };
         var issuer = context.RequestServices.GetRequiredService<IExecutionTokenIssuer>();
-        var issued = issuer.Issue(child, context.User, TimeSpan.FromHours(2));
+        var options = context.RequestServices.GetRequiredService<JwtOptions>();
+        var issued = issuer.Issue(child, context.User, options.SessionExecutionTokenLifetime);
         return SessionScratch.PushExecutionToken(issued.AccessToken);
     }
 
