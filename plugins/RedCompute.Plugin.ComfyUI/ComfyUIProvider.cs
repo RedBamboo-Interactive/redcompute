@@ -22,7 +22,6 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly Action<string> _log;
     private readonly string _host;
     private readonly int _port;
-    private readonly string _defaultWorkflow;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(30) };
     private readonly HttpClient _healthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
     private Process? _process;
@@ -41,21 +40,19 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     public bool SupportsProgress => true;
     public bool SupportsRerun => true;
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(10);
-    public WorkflowLoader WorkflowLoader { get; }
     public Action<double>? ProgressCallback { get; set; }
 
     private string BaseUrl => $"http://{_host}:{_port}";
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
-        ["prompt"] = new ParameterSchema { Type = "string", Required = true, Description = "Text prompt for image generation" },
-        ["workflow"] = new ParameterSchema { Type = "string", Required = false, Default = "z_turbo", Description = "Workflow name. Each workflow exposes typed parameters via GET /{slug}/workflows/{name}" },
-        ["negative"] = new ParameterSchema { Type = "string", Required = false, Description = "Negative prompt" },
-        ["seed"] = new ParameterSchema { Type = "integer", Required = false, Description = "Random seed for reproducibility" },
-        ["width"] = new ParameterSchema { Type = "integer", Required = false, Description = "Output image width" },
-        ["height"] = new ParameterSchema { Type = "integer", Required = false, Description = "Output image height" },
-        ["image_url"] = new ParameterSchema { Type = "string", Required = false, Description = "Source image URL for img2img workflows" },
-        ["workflow_json"] = new ParameterSchema { Type = "string", Required = false, Description = "Inline ComfyUI workflow JSON (alternative to workflow name). Must include _axl metadata." }
+        ["workflow_entity"] = new ParameterSchema { Type = "object", Required = true, Description = "Frozen RedLeaf ComfyUI workflow entity identity" },
+        ["workflow_inputs"] = new ParameterSchema { Type = "object", Required = true, Description = "Fully materialized workflow inputs" },
+        ["workflow_input_sources"] = new ParameterSchema { Type = "object", Required = false, Description = "Whether each effective input was explicit, defaulted, or generated" },
+        ["workflow_json"] = new ParameterSchema { Type = "string", Required = true, Description = "Frozen ComfyUI API-format node graph" },
+        ["workflow_parameters"] = new ParameterSchema { Type = "array", Required = true, Description = "Parameter-to-node injection contract" },
+        ["output_node"] = new ParameterSchema { Type = "string", Required = true, Description = "Node id that produces the output" },
+        ["media_type"] = new ParameterSchema { Type = "string", Required = true, Description = "Output media type" }
     };
 
     public ReturnSchema OutputSchema => new()
@@ -74,11 +71,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
         _host = ProviderHelpers.GetExtra(config, "Host", "127.0.0.1");
         _port = config.BackendPort ?? 8188;
-        _defaultWorkflow = ProviderHelpers.GetExtra(config, "DefaultWorkflow", "z_turbo");
-
-        var workflowsDir = ProviderHelpers.GetExtra(config, "WorkflowsDir", "workflows");
         _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
-        WorkflowLoader = new WorkflowLoader(workflowsDir, log);
     }
 
     public void SetProgressCallback(Action<double>? callback)
@@ -86,37 +79,9 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         ProgressCallback = callback;
     }
 
-    public void MapCustomEndpoints(WebApplication app)
-    {
-        app.MapGet($"/{CapabilitySlug}/workflows", () =>
-            Results.Json(WorkflowLoader.Workflows));
+    public void MapCustomEndpoints(WebApplication app) { }
 
-        app.MapGet($"/{CapabilitySlug}/workflows/{{name}}", (string name) =>
-        {
-            var wf = WorkflowLoader.Get(name);
-            return wf != null ? Results.Json(wf) : Results.NotFound(new { error = "not_found", message = $"Workflow '{name}' not found" });
-        });
-    }
-
-    public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() =>
-    [
-        new EndpointManifest
-        {
-            Method = "GET",
-            Path = $"/{CapabilitySlug}/workflows",
-            Description = "List available ComfyUI workflows"
-        },
-        new EndpointManifest
-        {
-            Method = "GET",
-            Path = $"/{CapabilitySlug}/workflows/{{name}}",
-            Description = "Get details of a specific ComfyUI workflow",
-            Parameters = new Dictionary<string, ParameterSchema>
-            {
-                ["name"] = new ParameterSchema { Type = "string", Required = true, Description = "Workflow name" }
-            }
-        }
-    ];
+    public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => [];
 
     public async Task<bool> StartAsync(CancellationToken ct = default)
     {
@@ -126,9 +91,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         // Check if already running externally
         if (await CheckHealthAsync())
         {
-            WorkflowLoader.Reload();
             _status = BackendStatus.Running;
-            _log($"[ComfyUI] Already running at {BaseUrl} ({WorkflowLoader.Workflows.Count} workflows)");
+            _log($"[ComfyUI] Already running at {BaseUrl}");
             return true;
         }
 
@@ -163,9 +127,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             {
                 if (await CheckHealthAsync())
                 {
-                    WorkflowLoader.Reload();
                     _status = BackendStatus.Running;
-                    _log($"[ComfyUI] Started at {BaseUrl} ({WorkflowLoader.Workflows.Count} workflows)");
+                    _log($"[ComfyUI] Started at {BaseUrl}");
                     return true;
                 }
                 await Task.Delay(2000, ct);
@@ -228,10 +191,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         if (_status == BackendStatus.Running && !await CheckHealthAsync())
             _status = BackendStatus.Error;
         else if (_status == BackendStatus.Error && await CheckHealthAsync())
-        {
-            WorkflowLoader.Reload();
             _status = BackendStatus.Running;
-        }
         return _status;
     }
 
@@ -241,102 +201,49 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     {
         var progressCallback = ProgressCallback;
         var p = request.Parameters;
-        var workflowName = ProviderHelpers.GetParam<string>(p, "workflow") ?? _defaultWorkflow;
         var inlineJson = ProviderHelpers.GetParam<string>(p, "workflow_json");
         var prompt = ProviderHelpers.GetParam<string>(p, "prompt");
         var negative = ProviderHelpers.GetParam<string>(p, "negative") ?? "";
         var seedParam = ProviderHelpers.GetParam<long?>(p, "seed");
+        if (string.IsNullOrWhiteSpace(inlineJson))
+            return new JobResult { Success = false, ErrorMessage = "workflow_json is required; resolve a comfyui-workflow entity through RedLeaf" };
 
-        WorkflowDefinition wfDef;
-        Dictionary<string, JsonElement> workflow;
+        var workflow = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(inlineJson);
+        if (workflow == null)
+            return new JobResult { Success = false, ErrorMessage = "Failed to parse workflow_json" };
+        workflow.Remove("_axl");
 
-        if (!string.IsNullOrEmpty(inlineJson))
+        var outputNode = ProviderHelpers.GetParam<string>(p, "output_node");
+        if (string.IsNullOrWhiteSpace(outputNode))
+            return new JobResult { Success = false, ErrorMessage = "output_node is required" };
+
+        var workflowName = WorkflowSnapshotName(p.TryGetValue("workflow_entity", out var snapshot) ? snapshot : null);
+        var wfDef = new WorkflowDefinition
         {
-            var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(inlineJson);
-            if (parsed == null)
-                return new JobResult { Success = false, ErrorMessage = "Failed to parse workflow_json" };
-
-            var inlineOutputNode = ProviderHelpers.GetParam<string>(p, "output_node");
-            if (!string.IsNullOrEmpty(inlineOutputNode))
-            {
-                var paramJson = p.TryGetValue("workflow_parameters", out var wp) ? wp : null;
-                var paramList = new List<WorkflowParameter>();
-                if (paramJson is JsonElement je && je.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var pe in je.EnumerateArray())
-                    {
-                        paramList.Add(new WorkflowParameter
-                        {
-                            Name = pe.TryGetProperty("name", out var n) ? n.GetString()! : "",
-                            NodeId = pe.TryGetProperty("node_id", out var ni) ? ni.ToString() : "",
-                            Field = pe.TryGetProperty("field", out var f) ? f.GetString()! : "",
-                            Default = pe.TryGetProperty("default", out var d) ? (object?)d.ToString() : null,
-                            Type = pe.TryGetProperty("type", out var t) ? t.GetString()! : "string",
-                        });
-                    }
-                }
-                wfDef = new WorkflowDefinition
-                {
-                    Name = workflowName ?? "inline",
-                    FileName = "",
-                    FilePath = "",
-                    OutputNode = inlineOutputNode,
-                    MediaType = ProviderHelpers.GetParam<string>(p, "media_type") ?? "image",
-                    Parameters = paramList,
-                };
-            }
-            else
-            {
-                wfDef = WorkflowLoader.ParseWorkflowDefinition(workflowName ?? "inline", parsed);
-            }
-            workflow = parsed;
-            workflow.Remove("_axl");
-        }
-        else
-        {
-            if (string.IsNullOrWhiteSpace(prompt))
-                return new JobResult { Success = false, ErrorMessage = "prompt is required" };
-
-            var def = WorkflowLoader.Get(workflowName);
-            if (def == null)
-            {
-                var available = string.Join(", ", WorkflowLoader.Workflows.Keys);
-                return new JobResult { Success = false, ErrorMessage = $"Unknown workflow '{workflowName}'. Available: {available}" };
-            }
-            wfDef = def;
-
-            var loaded = WorkflowLoader.LoadWorkflowJson(workflowName);
-            if (loaded == null)
-                return new JobResult { Success = false, ErrorMessage = $"Failed to load workflow JSON for '{workflowName}'" };
-            workflow = loaded;
-        }
+            Name = workflowName,
+            OutputNode = outputNode,
+            MediaType = ProviderHelpers.GetParam<string>(p, "media_type") ?? "image",
+            Parameters = ParseWorkflowParameters(p.TryGetValue("workflow_parameters", out var wp) ? wp : null),
+        };
 
         var actualSeed = seedParam ?? Random.Shared.NextInt64(0, uint.MaxValue);
 
         var extraParams = new Dictionary<string, object?>(p);
-        extraParams.Remove("workflow");
         extraParams.Remove("workflow_json");
+        extraParams.Remove("workflow_entity");
+        extraParams.Remove("workflow_inputs");
+        extraParams.Remove("workflow_input_sources");
+        extraParams.Remove("workflow_parameters");
+        extraParams.Remove("output_node");
+        extraParams.Remove("media_type");
         extraParams.Remove("prompt");
         extraParams.Remove("negative");
         extraParams.Remove("seed");
-
-        // Handle image upload for img2img/video workflows
-        var imageUrl = ProviderHelpers.GetParam<string>(extraParams, "image_url");
-        if (!string.IsNullOrEmpty(imageUrl))
-        {
-            var uploadedName = await UploadImageAsync(imageUrl, ct);
-            if (uploadedName == null)
-                return new JobResult { Success = false, ErrorMessage = "Failed to upload source image to ComfyUI" };
-            extraParams.Remove("image_url");
-            extraParams["image"] = uploadedName;
-        }
 
         await ResolveAssetParamsAsync(extraParams, wfDef.Parameters, ct);
         InjectParameters(workflow, wfDef.Parameters, prompt, negative, actualSeed, extraParams);
 
         var clientId = Guid.NewGuid().ToString();
-        var outputNode = wfDef.OutputNode;
-
         var result = await RunWithWebSocketAsync(workflow, outputNode, clientId, progressCallback, ct);
         if (result == null)
             return new JobResult { Success = false, ErrorMessage = "Generation failed or timed out" };
@@ -364,6 +271,36 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             },
             ResultJson = resultMeta
         };
+    }
+
+    private static string WorkflowSnapshotName(object? value)
+    {
+        if (value is not JsonElement element || element.ValueKind != JsonValueKind.Object)
+            return "ComfyUI workflow";
+        if (element.TryGetProperty("name", out var name) && !string.IsNullOrWhiteSpace(name.GetString()))
+            return name.GetString()!;
+        if (element.TryGetProperty("slug", out var slug) && !string.IsNullOrWhiteSpace(slug.GetString()))
+            return slug.GetString()!;
+        return "ComfyUI workflow";
+    }
+
+    private static List<WorkflowParameter> ParseWorkflowParameters(object? value)
+    {
+        if (value is not JsonElement element || element.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var parameters = new List<WorkflowParameter>();
+        foreach (var parameter in element.EnumerateArray())
+        {
+            parameters.Add(new WorkflowParameter
+            {
+                Name = parameter.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
+                NodeId = parameter.TryGetProperty("node_id", out var nodeId) ? nodeId.ToString() : "",
+                Field = parameter.TryGetProperty("field", out var field) ? field.GetString() ?? "" : "",
+                Type = parameter.TryGetProperty("type", out var type) ? type.GetString() ?? "string" : "string",
+            });
+        }
+        return parameters;
     }
 
     public async ValueTask DisposeAsync()
@@ -429,7 +366,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private void InjectParameters(
         Dictionary<string, JsonElement> workflow,
         List<WorkflowParameter> paramDefs,
-        string prompt, string negative, long seed,
+        string? prompt, string negative, long seed,
         Dictionary<string, object?> extras)
     {
         var values = new Dictionary<string, object?>(extras, StringComparer.OrdinalIgnoreCase)
@@ -444,10 +381,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             object? value;
             if (values.TryGetValue(param.Name, out var v))
                 value = v;
-            else if (param.Default is string s && s == "random")
-                value = Random.Shared.NextInt64(0, uint.MaxValue);
             else
-                value = param.Default;
+                value = null;
 
             if (value == null) continue;
             if (!workflow.TryGetValue(param.NodeId, out var node)) continue;
@@ -730,6 +665,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             {
                 if (je.ValueKind == JsonValueKind.Object && je.TryGetProperty("assetUrl", out var urlProp))
                     assetUrl = urlProp.GetString();
+                else if (je.ValueKind == JsonValueKind.Object && je.TryGetProperty("assetId", out var idProp))
+                    assetUrl = $"http://127.0.0.1:18804/api/assets/{idProp.GetString()}";
                 else if (je.ValueKind == JsonValueKind.String && param.Type is "image" or "video" or "audio")
                 {
                     var str = je.GetString();
@@ -803,39 +740,4 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         }
     }
 
-    private async Task<string?> UploadImageAsync(string imageUrl, CancellationToken ct)
-    {
-        try
-        {
-            var imageResp = await _http.GetAsync(imageUrl, ct);
-            if (!imageResp.IsSuccessStatusCode)
-            {
-                _log($"[ComfyUI] Failed to download source image: HTTP {(int)imageResp.StatusCode}");
-                return null;
-            }
-            var imageBytes = await imageResp.Content.ReadAsByteArrayAsync(ct);
-            var contentType = imageResp.Content.Headers.ContentType?.MediaType ?? "image/png";
-            var ext = contentType.Contains("jpeg") || contentType.Contains("jpg") ? ".jpg" : ".png";
-
-            using var form = new MultipartFormDataContent();
-            form.Add(new ByteArrayContent(imageBytes), "image", $"upload{ext}");
-            form.Add(new StringContent("true"), "overwrite");
-
-            var uploadResp = await _http.PostAsync($"{BaseUrl}/upload/image", form, ct);
-            if (!uploadResp.IsSuccessStatusCode)
-            {
-                var body = await uploadResp.Content.ReadAsStringAsync(ct);
-                _log($"[ComfyUI] Upload error {(int)uploadResp.StatusCode}: {body[..Math.Min(body.Length, 200)]}");
-                return null;
-            }
-
-            var result = await uploadResp.Content.ReadFromJsonAsync<JsonElement>(ct);
-            return result.GetProperty("name").GetString();
-        }
-        catch (Exception ex)
-        {
-            _log($"[ComfyUI] Image upload error: {ex.Message}");
-            return null;
-        }
-    }
 }

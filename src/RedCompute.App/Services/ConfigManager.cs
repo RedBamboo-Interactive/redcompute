@@ -316,9 +316,7 @@ public class ConfigManager
                             StartupTimeoutSeconds = 120,
                             Extra = new Dictionary<string, object?>
                             {
-                                ["Host"] = "127.0.0.1",
-                                ["WorkflowsDir"] = @"T:\Projects\Roaster\Roaster.GuildBot\axl-workspace\workflows",
-                                ["DefaultWorkflow"] = "z_turbo"
+                                ["Host"] = "127.0.0.1"
                             }
                         }
                     }
