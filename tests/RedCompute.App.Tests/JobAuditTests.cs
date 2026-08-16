@@ -192,7 +192,7 @@ public sealed class JobAuditTests : IDisposable
             {
                 Id = Guid.Parse("11111111-1111-1111-1111-111111111111"),
                 CapabilitySlug = "ai-session", ProviderName = "Codex", InputJson = "{}",
-                UserId = "local-user", CallerInfo = "Nova", QueuedAt = DateTimeOffset.UtcNow,
+                UserId = "local-user", QueuedAt = DateTimeOffset.UtcNow,
             });
             db.SaveChanges();
         }
@@ -222,7 +222,7 @@ public sealed class JobAuditTests : IDisposable
             {
                 Id = Guid.Parse("22222222-2222-2222-2222-222222222222"),
                 CapabilitySlug = "ai-session", ProviderName = "Codex", InputJson = "{}",
-                CallerInfo = "Nova", QueuedAt = DateTimeOffset.UtcNow,
+                QueuedAt = DateTimeOffset.UtcNow,
             });
             db.SaveChanges();
         }

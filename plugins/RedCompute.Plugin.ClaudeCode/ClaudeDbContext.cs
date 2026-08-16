@@ -80,6 +80,13 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("RepositoryId"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN RepositoryId TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl" })
         {
             if (columns.Contains(column)) continue;

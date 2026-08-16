@@ -31,6 +31,7 @@ public sealed class RedLeafSessionReaderTests
         var (info, history) = await reader.GetSessionAsync("session-1", tail: 2);
 
         Assert.Equal("session-1", info?.Id);
+        Assert.Equal(Guid.Parse("1910ac53-d68a-4ccc-883d-0541c0091d9b"), info?.RepositoryId);
         Assert.Equal([2L, 3L], history.Select(message => message.Id));
         Assert.Equal(["second", "third"], history.Select(message => message.Content));
         Assert.Contains(handler.Requests, path => path.Contains("order=desc") && path.Contains("limit=2"));
@@ -93,6 +94,7 @@ public sealed class RedLeafSessionReaderTests
                             {
                                 session_id = "session-1",
                                 provider = "codex",
+                                repository = "1910ac53-d68a-4ccc-883d-0541c0091d9b",
                                 status = "Idle",
                                 started_at = "2026-08-02T18:00:00Z",
                             }),

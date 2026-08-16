@@ -108,7 +108,6 @@ public static class GenericCapabilityEndpoints
                 {
                     job = jobTracker.CreateJob(new JobSubmission(
                         slug, provider.Name, JsonSerializer.Serialize(body), provenance,
-                        ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
                         idempotencyKey, jobName, jobRationale));
                 }
                 catch (IdempotencyConflictException ex)
@@ -196,7 +195,6 @@ public static class GenericCapabilityEndpoints
                 {
                     CapabilitySlug = slug,
                     Parameters = body,
-                    CallerInfo = ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
                     IdempotencyKey = idempotencyKey,
                     Provenance = provenance,
                 };
@@ -277,7 +275,6 @@ public static class GenericCapabilityEndpoints
                 .WithParam("async", "boolean", description: "Fire-and-forget: returns 202 with a job id instead of streaming the result", location: ParamLocation.Query)
                 .WithParam("Authorization", "string", description: "Preferred provenance and authentication: Bearer <signed suite execution token>. AI session processes receive the token in REDLEAF_EXECUTION_TOKEN; send it unchanged, inspect it through GET /auth/execution-context, and verify resulting jobs through GET /jobs?executionId=<id>.", location: ParamLocation.Header)
                 .WithParam("X-Async", "string", description: "Set to 'true' as an alternative to ?async", location: ParamLocation.Header)
-                .WithParam("X-Caller-Info", "string", description: "Legacy asserted caller label retained for compatibility; never treated as verified provenance", location: ParamLocation.Header)
                 .WithParam("X-Compute-Provenance", "string", description: "Legacy fallback for an authenticated RedLeaf service when no signed execution token can be resolved. Never combine it with an execution bearer token.", location: ParamLocation.Header)
                 .WithParam("X-System-Reason", "string", description: "Required explicit reason when a direct request has no real user beneficiary", location: ParamLocation.Header)
                 .WithParam("X-Idempotency-Key", "string", description: "Dedupe key — repeated requests with the same key reuse the original job", location: ParamLocation.Header)

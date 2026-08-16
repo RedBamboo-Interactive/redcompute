@@ -512,6 +512,7 @@ public class CodexSessionService
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        RepositoryId = r.RepositoryId,
         Status = r.Status,
         StartedAt = r.StartedAt,
         Model = r.Model,

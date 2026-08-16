@@ -212,6 +212,10 @@ public sealed class RedLeafSessionReader
             ProviderEntity = Str(d, "provider_entity"),
             ProjectName = Str(d, "project_name") ?? "",
             ProjectPath = Str(d, "project_path") ?? "",
+            RepositoryId = Str(d, "repository") is { } repositoryId
+                && Guid.TryParse(repositoryId, out var repositoryGuid)
+                    ? repositoryGuid
+                    : null,
             Status = Enum.TryParse<SessionStatus>(Str(d, "status"), ignoreCase: true, out var s) ? s : SessionStatus.Stopped,
             StopReason = Str(d, "stop_reason"),
             StartedAt = Str(d, "started_at") is { } sa && DateTimeOffset.TryParse(sa, out var t) ? t : default,

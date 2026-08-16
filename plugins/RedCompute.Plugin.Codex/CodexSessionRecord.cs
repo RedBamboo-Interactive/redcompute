@@ -5,6 +5,7 @@ public class CodexSessionRecord
     public required string Id { get; set; }
     public required string ProjectName { get; set; }
     public required string ProjectPath { get; set; }
+    public Guid? RepositoryId { get; set; }
     public required string Status { get; set; }
     public DateTimeOffset StartedAt { get; set; }
     public string? Model { get; set; }

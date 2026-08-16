@@ -766,7 +766,10 @@ public class ClaudeSessionService
         return sb.ToString().TrimEnd();
     }
 
-    public ClaudeSessionInfo? StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? qualityTier = null, string? providerEntity = null, JobProvenance? provenance = null, string? scratchDirectory = null)
+    public ClaudeSessionInfo? StartSession(string projectPath, string? model, string? userId,
+        string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -786,9 +789,9 @@ public class ClaudeSessionService
             Id = id,
             ProjectName = Path.GetFileName(projectPath),
             ProjectPath = projectPath,
+            RepositoryId = repositoryId,
             Status = SessionStatus.Starting,
             StartedAt = DateTimeOffset.UtcNow,
-            Source = callerInfo,
             UserId = userId,
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
@@ -850,11 +853,15 @@ public class ClaudeSessionService
         info.ProcessId = process.Id;
 
         // Create a job record for this session
-        var inputJson = System.Text.Json.JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = info.Id });
-        provenance ??= SessionJobProvenance.Create(callerInfo, userId, userName, userAvatarUrl,
-            "/ai-session/sessions", info.Id, info.ProjectName);
+        var inputJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            projectPath,
+            repositoryId = info.RepositoryId,
+            projectName = info.ProjectName,
+            sessionId = info.Id,
+        });
         var job = _jobTracker.CreateJob(new JobSubmission("ai-session", "Claude Code", inputJson,
-            provenance, callerInfo, Name: info.ProjectName, Rationale: "Interactive session"));
+            provenance, Name: info.ProjectName, Rationale: "Interactive session"));
         if (!job.IsIdempotencyReuse) _jobTracker.StartInvocation(job.Id, provenance);
         info.JobId = job.Id;
 
@@ -914,6 +921,7 @@ public class ClaudeSessionService
             Id = sessionRecord.Id,
             ProjectName = sessionRecord.ProjectName,
             ProjectPath = sessionRecord.ProjectPath,
+            RepositoryId = sessionRecord.RepositoryId,
             Status = SessionStatus.Starting,
             StartedAt = sessionRecord.StartedAt,
             Model = sessionRecord.Model,
@@ -975,9 +983,16 @@ public class ClaudeSessionService
         info.Status = SessionStatus.Idle;
         info.ProcessId = process.Id;
 
-        provenance ??= SessionJobProvenance.Create(sessionRecord.Source, sessionRecord.UserId,
-            sessionRecord.UserName, sessionRecord.UserAvatarUrl,
-            "/ai-session/sessions/{id}/resume", sessionRecord.Id, sessionRecord.ProjectName);
+        provenance ??= sessionRecord.JobId is { } existingJobId
+            ? _jobTracker.GetJob(existingJobId)?.CreationProvenance
+            : null;
+        if (provenance is null)
+        {
+            LastStartError = "A tracked job with provenance is required to resume this session";
+            try { process.Kill(entireProcessTree: true); } catch { }
+            _sessions.TryRemove(sessionId, out _);
+            return null;
+        }
         if (sessionRecord.JobId.HasValue)
         {
             info.JobId = sessionRecord.JobId.Value;
@@ -987,7 +1002,7 @@ public class ClaudeSessionService
         {
             var job = _jobTracker.CreateJob(new JobSubmission("ai-session", "Claude Code",
                 System.Text.Json.JsonSerializer.Serialize(new { projectPath = sessionRecord.ProjectPath, projectName = sessionRecord.ProjectName, resumed = true }),
-                provenance, sessionRecord.Source, Name: sessionRecord.ProjectName, Rationale: "Resumed session"));
+                provenance, Name: sessionRecord.ProjectName, Rationale: "Resumed session"));
             _jobTracker.StartInvocation(job.Id, provenance, JobEventKind.Resumed);
             info.JobId = job.Id;
         }
@@ -2376,6 +2391,7 @@ public class ClaudeSessionService
                 Id = info.Id,
                 ProjectName = info.ProjectName,
                 ProjectPath = info.ProjectPath,
+                RepositoryId = info.RepositoryId,
                 Status = info.Status.ToString(),
                 StopReason = info.StopReason,
                 StartedAt = info.StartedAt,

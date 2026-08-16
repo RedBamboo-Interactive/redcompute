@@ -89,15 +89,15 @@ public static class ProvenanceCapture
 
         var provenance = JobProvenance.DirectRedCompute(
             ctx.Request.Method, routeTemplate, beneficiary,
-            ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(),
             ctx.TraceIdentifier, CorrelationId(ctx));
         provenance.ValidateForNewJob();
         return provenance;
     }
 
     public static bool IsTrustedRedLeafService(HttpContext ctx)
-        => string.Equals(ctx.User?.FindFirst("client_id")?.Value, "redleaf", StringComparison.OrdinalIgnoreCase) &&
-           string.Equals(ctx.User?.FindFirst("compute_provenance")?.Value, "true", StringComparison.OrdinalIgnoreCase);
+        => string.Equals(ctx.User?.FindFirst("token_use")?.Value, "execution", StringComparison.OrdinalIgnoreCase)
+           || (string.Equals(ctx.User?.FindFirst("client_id")?.Value, "redleaf", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(ctx.User?.FindFirst("compute_provenance")?.Value, "true", StringComparison.OrdinalIgnoreCase));
 
     private static async Task<JobBeneficiary> ResolveBeneficiaryAsync(HttpContext ctx)
     {

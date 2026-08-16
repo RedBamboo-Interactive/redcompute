@@ -15,6 +15,7 @@ public sealed class AiSessionSnapshot
     public string? Title { get; init; }
     public string ProjectName { get; init; } = "";
     public string? ProjectPath { get; init; }
+    public Guid? RepositoryId { get; init; }
     public string Status { get; init; } = "";
     public string? StopReason { get; init; }
     public DateTimeOffset StartedAt { get; init; }

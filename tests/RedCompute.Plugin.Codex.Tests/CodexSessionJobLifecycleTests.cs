@@ -15,14 +15,13 @@ public sealed class CodexSessionJobLifecycleTests
         var lifecycle = new CodexSessionJobLifecycle(tracker);
         var session = SessionInfo();
 
-        lifecycle.Start(session, "nova");
+        lifecycle.Start(session, Provenance());
 
         var job = Assert.Single(tracker.Jobs.Values);
         Assert.Equal(job.Id, session.JobId);
         Assert.Equal(JobStatus.Running, job.Status);
         Assert.Equal("ai-session", job.CapabilitySlug);
         Assert.Equal("Codex", job.ProviderName);
-        Assert.Equal("nova", job.CallerInfo);
         Assert.Equal("ai-session:codex:session-1", job.IdempotencyKey);
         Assert.Equal("user-1", job.UserId);
 
@@ -37,7 +36,7 @@ public sealed class CodexSessionJobLifecycleTests
         var tracker = new FakeJobTracker();
         var lifecycle = new CodexSessionJobLifecycle(tracker);
         var session = SessionInfo();
-        lifecycle.Start(session, "nova");
+        lifecycle.Start(session, Provenance());
         var originalId = session.JobId;
         tracker.MarkCompleted(originalId!.Value);
 
@@ -91,7 +90,7 @@ public sealed class CodexSessionJobLifecycleTests
         var tracker = new FakeJobTracker();
         var lifecycle = new CodexSessionJobLifecycle(tracker);
         var session = SessionInfo();
-        lifecycle.Start(session, null);
+        lifecycle.Start(session, Provenance());
 
         session.Title = "Tracked title";
         session.InputTokens = 123;
@@ -130,33 +129,37 @@ public sealed class CodexSessionJobLifecycleTests
         InputTokens = 1000,
         OutputTokens = 200,
         CachedInputTokens = 300,
-        Source = "nova",
     };
+
+    private static JobProvenance Provenance() => new(
+        JobProvenance.CurrentSchemaVersion,
+        new JobOrigin("redleaf", new JobAppReference("app", "nova", null, "Nova"),
+            new JobEntrypoint("http", "/ai-session/sessions", "POST")),
+        new JobActor("agent", "Nova", Id: "nova"),
+        new JobBeneficiary("user", "user-1", "Laurent"),
+        [], new JobTrace(), JobProvenanceAssurance.Verified, DateTimeOffset.UtcNow);
 
     private sealed class FakeJobTracker : IJobTracker
     {
         public Dictionary<Guid, JobRecord> Jobs { get; } = [];
 
-        public JobRecord CreateJob(string capabilitySlug, string providerName, string inputJson,
-            string? callerInfo = null, string? idempotencyKey = null, string? name = null,
-            string? rationale = null, string? userId = null, string? userName = null,
-            string? userAvatarUrl = null)
+        public JobRecord CreateJob(JobSubmission submission)
         {
-            var existing = Jobs.Values.FirstOrDefault(j => j.IdempotencyKey == idempotencyKey);
+            var existing = Jobs.Values.FirstOrDefault(j => j.IdempotencyKey == submission.IdempotencyKey);
             if (existing != null) return existing;
 
             var job = new JobRecord
             {
-                CapabilitySlug = capabilitySlug,
-                ProviderName = providerName,
-                InputJson = inputJson,
-                CallerInfo = callerInfo,
-                IdempotencyKey = idempotencyKey,
-                Name = name,
-                Rationale = rationale,
-                UserId = userId,
-                UserName = userName,
-                UserAvatarUrl = userAvatarUrl,
+                CapabilitySlug = submission.CapabilitySlug,
+                ProviderName = submission.ProviderName,
+                InputJson = submission.InputJson,
+                IdempotencyKey = submission.IdempotencyKey,
+                Name = submission.Name,
+                Rationale = submission.Rationale,
+                UserId = submission.Provenance.OnBehalfOf.Id,
+                UserName = submission.Provenance.OnBehalfOf.NameSnapshot,
+                UserAvatarUrl = submission.Provenance.OnBehalfOf.AvatarSnapshot,
+                CreationProvenance = submission.Provenance,
             };
             Jobs.Add(job.Id, job);
             return job;

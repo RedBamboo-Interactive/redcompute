@@ -132,18 +132,17 @@ public sealed record JobProvenance(
         string method,
         string route,
         JobBeneficiary beneficiary,
-        string? callerInfo,
         string? requestId,
         string? correlationId)
     {
-        var caller = string.IsNullOrWhiteSpace(callerInfo) ? "Direct RedCompute client" : callerInfo.Trim();
+        const string client = "Direct RedCompute client";
         return new JobProvenance(
             CurrentSchemaVersion,
             new JobOrigin(
                 "redcompute",
-                new JobAppReference("direct-client", "direct-redcompute-api", null, caller),
+                new JobAppReference("direct-client", "direct-redcompute-api", null, client),
                 new JobEntrypoint("http", route, method)),
-            new JobActor("app", caller, Id: "direct-redcompute-api"),
+            new JobActor("app", client, Id: "direct-redcompute-api"),
             beneficiary,
             [],
             new JobTrace(requestId, correlationId),

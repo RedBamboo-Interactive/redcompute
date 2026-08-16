@@ -65,13 +65,13 @@ public static class GlobalEndpoints
             });
         });
 
-        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (string? capability, string? status, string? caller, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, string? executionId, bool? externalExecution, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (string? capability, string? status, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, string? executionId, bool? externalExecution, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;
             if (status != null && Enum.TryParse<JobStatus>(status, true, out var parsed))
                 statusFilter = parsed;
 
-            var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, caller, search,
+            var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, search,
                 limit ?? 50, offset ?? 0, originApp, originApi, actor, beneficiary, assurance, complete,
                 parentJobId, contextKind, contextId, externalExecution, executionId);
 
@@ -102,7 +102,6 @@ public static class GlobalEndpoints
                     j.CompletedAt,
                     durationMs = j.DurationMs,
                     j.ErrorMessage,
-                    j.CallerInfo,
                     j.Name,
                     j.Rationale,
                     j.CostUsd,
@@ -124,7 +123,6 @@ public static class GlobalEndpoints
             .WithParam("capability", "string", description: "Filter by capability slug", location: ParamLocation.Query)
             .WithParam("status", "string", description: "Filter by job status",
                 enumValues: ["Queued", "Running", "Completed", "Failed", "Cancelled", "Skipped", "TimedOut"], location: ParamLocation.Query)
-            .WithParam("caller", "string", description: "Legacy filter by asserted X-Caller-Info label", location: ParamLocation.Query)
             .WithParam("originApp", "string", description: "Filter by structured origin app id", location: ParamLocation.Query)
             .WithParam("originApi", "string", description: "Filter by structured origin entrypoint route", location: ParamLocation.Query)
             .WithParam("actor", "string", description: "Filter by structured actor id/entity/name", location: ParamLocation.Query)
@@ -136,7 +134,7 @@ public static class GlobalEndpoints
             .WithParam("contextId", "string", description: "Filter by context id or entity id", location: ParamLocation.Query)
             .WithParam("executionId", "string", description: "Filter by the signed suite execution id. This is the direct audit lookup for an app, agent, automation, or child process execution.", location: ParamLocation.Query)
             .WithParam("externalExecution", "boolean", description: "Filter work performed by an external trusted worker", location: ParamLocation.Query)
-            .WithParam("search", "string", description: "Substring match over job name, provider, caller and capability", location: ParamLocation.Query)
+            .WithParam("search", "string", description: "Substring match over job name, provider and capability", location: ParamLocation.Query)
             .WithParam("limit", "integer", description: "Max jobs to return", defaultValue: 50, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
@@ -163,7 +161,6 @@ public static class GlobalEndpoints
                 resultJson = job.ResultJson,
                 job.ErrorMessage,
                 job.ErrorDetails,
-                job.CallerInfo,
                 job.Name,
                 job.Rationale,
                 job.CostUsd,
@@ -292,7 +289,6 @@ public static class GlobalEndpoints
             {
                 Content = new StringContent(rerunBody, Encoding.UTF8, "application/json")
             };
-            request.Headers.Add("X-Caller-Info", $"rerun:{id}");
             ApplyRerunCredentials(ctx, request, provenance, id);
 
             try
@@ -386,7 +382,7 @@ public static class GlobalEndpoints
         })
             .WithParam("window", "integer", description: "Window size in seconds", defaultValue: 300, location: ParamLocation.Query);
 
-        endpoints.MapGet("/activity/summary", "Activity summary over a time range with per-capability and per-caller breakdowns", (string? since, string? until) =>
+        endpoints.MapGet("/activity/summary", "Activity summary over a time range with capability and provenance breakdowns", (string? since, string? until) =>
         {
             var now = DateTimeOffset.UtcNow;
             var sinceDate = since != null && DateTimeOffset.TryParse(since, out var s) ? s : now.Date;
@@ -424,7 +420,6 @@ public static class GlobalEndpoints
                         j.Id,
                         j.Name,
                         status = j.Status.ToString(),
-                        j.CallerInfo,
                         j.CostUsd,
                         durationMs = j.DurationMs,
                         j.StartedAt,
@@ -432,21 +427,6 @@ public static class GlobalEndpoints
                     })
                 });
             }
-
-            var byCaller = jobs
-                .GroupBy(j => j.CallerInfo ?? "(direct)")
-                .OrderByDescending(g => g.Count())
-                .Select(g => new
-                {
-                    caller = g.Key,
-                    jobs = g.Count(),
-                    completed = g.Count(j => j.Status == JobStatus.Completed),
-                    failed = g.Count(j => j.Status == JobStatus.Failed),
-                    timedOut = g.Count(j => j.Status == JobStatus.TimedOut),
-                    skipped = g.Count(j => j.Status == JobStatus.Skipped),
-                    cancelled = g.Count(j => j.Status == JobStatus.Cancelled),
-                    totalCostUsd = Math.Round(g.Where(j => j.CostUsd.HasValue).Sum(j => j.CostUsd!.Value), 4)
-                });
 
             var byOriginApp = jobs.GroupBy(j => j.CreationProvenance?.Origin.App.Id ?? "(audit-gap)")
                 .OrderByDescending(g => g.Count()).Select(g => new
@@ -495,7 +475,6 @@ public static class GlobalEndpoints
                     totalDurationMs = totalDuration
                 },
                 byCapability,
-                byCaller,
                 byOriginApp,
                 byOriginApi,
                 byActor,

@@ -7,6 +7,7 @@ public class ClaudeSessionInfo
     public required string Id { get; init; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }
+    public Guid? RepositoryId { get; set; }
     public SessionStatus Status { get; set; }
     public string? StopReason { get; set; }
     public DateTimeOffset StartedAt { get; init; }

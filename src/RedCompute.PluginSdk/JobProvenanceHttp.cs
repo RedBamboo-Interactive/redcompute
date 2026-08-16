@@ -32,7 +32,7 @@ public static class JobProvenanceHttp
             var result = supplied with
             {
                 OnBehalfOf = trusted ? supplied.OnBehalfOf : beneficiary,
-                Assurance = trusted ? JobProvenanceAssurance.Verified : JobProvenanceAssurance.Asserted,
+                Assurance = trusted ? supplied.Assurance : JobProvenanceAssurance.Asserted,
                 Trace = supplied.Trace with { RequestId = supplied.Trace.RequestId ?? ctx.TraceIdentifier },
             };
             result.ValidateForNewJob();
@@ -40,7 +40,7 @@ public static class JobProvenanceHttp
         }
 
         var direct = JobProvenance.DirectRedCompute(ctx.Request.Method, route, beneficiary,
-            ctx.Request.Headers["X-Caller-Info"].FirstOrDefault(), ctx.TraceIdentifier,
+            ctx.TraceIdentifier,
             ctx.Request.Headers["X-Correlation-Id"].FirstOrDefault());
         direct.ValidateForNewJob();
         return direct;

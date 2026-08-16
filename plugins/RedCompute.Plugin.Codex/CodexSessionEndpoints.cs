@@ -133,7 +133,6 @@ public static class CodexSessionEndpoints
             env = envProp.EnumerateObject().ToDictionary(kv => kv.Name, kv => kv.Value.GetString() ?? "");
 
         var inputSummary = JsonSerializer.Serialize(new { prompt, model, sandbox, timeout });
-        var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         var rationale = ctx.Request.Headers.TryGetValue("X-Job-Rationale", out var jr) ? jr.ToString() : null;
@@ -152,7 +151,7 @@ public static class CodexSessionEndpoints
         try
         {
             job = jobTracker.CreateJob(new JobSubmission("ai-session", providerLabel, inputSummary,
-                provenance, callerInfo, idempotencyKey, jobName, rationale));
+                provenance, idempotencyKey, jobName, rationale));
         }
         catch (IdempotencyConflictException ex)
         {

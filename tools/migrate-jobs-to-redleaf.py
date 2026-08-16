@@ -86,7 +86,6 @@ def main():
             "output_content_type": j["OutputContentType"],
             "result_json": j["ResultJson"],
             "error_message": j["ErrorMessage"],
-            "caller_info": j["CallerInfo"],
             "rationale": j["Rationale"],
             "cost_usd": j["CostUsd"],
             "user_id": j["UserId"],

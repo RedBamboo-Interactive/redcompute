@@ -143,10 +143,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     // ===== Lifecycle =========================================================================
 
     public async Task<CodexSessionInfo?> StartSessionAsync(
-        string projectPath, string? callerInfo = null, string? model = null,
-        string? userId = null, string? userName = null, string? userAvatarUrl = null,
-        string? effort = null, string? qualityTier = null, string? providerEntity = null,
-        JobProvenance? provenance = null, string? scratchDirectory = null)
+        string projectPath, string? model, string? userId, string? userName,
+        string? userAvatarUrl, string? effort, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -160,13 +160,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             Id = id,
             ProjectName = Path.GetFileName(projectPath.TrimEnd('/', '\\')) ?? projectPath,
             ProjectPath = projectPath,
+            RepositoryId = repositoryId,
             StartedAt = DateTimeOffset.UtcNow,
             Status = "Starting",
             Model = model,
             Effort = effort,
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
-            Source = callerInfo,
             UserId = userId,
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
@@ -199,7 +199,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
-            _jobLifecycle.Start(info, callerInfo, provenance);
+            _jobLifecycle.Start(info, provenance);
             _sessions[id] = session;
             Persist(info);
             SessionCreated?.Invoke(info);
@@ -1093,6 +1093,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Id = info.Id,
         ProjectName = info.ProjectName,
         ProjectPath = info.ProjectPath,
+        RepositoryId = info.RepositoryId,
         Status = info.Status,
         StartedAt = info.StartedAt,
         Model = info.Model,
@@ -1123,6 +1124,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        RepositoryId = r.RepositoryId,
         Status = r.Status,
         StartedAt = r.StartedAt,
         Model = r.Model,

@@ -28,33 +28,6 @@ public class JobTrackingService : IJobTracker
     public event Action<JobRecord>? JobUpdated;
     public event Action<JobLifecycleEvent>? JobEventAppended;
 
-    /// <summary>
-    /// Compatibility boundary for older in-process providers. It records an honest audit gap
-    /// instead of inventing a Local User. New HTTP and SDK paths use the structured overload.
-    /// </summary>
-    public JobRecord CreateJob(string capabilitySlug, string providerName, string inputJson,
-        string? callerInfo = null, string? idempotencyKey = null, string? name = null,
-        string? rationale = null, string? userId = null, string? userName = null,
-        string? userAvatarUrl = null)
-    {
-        var hasRealUser = !string.IsNullOrWhiteSpace(userId) &&
-            !string.Equals(userId, "local-user", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(userId, "system", StringComparison.OrdinalIgnoreCase);
-        var provenance = new JobProvenance(
-            JobProvenance.CurrentSchemaVersion,
-            new JobOrigin("redcompute",
-                new JobAppReference("legacy-in-process", "redcompute-provider", null, callerInfo ?? providerName),
-                new JobEntrypoint("sdk", "IJobTracker.CreateJob")),
-            new JobActor("app", callerInfo ?? providerName, Id: "redcompute-provider"),
-            hasRealUser
-                ? new JobBeneficiary("user", userId, userName, userAvatarUrl)
-                : new JobBeneficiary("system", Reason: "Legacy in-process submission did not provide a beneficiary"),
-            [], new JobTrace(), JobProvenanceAssurance.Unknown, DateTimeOffset.UtcNow);
-
-        return CreateJob(new JobSubmission(capabilitySlug, providerName, inputJson, provenance,
-            callerInfo, idempotencyKey, name, rationale));
-    }
-
     public JobRecord CreateJob(JobSubmission submission)
     {
         submission.Provenance.ValidateForNewJob();
@@ -99,7 +72,6 @@ public class JobTrackingService : IJobTracker
                     CapabilitySlug = submission.CapabilitySlug,
                     ProviderName = submission.ProviderName,
                     InputJson = submission.InputJson,
-                    CallerInfo = submission.CallerInfo,
                     IdempotencyKey = submission.IdempotencyKey,
                     IdempotencyScope = scope,
                     IdempotencyFingerprint = fingerprint,
@@ -159,7 +131,7 @@ public class JobTrackingService : IJobTracker
 
             job.IdempotencyFingerprint ??= ComputeIdempotencyFingerprint(new JobSubmission(
                 job.CapabilitySlug, job.ProviderName, job.InputJson, job.CreationProvenance,
-                job.CallerInfo, job.IdempotencyKey, job.Name, job.Rationale,
+                job.IdempotencyKey, job.Name, job.Rationale,
                 ExternalExecution: job.ExternalExecution));
             db.Jobs.Add(job);
             createdEvent = AppendEvent(db, job, JobEventKind.Created, job.CreationProvenance,
@@ -197,7 +169,7 @@ public class JobTrackingService : IJobTracker
         job.IdempotencyScope = ComputeIdempotencyScope(job.CapabilitySlug, job.CreationProvenance);
         job.IdempotencyFingerprint = ComputeIdempotencyFingerprint(new JobSubmission(
             job.CapabilitySlug, job.ProviderName, job.InputJson, job.CreationProvenance,
-            job.CallerInfo, job.IdempotencyKey, job.Name, job.Rationale,
+            job.IdempotencyKey, job.Name, job.Rationale,
             ExternalExecution: true));
         job.StartedAt ??= job.QueuedAt;
         job.CompletedAt ??= job.StartedAt;
@@ -280,8 +252,7 @@ public class JobTrackingService : IJobTracker
 
     /// <summary>
     /// Conservatively annotates pre-contract rows. Exact session/job and user links are
-    /// retained as context/snapshots, but legacy Source/CallerInfo strings never become
-    /// verified actors. Rows with unresolved roles remain explicit audit gaps.
+    /// retained as context/snapshots. Rows with unresolved roles remain explicit audit gaps.
     /// </summary>
     public int BackfillLegacyJobs(IEnumerable<UnifiedSessionInfo> sessions)
     {
@@ -303,7 +274,7 @@ public class JobTrackingService : IJobTracker
                 job.UserAvatarUrl ??= session?.UserAvatarUrl;
                 job.IdempotencyFingerprint ??= ComputeIdempotencyFingerprint(new JobSubmission(
                     job.CapabilitySlug, job.ProviderName, job.InputJson, provenance,
-                    job.CallerInfo, job.IdempotencyKey, job.Name, job.Rationale,
+                    job.IdempotencyKey, job.Name, job.Rationale,
                     ExternalExecution: job.ExternalExecution));
                 job.IdempotencyScope ??= $"legacy:{job.Id:N}";
                 if (!db.JobEvents.Any(e => e.JobId == job.Id))
@@ -679,7 +650,7 @@ public class JobTrackingService : IJobTracker
     }
 
     public (List<JobRecord> Items, int TotalCount) GetJobs(
-        string? capabilitySlug = null, JobStatus? status = null, string? caller = null,
+        string? capabilitySlug = null, JobStatus? status = null,
         string? search = null, int limit = 50, int offset = 0,
         string? originApp = null, string? originApi = null, string? actor = null,
         string? beneficiary = null, string? assurance = null, bool? complete = null,
@@ -691,13 +662,11 @@ public class JobTrackingService : IJobTracker
 
         if (capabilitySlug != null) query = query.Where(j => j.CapabilitySlug == capabilitySlug);
         if (status != null) query = query.Where(j => j.Status == status);
-        if (caller != null) query = query.Where(j => j.CallerInfo == caller);
         if (parentJobId != null) query = query.Where(j => j.ParentJobId == parentJobId);
         if (externalExecution != null) query = query.Where(j => j.ExternalExecution == externalExecution);
         if (!string.IsNullOrEmpty(search))
             query = query.Where(j =>
                 (j.Name != null && j.Name.Contains(search)) || j.ProviderName.Contains(search) ||
-                (j.CallerInfo != null && j.CallerInfo.Contains(search)) ||
                 (j.CreationProvenanceJson != null && j.CreationProvenanceJson.Contains(search)) ||
                 j.CapabilitySlug.Contains(search));
 
@@ -1011,7 +980,7 @@ public class JobTrackingService : IJobTracker
         JobEventKind kind, JobProvenance? provenance = null, object? data = null,
         DateTimeOffset? occurredAt = null)
     {
-        // A lifecycle transition without a more specific caller identity still belongs to
+        // A lifecycle transition without a more specific event identity still belongs to
         // the immutable execution that created the job. Explicit event provenance wins for
         // worker claims, resumes, reruns, and backfill evidence.
         provenance ??= job.CreationProvenance;
@@ -1057,7 +1026,6 @@ public class JobTrackingService : IJobTracker
         outputContentType = job.OutputContentType,
         resultJson = job.ResultJson,
         errorMessage = job.ErrorMessage,
-        callerInfo = job.CallerInfo,
         rationale = job.Rationale,
         costUsd = job.CostUsd,
         durationMs = job.DurationMs,
@@ -1119,9 +1087,9 @@ public class JobTrackingService : IJobTracker
     private static JobProvenance BackfilledUnknown(JobRecord job) => new(
         JobProvenance.CurrentSchemaVersion,
         new JobOrigin("redcompute",
-            new JobAppReference("legacy", "unknown", null, job.CallerInfo ?? "Unknown legacy origin"),
+            new JobAppReference("legacy", "unknown", null, "Unknown legacy origin"),
             new JobEntrypoint("legacy", "unknown")),
-        new JobActor("unknown", job.CallerInfo ?? "Unknown legacy actor", Id: "unknown"),
+        new JobActor("unknown", "Unknown legacy actor", Id: "unknown"),
         !string.IsNullOrWhiteSpace(job.UserId) && !string.Equals(job.UserId, "local-user", StringComparison.OrdinalIgnoreCase)
             ? new JobBeneficiary("user", job.UserId, job.UserName, job.UserAvatarUrl)
             : new JobBeneficiary("system", Reason: "Legacy record has no verifiable beneficiary"),

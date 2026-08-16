@@ -9,24 +9,13 @@ public interface ISessionProvider
     string ProviderDisplayName { get; }
     SessionCapabilities Capabilities { get; }
 
-    // Session lifecycle (PersistentSessions)
-    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null);
-
-    // Extended start with provider-level endpoint override (default delegates to 7-param above).
-    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
-        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
-    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
-        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
-        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance)
-        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort,
-            endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity);
-    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
-        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
-        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance, string? scratchDirectory)
-        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort,
-            endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity, provenance);
+    // Session lifecycle (PersistentSessions). A session cannot exist without the
+    // immutable identity of the job it creates.
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort,
+        string? endpointUrl, string? apiKey, int? thinkingBudget, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory = null);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
         => ResumeSessionAsync(sessionId);

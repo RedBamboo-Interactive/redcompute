@@ -124,7 +124,11 @@ public class OpenCodeSessionService
 
     // ===== ACP Interactive Session Methods =====
 
-    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? endpointUrl = null, string? apiKey = null, string? effort = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null, JobProvenance? provenance = null, string? scratchDirectory = null)
+    public async Task<OpenCodeSessionInfo?> StartSession(string projectPath, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? endpointUrl,
+        string? apiKey, string? effort, int? thinkingBudget, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -150,9 +154,9 @@ public class OpenCodeSessionService
             Id = id,
             ProjectName = Path.GetFileName(projectPath),
             ProjectPath = projectPath,
+            RepositoryId = repositoryId,
             Status = "Starting",
             StartedAt = DateTimeOffset.UtcNow,
-            Source = callerInfo,
             UserId = userId,
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
@@ -172,11 +176,15 @@ public class OpenCodeSessionService
         info.ProcessId = session.Process.Id;
         info.Effort = effort;
 
-        var inputJson = JsonSerializer.Serialize(new { projectPath, projectName = info.ProjectName, sessionId = id });
-        provenance ??= SessionJobProvenance.Create(callerInfo, userId, userName, userAvatarUrl,
-            "/ai-session/sessions", id, info.ProjectName);
+        var inputJson = JsonSerializer.Serialize(new
+        {
+            projectPath,
+            repositoryId = info.RepositoryId,
+            projectName = info.ProjectName,
+            sessionId = id,
+        });
         var job = _jobTracker.CreateJob(new JobSubmission("ai-session", "OpenCode", inputJson,
-            provenance, callerInfo, Name: info.ProjectName, Rationale: "Interactive session"));
+            provenance, Name: info.ProjectName, Rationale: "Interactive session"));
         if (!job.IsIdempotencyReuse) _jobTracker.StartInvocation(job.Id, provenance);
         info.JobId = job.Id;
 
@@ -232,6 +240,7 @@ public class OpenCodeSessionService
             Id = record.Id,
             ProjectName = record.ProjectName,
             ProjectPath = record.ProjectPath,
+            RepositoryId = record.RepositoryId,
             Status = "Starting",
             StartedAt = record.StartedAt,
             Model = record.Model,
@@ -261,8 +270,16 @@ public class OpenCodeSessionService
         info.Status = "Idle";
         info.ProcessId = session.Process.Id;
 
-        provenance ??= SessionJobProvenance.Create(record.Source, record.UserId, record.UserName,
-            record.UserAvatarUrl, "/ai-session/sessions/{id}/resume", record.Id, record.ProjectName);
+        provenance ??= record.JobId is { } existingJobId
+            ? _jobTracker.GetJob(existingJobId)?.CreationProvenance
+            : null;
+        if (provenance is null)
+        {
+            LastStartError = "A tracked job with provenance is required to resume this session";
+            if (_sessions.TryRemove(sessionId, out var orphan))
+                try { orphan.Process.Kill(entireProcessTree: true); } catch { }
+            return null;
+        }
         if (record.JobId.HasValue)
         {
             info.JobId = record.JobId.Value;
@@ -272,7 +289,7 @@ public class OpenCodeSessionService
         {
             var job = _jobTracker.CreateJob(new JobSubmission("ai-session", "OpenCode",
                 JsonSerializer.Serialize(new { projectPath = record.ProjectPath, projectName = record.ProjectName, resumed = true }),
-                provenance, record.Source, Name: record.ProjectName, Rationale: "Resumed session"));
+                provenance, Name: record.ProjectName, Rationale: "Resumed session"));
             _jobTracker.StartInvocation(job.Id, provenance, JobEventKind.Resumed);
             info.JobId = job.Id;
         }
@@ -1130,6 +1147,7 @@ public class OpenCodeSessionService
             Id = info.Id,
             ProjectName = info.ProjectName,
             ProjectPath = info.ProjectPath,
+            RepositoryId = info.RepositoryId,
             Status = info.Status,
             StartedAt = info.StartedAt,
             Model = info.Model,

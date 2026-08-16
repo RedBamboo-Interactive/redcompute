@@ -15,12 +15,11 @@ internal sealed class CodexSessionJobLifecycle
 
     public CodexSessionJobLifecycle(IJobTracker jobs) => _jobs = jobs;
 
-    public void Start(CodexSessionInfo info, string? callerInfo, JobProvenance? provenance = null)
+    public void Start(CodexSessionInfo info, JobProvenance provenance)
     {
-        provenance ??= SessionProvenance(info, "session", "/ai-session/sessions");
         var job = _jobs.CreateJob(new JobSubmission(
             "ai-session", "Codex", InputJson(info, resumed: false), provenance,
-            callerInfo, IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Interactive session"));
+            IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Interactive session"));
 
         if (!job.IsIdempotencyReuse)
             _jobs.StartInvocation(job.Id, provenance);
@@ -29,7 +28,12 @@ internal sealed class CodexSessionJobLifecycle
 
     public void Resume(CodexSessionInfo info, JobProvenance? provenance = null)
     {
-        provenance ??= SessionProvenance(info, "session-resume", "/ai-session/sessions/{id}/resume");
+        provenance ??= info.JobId is { } jobId
+            ? _jobs.GetJob(jobId)?.CreationProvenance
+            : null;
+        if (provenance is null)
+            throw new JobProvenanceValidationException(
+                "A tracked job with provenance is required to resume this session");
         if (info.JobId is { } linkedId && _jobs.GetJob(linkedId) != null)
         {
             _jobs.StartInvocation(linkedId, provenance, JobEventKind.Resumed);
@@ -38,7 +42,7 @@ internal sealed class CodexSessionJobLifecycle
 
         var job = _jobs.CreateJob(new JobSubmission(
             "ai-session", "Codex", InputJson(info, resumed: true), provenance,
-            info.Source, IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Resumed interactive session"));
+            IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Resumed interactive session"));
 
         _jobs.StartInvocation(job.Id, provenance, JobEventKind.Resumed);
         info.JobId = job.Id;
@@ -102,7 +106,6 @@ internal sealed class CodexSessionJobLifecycle
             ErrorMessage = status == JobStatus.Failed
                 ? "Recovered Codex session ended in Error; the original process error was not persisted"
                 : null,
-            CallerInfo = session.Source,
             IdempotencyKey = IdempotencyKey(session.Id),
             Name = session.Title ?? session.ProjectName,
             Rationale = "Interactive session recovered after missing job-link regression",
@@ -118,26 +121,10 @@ internal sealed class CodexSessionJobLifecycle
 
     internal static string IdempotencyKey(string sessionId) => $"ai-session:codex:{sessionId}";
 
-    private static JobProvenance SessionProvenance(CodexSessionInfo info, string entrypointKind, string route)
-    {
-        var source = string.IsNullOrWhiteSpace(info.Source) ? "Direct RedCompute client" : info.Source;
-        var realUser = !string.IsNullOrWhiteSpace(info.UserId) &&
-            !string.Equals(info.UserId, "local-user", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(info.UserId, "system", StringComparison.OrdinalIgnoreCase);
-        return new JobProvenance(JobProvenance.CurrentSchemaVersion,
-            new JobOrigin("redcompute", new JobAppReference("asserted-client", source!, null, source!),
-                new JobEntrypoint(entrypointKind, route)),
-            new JobActor("app", source!, Id: source),
-            realUser ? new JobBeneficiary("user", info.UserId, info.UserName, info.UserAvatarUrl)
-                : new JobBeneficiary("system", Reason: "Legacy session record has no verifiable beneficiary"),
-            [new JobContextReference("ai-session", info.Id, NameSnapshot: info.Title ?? info.ProjectName)],
-            new JobTrace(), realUser ? JobProvenanceAssurance.Asserted : JobProvenanceAssurance.Unknown,
-            DateTimeOffset.UtcNow);
-    }
-
     private static string InputJson(CodexSessionInfo info, bool resumed) => JsonSerializer.Serialize(new
     {
         projectPath = info.ProjectPath,
+        repositoryId = info.RepositoryId,
         projectName = info.ProjectName,
         sessionId = info.Id,
         model = info.Model,
@@ -159,6 +146,7 @@ internal sealed class CodexSessionJobLifecycle
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        RepositoryId = r.RepositoryId,
         Status = r.Status,
         StartedAt = r.StartedAt,
         Model = r.Model,

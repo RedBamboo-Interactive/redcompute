@@ -12,6 +12,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         Title = r.Title,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        RepositoryId = r.RepositoryId,
         Status = r.Status,
         StartedAt = r.StartedAt,
         Model = r.Model,
@@ -84,6 +85,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         {
             existing.ProjectName = record.ProjectName;
             existing.ProjectPath = record.ProjectPath;
+            existing.RepositoryId = record.RepositoryId;
             existing.Status = record.Status;
             existing.StartedAt = record.StartedAt;
             existing.Model = record.Model;

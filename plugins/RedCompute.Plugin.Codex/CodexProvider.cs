@@ -122,32 +122,14 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     // --- ISessionProvider: Interactive sessions ---
 
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
-    {
-        var info = await _interactive.StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
-        return info != null ? ToUnified(info) : null;
-    }
-
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
-    {
-        var info = await _interactive.StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, qualityTier, providerEntity);
-        return info != null ? ToUnified(info) : null;
-    }
-
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance)
-        => await StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl,
-            effort, endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity, provenance, null);
-
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
-        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
-        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance, string? scratchDirectory)
+        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory)
     {
-        var info = await _interactive.StartSessionAsync(projectPath, callerInfo, model, userId, userName,
-            userAvatarUrl, effort, qualityTier, providerEntity, provenance, scratchDirectory);
+        var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
+            userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
+            scratchDirectory);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -363,6 +345,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
+        RepositoryId = s.RepositoryId,
         Status = Enum.TryParse<Core.Sessions.SessionStatus>(s.Status, out var st)
             ? st : Core.Sessions.SessionStatus.Stopped,
         StartedAt = s.StartedAt,

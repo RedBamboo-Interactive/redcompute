@@ -90,7 +90,6 @@ public sealed record JobSubmission(
     string ProviderName,
     string InputJson,
     JobProvenance Provenance,
-    string? CallerInfo = null,
     string? IdempotencyKey = null,
     string? Name = null,
     string? Rationale = null,

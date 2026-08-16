@@ -12,6 +12,7 @@ public class CodexSessionInfo
     public required string Id { get; init; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }
+    public Guid? RepositoryId { get; set; }
     public string Status { get; set; } = "Starting";
     public DateTimeOffset StartedAt { get; init; }
     public string? Model { get; set; }

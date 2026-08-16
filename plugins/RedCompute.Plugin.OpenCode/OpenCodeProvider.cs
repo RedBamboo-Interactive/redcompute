@@ -82,30 +82,14 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Session Lifecycle ---
 
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
-        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, null, null, null, null, null);
-
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
-    {
-        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, endpointUrl, apiKey, effort, thinkingBudget, qualityTier, providerEntity);
-        return info != null ? ToUnified(info) : null;
-    }
-
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance)
-        => await StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl,
-            effort, endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity, provenance, null);
-
-    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
-        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
-        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance, string? scratchDirectory)
+        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory)
     {
-        var info = await _opencode.StartSession(projectPath, callerInfo, model, userId, userName,
+        var info = await _opencode.StartSession(projectPath, model, userId, userName,
             userAvatarUrl, endpointUrl, apiKey, effort, thinkingBudget, qualityTier, providerEntity,
-            provenance, scratchDirectory);
+            repositoryId, provenance, scratchDirectory);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -229,6 +213,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
+        RepositoryId = s.RepositoryId,
         Status = Enum.TryParse<SessionStatus>(s.Status, out var st)
             ? st : SessionStatus.Stopped,
         StartedAt = s.StartedAt,

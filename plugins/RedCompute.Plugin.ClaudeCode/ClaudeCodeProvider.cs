@@ -102,32 +102,13 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     // --- ISessionProvider: Session Lifecycle ---
 
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null)
-    {
-        var info = _claude.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort);
-        return Task.FromResult(info != null ? ToUnified(info) : null);
-    }
-
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo = null, string? model = null, string? userId = null, string? userName = null, string? userAvatarUrl = null, string? effort = null, string? endpointUrl = null, string? apiKey = null, int? thinkingBudget = null, string? qualityTier = null, string? providerEntity = null)
-    {
-        var info = _claude.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl, effort, qualityTier, providerEntity);
-        return Task.FromResult(info != null ? ToUnified(info) : null);
-    }
-
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance)
-        => StartSessionAsync(projectPath, callerInfo, model, userId, userName, userAvatarUrl,
-            effort, endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity, provenance, null);
-
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? callerInfo, string? model,
-        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
-        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        JobProvenance provenance, string? scratchDirectory)
+        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory)
     {
-        var info = _claude.StartSession(projectPath, callerInfo, model, userId, userName, userAvatarUrl,
-            effort, qualityTier, providerEntity, provenance, scratchDirectory);
+        var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
+            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory);
         return Task.FromResult(info != null ? ToUnified(info) : null);
     }
 
@@ -266,6 +247,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
+        RepositoryId = s.RepositoryId,
         Status = (Core.Sessions.SessionStatus)(int)s.Status,
         StopReason = s.StopReason,
         StartedAt = s.StartedAt,

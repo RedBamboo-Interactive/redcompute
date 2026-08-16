@@ -34,7 +34,8 @@ public static class UnifiedSessionEndpoints
         DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null,
         QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null,
         ProviderConfigService? providerConfig = null, InputAttachmentStore? attachmentStore = null,
-        SessionInputQueueService? inputQueue = null)
+        SessionInputQueueService? inputQueue = null,
+        RepositoryReferenceValidator? repositoryValidator = null)
     {
         _docker = docker;
         _callbacks = callbacks;
@@ -153,7 +154,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("excludeSource", "string", description: "Exclude sessions whose source matches this value", location: ParamLocation.Query);
 
         endpoints.MapPost("/ai-session/sessions",
-            "Start a new interactive session in a project directory. Signed execution callers launch the provider process with a derived child identity in REDLEAF_EXECUTION_TOKEN so AI tools can authenticate, inspect, and verify subsequent suite API calls.", async (HttpContext ctx) =>
+            "Start a new interactive session in a project directory. Requests authenticated with signed execution identity launch the provider process with a derived child identity in REDLEAF_EXECUTION_TOKEN so AI tools can authenticate, inspect, and verify subsequent suite API calls.", async (HttpContext ctx) =>
         {
             var userId = ResolveUserId(ctx);
             if (userId == null)
@@ -177,6 +178,27 @@ public static class UnifiedSessionEndpoints
             if (string.IsNullOrWhiteSpace(projectPath))
                 return Error(422, "validation_failed", "projectPath is required");
 
+            RepositoryReference? repository = null;
+            if (body.TryGetProperty("repositoryId", out var repositoryValue)
+                && repositoryValue.ValueKind != JsonValueKind.Null)
+            {
+                if (repositoryValue.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(repositoryValue.GetString()))
+                    return Error(422, "validation_failed", "repositoryId must be a Repository entity UUID");
+                if (repositoryValidator is null)
+                    return Error(503, "repository_validation_unavailable", "Repository validation is unavailable");
+
+                var validation = await repositoryValidator.ValidateAsync(
+                    repositoryValue.GetString()!, projectPath, ctx.RequestAborted);
+                if (!validation.Ok)
+                    return Error(validation.StatusCode,
+                        validation.StatusCode == StatusCodes.Status503ServiceUnavailable
+                            ? "repository_validation_unavailable"
+                            : "validation_failed",
+                        validation.Error ?? "Repository validation failed");
+                repository = validation.Repository;
+            }
+
             string? scratchDirectory = null;
             if (body.TryGetProperty("scratchDir", out var scratchValue)
                 && scratchValue.ValueKind != JsonValueKind.Null)
@@ -190,16 +212,31 @@ public static class UnifiedSessionEndpoints
             var effort = q.Effort;
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
             thinkingBudget ??= q.ThinkingBudget;
-            var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
             JobProvenance provenance;
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+            if (repository is not null && !provenance.Context.Any(reference =>
+                    string.Equals(reference.Kind, "repository", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(reference.EntityId, repository.Id.ToString("D"), StringComparison.OrdinalIgnoreCase)))
+            {
+                provenance = provenance with
+                {
+                    Context =
+                    [
+                        .. provenance.Context,
+                        new JobContextReference(
+                            "repository",
+                            EntityId: repository.Id.ToString("D"),
+                            NameSnapshot: repository.Name),
+                    ],
+                };
+            }
             UnifiedSessionInfo? session;
             using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
-                session = await provider.StartSessionAsync(projectPath, callerInfo, model, uId, uName, uAvatar,
-                    effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName, provenance,
-                    scratchDirectory);
+                session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
+                    effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
+                    repository?.Id, provenance, scratchDirectory);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
             if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -213,6 +250,7 @@ public static class UnifiedSessionEndpoints
             return Results.Json(session);
         })
             .WithParam("projectPath", "string", required: true, description: "Path to the project directory", location: ParamLocation.Body)
+            .WithParam("repositoryId", "string", description: "Stable RedLeaf Repository entity UUID. When supplied, its active local_path must exactly match projectPath.", location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Provider to use. Defaults to the active provider.", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("model", "string", description: "Model to use. Overrides qualityTier when both are given.", location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Effort level (e.g. low, normal, high)", location: ParamLocation.Body)
@@ -1215,7 +1253,6 @@ public static class UnifiedSessionEndpoints
             }
 
             var inputSummary = prompt.Length > 100 ? prompt[..97] + "..." : prompt;
-            var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
             var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
             var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
             if (string.IsNullOrEmpty(jobName)) jobName = inputSummary;
@@ -1228,7 +1265,7 @@ public static class UnifiedSessionEndpoints
             try
             {
                 job = jobTracker.CreateJob(new JobSubmission("ai-session", provider.ProviderDisplayName,
-                    inputJson, provenance, callerInfo, idempotencyKey, jobName));
+                    inputJson, provenance, idempotencyKey, jobName));
             }
             catch (IdempotencyConflictException ex)
             {
@@ -1301,7 +1338,6 @@ public static class UnifiedSessionEndpoints
             }
         })
             .WithParam("async", "boolean", description: "Fire-and-forget: returns 202 with a job id instead of waiting for completion (presence flag)", location: ParamLocation.Query)
-            .WithParam("X-Caller-Info", "string", description: "Legacy asserted caller label retained for compatibility; never treated as verified provenance", location: ParamLocation.Header)
             .WithParam("X-Idempotency-Key", "string", description: "Dedupe key scoped by capability, origin, actor, and beneficiary; conflicting payload reuse is rejected", location: ParamLocation.Header)
             .WithParam("X-Job-Name", "string", description: "Human-readable job name (defaults to a prompt excerpt)", location: ParamLocation.Header)
             .WithRequestBody(new
@@ -1404,13 +1440,12 @@ public static class UnifiedSessionEndpoints
 
         int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
         thinkingBudget ??= q.ThinkingBudget;
-        var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
         JobProvenance provenance;
         try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/generate"); }
         catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
-        var session = await provider.StartSessionAsync(resolved.Path, callerInfo, q.Model, uId, uName, uAvatar,
-            q.Effort, q.EndpointUrl, q.ApiKey, thinkingBudget, null, null, provenance);
+        var session = await provider.StartSessionAsync(resolved.Path, q.Model, uId, uName, uAvatar,
+            q.Effort, q.EndpointUrl, q.ApiKey, thinkingBudget, null, null, null, provenance);
         if (session == null)
             return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
         if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -1458,7 +1493,6 @@ public static class UnifiedSessionEndpoints
         }
 
         var inputJson = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, effort, prompt, system, messages, provider = provider.ProviderId });
-        var callerInfo = ctx.Request.Headers.TryGetValue("X-Caller-Info", out var ci) ? ci.ToString() : null;
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
@@ -1467,7 +1501,7 @@ public static class UnifiedSessionEndpoints
         try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/generate"); }
         catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
         var job = jobTracker.CreateJob(new JobSubmission("ai-session", provider.ProviderDisplayName,
-            inputJson, provenance, callerInfo, Name: jobName));
+            inputJson, provenance, Name: jobName));
         jobTracker.StartInvocation(job.Id, provenance);
 
         try
@@ -1708,7 +1742,7 @@ public static class UnifiedSessionEndpoints
         properties = new
         {
             id = new { type = "string" },
-            clientId = new { type = new[] { "string", "null" }, description = "Authorized caller idempotency key used to reconcile an uncertain admission" },
+            clientId = new { type = new[] { "string", "null" }, description = "Authorized client idempotency key used to reconcile an uncertain admission" },
             sessionId = new { type = "string" },
             sequence = new { type = "integer" },
             state = new { type = "string", @enum = new[] { "pending", "delivering", "failed", "delivered", "cancelled" } },

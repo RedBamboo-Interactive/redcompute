@@ -183,6 +183,7 @@ public class RelayServer
                 new { name = "Status", fieldType = "string", description = "Lifecycle status (Starting, Active, Idle, Stopped...)" },
                 new { name = "Project Name", fieldType = "string" },
                 new { name = "Project Path", fieldType = "string", description = "Machine-local path to the project directory" },
+                new { name = "Repository", fieldType = "entity_ref", description = "Stable Repository entity for code sessions", constraints = "{\"target_type\":\"repository\"}" },
                 new { name = "Model", fieldType = "string" },
                 new { name = "Message Count", fieldType = "number" },
                 new { name = "Cost USD", fieldType = "float" },
@@ -217,6 +218,7 @@ public class RelayServer
                 session_id = snap.Id,
                 project_name = snap.ProjectName,
                 project_path = snap.ProjectPath,
+                repository = snap.RepositoryId,
                 status = snap.Status,
                 stop_reason = snap.StopReason,
                 started_at = snap.StartedAt.ToString("O"),
@@ -255,7 +257,6 @@ public class RelayServer
                 new { name = "Status", fieldType = "string" },
                 new { name = "Queued At", fieldType = "date" },
                 new { name = "Cost USD", fieldType = "float" },
-                new { name = "Caller Info", fieldType = "string" },
                 new { name = "Error Message", fieldType = "string" },
                 new { name = "User ID", fieldType = "string" },
                 new { name = "User Name", fieldType = "string" },
@@ -288,13 +289,16 @@ public class RelayServer
         // Read-path cutover: session list/history reads come from RedLeaf
         // (hard dependency by decision); plugin SQLite stays write-only
         // (dual-write) until the verification window closes.
+        var redLeafJwt = new JwtService(new JwtOptions { SigningKey = signingKey });
         var redLeafReader = new RedLeafSessionReader(
-            _config.RedLeafUrl, new JwtService(new JwtOptions { SigningKey = signingKey }), _qualityModes);
+            _config.RedLeafUrl, redLeafJwt, _qualityModes);
+        var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
             _jobTracker, broadcaster, _log);
         UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks,
-            _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue);
+            _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue,
+            repositoryValidator);
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
@@ -328,7 +332,7 @@ public class RelayServer
     {
         broadcaster.RegisterEvent(new WsEventSchema("job.created",
             "Fired when a new job is queued", "JobRecord",
-            ["id", "capabilitySlug", "providerName", "status", "queuedAt", "inputJson", "callerInfo", "name", "rationale", "creationProvenance", "userId", "userName", "userAvatarUrl"]));
+            ["id", "capabilitySlug", "providerName", "status", "queuedAt", "inputJson", "name", "rationale", "creationProvenance", "userId", "userName", "userAvatarUrl"]));
         broadcaster.RegisterEvent(new WsEventSchema("job.updated",
             "Fired when a job's status, progress, or output changes", "JobRecord",
             ["id", "capabilitySlug", "providerName", "status", "progress", "startedAt", "completedAt", "errorMessage", "outputSizeBytes", "durationMs", "creationProvenance", "userId", "userName", "userAvatarUrl"]));
