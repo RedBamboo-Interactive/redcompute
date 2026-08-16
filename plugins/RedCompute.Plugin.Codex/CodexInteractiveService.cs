@@ -902,9 +902,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     /// <c>thread/name/set</c> is the client's job. Claude Code's CLI generates its own title, so
     /// without this a Codex discussion sits untitled in the sidebar forever.
     ///
-    /// A derived title is applied immediately so the sidebar is never blank, then upgraded in the
-    /// background by a one-shot on the cheap model. If that is unconfigured or fails, the derived
-    /// title simply stands.
+    /// A deterministic title derived from the opening message is applied immediately so the
+    /// sidebar is never blank. Naming performs no hidden inference call; model selection belongs
+    /// to the request's entity-backed quality mode.
     /// </summary>
     private void EnsureTitle(ManagedSession session, string firstUserMessage)
     {
@@ -912,53 +912,6 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         var derived = DeriveTitle(firstUserMessage);
         if (derived != null) ApplyTitle(session, derived);
-
-        if (!string.IsNullOrWhiteSpace(_config.TitleModel))
-            _ = GenerateTitleAsync(session, firstUserMessage);
-    }
-
-    /// <summary>
-    /// Names the session with a one-shot on the cheap model rather than an extra turn on the
-    /// session's own — possibly flagship — model. Detached on purpose: a title is never worth
-    /// delaying or failing the user's actual message.
-    /// </summary>
-    private async Task GenerateTitleAsync(ManagedSession session, string firstUserMessage)
-    {
-        try
-        {
-            var opening = StripContext(firstUserMessage);
-            if (string.IsNullOrWhiteSpace(opening)) return;
-
-            var excerpt = opening.Length > 800 ? opening[..800] : opening;
-            var result = await _exec.ExecuteExecAsync(
-                "Write a title of at most six words for a conversation that opens with the message "
-                + "below. Reply with the title only: no quotes, no trailing punctuation, no preamble.\n\n"
-                + excerpt,
-                container: null, workingDir: null,
-                model: _config.TitleModel, sandbox: "read-only", timeout: 60,
-                CancellationToken.None);
-
-            if (!result.Success || string.IsNullOrWhiteSpace(result.Text)) return;
-            if (CleanGeneratedTitle(result.Text) is { } title) ApplyTitle(session, title);
-        }
-        catch (Exception ex)
-        {
-            _log($"[Codex] Title generation failed for {session.Info.Id}: {ex.Message}", null);
-        }
-    }
-
-    /// <summary>Models editorialise. Strip quotes and trailing punctuation, and reject a paragraph.</summary>
-    public static string? CleanGeneratedTitle(string raw)
-    {
-        var line = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(l => l.Trim())
-            .LastOrDefault(l => l.Length > 0);
-        if (line == null) return null;
-
-        line = line.Trim('"', '\'', '`', '*', ' ').TrimEnd('.', '!', ':', ';', ',').Trim();
-
-        // A model that ignored the instruction and wrote prose is worse than the derived title.
-        return line.Length is 0 or > 70 ? null : line;
     }
 
     private void ApplyTitle(ManagedSession session, string title)

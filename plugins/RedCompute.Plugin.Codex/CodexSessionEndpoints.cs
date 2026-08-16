@@ -11,8 +11,6 @@ public static class CodexSessionEndpoints
     public static void Map(WebApplication app, CodexSessionService codex, CodexModelCatalog catalog,
         IJobTracker jobTracker, Action<string, Guid?> log)
     {
-        app.MapGet("/codex/projects", () => Results.Ok(codex.ListProjects()));
-
         app.MapGet("/codex/models", async (bool? refresh, CancellationToken ct) =>
         {
             var models = await catalog.GetAsync(forceRefresh: refresh == true, ct);

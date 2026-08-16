@@ -87,6 +87,45 @@ public sealed class QualityModeServiceTests
     }
 
     [Fact]
+    public async Task RequestedTier_UsesSuiteDefaultProviderWhenSeveralModesClaimDefault()
+    {
+        var cachePath = TempCachePath();
+        try
+        {
+            var handler = new CatalogHandler(
+                modesJson: MultiProviderModesJson,
+                providersJson: ProvidersJson,
+                suiteConfigJson: MultiProviderSuiteConfigJson);
+            var config = new RedComputeConfig { RedLeafUrl = "http://127.0.0.1:18804" };
+            var log = new Action<string, Guid?>((_, _) => { });
+            var providerConfig = new ProviderConfigService(
+                config,
+                log,
+                new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(1) });
+            await providerConfig.RefreshAsync();
+
+            var service = new QualityModeService(
+                config,
+                log,
+                providerConfig,
+                new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(1) },
+                cachePath,
+                TimeSpan.FromMilliseconds(1),
+                TimeSpan.FromMilliseconds(2));
+            Assert.True(await service.InitialSyncAsync());
+
+            Assert.True(service.TryResolveRequested("deep", null, out var resolved, out var failure));
+            Assert.Equal(QualityResolutionFailure.None, failure);
+            Assert.Equal("opencode-default", resolved!.Provider);
+            Assert.Equal("anthropic/claude-sonnet-4-5", resolved.Model);
+        }
+        finally
+        {
+            DeleteCache(cachePath);
+        }
+    }
+
+    [Fact]
     public async Task LegacyGpt56Pricing_InfersDocumentedCachedInputDiscount()
     {
         var cachePath = TempCachePath();
@@ -134,7 +173,12 @@ public sealed class QualityModeServiceTests
         if (File.Exists(cachePath + ".tmp")) File.Delete(cachePath + ".tmp");
     }
 
-    private sealed class CatalogHandler(int failuresRemaining = 0, string? pricingJson = null) : HttpMessageHandler
+    private sealed class CatalogHandler(
+        int failuresRemaining = 0,
+        string? pricingJson = null,
+        string? modesJson = null,
+        string? providersJson = null,
+        string? suiteConfigJson = null) : HttpMessageHandler
     {
         private int _failuresRemaining = failuresRemaining;
         private int _requestCount;
@@ -148,12 +192,15 @@ public sealed class QualityModeServiceTests
                 throw new HttpRequestException("RedLeaf unavailable");
 
             var query = request.RequestUri?.Query ?? "";
+            var path = request.RequestUri?.AbsolutePath ?? "";
             var json = query switch
             {
                 var q when q.Contains("type=quality-tier", StringComparison.Ordinal) => TiersJson,
-                var q when q.Contains("type=quality-mode", StringComparison.Ordinal) => ModesJson,
+                var q when q.Contains("type=quality-mode", StringComparison.Ordinal) => modesJson ?? ModesJson,
                 var q when q.Contains("type=inference-model", StringComparison.Ordinal) => pricingJson ?? "{\"items\":[]}",
-                var q when q.Contains("type=suite-config", StringComparison.Ordinal) => SuiteConfigJson,
+                var q when q.Contains("type=suite-config", StringComparison.Ordinal) => suiteConfigJson ?? SuiteConfigJson,
+                var q when q.Contains("type=provider", StringComparison.Ordinal) => providersJson ?? "{\"items\":[]}",
+                _ when path.Contains("provider-secrets", StringComparison.Ordinal) => "{\"items\":[]}",
                 _ => "{\"items\":[]}",
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -173,6 +220,24 @@ public sealed class QualityModeServiceTests
 
     private const string SuiteConfigJson = """
         {"items":[{"id":"suite","slug":"suite-config","data":{"default_quality_tier":"tier-deep"}}]}
+        """;
+
+    private const string MultiProviderModesJson = """
+        {"items":[
+          {"id":"mode-deep-codex","slug":"deep-codex","data":{"quality_tier":"tier-deep","provider":"codex-default","model":"gpt-5.6-sol","effort":"high","is_default":true}},
+          {"id":"mode-deep-opencode","slug":"deep-opencode","data":{"quality_tier":"tier-deep","provider":"opencode-default","model":"anthropic/claude-sonnet-4-5","is_default":true}}
+        ]}
+        """;
+
+    private const string ProvidersJson = """
+        {"items":[
+          {"id":"provider-codex","slug":"codex-default","name":"Codex","data":{"backend":"codex","status":"active"}},
+          {"id":"provider-opencode","slug":"opencode-default","name":"OpenCode","data":{"backend":"opencode","status":"active"}}
+        ]}
+        """;
+
+    private const string MultiProviderSuiteConfigJson = """
+        {"items":[{"id":"suite","slug":"suite-config","data":{"default_quality_tier":"tier-deep","default_provider":"provider-opencode"}}]}
         """;
 
     // Compatibility fixture from provider-codex installations created before the cached-input

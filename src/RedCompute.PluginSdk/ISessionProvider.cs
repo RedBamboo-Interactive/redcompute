@@ -101,8 +101,7 @@ public interface ISessionProvider
     Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null);
 
-    // Discovery
-    List<SessionProjectInfo> ListProjects();
+    // Model discovery
     List<ModelInfo> GetAvailableModels();
 
     // Message injection (without triggering inference)

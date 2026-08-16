@@ -11,7 +11,6 @@ public enum SessionCapabilities
     SendMessage = 1 << 4,
     PermissionMode = 1 << 5,
     ImageAttachments = 1 << 7,
-    ProjectDiscovery = 1 << 8,
     Generate = 1 << 9,
     FileAttachments = 1 << 10,
 }

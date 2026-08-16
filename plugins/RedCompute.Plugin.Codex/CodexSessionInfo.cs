@@ -1,12 +1,5 @@
 namespace RedCompute.Plugin.Codex;
 
-public class ProjectInfo
-{
-    public required string Name { get; init; }
-    public required string Path { get; init; }
-    public bool HasClaudeMd { get; init; }
-}
-
 public class CodexSessionInfo
 {
     public required string Id { get; init; }

@@ -1007,47 +1007,6 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { killed = true });
         });
 
-        endpoints.MapGet("/ai-session/projects",
-            "List known project directories across providers", (HttpContext ctx) =>
-        {
-            var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
-            var allProjects = new List<object>();
-
-            foreach (var provider in registry.FindProviders<ISessionProvider>())
-            {
-                if (providerFilter != null && provider.ProviderId != providerFilter)
-                    continue;
-                if (!provider.Capabilities.HasFlag(SessionCapabilities.ProjectDiscovery))
-                    continue;
-                foreach (var p in provider.ListProjects())
-                    allProjects.Add(new { p.Name, p.Path, p.HasClaudeMd, p.HasIcon, provider = provider.ProviderId });
-            }
-
-            return Results.Json(allProjects);
-        })
-            .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
-
-        endpoints.MapGet("/ai-session/projects/{name}/icon",
-            "Serve the project's icon image (favicon/logo) if one exists", (HttpContext ctx, string name) =>
-        {
-            var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
-            foreach (var provider in registry.FindProviders<ISessionProvider>())
-            {
-                if (providerFilter != null && provider.ProviderId != providerFilter)
-                    continue;
-                if (!provider.Capabilities.HasFlag(SessionCapabilities.ProjectDiscovery))
-                    continue;
-                var project = provider.ListProjects().FirstOrDefault(p =>
-                    p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-                if (project == null) continue;
-                var iconPath = FindProjectIcon(project.Path);
-                if (iconPath != null)
-                    return Results.File(iconPath);
-            }
-            return Results.NotFound();
-        })
-            .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
-
         endpoints.MapPost("/ai-session/sessions/{id}/open-in-codered",
             "Ask the local CodeRed instance to navigate to this session", async (string id) =>
         {
@@ -1149,7 +1108,6 @@ public static class UnifiedSessionEndpoints
                 iconSvgPath = p.IconSvgPath,
                 endpointUrl = p.EndpointUrl,
                 hasApiKey = !string.IsNullOrEmpty(p.ApiKey),
-                defaultModel = p.DefaultModel,
                 isDefault = string.Equals(p.Slug, defaultSlug, StringComparison.OrdinalIgnoreCase),
                 p.Status,
                 p.Description,
@@ -1365,7 +1323,7 @@ public static class UnifiedSessionEndpoints
             });
 
         endpoints.MapPost("/ai-session/generate",
-            "Dual-mode: 'session' creates a persistent interactive session by project name, 'oneshot' runs a stateless LLM completion", async (HttpContext ctx) =>
+            "Run a stateless LLM completion", async (HttpContext ctx) =>
         {
             ctx.Items["Telemetry.Kind"] = "job";
 
@@ -1378,21 +1336,18 @@ public static class UnifiedSessionEndpoints
             var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, body, q.ProviderName, q.BackendName);
             if (resolveError != null) return resolveError;
 
-            var mode = body.TryGetProperty("mode", out var m) ? m.GetString() : "session";
+            if (!IsStatelessGenerateMode(body))
+                return Error(422, "validation_failed",
+                    "mode must be 'oneshot'; create persistent sessions through POST /ai-session/sessions with projectPath and repositoryId");
 
-            if (mode == "oneshot")
-                return await HandleGenerateOneshot(ctx, body, provider!, jobTracker, q);
-
-            return await HandleGenerateSession(ctx, body, provider!, jobTracker, q);
+            return await HandleGenerateOneshot(ctx, body, provider!, jobTracker, q);
         })
-            .WithParam("mode", "string", description: "'session' starts a persistent session; 'oneshot' runs a stateless LLM completion",
-                defaultValue: "session", enumValues: ["session", "oneshot"], location: ParamLocation.Body)
-            .WithParam("project", "string", description: "(session mode, required) Project name to start the session in", location: ParamLocation.Body)
-            .WithParam("prompt", "string", description: "(session mode) Initial message to send once the session is up", location: ParamLocation.Body)
-            .WithParam("messages", "array", description: "(oneshot mode, required) Array of {role, content} message objects", location: ParamLocation.Body)
+            .WithParam("mode", "string", description: "Stateless completion mode",
+                defaultValue: "oneshot", enumValues: ["oneshot"], location: ParamLocation.Body)
+            .WithParam("messages", "array", description: "Required array of {role, content} message objects", location: ParamLocation.Body)
             .WithParam("model", "string", description: "Model to use", location: ParamLocation.Body)
-            .WithParam("system", "string", description: "(oneshot mode) System prompt", location: ParamLocation.Body)
-            .WithParam("maxTokens", "integer", description: "(oneshot mode) Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
+            .WithParam("system", "string", description: "System prompt", location: ParamLocation.Body)
+            .WithParam("maxTokens", "integer", description: "Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
@@ -1421,46 +1376,11 @@ public static class UnifiedSessionEndpoints
         return false;
     }
 
-    private static async Task<IResult> HandleGenerateSession(
-        HttpContext ctx, JsonElement body, ISessionProvider provider, IJobTracker jobTracker, QualityResolution q)
+    internal static bool IsStatelessGenerateMode(JsonElement body)
     {
-        if (!provider.Capabilities.HasFlag(SessionCapabilities.PersistentSessions))
-            return NotSupported(provider.ProviderId, "persistent sessions");
-
-        var project = body.TryGetProperty("project", out var p) ? p.GetString() : null;
-        var prompt = body.TryGetProperty("prompt", out var pr) ? pr.GetString() : null;
-
-        if (string.IsNullOrWhiteSpace(project))
-            return Error(422, "validation_failed", "project is required for session mode");
-
-        var resolved = provider.ListProjects().FirstOrDefault(proj =>
-            proj.Name.Equals(project, StringComparison.OrdinalIgnoreCase));
-        if (resolved == null)
-            return Error(422, "validation_failed", $"Project '{project}' not found");
-
-        int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
-        thinkingBudget ??= q.ThinkingBudget;
-        var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
-        JobProvenance provenance;
-        try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/generate"); }
-        catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
-        var session = await provider.StartSessionAsync(resolved.Path, q.Model, uId, uName, uAvatar,
-            q.Effort, q.EndpointUrl, q.ApiKey, thinkingBudget, null, null, null, provenance);
-        if (session == null)
-            return Error(503, "start_failed", provider.LastStartError ?? "Failed to start session");
-        if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
-        {
-            try { await provider.ForceKillAsync(session.Id); } catch { }
-            return Error(500, "tracking_failed", "Session creation was rolled back because its compute job was not created");
-        }
-
-        if (!string.IsNullOrWhiteSpace(prompt) && provider.Capabilities.HasFlag(SessionCapabilities.SendMessage))
-        {
-            await Task.Delay(2000);
-            await provider.SendMessageAsync(session.Id, prompt);
-        }
-
-        return Results.Json(new { jobId, sessionId = session.Id }, statusCode: 202);
+        if (!body.TryGetProperty("mode", out var value)) return true;
+        return value.ValueKind == JsonValueKind.String
+            && string.Equals(value.GetString(), "oneshot", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<IResult> HandleGenerateOneshot(
@@ -1557,7 +1477,7 @@ public static class UnifiedSessionEndpoints
             if (explicitProvider != null && _providerConfig != null)
             {
                 var pc = _providerConfig.Resolve(explicitProvider);
-                return (new QualityResolution(model ?? pc.DefaultModel, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey), null);
+                return (new QualityResolution(model, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey), null);
             }
             return (new QualityResolution(model, effort, explicitProvider), null);
         }
@@ -1805,23 +1725,4 @@ public static class UnifiedSessionEndpoints
         _ => ".png",
     };
 
-    private static readonly string[] IconCandidates =
-    [
-        "public/favicon.ico", "public/favicon.png", "public/favicon.svg",
-        "public/logo.png", "public/logo.svg",
-        "favicon.ico", "favicon.png", "favicon.svg",
-        "logo.png", "logo.svg",
-        "icon.png", "icon.ico", "icon.svg",
-        "wwwroot/favicon.ico",
-    ];
-
-    private static string? FindProjectIcon(string projectPath)
-    {
-        foreach (var candidate in IconCandidates)
-        {
-            var full = Path.Combine(projectPath, candidate);
-            if (File.Exists(full)) return full;
-        }
-        return null;
-    }
 }

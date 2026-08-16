@@ -37,7 +37,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.Resume | SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
         SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
-        SessionCapabilities.ProjectDiscovery | SessionCapabilities.Generate;
+        SessionCapabilities.Generate;
 
     public string? LastStartError => _claude.LastStartError;
 
@@ -217,14 +217,6 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }
 
-    // --- ISessionProvider: Discovery ---
-
-    public List<SessionProjectInfo> ListProjects()
-        => _claude.ListProjects().Select(p => new SessionProjectInfo
-        {
-            Name = p.Name, Path = p.Path, HasClaudeMd = p.HasClaudeMd, HasIcon = p.HasIcon
-        }).ToList();
-
     public List<ModelInfo> GetAvailableModels() =>
     [
         new() { Id = "haiku", Name = "Haiku", Fast = true },
@@ -313,18 +305,16 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         var claudePath = ProviderHelpers.GetExtra(config, "ClaudePath", "");
         return new ClaudeConfig
         {
-            ProjectsRoot = ProviderHelpers.GetExtra(config, "ProjectsRoot", @"T:\Projects"),
             ClaudePath = string.IsNullOrEmpty(claudePath) ? null : claudePath,
             MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
-            DefaultOneshotModel = ProviderHelpers.GetExtra(config, "DefaultOneshotModel", "haiku"),
         };
     }
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
         ["prompt"] = new() { Type = "string", Required = true, Description = "Prompt text for agent execution" },
-        ["model"] = new() { Type = "string", Required = false, Default = "sonnet", Enum = ["haiku", "sonnet", "opus", "fable"], Description = "Model to use" },
+        ["model"] = new() { Type = "string", Required = false, Description = "Optional concrete model override; quality tiers are preferred" },
         ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
         ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }
     };

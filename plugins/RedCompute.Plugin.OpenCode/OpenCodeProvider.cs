@@ -38,8 +38,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage |
         SessionCapabilities.ImageAttachments |
-        SessionCapabilities.FileAttachments |
-        SessionCapabilities.ProjectDiscovery;
+        SessionCapabilities.FileAttachments;
 
     public string? LastStartError => _opencode.LastStartError;
 
@@ -183,14 +182,6 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }
 
-    // --- ISessionProvider: Discovery ---
-
-    public List<SessionProjectInfo> ListProjects()
-        => _opencode.ListProjects().Select(p => new SessionProjectInfo
-        {
-            Name = p.Name, Path = p.Path, HasClaudeMd = p.HasClaudeMd,
-        }).ToList();
-
     public List<ModelInfo> GetAvailableModels() =>
     [
         new() { Id = "anthropic/claude-sonnet-4-20250514", Name = "Claude Sonnet 4", Fast = false },
@@ -276,18 +267,16 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         var openCodePath = ProviderHelpers.GetExtra(config, "OpenCodePath", "");
         return new OpenCodeConfig
         {
-            ProjectsRoot = ProviderHelpers.GetExtra(config, "ProjectsRoot", @"T:\Projects"),
             OpenCodePath = string.IsNullOrEmpty(openCodePath) ? null : openCodePath,
             MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
-            DefaultModel = ProviderHelpers.GetExtra(config, "DefaultModel", "sonnet"),
         };
     }
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
         ["prompt"] = new() { Type = "string", Required = true, Description = "Prompt text for agent execution" },
-        ["model"] = new() { Type = "string", Required = false, Default = "sonnet", Description = "Model to use (supports 75+ providers)" },
+        ["model"] = new() { Type = "string", Required = false, Description = "Optional concrete model override; quality tiers are preferred" },
         ["workingDir"] = new() { Type = "string", Required = false, Description = "Working directory for the agent" },
         ["timeout"] = new() { Type = "integer", Required = false, Default = 600, Min = 1, Max = 1800, Description = "Timeout in seconds" }
     };

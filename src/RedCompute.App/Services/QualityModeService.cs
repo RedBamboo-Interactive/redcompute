@@ -229,7 +229,7 @@ public class QualityModeService
                 var pc = string.IsNullOrWhiteSpace(preferredProvider)
                     ? _providerConfig.GetDefault()
                     : _providerConfig.Resolve(preferredProvider);
-                return new ResolvedMode(pc.Slug, pc.DefaultModel, null, pc.Backend, pc.EndpointUrl, pc.ApiKey, QualityTier: tier);
+                return new ResolvedMode(pc.Slug, null, null, pc.Backend, pc.EndpointUrl, pc.ApiKey, QualityTier: tier);
             }
         }
 
@@ -239,10 +239,10 @@ public class QualityModeService
                 string.Equals(m.Provider, preferredProvider, StringComparison.OrdinalIgnoreCase));
             if (match != null) return ToResolved(match);
             var ppc = _providerConfig.Resolve(preferredProvider);
-            return new ResolvedMode(preferredProvider, ppc.DefaultModel, null, ppc.Backend, ppc.EndpointUrl, ppc.ApiKey, QualityTier: tier);
+            return new ResolvedMode(preferredProvider, null, null, ppc.Backend, ppc.EndpointUrl, ppc.ApiKey, QualityTier: tier);
         }
 
-        var chosen = candidates.FirstOrDefault(m => m.IsDefault) ?? candidates[0];
+        var chosen = ChooseDefault(candidates);
         return ToResolved(chosen);
     }
 
@@ -289,7 +289,7 @@ public class QualityModeService
         }
         else
         {
-            var chosen = candidates.FirstOrDefault(m => m.IsDefault) ?? candidates[0];
+            var chosen = ChooseDefault(candidates);
             resolved = ToResolved(chosen);
         }
 
@@ -301,6 +301,19 @@ public class QualityModeService
         }
 
         return true;
+    }
+
+    private QualityMode ChooseDefault(IReadOnlyList<QualityMode> candidates)
+    {
+        var suiteDefaultProvider = _providerConfig.DefaultProviderSlug;
+        if (!string.IsNullOrWhiteSpace(suiteDefaultProvider))
+        {
+            var providerMatch = candidates.FirstOrDefault(mode =>
+                string.Equals(mode.Provider, suiteDefaultProvider, StringComparison.OrdinalIgnoreCase));
+            if (providerMatch != null) return providerMatch;
+        }
+
+        return candidates.FirstOrDefault(mode => mode.IsDefault) ?? candidates[0];
     }
 
     /// <summary>

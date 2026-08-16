@@ -244,24 +244,6 @@ public class ClaudeSessionService
         }
     }
 
-    public List<ProjectInfo> ListProjects()
-    {
-        var root = _config.ProjectsRoot;
-        if (!Directory.Exists(root))
-            return [];
-
-        return Directory.GetDirectories(root)
-            .Select(d => new ProjectInfo
-            {
-                Name = Path.GetFileName(d),
-                Path = d,
-                HasClaudeMd = File.Exists(Path.Combine(d, "CLAUDE.md")),
-                HasIcon = FindProjectIcon(d) != null
-            })
-            .OrderBy(p => p.Name)
-            .ToList();
-    }
-
     public string? LastStartError { get; private set; }
 
     public record OneshotResult(bool Success, string? Text, string? StreamOutput, string? Model, int InputTokens, int OutputTokens, double? CostUsd, string? Error);
@@ -625,8 +607,6 @@ public class ClaudeSessionService
         if (claudePath == null)
             return new OneshotResult(false, null, null, null, 0, 0, null, "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
 
-        var resolvedModel = model ?? _config.DefaultOneshotModel;
-
         var prompt = BuildOneshotPrompt(messages);
         if (string.IsNullOrWhiteSpace(prompt))
             return new OneshotResult(false, null, null, null, 0, 0, null, "messages produced empty prompt");
@@ -651,8 +631,11 @@ public class ClaudeSessionService
             startInfo.ArgumentList.Add(prompt);
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("stream-json");
-        startInfo.ArgumentList.Add("--model");
-        startInfo.ArgumentList.Add(resolvedModel);
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            startInfo.ArgumentList.Add("--model");
+            startInfo.ArgumentList.Add(model);
+        }
         startInfo.ArgumentList.Add("--no-session-persistence");
         startInfo.ArgumentList.Add("--allowedTools");
         startInfo.ArgumentList.Add("Read,Glob,Grep");
@@ -728,7 +711,7 @@ public class ClaudeSessionService
                 return new OneshotResult(false, null, null, null, 0, 0, null, $"claude exited with code {process.ExitCode}: {errMsg}");
             }
 
-            var result = ParseStreamJsonOutput(rawStdout, resolvedModel);
+            var result = ParseStreamJsonOutput(rawStdout, model);
             var streamOutput = tsSb.ToString();
 
             _log($"[Claude] Oneshot {result.Model} done ({result.Text?.Length ?? 0} chars)", null);
@@ -741,7 +724,7 @@ public class ClaudeSessionService
             var rawStdout = rawSb.ToString();
             if (!string.IsNullOrWhiteSpace(rawStdout))
             {
-                var partial = ParseStreamJsonOutput(rawStdout, resolvedModel);
+                var partial = ParseStreamJsonOutput(rawStdout, model);
                 return new OneshotResult(false, partial.Text, tsSb.ToString(), partial.Model,
                     partial.InputTokens, partial.OutputTokens, partial.CostUsd,
                     $"Execution timed out after {clampedTimeout}s");
@@ -2449,36 +2432,6 @@ public class ClaudeSessionService
         {
             _log($"[Claude] Failed to persist message: {ex.Message}", null);
         }
-    }
-
-    private static readonly string[] IconCandidates =
-    [
-        "public/favicon.ico", "public/favicon.png", "public/favicon.svg",
-        "public/logo.png", "public/logo.svg",
-        "favicon.ico", "favicon.png", "favicon.svg",
-        "logo.png", "logo.svg",
-        "icon.png", "icon.ico", "icon.svg",
-        "wwwroot/favicon.ico",
-    ];
-
-    internal static string? FindProjectIcon(string projectPath)
-    {
-        foreach (var candidate in IconCandidates)
-        {
-            var full = Path.Combine(projectPath, candidate.Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(full))
-                return full;
-        }
-        return null;
-    }
-
-    public string? GetProjectIconPath(string projectName)
-    {
-        var root = _config.ProjectsRoot;
-        if (!Directory.Exists(root)) return null;
-        var projectDir = Path.Combine(root, projectName);
-        if (!Directory.Exists(projectDir)) return null;
-        return FindProjectIcon(projectDir);
     }
 
     // A control_request from the CLI that we have parked awaiting a client, held open until

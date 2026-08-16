@@ -37,7 +37,6 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     internal const SessionCapabilities DeclaredCapabilities =
         SessionCapabilities.StatelessExecution
         | SessionCapabilities.Generate
-        | SessionCapabilities.ProjectDiscovery
         | SessionCapabilities.PersistentSessions
         | SessionCapabilities.Resume
         | SessionCapabilities.Interrupt
@@ -306,14 +305,6 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }
 
-    // --- ISessionProvider: Discovery ---
-
-    public List<SessionProjectInfo> ListProjects()
-        => _codex.ListProjects().Select(p => new SessionProjectInfo
-        {
-            Name = p.Name, Path = p.Path, HasClaudeMd = p.HasClaudeMd,
-        }).ToList();
-
     public List<ModelInfo> GetAvailableModels()
     {
         var cached = _models.Cached;
@@ -405,12 +396,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var codexPath = ProviderHelpers.GetExtra(config, "CodexPath", "");
         return new CodexConfig
         {
-            ProjectsRoot = ProviderHelpers.GetExtra(config, "ProjectsRoot", @"T:\Projects"),
             CodexPath = string.IsNullOrEmpty(codexPath) ? null : codexPath,
             MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
-            DefaultExecModel = ProviderHelpers.GetExtra(config, "DefaultExecModel", "") is { Length: > 0 } dem ? dem : null,
-            TitleModel = ProviderHelpers.GetExtra(config, "TitleModel", "") is { Length: > 0 } tm ? tm : null,
             SandboxMode = ProviderHelpers.GetExtra(config, "SandboxMode", "workspace-write"),
         };
     }
@@ -436,9 +424,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => new List<EndpointManifest>
     {
-        new() { Method = "POST", Path = "/codex/execute", Description = "Execute a prompt with Codex agent", Parameters = new() { ["prompt"] = new() { Type = "string", Required = true }, ["model"] = new() { Type = "string", Required = false, Default = "codex-mini-latest" } }, Returns = new() { ContentType = "application/json", Streaming = false } },
+        new() { Method = "POST", Path = "/codex/execute", Description = "Execute a prompt with Codex agent", Parameters = new() { ["prompt"] = new() { Type = "string", Required = true }, ["model"] = new() { Type = "string", Required = false } }, Returns = new() { ContentType = "application/json", Streaming = false } },
         new() { Method = "GET", Path = "/codex/models", Description = "List available Codex models", Returns = new() { ContentType = "application/json", Streaming = false } },
-        new() { Method = "GET", Path = "/codex/projects", Description = "List available projects" },
         new() { Method = "GET", Path = "/codex/sessions", Description = "List recent Codex sessions" },
         new() { Method = "GET", Path = "/codex/sessions/{id}", Description = "Get session details and message history" },
         new() { Method = "GET", Path = "/codex/sessions/by-job/{jobId}", Description = "Get the session associated with a job ID" },

@@ -1312,7 +1312,7 @@ public class OpenCodeSessionService
         startInfo.ArgumentList.Add("json");
         startInfo.ArgumentList.Add("--dangerously-skip-permissions");
 
-        var resolvedModel = model ?? _config.Model ?? _config.DefaultModel;
+        var resolvedModel = model ?? _config.Model;
         if (!string.IsNullOrEmpty(resolvedModel))
         {
             startInfo.ArgumentList.Add("-m");
@@ -1599,22 +1599,6 @@ public class OpenCodeSessionService
     }
 
     public void DismissSession(string sessionId) => _store.DismissSession(sessionId);
-
-    public List<ProjectInfo> ListProjects()
-    {
-        var root = _config.ProjectsRoot;
-        if (!Directory.Exists(root)) return new();
-
-        return Directory.GetDirectories(root)
-            .Select(dir => new ProjectInfo
-            {
-                Name = Path.GetFileName(dir),
-                Path = dir,
-                HasClaudeMd = File.Exists(Path.Combine(dir, "CLAUDE.md")),
-            })
-            .OrderBy(p => p.Name)
-            .ToList();
-    }
 
     // ===== Process Management =====
 

@@ -331,9 +331,7 @@ public class ConfigManager
                             Type = "ClaudeCode",
                             Extra = new Dictionary<string, object?>
                             {
-                                ["ProjectsRoot"] = @"T:\Projects",
-                                ["MaxSessions"] = 99,
-                                ["DefaultOneshotModel"] = "haiku"
+                                ["MaxSessions"] = 99
                             }
                         },
                         ["codex"] = new()
@@ -341,8 +339,7 @@ public class ConfigManager
                             Type = "Codex",
                             Extra = new Dictionary<string, object?>
                             {
-                                ["ProjectsRoot"] = @"T:\Projects",
-                                ["MaxSessions"] = 99,
+                                ["MaxSessions"] = 99
                             }
                         },
                         ["opencode"] = new()
@@ -350,8 +347,7 @@ public class ConfigManager
                             Type = "OpenCode",
                             Extra = new Dictionary<string, object?>
                             {
-                                ["ProjectsRoot"] = @"T:\Projects",
-                                ["MaxSessions"] = 99,
+                                ["MaxSessions"] = 99
                             }
                         }
                     }

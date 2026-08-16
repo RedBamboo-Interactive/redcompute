@@ -240,7 +240,7 @@ public class CodexSessionService
         if (IsSafeEffort(effort))
             AddConfig(startInfo, $"model_reasoning_effort=\"{effort}\"");
 
-        var resolvedModel = model ?? _config.Model ?? _config.DefaultExecModel;
+        var resolvedModel = model ?? _config.Model;
         if (!string.IsNullOrEmpty(resolvedModel))
         {
             startInfo.ArgumentList.Add("--model");
@@ -483,22 +483,6 @@ public class CodexSessionService
         => _store.GetSessionStatusesByJobIds(jobIds);
 
     public void DismissSession(string sessionId) => _store.DismissSession(sessionId);
-
-    public List<ProjectInfo> ListProjects()
-    {
-        var root = _config.ProjectsRoot;
-        if (!Directory.Exists(root)) return new();
-
-        return Directory.GetDirectories(root)
-            .Select(dir => new ProjectInfo
-            {
-                Name = Path.GetFileName(dir),
-                Path = dir,
-                HasClaudeMd = File.Exists(Path.Combine(dir, "CLAUDE.md")),
-            })
-            .OrderBy(p => p.Name)
-            .ToList();
-    }
 
     public async Task StopAllAsync()
     {

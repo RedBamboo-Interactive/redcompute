@@ -26,10 +26,3 @@ public class OpenCodeSessionInfo
     public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
 }
-
-public class ProjectInfo
-{
-    public required string Name { get; init; }
-    public required string Path { get; init; }
-    public bool HasClaudeMd { get; init; }
-}
