@@ -15,7 +15,7 @@ public interface ISessionProvider
         string? userId, string? userName, string? userAvatarUrl, string? effort,
         string? endpointUrl, string? apiKey, int? thinkingBudget, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory = null);
+        string? scratchDirectory = null, bool confidential = false);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
         => ResumeSessionAsync(sessionId);

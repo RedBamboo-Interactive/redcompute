@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
@@ -35,7 +36,8 @@ public static class UnifiedSessionEndpoints
         QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null,
         ProviderConfigService? providerConfig = null, InputAttachmentStore? attachmentStore = null,
         SessionInputQueueService? inputQueue = null,
-        RepositoryReferenceValidator? repositoryValidator = null)
+        RepositoryReferenceValidator? repositoryValidator = null,
+        Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null)
     {
         _docker = docker;
         _callbacks = callbacks;
@@ -142,9 +144,7 @@ public static class UnifiedSessionEndpoints
             if (excludeSource != null)
                 allSessions.RemoveAll(s => s.Source == excludeSource);
 
-            var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user")
-                allSessions.RemoveAll(s => s.UserId != null && s.UserId != userId);
+            allSessions.RemoveAll(session => !ComputeResourceAccess.CanReadSession(ctx, session));
 
             return Results.Json(allSessions);
         })
@@ -210,12 +210,22 @@ public static class UnifiedSessionEndpoints
 
             var model = q.Model;
             var effort = q.Effort;
+            var confidential = body.TryGetProperty("confidential", out var confidentialValue)
+                && confidentialValue.ValueKind == JsonValueKind.True;
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
             thinkingBudget ??= q.ThinkingBudget;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
             JobProvenance provenance;
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+            if (confidential
+                && (provenance.Assurance != JobProvenanceAssurance.Verified
+                    || !provenance.Actor.Kind.Equals("agent", StringComparison.OrdinalIgnoreCase)
+                    || string.IsNullOrWhiteSpace(provenance.Actor.EntityId)
+                    || !provenance.OnBehalfOf.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
+                    || string.IsNullOrWhiteSpace(provenance.OnBehalfOf.Id)))
+                return Error(422, "invalid_confidential_owner",
+                    "Confidential sessions require a verified Agent actor and user beneficiary");
             if (repository is not null && !provenance.Context.Any(reference =>
                     string.Equals(reference.Kind, "repository", StringComparison.OrdinalIgnoreCase)
                     && string.Equals(reference.EntityId, repository.Id.ToString("D"), StringComparison.OrdinalIgnoreCase)))
@@ -236,7 +246,7 @@ public static class UnifiedSessionEndpoints
             using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
                 session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
                     effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
-                    repository?.Id, provenance, scratchDirectory);
+                    repository?.Id, provenance, scratchDirectory, confidential);
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
             if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -256,7 +266,9 @@ public static class UnifiedSessionEndpoints
             .WithParam("effort", "string", description: "Effort level (e.g. low, normal, high)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
             .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body)
-            .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body);
+            .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body)
+            .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body);
+
 
         endpoints.MapGet("/ai-session/sessions/{id}",
             "Get session details and message history", async (HttpContext ctx, string id) =>
@@ -280,14 +292,60 @@ public static class UnifiedSessionEndpoints
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
 
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
 
             var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
             return Results.Json(new { session = info, messages = history, inputQueue = queue });
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("tail", "integer", description: "Return only the newest transcript records, in chronological order (max 10000)", location: ParamLocation.Query);
+
+        endpoints.MapPut("/ai-session/sessions/{id}/confidential",
+            "Permanently tighten a session and its linked job to the verified owning Agent and beneficiary user.",
+            async (HttpContext ctx, string id) =>
+        {
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            if (!body.TryGetProperty("confidential", out var confidentialValue)
+                || confidentialValue.ValueKind != JsonValueKind.True)
+                return Error(422, "classification_is_sticky",
+                    "RedCompute only accepts confidentiality tightening; declassification happens at the owning application boundary");
+
+            UnifiedSessionInfo? info;
+            try { (info, _) = await _redLeafReader!.GetSessionInfoAsync(id); }
+            catch (Exception ex)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+            if (info?.JobId is not { } jobId)
+                return Error(404, "not_found", $"Session '{id}' not found");
+            var job = jobTracker.GetJob(jobId);
+            if (job?.CreationProvenance is not { } provenance)
+                return Error(404, "not_found", $"Session '{id}' not found");
+
+            var execution = ConfidentialResourcePolicy.ExecutionIdentity(ctx);
+            var actorId = execution?.Actor.EntityId ?? execution?.Actor.Id;
+            var ownerAgentId = provenance.Actor.EntityId ?? provenance.Actor.Id;
+            if (execution is null
+                || !execution.Actor.Kind.Equals("agent", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(actorId, ownerAgentId, StringComparison.OrdinalIgnoreCase)
+                || !execution.Beneficiary.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(execution.Beneficiary.Id, job.UserId,
+                    StringComparison.OrdinalIgnoreCase))
+                return Error(404, "not_found", $"Session '{id}' not found");
+
+            jobTracker.SetConfidential(jobId);
+            job = jobTracker.GetJob(jobId)!;
+            info.Confidential = true;
+            info.OwnerAgentId = ownerAgentId;
+            if (mirrorConfidential is not null)
+                await mirrorConfidential(info, job, ctx.RequestAborted);
+            return Results.Json(new { sessionId = id, jobId, confidential = true });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path)
+            .WithParam("confidential", "boolean", required: true, location: ParamLocation.Body);
 
         endpoints.MapGet("/ai-session/sessions/{id}/messages/{recordId:long}/output",
             "Stream a payload-backed transcript output. Supports HTTP byte ranges; bytes are loaded only when requested.", async (HttpContext ctx, string id, long recordId) =>
@@ -307,8 +365,8 @@ public static class UnifiedSessionEndpoints
                 return Error(404, "not_found", $"Session '{id}' not found");
 
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
 
             HttpResponseMessage upstream;
             try
@@ -377,8 +435,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
 
@@ -605,8 +663,8 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             var owner = userId ?? "local-user";
             var includeTerminal = bool.TryParse(ctx.Request.Query["includeTerminal"].FirstOrDefault(), out var include) && include;
             var items = await _inputQueue!.ListAsync(id, owner, includeTerminal, ctx.RequestAborted);
@@ -627,8 +685,8 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             var item = await _inputQueue!.GetAsync(id, itemId, userId ?? "local-user", ctx.RequestAborted);
             return item is null
                 ? Error(404, "queue_item_not_found", $"Queue item '{itemId}' was not found")
@@ -645,8 +703,8 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             try
             {
                 var item = await _inputQueue!.CancelAsync(id, itemId, userId ?? "local-user", ctx.RequestAborted);
@@ -667,8 +725,8 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             try
             {
                 var item = await _inputQueue!.RetryAsync(id, itemId, userId ?? "local-user", ctx.RequestAborted);
@@ -689,8 +747,8 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             var requested = await _inputQueue!.SendNowAsync(id, userId ?? "local-user", ctx.RequestAborted);
             if (!requested) return Error(409, "queue_empty", "There is no active queued input to send");
             var summary = await _inputQueue.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
@@ -715,8 +773,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
 
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
@@ -763,8 +821,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
 
@@ -791,8 +849,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
 
@@ -876,8 +934,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Interrupt))
                 return NotSupported(provider.ProviderId, "session interrupts");
 
@@ -892,8 +950,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Resume))
                 return NotSupported(provider.ProviderId, "session resume");
 
@@ -916,8 +974,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
 
             await provider!.StopSessionAsync(id);
             return Results.Json(new { stopped = true });
@@ -930,8 +988,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
 
             provider!.DismissSession(id);
             var cancelledQueueItems = await _inputQueue!.CancelSessionAsync(id, ctx.RequestAborted);
@@ -948,8 +1006,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
 
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
@@ -973,8 +1031,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.PermissionMode))
                 return NotSupported(provider.ProviderId, "permission modes");
 
@@ -1000,8 +1058,8 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (userId != null && userId != "local-user" && info.UserId != null && info.UserId != userId)
-                return Error(403, "forbidden", "You do not have access to this session");
+            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
 
             await provider!.ForceKillAsync(id);
             return Results.Json(new { killed = true });

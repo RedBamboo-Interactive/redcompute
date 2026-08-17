@@ -62,6 +62,7 @@ public class JobRecord
     public string? UserId { get; set; }
     public string? UserName { get; set; }
     public string? UserAvatarUrl { get; set; }
+    public bool Confidential { get; set; }
 
     public long? DurationMs => CompletedAt.HasValue && StartedAt.HasValue
         ? (long)(CompletedAt.Value - StartedAt.Value).TotalMilliseconds

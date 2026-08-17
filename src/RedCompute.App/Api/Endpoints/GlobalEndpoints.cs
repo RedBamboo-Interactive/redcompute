@@ -65,7 +65,7 @@ public static class GlobalEndpoints
             });
         });
 
-        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (string? capability, string? status, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, string? executionId, bool? externalExecution, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (HttpContext ctx, string? capability, string? status, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, string? executionId, bool? externalExecution, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;
             if (status != null && Enum.TryParse<JobStatus>(status, true, out var parsed))
@@ -73,7 +73,8 @@ public static class GlobalEndpoints
 
             var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, search,
                 limit ?? 50, offset ?? 0, originApp, originApi, actor, beneficiary, assurance, complete,
-                parentJobId, contextKind, contextId, externalExecution, executionId);
+                parentJobId, contextKind, contextId, externalExecution, executionId,
+                job => ComputeResourceAccess.CanReadJob(ctx, job));
 
             var sessionStatuses = new Dictionary<Guid, string>();
             var aiSessionJobIds = jobs
@@ -106,6 +107,7 @@ public static class GlobalEndpoints
                     j.Rationale,
                     j.CostUsd,
                     j.UserId,
+                    j.Confidential,
                     j.UserName,
                     j.UserAvatarUrl,
                     j.ExternalExecution,
@@ -138,10 +140,11 @@ public static class GlobalEndpoints
             .WithParam("limit", "integer", description: "Max jobs to return", defaultValue: 50, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
-        endpoints.MapGet("/jobs/{id:guid}", "Get job details", (Guid id) =>
+        endpoints.MapGet("/jobs/{id:guid}", "Get job details", (Guid id, HttpContext ctx) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
 
             return Results.Ok(new
             {
@@ -165,6 +168,7 @@ public static class GlobalEndpoints
                 job.Rationale,
                 job.CostUsd,
                 job.UserId,
+                job.Confidential,
                 job.UserName,
                 job.UserAvatarUrl,
                 job.ExternalExecution,
@@ -177,10 +181,12 @@ public static class GlobalEndpoints
             });
         });
 
-        endpoints.MapGet("/jobs/{id:guid}/lifecycle-events", "Get the immutable invocation and lifecycle audit timeline", (Guid id) =>
+        endpoints.MapGet("/jobs/{id:guid}/lifecycle-events", "Get the immutable invocation and lifecycle audit timeline", (Guid id, HttpContext ctx) =>
         {
-            if (jobTracker.GetJob(id) == null)
+            var job = jobTracker.GetJob(id);
+            if (job == null)
                 return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
             var events = jobTracker.GetJobEvents(id);
             return Results.Ok(new
             {
@@ -225,10 +231,11 @@ public static class GlobalEndpoints
             }
         });
 
-        endpoints.MapDelete("/jobs/{id:guid}", "Cancel a running job", async (Guid id) =>
+        endpoints.MapDelete("/jobs/{id:guid}", "Cancel a running job", async (Guid id, HttpContext ctx) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
             if (JobTrackingService.IsTerminal(job.Status))
                 return Results.BadRequest(new { error = "invalid_state", message = "Job already finished" });
 
@@ -255,6 +262,7 @@ public static class GlobalEndpoints
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
 
             var entry = registry.Get(job.CapabilitySlug);
             var canRerun = entry?.ActiveProvider is IPluginProvider pp && pp.SupportsRerun;
@@ -557,10 +565,11 @@ public static class GlobalEndpoints
         // LOG ENDPOINTS (AI-Native)
         // ============================================================
 
-        endpoints.MapGet("/jobs/{id:guid}/logs", "Get logs for a specific job", (Guid id, string? tag, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs/{id:guid}/logs", "Get logs for a specific job", (Guid id, HttpContext ctx, string? tag, int? limit, int? offset) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
 
             var logs = App.Logger.GetLogsForJob(id, tag, limit ?? 100, offset ?? 0);
             var totalCount = App.Logger.GetLogCountForJob(id);
@@ -588,10 +597,11 @@ public static class GlobalEndpoints
             .WithParam("limit", "integer", description: "Max log entries to return", defaultValue: 100, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
-        endpoints.MapGet("/jobs/{id:guid}/events", "Get parsed transcript events for an execute job (text, thinking, tool calls, results)", (Guid id, string? types, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs/{id:guid}/events", "Get parsed transcript events for an execute job (text, thinking, tool calls, results)", (Guid id, HttpContext ctx, string? types, int? limit, int? offset) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
 
             string? streamOutput = null;
             if (!string.IsNullOrEmpty(job.ResultJson))

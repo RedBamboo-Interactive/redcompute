@@ -146,7 +146,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string projectPath, string? model, string? userId, string? userName,
         string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory = null)
+        string? scratchDirectory = null, bool confidential = false)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -199,7 +199,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
-            _jobLifecycle.Start(info, provenance);
+            _jobLifecycle.Start(info, provenance, confidential);
             _sessions[id] = session;
             Persist(info);
             SessionCreated?.Invoke(info);

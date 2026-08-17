@@ -124,11 +124,12 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory)
+        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
+        bool confidential = false)
     {
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory);
+            scratchDirectory, confidential);
         return info != null ? ToUnified(info) : null;
     }
 

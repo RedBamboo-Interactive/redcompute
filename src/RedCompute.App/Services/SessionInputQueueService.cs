@@ -47,6 +47,7 @@ public sealed class SessionInputQueueService
     private readonly IJobTracker _jobTracker;
     private readonly WebSocketBroadcaster _broadcaster;
     private readonly Action<string, Guid?> _log;
+    private readonly Func<string, bool> _isConfidential;
     private readonly string _leaseOwner = $"redcompute:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new(StringComparer.Ordinal);
     private readonly Channel<string> _signals = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
@@ -61,7 +62,8 @@ public sealed class SessionInputQueueService
         CapabilityRegistry registry,
         IJobTracker jobTracker,
         WebSocketBroadcaster broadcaster,
-        Action<string, Guid?> log)
+        Action<string, Guid?> log,
+        Func<string, bool>? isConfidential = null)
     {
         _store = store;
         _attachments = attachments;
@@ -69,6 +71,7 @@ public sealed class SessionInputQueueService
         _jobTracker = jobTracker;
         _broadcaster = broadcaster;
         _log = log;
+        _isConfidential = isConfidential ?? (_ => false);
 
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
             source.PluginEvent += OnProviderEvent;
@@ -329,9 +332,17 @@ public sealed class SessionInputQueueService
         var summary = first is null
             ? new SessionInputQueueSummary(0, "empty", null, null, null)
             : await GetSummaryAsync(sessionId, first, ct);
-        _broadcaster.Broadcast("session.input-queue.updated", new SessionInputQueueChanged(
-            sessionId, itemIds, transition, summary.Depth, summary.State,
-            summary.BlockedReason, errorCode ?? summary.ErrorCode, deliveredMessageUid));
+        if (_isConfidential(sessionId))
+            _broadcaster.Broadcast("ai-session.changed", new
+            {
+                sessionId,
+                confidential = true,
+                timestamp = DateTimeOffset.UtcNow.ToString("O"),
+            });
+        else
+            _broadcaster.Broadcast("session.input-queue.updated", new SessionInputQueueChanged(
+                sessionId, itemIds, transition, summary.Depth, summary.State,
+                summary.BlockedReason, errorCode ?? summary.ErrorCode, deliveredMessageUid));
     }
 
     private async Task<string?> FindAnyOwnerAsync(string sessionId, CancellationToken ct)

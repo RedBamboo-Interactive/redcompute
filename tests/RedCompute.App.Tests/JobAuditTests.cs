@@ -184,6 +184,37 @@ public sealed class JobAuditTests : IDisposable
     }
 
     [Fact]
+    public void ConfidentialJobsPersistAndAreFilteredBeforePagination()
+    {
+        var confidential = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", "{}",
+            Provenance("nova", "agent-nova", "user-1", "/nova/message"),
+            Confidential: true));
+        _jobs.CreateJob(new JobSubmission(
+            "tts", "Local", "{}",
+            Provenance("nova", "agent-nova", "user-1", "/nova/speak")));
+
+        Assert.True(_jobs.GetJob(confidential.Id)!.Confidential);
+        var visible = _jobs.GetJobs(canRead: job => !job.Confidential);
+        Assert.Single(visible.Items);
+        Assert.Equal(1, visible.TotalCount);
+    }
+
+    [Fact]
+    public void ConfidentialJobAllowsOnlyOwnerOwningAgentOrTrustedRedLeaf()
+    {
+        var job = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", "{}",
+            Provenance("nova", "agent-nova", "user-1", "/nova/message"),
+            Confidential: true));
+
+        Assert.True(ComputeResourceAccess.CanReadJob(Human("user-1"), job));
+        Assert.False(ComputeResourceAccess.CanReadJob(LocalDefault(), job));
+        Assert.True(ComputeResourceAccess.CanReadJob(Agent("agent-nova", "user-1"), job));
+        Assert.False(ComputeResourceAccess.CanReadJob(Agent("another-agent", "user-1"), job));
+    }
+
+    [Fact]
     public void Conservative_backfill_keeps_exact_session_links_but_unknown_actor_visible()
     {
         using (var db = Db())
@@ -530,6 +561,36 @@ public sealed class JobAuditTests : IDisposable
         var context = new DefaultHttpContext();
         context.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
         context.RequestServices = new ServiceCollection().BuildServiceProvider();
+        return context;
+    }
+
+    private static DefaultHttpContext Human(string userId)
+        => Context([new Claim("sub", userId)]);
+
+    private static DefaultHttpContext LocalDefault()
+    {
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim("sub", "local-user")], "LocalDefault")),
+            RequestServices = new ServiceCollection().BuildServiceProvider(),
+        };
+        return context;
+    }
+
+    private static DefaultHttpContext Agent(string agentId, string beneficiaryId)
+    {
+        var context = Context([
+            new Claim("sub", beneficiaryId),
+            new Claim(ExecutionIdentityClaims.TokenUseClaim, ExecutionIdentityClaims.TokenUse),
+        ]);
+        context.Items[ExecutionIdentityClaims.HttpContextItemKey] = new ExecutionIdentity(
+            ExecutionIdentity.CurrentSchemaVersion,
+            Guid.NewGuid().ToString(),
+            new ExecutionAppIdentity("nova", "Nova"),
+            new ExecutionActorIdentity("agent", "nova", "Nova", agentId),
+            new ExecutionBeneficiaryIdentity("user", beneficiaryId),
+            []);
         return context;
     }
 

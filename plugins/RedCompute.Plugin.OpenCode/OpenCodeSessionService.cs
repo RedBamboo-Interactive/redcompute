@@ -128,7 +128,7 @@ public class OpenCodeSessionService
         string? userId, string? userName, string? userAvatarUrl, string? endpointUrl,
         string? apiKey, string? effort, int? thinkingBudget, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory = null)
+        string? scratchDirectory = null, bool confidential = false)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -184,7 +184,8 @@ public class OpenCodeSessionService
             sessionId = id,
         });
         var job = _jobTracker.CreateJob(new JobSubmission("ai-session", "OpenCode", inputJson,
-            provenance, Name: info.ProjectName, Rationale: "Interactive session"));
+            provenance, Name: info.ProjectName, Rationale: "Interactive session",
+            Confidential: confidential));
         if (!job.IsIdempotencyReuse) _jobTracker.StartInvocation(job.Id, provenance);
         info.JobId = job.Id;
 

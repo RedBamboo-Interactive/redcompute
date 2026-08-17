@@ -237,6 +237,8 @@ public sealed class RedLeafSessionReader
             JobId = Str(d, "job_id") is { } j && Guid.TryParse(j, out var g) ? g : null,
             Source = Str(d, "source"),
             UserId = Str(d, "user_id"),
+            OwnerAgentId = Str(d, "owner_agent_id"),
+            Confidential = Bool(d, "confidential") ?? false,
         };
     }
 
@@ -249,6 +251,11 @@ public sealed class RedLeafSessionReader
 
     private static string? Str(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static bool? Bool(JsonElement e, string key) =>
+        e.TryGetProperty(key, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? v.GetBoolean()
+            : null;
 
     private static int? Int(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;

@@ -83,6 +83,7 @@ public class JobTrackingService : IJobTracker
                     UserAvatarUrl = submission.Provenance.OnBehalfOf.AvatarSnapshot,
                     CreationProvenance = submission.Provenance,
                     ExternalExecution = submission.ExternalExecution,
+                    Confidential = submission.Confidential,
                     ParentJobId = Guid.TryParse(submission.Provenance.Trace.ParentJobId, out var parentJobId)
                         ? parentJobId : null,
                     Status = JobStatus.Queued,
@@ -616,6 +617,9 @@ public class JobTrackingService : IJobTracker
     public void UpdateName(Guid jobId, string name)
         => MutateProjection(jobId, job => job.Name = name);
 
+    public void SetConfidential(Guid jobId)
+        => MutateProjection(jobId, job => job.Confidential = true);
+
     public int RecoverOrphanedJobs()
     {
         var changed = new List<(JobRecord Job, JobLifecycleEvent Event)>();
@@ -655,7 +659,8 @@ public class JobTrackingService : IJobTracker
         string? originApp = null, string? originApi = null, string? actor = null,
         string? beneficiary = null, string? assurance = null, bool? complete = null,
         Guid? parentJobId = null, string? contextKind = null, string? contextId = null,
-        bool? externalExecution = null, string? executionId = null)
+        bool? externalExecution = null, string? executionId = null,
+        Func<JobRecord, bool>? canRead = null)
     {
         using var db = _dbFactory();
         IQueryable<JobRecord> query = db.Jobs.OrderByDescending(j => j.QueuedAt);
@@ -696,6 +701,7 @@ public class JobTrackingService : IJobTracker
         if (executionId != null) filtered = filtered.Where(j =>
             j.CreationProvenance?.Context.Any(c =>
                 Eq(c.Kind, "execution") && Eq(c.Id, executionId)) == true);
+        if (canRead != null) filtered = filtered.Where(canRead);
 
         var materialized = filtered.ToList();
         return (materialized.Skip(offset).Take(limit).ToList(), materialized.Count);
@@ -1030,6 +1036,10 @@ public class JobTrackingService : IJobTracker
         costUsd = job.CostUsd,
         durationMs = job.DurationMs,
         userId = job.UserId,
+        owner_id = job.UserId,
+        owner_agent_id = job.CreationProvenance?.Actor.EntityId
+            ?? job.CreationProvenance?.Actor.Id,
+        confidential = job.Confidential,
         userName = job.UserName,
         userAvatarUrl = job.UserAvatarUrl,
         externalExecution = job.ExternalExecution,
@@ -1056,7 +1066,7 @@ public class JobTrackingService : IJobTracker
     {
         var p = submission.Provenance;
         var material = string.Join('\n', submission.CapabilitySlug, submission.ProviderName, submission.InputJson,
-            submission.ExternalExecution,
+            submission.ExternalExecution, submission.Confidential,
             p.Origin.Service, p.Origin.App.Kind, p.Origin.App.Id, p.Origin.App.EntityId,
             p.Origin.Entrypoint.Kind, p.Origin.Entrypoint.Method, p.Origin.Entrypoint.Route,
             p.Actor.Kind, p.Actor.EntityId, p.Actor.Id,

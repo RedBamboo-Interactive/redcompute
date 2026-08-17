@@ -15,11 +15,12 @@ internal sealed class CodexSessionJobLifecycle
 
     public CodexSessionJobLifecycle(IJobTracker jobs) => _jobs = jobs;
 
-    public void Start(CodexSessionInfo info, JobProvenance provenance)
+    public void Start(CodexSessionInfo info, JobProvenance provenance, bool confidential = false)
     {
         var job = _jobs.CreateJob(new JobSubmission(
             "ai-session", "Codex", InputJson(info, resumed: false), provenance,
-            IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Interactive session"));
+            IdempotencyKey(info.Id), info.Title ?? info.ProjectName, "Interactive session",
+            Confidential: confidential));
 
         if (!job.IsIdempotencyReuse)
             _jobs.StartInvocation(job.Id, provenance);

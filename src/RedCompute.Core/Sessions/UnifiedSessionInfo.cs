@@ -30,5 +30,7 @@ public class UnifiedSessionInfo
     public string? UserId { get; set; }
     public string? UserName { get; set; }
     public string? UserAvatarUrl { get; set; }
+    public string? OwnerAgentId { get; set; }
+    public bool Confidential { get; set; }
     public Dictionary<string, object?>? ProviderMetadata { get; set; }
 }

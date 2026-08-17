@@ -105,10 +105,13 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory)
+        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
+        bool confidential = false)
     {
         var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
-            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory);
+            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
+            confidential);
+
         return Task.FromResult(info != null ? ToUnified(info) : null);
     }
 

@@ -19,6 +19,7 @@ public interface IJobTracker
     void MarkTimedOut(Guid jobId, string reason, string? resultJson = null)
         => MarkFailed(jobId, reason, resultJson: resultJson);
     void UpdateName(Guid jobId, string name);
+    void SetConfidential(Guid jobId) { }
     JobRecord? GetJob(Guid jobId) => null;
 
     IReadOnlyList<JobLifecycleEvent> GetJobEvents(Guid jobId) => [];

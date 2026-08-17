@@ -20,16 +20,19 @@ public sealed class SessionTranscriptPipeline
     private readonly RedLeafStreamClient _streams;
     private readonly WebSocketBroadcaster _broadcaster;
     private readonly Action<string, Guid?> _log;
+    private readonly Func<string, string, bool> _isConfidential;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _livePayloads = new();
 
     public SessionTranscriptPipeline(
         RedLeafStreamClient streams,
         WebSocketBroadcaster broadcaster,
-        Action<string, Guid?> log)
+        Action<string, Guid?> log,
+        Func<string, string, bool>? isConfidential = null)
     {
         _streams = streams;
         _broadcaster = broadcaster;
         _log = log;
+        _isConfidential = isConfidential ?? ((_, _) => false);
     }
 
     public void HandleLiveEvent(string provider, string sessionId, UnifiedStreamEvent evt)
@@ -178,7 +181,20 @@ public sealed class SessionTranscriptPipeline
             attachments_json = message.AttachmentsJson,
         });
 
-    private void Broadcast(string provider, string sessionId, UnifiedStreamEvent evt) =>
+    private void Broadcast(string provider, string sessionId, UnifiedStreamEvent evt)
+    {
+        if (_isConfidential(provider, sessionId))
+        {
+            _broadcaster.Broadcast("ai-session.changed", new
+            {
+                provider,
+                sessionId,
+                confidential = true,
+                timestamp = DateTimeOffset.UtcNow.ToString("O"),
+            });
+            return;
+        }
+
         _broadcaster.Broadcast("ai-session.stream", new
         {
             provider,
@@ -189,6 +205,7 @@ public sealed class SessionTranscriptPipeline
             // rewrite the visible chronology.
             timestamp = DateTimeOffset.UtcNow.ToString("O"),
         });
+    }
 
     private static string? Output(UnifiedStreamEvent evt) => evt.ToolResult ?? evt.Content;
 

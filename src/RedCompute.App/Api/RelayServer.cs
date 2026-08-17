@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -21,6 +22,7 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api;
@@ -45,6 +47,7 @@ public class RelayServer
     private Action<TelemetryEntry>? _telemetryForwarder;
     private CancellationTokenSource? _jobAuditCts;
     private Task? _jobAuditTask;
+    private readonly ConcurrentDictionary<string, bool> _confidentialSessions = new(StringComparer.OrdinalIgnoreCase);
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
@@ -107,6 +110,9 @@ public class RelayServer
         _app.Use(async (ctx, next) =>
         {
             ctx.Response.Headers["X-RedCompute-Version"] = RedComputeServiceDescriptor.AppVersion;
+            if (ctx.Request.Path.StartsWithSegments("/ai-session")
+                || ctx.Request.Path.StartsWithSegments("/jobs"))
+                ctx.Response.Headers.CacheControl = "private, no-store";
             await next();
         });
         _app.UseAppHostAuth(new BearerAuthOptions
@@ -195,6 +201,9 @@ public class RelayServer
                 new { name = "Dismissed", fieldType = "boolean" },
                 new { name = "Source", fieldType = "string", description = "Origin app (e.g. Nova)" },
                 new { name = "User ID", fieldType = "string", description = "Owner of the session" },
+                new { name = "Owner ID", fieldType = "string", description = "Canonical human owner used by confidential-resource authorization" },
+                new { name = "Owner Agent ID", fieldType = "string", description = "Stable Agent entity UUID allowed to read a confidential session" },
+                new { name = "Confidential", fieldType = "boolean", description = "Restricts reads to the owner and owning Agent" },
                 new { name = "External Session ID", fieldType = "string", description = "Provider-side session identifier" },
                 new { name = "Input Tokens", fieldType = "number" },
                 new { name = "Output Tokens", fieldType = "number" },
@@ -205,14 +214,24 @@ public class RelayServer
             "session-messages", "Session Messages",
             "Messages and tool events from AI sessions", RetentionDays: 180, ParentType: "ai-session"));
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
-        var transcriptPipeline = new SessionTranscriptPipeline(_streamClient, broadcaster, _log);
+        var transcriptPipeline = new SessionTranscriptPipeline(
+            _streamClient, broadcaster, _log,
+            (provider, sessionId) => _confidentialSessions.TryGetValue(
+                SessionConfidentialityKey(provider, sessionId), out var confidential) && confidential);
 
-        SuiteMirror.SessionUpserted = snap => _streamClient.UpsertEntity(
-            SessionEntitySlug(snap.Provider, snap.Id),
-            "ai-session",
-            snap.Title ?? $"{snap.ProjectName} ({snap.Provider})",
-            new
-            {
+        SuiteMirror.SessionUpserted = snap =>
+        {
+            var job = snap.JobId is { } jobId ? _jobTracker.GetJob(jobId) : null;
+            var ownerAgentId = job?.CreationProvenance?.Actor.EntityId
+                ?? job?.CreationProvenance?.Actor.Id;
+            _confidentialSessions[SessionConfidentialityKey(snap.Provider, snap.Id)] =
+                job?.Confidential ?? false;
+            _streamClient.UpsertEntity(
+                SessionEntitySlug(snap.Provider, snap.Id),
+                "ai-session",
+                snap.Title ?? $"{snap.ProjectName} ({snap.Provider})",
+                new
+                {
                 provider = snap.Provider,
                 provider_entity = snap.ProviderEntity,
                 session_id = snap.Id,
@@ -238,8 +257,12 @@ public class RelayServer
                 dismissed = snap.Dismissed,
                 source = snap.Source,
                 user_id = snap.UserId,
+                owner_id = job?.UserId ?? snap.UserId,
+                owner_agent_id = ownerAgentId,
+                confidential = job?.Confidential ?? false,
                 app = "redcompute",
-            });
+                });
+        };
 
         SuiteMirror.MessagesAdded = transcriptPipeline.MirrorMessages;
 
@@ -259,6 +282,9 @@ public class RelayServer
                 new { name = "Cost USD", fieldType = "float" },
                 new { name = "Error Message", fieldType = "string" },
                 new { name = "User ID", fieldType = "string" },
+                new { name = "Owner ID", fieldType = "string" },
+                new { name = "Owner Agent ID", fieldType = "string" },
+                new { name = "Confidential", fieldType = "boolean" },
                 new { name = "User Name", fieldType = "string" },
                 new { name = "User Avatar URL", fieldType = "string" },
                 new { name = "Creation Provenance", fieldType = "json", description = "Immutable versioned origin, actor, beneficiary, context, trace and assurance snapshot" },
@@ -295,10 +321,21 @@ public class RelayServer
         var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
-            _jobTracker, broadcaster, _log);
+            _jobTracker, broadcaster, _log,
+            sessionId => _confidentialSessions.Any(pair =>
+                pair.Value && pair.Key.EndsWith($":{sessionId}", StringComparison.OrdinalIgnoreCase)));
         UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks,
             _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue,
-            repositoryValidator);
+            repositoryValidator,
+            async (session, job, token) => await _streamClient.PatchEntityDataAsync(
+                SessionEntitySlug(session.Provider, session.Id),
+                new
+                {
+                    owner_id = job.UserId,
+                    owner_agent_id = job.CreationProvenance?.Actor.EntityId
+                        ?? job.CreationProvenance?.Actor.Id,
+                    confidential = true,
+                }, token));
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
@@ -358,17 +395,70 @@ public class RelayServer
             "Fired when durable input is queued, delivered, cancelled, retried, or blocked",
             "SessionInputQueueChanged",
             ["sessionId", "itemIds", "transition", "depth", "state", "blockedReason", "errorCode", "deliveredMessageUid"]));
+        broadcaster.RegisterEvent(new WsEventSchema("ai-session.changed",
+            "Opaque invalidation for a confidential AI session",
+            Fields: ["provider", "sessionId", "confidential", "timestamp"]));
         broadcaster.RegisterEvent(new WsEventSchema("hardware.snapshot",
             "Fired every 2 seconds with live system hardware metrics",
             Fields: ["timestamp", "cpu", "ram", "gpus"]));
 
-        _jobTracker.JobCreated += job => broadcaster.Broadcast("job.created", job);
-        _jobTracker.JobUpdated += job => broadcaster.Broadcast("job.updated", job);
-        _jobTracker.JobEventAppended += evt => broadcaster.Broadcast("job.event", evt);
+        _jobTracker.JobCreated += job => BroadcastJob(broadcaster, "job.created", job);
+        _jobTracker.JobUpdated += job => BroadcastJob(broadcaster, "job.updated", job);
+        _jobTracker.JobEventAppended += evt =>
+        {
+            var job = _jobTracker.GetJob(evt.JobId);
+            if (job?.Confidential == true)
+                broadcaster.Broadcast("job.updated", new { id = evt.JobId, status = job.Status, confidential = true });
+            else
+                broadcaster.Broadcast("job.event", evt);
+        };
 
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
         {
-            source.PluginEvent += (type, data) => broadcaster.Broadcast(type, data);
+            var sessionProvider = source as ISessionProvider;
+            source.PluginEvent += (type, data) =>
+            {
+                // Session stream payloads are persisted and broadcast exactly once by
+                // SessionTranscriptPipeline, which can suppress confidential content.
+                if (type == "session.stream") return;
+
+                if (data is UnifiedSessionInfo session)
+                {
+                    var confidential = session.JobId is { } jobId
+                        && _jobTracker.GetJob(jobId)?.Confidential == true;
+                    session.Confidential = confidential;
+                    _confidentialSessions[SessionConfidentialityKey(session.Provider, session.Id)] = confidential;
+                    if (confidential)
+                    {
+                        broadcaster.Broadcast("ai-session.changed", new
+                        {
+                            provider = session.Provider,
+                            sessionId = session.Id,
+                            confidential = true,
+                            timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                        });
+                        return;
+                    }
+                }
+
+                if (type == "session.ended" && sessionProvider is not null
+                    && TryReadEventId(data) is { } endedId
+                    && _confidentialSessions.TryGetValue(
+                        SessionConfidentialityKey(sessionProvider.ProviderId, endedId), out var endedConfidential)
+                    && endedConfidential)
+                {
+                    broadcaster.Broadcast("ai-session.changed", new
+                    {
+                        provider = sessionProvider.ProviderId,
+                        sessionId = endedId,
+                        confidential = true,
+                        timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                    });
+                    return;
+                }
+
+                broadcaster.Broadcast(type, data);
+            };
             source.PluginEvent += _callbacks.OnSessionEvent;
         }
 
@@ -426,6 +516,21 @@ public class RelayServer
                 catch { }
             }
         }
+    }
+
+    private static string SessionConfidentialityKey(string provider, string sessionId)
+        => $"{provider}:{sessionId}";
+
+    private static string? TryReadEventId(object data)
+        => data.GetType().GetProperty("id")?.GetValue(data)?.ToString()
+            ?? data.GetType().GetProperty("Id")?.GetValue(data)?.ToString();
+
+    private static void BroadcastJob(WebSocketBroadcaster broadcaster, string eventType, RedCompute.Core.Jobs.JobRecord job)
+    {
+        if (job.Confidential)
+            broadcaster.Broadcast("job.updated", new { id = job.Id, status = job.Status, confidential = true });
+        else
+            broadcaster.Broadcast(eventType, job);
     }
 
     private async Task RunAttachmentCleanupAsync(CancellationToken ct)

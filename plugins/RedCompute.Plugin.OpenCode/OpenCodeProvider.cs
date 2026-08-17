@@ -84,11 +84,12 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
-        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory)
+        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
+        bool confidential = false)
     {
         var info = await _opencode.StartSession(projectPath, model, userId, userName,
             userAvatarUrl, endpointUrl, apiKey, effort, thinkingBudget, qualityTier, providerEntity,
-            repositoryId, provenance, scratchDirectory);
+            repositoryId, provenance, scratchDirectory, confidential);
         return info != null ? ToUnified(info) : null;
     }
 
