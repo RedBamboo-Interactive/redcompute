@@ -388,7 +388,7 @@ public class RelayServer
         broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason", "stopReason"]));
-        broadcaster.RegisterEvent(new WsEventSchema("session.stream",
+        broadcaster.RegisterEvent(new WsEventSchema(SessionTranscriptPipeline.StreamEventType,
             "Fired for each streaming event from an active session (text, tool calls, thinking, errors)",
             Fields: ["sessionId", "event", "timestamp"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.input-queue.updated",
@@ -420,7 +420,7 @@ public class RelayServer
             {
                 // Session stream payloads are persisted and broadcast exactly once by
                 // SessionTranscriptPipeline, which can suppress confidential content.
-                if (type == "session.stream") return;
+                if (type == SessionTranscriptPipeline.StreamEventType) return;
 
                 if (data is UnifiedSessionInfo session)
                 {

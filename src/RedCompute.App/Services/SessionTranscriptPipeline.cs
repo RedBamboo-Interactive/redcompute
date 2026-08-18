@@ -16,6 +16,8 @@ namespace RedCompute.App.Services;
 /// </summary>
 public sealed class SessionTranscriptPipeline
 {
+    internal const string StreamEventType = "session.stream";
+
     private static readonly TimeSpan DedupLifetime = TimeSpan.FromMinutes(10);
     private readonly RedLeafStreamClient _streams;
     private readonly WebSocketBroadcaster _broadcaster;
@@ -195,7 +197,7 @@ public sealed class SessionTranscriptPipeline
             return;
         }
 
-        _broadcaster.Broadcast("ai-session.stream", new
+        _broadcaster.Broadcast(StreamEventType, new
         {
             provider,
             sessionId,
