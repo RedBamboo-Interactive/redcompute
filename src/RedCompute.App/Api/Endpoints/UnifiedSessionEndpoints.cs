@@ -1174,7 +1174,7 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapPost("/ai-session/execute",
-            "Run an agent task with full tool access (default 30min timeout, max 2h). Use ?async for fire-and-forget with job tracking.", async (HttpContext ctx) =>
+            "Run an agent task with full tool access (default 30min timeout, max 2h). Use ?async for fire-and-forget with job tracking. Signed execution identity is derived for the admitted one-shot lifetime and passed to the provider process in REDLEAF_EXECUTION_TOKEN.", async (HttpContext ctx) =>
         {
             var userId = ResolveUserId(ctx);
             if (userId == null)
@@ -1290,6 +1290,21 @@ public static class UnifiedSessionEndpoints
             if (job.IsIdempotencyReuse)
                 return Results.Json(new { jobId = job.Id, status = job.Status.ToString(), idempotentReuse = true },
                     statusCode: job.Status is JobStatus.Running or JobStatus.Queued ? 202 : 200);
+
+            try
+            {
+                // Materialize before the sync/async split. Detached execution must not depend on
+                // request-scoped AsyncLocal state surviving after this handler returns.
+                env = SessionExecutionToken.CreateStatelessEnvironment(
+                    ctx, provider.ProviderId, provider.ProviderDisplayName, timeout, env);
+            }
+            catch (Exception ex)
+            {
+                const string message = "Failed to derive provider execution identity";
+                jobTracker.MarkFailed(job.Id, message);
+                log($"[{provider.ProviderId}] {message}: {ex.Message}", job.Id);
+                return Error(500, "execution_identity_failed", message);
+            }
             jobTracker.StartInvocation(job.Id, provenance);
             log($"[{provider.ProviderId}] Execute job {job.Id} started (model={model ?? "default"})", job.Id);
 
