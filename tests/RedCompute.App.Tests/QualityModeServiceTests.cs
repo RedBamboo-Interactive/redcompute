@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
+using RedCompute.PluginSdk;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -79,6 +80,30 @@ public sealed class QualityModeServiceTests
 
             Assert.False(loaded.TryResolveRequested("deep", "provider-without-a-model", out _, out var modelFailure));
             Assert.Equal(QualityResolutionFailure.ModelUnavailable, modelFailure);
+        }
+        finally
+        {
+            DeleteCache(cachePath);
+        }
+    }
+
+    [Fact]
+    public async Task PluginResolverReturnsProviderOwnedModelEffortAndTimeout()
+    {
+        var cachePath = TempCachePath();
+        try
+        {
+            var service = CreateService(new CatalogHandler(), cachePath);
+            Assert.True(await service.InitialSyncAsync());
+            var resolver = Assert.IsAssignableFrom<IProviderQualityModeResolver>(service);
+
+            Assert.True(resolver.TryResolveRequested("deep", "codex", out var resolved));
+            Assert.NotNull(resolved);
+            Assert.Equal("codex-default", resolved!.Provider);
+            Assert.Equal("gpt-5.6-sol", resolved.Model);
+            Assert.Equal("high", resolved.Effort);
+            Assert.Equal(75, resolved.TimeoutSeconds);
+            Assert.Equal("deep", resolved.QualityTier);
         }
         finally
         {
@@ -215,7 +240,7 @@ public sealed class QualityModeServiceTests
         """;
 
     private const string ModesJson = """
-        {"items":[{"id":"mode-deep-codex","slug":"deep-codex","data":{"quality_tier":"tier-deep","provider":"codex-default","model":"gpt-5.6-sol","effort":"high","is_default":true}}]}
+        {"items":[{"id":"mode-deep-codex","slug":"deep-codex","data":{"quality_tier":"tier-deep","provider":"codex-default","model":"gpt-5.6-sol","effort":"high","timeout":75,"is_default":true}}]}
         """;
 
     private const string SuiteConfigJson = """

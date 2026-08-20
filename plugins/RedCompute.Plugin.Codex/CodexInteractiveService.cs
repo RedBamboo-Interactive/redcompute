@@ -45,12 +45,16 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions);
 
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
+    private readonly ConcurrentDictionary<string, Lazy<Task>> _titleTasks = new();
+    private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly CodexConfig _config;
     private readonly ICodexSessionStore _store;
     private readonly CodexModelCatalog _catalog;
     private readonly CodexSessionJobLifecycle _jobLifecycle;
+    private readonly IProviderQualityModeResolver _qualityModes;
+    private readonly Func<string?> _titleQualityTier;
 
-    /// <summary>Stateless exec, used only to name sessions with a cheap one-shot.</summary>
+    /// <summary>Stateless exec used for the separately audited semantic-title operation.</summary>
     private readonly CodexSessionService _exec;
 
     private readonly Action<string, Guid?> _log;
@@ -62,13 +66,17 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
     public CodexInteractiveService(
         CodexConfig config, ICodexSessionStore store, CodexModelCatalog catalog,
-        CodexSessionService exec, IJobTracker jobTracker, Action<string, Guid?> log)
+        CodexSessionService exec, IJobTracker jobTracker,
+        IProviderQualityModeResolver qualityModes, Func<string?> titleQualityTier,
+        Action<string, Guid?> log)
     {
         _config = config;
         _store = store;
         _catalog = catalog;
         _exec = exec;
         _jobLifecycle = new CodexSessionJobLifecycle(jobTracker);
+        _qualityModes = qualityModes;
+        _titleQualityTier = titleQualityTier;
         _log = log;
         RecoverSessions();
     }
@@ -903,8 +911,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     /// without this a Codex discussion sits untitled in the sidebar forever.
     ///
     /// A deterministic title derived from the opening message is applied immediately so the
-    /// sidebar is never blank. Naming performs no hidden inference call; model selection belongs
-    /// to the request's entity-backed quality mode.
+    /// sidebar is never blank. When configured, a separately audited asynchronous inference then
+    /// upgrades it using the provider's entity-backed quality tier.
     /// </summary>
     private void EnsureTitle(ManagedSession session, string firstUserMessage)
     {
@@ -912,6 +920,117 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         var derived = DeriveTitle(firstUserMessage);
         if (derived != null) ApplyTitle(session, derived);
+
+        if (_titleQualityTier() is { } qualityTier)
+        {
+            var candidate = new Lazy<Task>(
+                () => GenerateTitleAsync(session, firstUserMessage, qualityTier),
+                LazyThreadSafetyMode.ExecutionAndPublication);
+            var tracked = _titleTasks.GetOrAdd(session.Info.Id, candidate);
+            if (ReferenceEquals(tracked, candidate))
+                _ = tracked.Value.ContinueWith(
+                    completed => { _titleTasks.TryRemove(session.Info.Id, out _); },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+        }
+    }
+
+    private async Task GenerateTitleAsync(
+        ManagedSession session,
+        string firstUserMessage,
+        string qualityTier)
+    {
+        var opening = StripContext(firstUserMessage);
+        if (string.IsNullOrWhiteSpace(opening)) return;
+
+        var provider = session.Info.ProviderEntity ?? "codex";
+        if (!_qualityModes.TryResolveRequested(qualityTier, provider, out var quality)
+            || quality is null)
+        {
+            _log($"[Codex] Title generation skipped for {session.Info.Id}: " +
+                 $"quality tier '{qualityTier}' has no model for provider '{provider}'", null);
+            return;
+        }
+
+        var titleJob = _jobLifecycle.StartTitleGeneration(
+            session.Info, quality.QualityTier, quality.Model);
+        if (titleJob is null)
+        {
+            _log($"[Codex] Title generation skipped for {session.Info.Id}: " +
+                 "the parent session has no verified job provenance", null);
+            return;
+        }
+
+        try
+        {
+            var result = await _exec.ExecuteExecAsync(
+                BuildTitlePrompt(opening),
+                container: null,
+                workingDir: null,
+                model: quality.Model,
+                sandbox: "read-only",
+                timeout: Math.Clamp(quality.TimeoutSeconds ?? 60, 10, 600),
+                _lifetimeCts.Token,
+                effort: quality.Effort);
+
+            if (!result.Success)
+            {
+                var error = result.Error ?? "Title inference returned no result";
+                _jobLifecycle.FailTitleGeneration(titleJob, error);
+                _log($"[Codex] Title generation failed for {session.Info.Id}: {error}", null);
+                return;
+            }
+
+            var title = CleanGeneratedTitle(result.Text ?? "");
+            if (title is null)
+            {
+                const string error = "Title inference returned an invalid title";
+                _jobLifecycle.FailTitleGeneration(titleJob, error);
+                _log($"[Codex] {error} for {session.Info.Id}", null);
+                return;
+            }
+
+            ApplyTitle(session, title);
+            _jobLifecycle.CompleteTitleGeneration(
+                titleJob,
+                title,
+                result.Model ?? quality.Model,
+                quality.QualityTier,
+                result.InputTokens,
+                result.OutputTokens,
+                result.CostUsd);
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+        {
+            _jobLifecycle.CancelTitleGeneration(titleJob);
+        }
+        catch (Exception ex)
+        {
+            _jobLifecycle.FailTitleGeneration(titleJob, ex.Message);
+            _log($"[Codex] Title generation failed for {session.Info.Id}: {ex.Message}", null);
+        }
+    }
+
+    internal static string BuildTitlePrompt(string opening)
+    {
+        var excerpt = opening.Length > 800 ? opening[..800] : opening;
+        return "Write a specific title of at most six words for a conversation that opens with " +
+               "the message below. Capture the subject rather than merely repeating a greeting. " +
+               "Reply with the title only: no quotes, no trailing punctuation, no preamble.\n\n" +
+               excerpt;
+    }
+
+    /// <summary>Models editorialise. Strip wrappers and reject prose instead of replacing a safe fallback.</summary>
+    public static string? CleanGeneratedTitle(string raw)
+    {
+        var line = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim())
+            .LastOrDefault(value => value.Length > 0);
+        if (line is null) return null;
+
+        line = line.Trim('"', '\'', '`', '*', ' ').TrimEnd('.', '!', ':', ';', ',').Trim();
+        return line.Length is 0 or > 70 ? null : line;
     }
 
     private void ApplyTitle(ManagedSession session, string title)
@@ -1103,5 +1222,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         StopReason = r.StopReason,
     };
 
-    public async ValueTask DisposeAsync() => await StopAllAsync();
+    public async ValueTask DisposeAsync()
+    {
+        _lifetimeCts.Cancel();
+        await StopAllAsync();
+        await Task.WhenAll(_titleTasks.Values
+            .Where(task => task.IsValueCreated)
+            .Select(task => task.Value));
+        _lifetimeCts.Dispose();
+    }
 }

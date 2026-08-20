@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text.Json;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services;
 
@@ -23,7 +24,8 @@ public record QualityMode(
 /// </summary>
 public record ResolvedMode(string Provider, string? Model, string? Effort,
     string? Backend = null, string? EndpointUrl = null, string? ApiKey = null,
-    int? ThinkingBudget = null, string? QualityTier = null);
+    int? ThinkingBudget = null, string? QualityTier = null,
+    int? TimeoutSeconds = null, int? MaxTurns = null);
 
 public enum QualityResolutionFailure
 {
@@ -40,7 +42,7 @@ public enum QualityResolutionFailure
 /// in code. A last-known-good disk snapshot covers cold-start outages and RedLeaf is
 /// retried in the background until the authoritative entity catalog is available.
 /// </summary>
-public class QualityModeService
+public class QualityModeService : IProviderQualityModeResolver
 {
     private readonly RedComputeConfig _config;
     private readonly Action<string, Guid?> _log;
@@ -303,6 +305,25 @@ public class QualityModeService
         return true;
     }
 
+    bool IProviderQualityModeResolver.TryResolveRequested(
+        string qualityTier,
+        string? preferredProvider,
+        out ProviderQualityMode? resolved)
+    {
+        resolved = null;
+        if (!TryResolveRequested(qualityTier, preferredProvider, out var mode, out _)
+            || mode?.Model is not { Length: > 0 } model)
+            return false;
+
+        resolved = new ProviderQualityMode(
+            mode.Provider,
+            model,
+            mode.Effort,
+            mode.TimeoutSeconds,
+            mode.QualityTier ?? qualityTier);
+        return true;
+    }
+
     private QualityMode ChooseDefault(IReadOnlyList<QualityMode> candidates)
     {
         var suiteDefaultProvider = _providerConfig.DefaultProviderSlug;
@@ -369,7 +390,8 @@ public class QualityModeService
     private ResolvedMode ToResolved(QualityMode m)
     {
         var pc = _providerConfig.Resolve(m.Provider);
-        return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey, m.ThinkingBudget, m.QualityTier);
+        return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey,
+            m.ThinkingBudget, m.QualityTier, m.Timeout, m.MaxTurns);
     }
 
     private void ApplySnapshot(

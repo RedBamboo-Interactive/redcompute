@@ -49,7 +49,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public string? LastStartError => null;
 
     public CodexProvider(ProviderConfig config, string capabilitySlug,
-        IJobTracker jobTracker, Action<string, Guid?> log)
+        IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
+        Action<string, Guid?> log)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -60,7 +61,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var codexConfig = BuildConfig(config);
         _codex = new CodexSessionService(codexConfig, jobTracker, store, log);
         _models = new CodexModelCatalog(codexConfig, log);
-        _interactive = new CodexInteractiveService(codexConfig, store, _models, _codex, jobTracker, log);
+        _interactive = new CodexInteractiveService(
+            codexConfig, store, _models, _codex, jobTracker, qualityModes,
+            () => GetTitleQualityTier(config), log);
 
         _codex.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _codex.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
@@ -402,6 +405,15 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             Model = config.Model,
             SandboxMode = ProviderHelpers.GetExtra(config, "SandboxMode", "workspace-write"),
         };
+    }
+
+    internal static string? GetTitleQualityTier(ProviderConfig config)
+    {
+        var value = ProviderHelpers.GetExtra(config, "TitleQualityTier", "fast").Trim();
+        return string.IsNullOrWhiteSpace(value)
+            || value.Equals("off", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : value;
     }
 
     public Dictionary<string, ParameterSchema> InputParameters => new()

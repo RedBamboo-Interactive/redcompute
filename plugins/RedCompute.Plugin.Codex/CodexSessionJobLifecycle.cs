@@ -68,6 +68,79 @@ internal sealed class CodexSessionJobLifecycle
     }
 
     /// <summary>
+    /// Creates a separately auditable child operation for semantic title inference.
+    /// If the parent session has no verified provenance, inference fails closed and the
+    /// deterministic title remains instead of becoming an untracked hidden model call.
+    /// </summary>
+    public JobRecord? StartTitleGeneration(
+        CodexSessionInfo info,
+        string qualityTier,
+        string model)
+    {
+        var parent = info.JobId is { } parentId ? _jobs.GetJob(parentId) : null;
+        if (parent?.CreationProvenance is not { } provenance) return null;
+        var childProvenance = provenance with
+        {
+            Trace = provenance.Trace with { ParentJobId = parent.Id.ToString() },
+        };
+
+        var job = _jobs.CreateJob(new JobSubmission(
+            "ai-session",
+            "Codex",
+            JsonSerializer.Serialize(new
+            {
+                operation = "session-title",
+                sessionId = info.Id,
+                qualityTier,
+                model,
+            }),
+            childProvenance,
+            $"ai-session:codex:{info.Id}:title",
+            "Generate discussion title",
+            "Asynchronous semantic title for an interactive session",
+            Confidential: parent.Confidential));
+
+        if (!job.IsIdempotencyReuse)
+            _jobs.StartInvocation(job.Id, childProvenance);
+        return job;
+    }
+
+    public void CompleteTitleGeneration(
+        JobRecord? job,
+        string title,
+        string model,
+        string qualityTier,
+        int inputTokens,
+        int outputTokens,
+        double? costUsd)
+    {
+        if (job is null) return;
+        _jobs.MarkCompleted(job.Id, resultJson: JsonSerializer.Serialize(new
+        {
+            title,
+            model,
+            qualityTier,
+            inputTokens,
+            outputTokens,
+        }), costUsd: costUsd);
+    }
+
+    public void FailTitleGeneration(JobRecord? job, string error)
+    {
+        if (job is null) return;
+        _jobs.MarkFailed(job.Id, error, resultJson: JsonSerializer.Serialize(new
+        {
+            operation = "session-title",
+            fallback = "opening-message",
+        }));
+    }
+
+    public void CancelTitleGeneration(JobRecord? job)
+    {
+        if (job is not null) _jobs.MarkCancelled(job.Id);
+    }
+
+    /// <summary>
     /// Reconstruct the job row from the surviving session record. LastActivity is the only honest
     /// terminal timestamp available for the affected sessions; the result metadata calls this out
     /// rather than pretending it is an exact historical stop time.

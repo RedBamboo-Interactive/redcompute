@@ -40,6 +40,7 @@ public partial class App : Application
     public static JobTrackingService JobTracker { get; } = new();
     public static HardwareMonitorService HardwareMonitor { get; } = new();
     public static ProviderConfigService ProviderConfig { get; private set; } = null!;
+    public static QualityModeService QualityModes { get; private set; } = null!;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -77,6 +78,12 @@ public partial class App : Application
         if (vaultedProviderKeys.Count > 0)
             ConfigManager.Save();
         Log("[App] Provider entities synced");
+
+        // Construct the shared resolver before provider plugins so provider-owned internal
+        // inference can resolve entity-backed tiers. RelayServer loads its authoritative
+        // RedLeaf/cache snapshot before accepting requests.
+        QualityModes = new QualityModeService(
+            ConfigManager.Config, (msg, jobId) => Log(msg, jobId), ProviderConfig);
 
         DefenderExclusionService.EnsureExclusions(s => Log(s));
 
@@ -135,6 +142,7 @@ public partial class App : Application
         var extraServices = new object?[]
         {
             (IJobTracker)JobTracker,
+            (IProviderQualityModeResolver)QualityModes,
             (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),
         };
 
@@ -213,6 +221,7 @@ public partial class App : Application
             var extraServices = new object?[]
             {
                 (IJobTracker)JobTracker,
+                (IProviderQualityModeResolver)QualityModes,
                 (Action<string, Guid?>)((message, jobId) => Log(message, jobId)),
             };
             foreach (var (capabilitySlug, providerName) in changed)
@@ -307,7 +316,9 @@ public partial class App : Application
     private async Task StartRelayServer()
     {
         _relayCts = new CancellationTokenSource();
-        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger, ConfigManager, HardwareMonitor, ProviderConfig, (msg, jobId) => Log(msg, jobId));
+        _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger,
+            ConfigManager, HardwareMonitor, ProviderConfig, QualityModes,
+            (msg, jobId) => Log(msg, jobId));
 
         try
         {

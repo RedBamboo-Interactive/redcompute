@@ -103,6 +103,48 @@ public sealed class CodexSessionJobLifecycleTests
         Assert.Contains("\"inputTokens\":123", job.ResultJson);
     }
 
+    [Fact]
+    public void TitleGenerationIsSeparateAuditedAndConfidential()
+    {
+        var tracker = new FakeJobTracker();
+        var lifecycle = new CodexSessionJobLifecycle(tracker);
+        var session = SessionInfo();
+        lifecycle.Start(session, Provenance(), confidential: true);
+
+        var titleJob = lifecycle.StartTitleGeneration(session, "fast", "gpt-5.6-luna");
+
+        Assert.NotNull(titleJob);
+        Assert.Equal(2, tracker.Jobs.Count);
+        Assert.Equal(JobStatus.Running, titleJob!.Status);
+        Assert.True(titleJob.Confidential);
+        Assert.Equal(session.JobId, titleJob.ParentJobId);
+        Assert.Equal("ai-session:codex:session-1:title", titleJob.IdempotencyKey);
+        Assert.Equal("Generate discussion title", titleJob.Name);
+        Assert.DoesNotContain("user message", titleJob.InputJson, StringComparison.OrdinalIgnoreCase);
+
+        lifecycle.CompleteTitleGeneration(
+            titleJob,
+            "Semantic Titles Restored",
+            "gpt-5.6-luna",
+            "fast",
+            inputTokens: 45,
+            outputTokens: 6,
+            costUsd: 0.0001);
+
+        Assert.Equal(JobStatus.Completed, titleJob.Status);
+        Assert.Equal(0.0001, titleJob.CostUsd);
+        Assert.Contains("\"title\":\"Semantic Titles Restored\"", titleJob.ResultJson);
+        Assert.Contains("\"inputTokens\":45", titleJob.ResultJson);
+    }
+
+    [Fact]
+    public void TitleGenerationFailsClosedWithoutParentProvenance()
+    {
+        var lifecycle = new CodexSessionJobLifecycle(new FakeJobTracker());
+
+        Assert.Null(lifecycle.StartTitleGeneration(SessionInfo(), "fast", "gpt-5.6-luna"));
+    }
+
     private static CodexSessionInfo SessionInfo() => new()
     {
         Id = "session-1",
@@ -160,6 +202,10 @@ public sealed class CodexSessionJobLifecycleTests
                 UserName = submission.Provenance.OnBehalfOf.NameSnapshot,
                 UserAvatarUrl = submission.Provenance.OnBehalfOf.AvatarSnapshot,
                 CreationProvenance = submission.Provenance,
+                ParentJobId = Guid.TryParse(submission.Provenance.Trace.ParentJobId, out var parentJobId)
+                    ? parentJobId
+                    : null,
+                Confidential = submission.Confidential,
             };
             Jobs.Add(job.Id, job);
             return job;

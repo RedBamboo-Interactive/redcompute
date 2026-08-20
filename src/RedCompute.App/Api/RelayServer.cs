@@ -51,7 +51,8 @@ public class RelayServer
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
-        HardwareMonitorService hardwareMonitor, ProviderConfigService providerConfig, Action<string, Guid?> log)
+        HardwareMonitorService hardwareMonitor, ProviderConfigService providerConfig,
+        QualityModeService qualityModes, Action<string, Guid?> log)
     {
         _config = config;
         _registry = registry;
@@ -62,7 +63,7 @@ public class RelayServer
         _docker = new DockerContainerService(log);
         _providerConfig = providerConfig;
         _inputAttachments = new InputAttachmentStore(config);
-        _qualityModes = new QualityModeService(config, log, _providerConfig);
+        _qualityModes = qualityModes;
         _callbacks = new SessionCallbackRegistry(log);  // re-created with auth factory after Build()
         _log = log;
     }
