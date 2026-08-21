@@ -134,9 +134,10 @@ public sealed class ReleaseToolTests
         var yaml = string.Join("\n", workflow);
         Assert.DoesNotContain("\n      channel:", yaml, StringComparison.Ordinal);
         Assert.DoesNotContain("github.sha", yaml, StringComparison.Ordinal);
-        Assert.Contains("ref: ${{ github.workflow_sha }}", yaml, StringComparison.Ordinal);
-        Assert.Contains("REDCOMPUTE_SHA: ${{ github.workflow_sha }}", yaml, StringComparison.Ordinal);
-        Assert.Contains("name: redcompute-${{ github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}", yaml, StringComparison.Ordinal);
+        Assert.Contains("source_commit:", yaml, StringComparison.Ordinal);
+        Assert.Contains("ref: ${{ inputs.source_commit || github.workflow_sha }}", yaml, StringComparison.Ordinal);
+        Assert.Contains("REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}", yaml, StringComparison.Ordinal);
+        Assert.Contains("name: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}", yaml, StringComparison.Ordinal);
         Assert.Contains("dotnet restore RedCompute.sln --locked-mode", yaml, StringComparison.Ordinal);
         Assert.DoesNotContain("CycloneDX", yaml, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("--sbom", yaml, StringComparison.Ordinal);

@@ -7,6 +7,11 @@ on:
         description: Exact RedCompute semantic version built into the component input.
         required: true
         type: string
+      source_commit:
+        description: Exact producer source commit supplied by trusted automation.
+        required: false
+        default: ''
+        type: string
       compatible_product_version:
         description: Compatible RedLeaf product Phase 1 version range.
         required: true
@@ -58,7 +63,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: RedBamboo-Interactive/redcompute
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ inputs.source_commit || github.workflow_sha }}
           path: redcompute
           persist-credentials: false
 
@@ -120,7 +125,7 @@ jobs:
           COMPATIBLE_PRODUCT_VERSION: ${{ inputs.compatible_product_version }}
           REQUIRES_KERNEL_API: ${{ inputs.requires_kernel_api }}
           PROVIDES_COMPUTE_API: ${{ inputs.provides_compute_api }}
-          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+          REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}
         run: |
           $semver = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
           foreach ($value in @($env:COMPONENT_VERSION, $env:PROVIDES_COMPUTE_API)) {
@@ -205,7 +210,7 @@ jobs:
         env:
           COMPONENT_VERSION: ${{ inputs.version }}
           REDCOMPUTE_REPOSITORY: https://github.com/RedBamboo-Interactive/redcompute
-          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+          REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}
         run: |
           $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
           $redComputeRoot = (Get-Location).Path
@@ -291,7 +296,7 @@ jobs:
         shell: pwsh
         env:
           ARTIFACT_NAME_TEMPLATE: ${{ steps.redleaf-tool.outputs.artifact_name_template }}
-          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+          REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}
         run: |
           $productionRoot = Join-Path $env:RUNNER_TEMP 'redcompute-productions'
           $artifact = Join-Path $productionRoot 'first/redcompute-win-x64.zip'
@@ -357,7 +362,7 @@ jobs:
       - name: Upload unsigned component and generic candidate bytes for audit
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: redcompute-${{ github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: redcompute/artifacts/**
           if-no-files-found: error
           retention-days: 14
@@ -373,17 +378,19 @@ jobs:
     permissions:
       actions: read
       contents: write
+    env:
+      GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
     steps:
       - name: Download exact unsigned candidate inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: redcompute-${{ github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: bridge-input
 
       - name: Prepare immutable bridge asset names
         shell: pwsh
         env:
-          REDCOMPUTE_SHA: ${{ github.workflow_sha }}
+          REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}
         run: |
           $descriptor = @(Get-ChildItem bridge-input -Recurse -File -Filter redcompute-release-candidate.unsigned.json)
           if ($descriptor.Count -ne 1) { throw 'Expected exactly one unsigned RedCompute descriptor.' }
@@ -426,7 +433,7 @@ jobs:
           $tag = 'redcompute-unsigned-candidates'
           $releaseJson = & gh release view $tag --json isDraft,isPrerelease,assets 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --prerelease --latest=false --target '${{ github.workflow_sha }}' `
+            gh release create $tag --prerelease --latest=false --target $env:REDCOMPUTE_SHA `
               --title 'Rolling unsigned RedCompute candidates' `
               --notes 'Unsigned producer inputs for exact central component publication. Trust comes only from central signed metadata.'
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the rolling RedCompute candidate prerelease.' }
