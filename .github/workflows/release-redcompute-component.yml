@@ -43,13 +43,16 @@ on:
         type: string
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
 jobs:
   build:
     name: Build unsigned self-contained win-x64 input
     runs-on: windows-2025
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - name: Checkout exact RedCompute commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
