@@ -9,6 +9,8 @@ public class CodexStreamEvent
     public string? ToolResult { get; init; }
     public bool IsPartial { get; init; }
     public string? MessageId { get; init; }
+    /// <summary>Codex assistant-message phase: commentary or final_answer.</summary>
+    public string? Phase { get; set; }
 
     /// <summary>
     /// Provider-neutral turn uid. Settable rather than init-only because the mapper builds events

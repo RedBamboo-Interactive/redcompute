@@ -276,7 +276,12 @@ public class CodexSessionService
                 {
                     var content = ExtractTextContent(item);
                     if (content != null)
-                        events.Add(new CodexStreamEvent { Type = "text", Content = content });
+                        events.Add(new CodexStreamEvent
+                        {
+                            Type = "text",
+                            Content = content,
+                            Phase = ExtractMessagePhase(item),
+                        });
                     break;
                 }
                 case "reasoning":
@@ -391,6 +396,15 @@ public class CodexSessionService
             return directText.GetString();
 
         return null;
+    }
+
+    private static string? ExtractMessagePhase(JsonElement item)
+    {
+        var phase = item.TryGetProperty("phase", out var value)
+            && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        return phase is "commentary" or "final_answer" ? phase : null;
     }
 
     private ExecuteResult ParseExecOutput(string stdout, string? requestedModel)

@@ -10,6 +10,10 @@ public class UnifiedStreamEvent
     public TranscriptPayloadRef? PayloadRef { get; init; }
     public bool IsPartial { get; init; }
     public string? MessageId { get; init; }
+    // Provider-authored assistant-message phase. Codex currently emits
+    // commentary and final_answer; null preserves legacy/provider-neutral
+    // behavior when a backend does not classify text.
+    public string? Phase { get; init; }
     // Provider-neutral message identity minted by RedCompute (not the
     // provider's msg_/toolu_ id). All events of one assistant turn share it;
     // the persisted records carry the same value, so a streamed block and its

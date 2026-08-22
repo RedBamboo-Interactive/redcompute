@@ -34,6 +34,7 @@ public sealed class RedLeafSessionReaderTests
         Assert.Equal(Guid.Parse("1910ac53-d68a-4ccc-883d-0541c0091d9b"), info?.RepositoryId);
         Assert.Equal([2L, 3L], history.Select(message => message.Id));
         Assert.Equal(["second", "third"], history.Select(message => message.Content));
+        Assert.All(history, message => Assert.Equal("final_answer", message.Phase));
         Assert.Contains(handler.Requests, path => path.Contains("order=desc") && path.Contains("limit=2"));
         Assert.DoesNotContain(handler.Requests, path => path.Contains("after_id="));
     }
@@ -122,6 +123,7 @@ public sealed class RedLeafSessionReaderTests
                 role = "assistant",
                 event_type = "text",
                 content,
+                phase = "final_answer",
                 timestamp = $"2026-08-02T18:00:0{id}Z",
             }),
         };

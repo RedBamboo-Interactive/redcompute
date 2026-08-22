@@ -46,6 +46,7 @@ public class CodexSessionStore : ICodexSessionStore
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        Phase = m.Phase,
         MessageUid = m.MessageUid,
         AttachmentsJson = m.AttachmentsJson,
         Timestamp = m.Timestamp,

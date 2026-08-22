@@ -40,6 +40,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         /// renders every message twice.
         /// </summary>
         public HashSet<string> StreamedItems { get; } = [];
+
+        /// <summary>
+        /// Codex includes commentary/final phase on item start/completion but not on text deltas.
+        /// Retain it by item id so every live delta carries the same semantic phase as its durable
+        /// completion record.
+        /// </summary>
+        public Dictionary<string, string> MessagePhases { get; } = [];
     }
 
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions);
@@ -659,6 +666,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 ApplyUsage(session, @params);
                 session.ActiveTurnId = null;
                 session.StreamedItems.Clear();
+                session.MessagePhases.Clear();
                 session.Info.Status = "Idle";
                 session.Info.LastActivity = DateTimeOffset.UtcNow;
                 Persist(session.Info);
@@ -683,7 +691,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 return;
         }
 
-        foreach (var evt in CodexEventMapper.Map(method, @params))
+        foreach (var evt in CodexEventMapper.Map(method, @params, session.MessagePhases))
         {
             // Text and reasoning arrive twice: streamed as deltas, then whole again on
             // item/completed. The client appends partials into one part, so emitting the complete
@@ -765,6 +773,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             ToolInput = evt.ToolInput is null ? null : JsonSerializer.Serialize(evt.ToolInput),
             ToolResult = evt.ToolResult,
             MessageId = evt.MessageId,
+            Phase = evt.Phase,
             MessageUid = evt.MessageUid,
             Timestamp = DateTimeOffset.UtcNow,
         });

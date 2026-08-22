@@ -12,6 +12,9 @@ public class UnifiedMessageRecord
     public string? ToolResult { get; set; }
     public TranscriptPayloadRef? PayloadRef { get; set; }
     public string? MessageId { get; set; }
+    // Optional provider-authored assistant-message phase (for example,
+    // commentary or final_answer). Null on legacy and unclassified records.
+    public string? Phase { get; set; }
     // Provider-neutral message uid (see UnifiedStreamEvent.MessageUid).
     // Null on records persisted before the uid rollout.
     public string? MessageUid { get; set; }

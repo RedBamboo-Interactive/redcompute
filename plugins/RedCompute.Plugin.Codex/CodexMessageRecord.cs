@@ -11,6 +11,7 @@ public class CodexMessageRecord
     public string? ToolInput { get; set; }
     public string? ToolResult { get; set; }
     public string? MessageId { get; set; }
+    public string? Phase { get; set; }
 
     /// <summary>
     /// Provider-neutral turn identity, minted once per assistant turn and stamped on every event in

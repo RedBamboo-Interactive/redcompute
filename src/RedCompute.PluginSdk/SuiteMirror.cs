@@ -50,6 +50,7 @@ public sealed class AiMessageSnapshot
     public string? ToolResult { get; init; }
     public TranscriptPayloadRef? PayloadRef { get; init; }
     public string? MessageId { get; init; }
+    public string? Phase { get; init; }
     // Provider-neutral message uid minted by RedCompute; shared by all
     // events of one assistant turn and carried into the RedLeaf mirror.
     public string? MessageUid { get; init; }

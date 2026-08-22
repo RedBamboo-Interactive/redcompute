@@ -119,6 +119,7 @@ public sealed class RedLeafSessionReader
                 ToolResult = Str(d, "tool_result"),
                 PayloadRef = MapPayloadRef(rec, id),
                 MessageId = Str(d, "message_id"),
+                Phase = Str(d, "phase"),
                 MessageUid = Str(d, "message_uid"),
                 Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
                     ? t : default,

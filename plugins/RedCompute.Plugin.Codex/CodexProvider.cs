@@ -375,6 +375,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ToolResult = e.ToolResult,
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
+        Phase = e.Phase,
         MessageUid = e.MessageUid,
         RequestId = e.RequestId,
     };
@@ -390,6 +391,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        Phase = m.Phase,
+        MessageUid = m.MessageUid,
         Timestamp = m.Timestamp,
     };
 

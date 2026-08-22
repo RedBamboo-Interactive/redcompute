@@ -23,13 +23,26 @@ public static class CodexEventMapper
     /// (e.g. "item/completed"); <paramref name="params"/> its params object.
     /// Returns zero or more events, in emission order.
     /// </summary>
-    public static List<CodexStreamEvent> Map(string method, JsonElement @params)
+    public static List<CodexStreamEvent> Map(
+        string method,
+        JsonElement @params,
+        IDictionary<string, string>? messagePhases = null)
     {
         // Stateless exec emits the same vocabulary with dots ("item.completed") rather than
         // slashes. Normalise so one mapper serves both transports.
         var m = method.Replace('.', '/');
 
-        return m switch
+        string? completedAgentMessageId = null;
+        if (messagePhases is not null
+            && m is "item/started" or "item/completed"
+            && TryAgentMessageIdentity(@params, out var itemId, out var phase)
+            && itemId is { Length: > 0 })
+        {
+            if (phase is { Length: > 0 }) messagePhases[itemId] = phase;
+            if (m == "item/completed") completedAgentMessageId = itemId;
+        }
+
+        var events = m switch
         {
             "item/started" => MapItem(@params, started: true),
             "item/completed" => MapItem(@params, started: false),
@@ -57,6 +70,20 @@ public static class CodexEventMapper
 
             _ => [],
         };
+
+        if (messagePhases is not null)
+        {
+            foreach (var evt in events)
+                if (evt.Phase is null
+                    && evt.MessageId is { Length: > 0 } messageId
+                    && messagePhases.TryGetValue(messageId, out var knownPhase))
+                    evt.Phase = knownPhase;
+
+            if (completedAgentMessageId is not null)
+                messagePhases.Remove(completedAgentMessageId);
+        }
+
+        return events;
     }
 
     /// <summary>
@@ -88,7 +115,8 @@ public static class CodexEventMapper
 
         return itemType switch
         {
-            "agentMessage" => Single("text", Str(item, "text"), partial: started, messageId: id),
+            "agentMessage" => Single(
+                "text", Str(item, "text"), partial: started, messageId: id, phase: MessagePhase(item)),
             "plan" => started ? [] : Single("text", Str(item, "text"), partial: false, messageId: id),
             "reasoning" => Single("thinking", Reasoning(item), partial: started, messageId: id),
 
@@ -331,10 +359,39 @@ public static class CodexEventMapper
     ];
 
     private static List<CodexStreamEvent> Single(
-        string type, string? content, bool partial, string? messageId) =>
+        string type, string? content, bool partial, string? messageId, string? phase = null) =>
         string.IsNullOrEmpty(content)
             ? []
-            : [new CodexStreamEvent { Type = type, Content = content, IsPartial = partial, MessageId = messageId }];
+            : [new CodexStreamEvent
+            {
+                Type = type,
+                Content = content,
+                IsPartial = partial,
+                MessageId = messageId,
+                Phase = phase,
+            }];
+
+    private static bool TryAgentMessageIdentity(
+        JsonElement @params,
+        out string? itemId,
+        out string? phase)
+    {
+        itemId = null;
+        phase = null;
+        if (!@params.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object)
+            return false;
+        if (NormaliseItemType(Str(item, "type")) != "agentMessage") return false;
+
+        itemId = Str(item, "id");
+        phase = MessagePhase(item);
+        return true;
+    }
+
+    private static string? MessagePhase(JsonElement item)
+    {
+        var phase = Str(item, "phase");
+        return phase is "commentary" or "final_answer" ? phase : null;
+    }
 
     /// <summary>Delta notifications carry their payload as `delta`, or occasionally `text`.</summary>
     private static string? Text(JsonElement p) => Str(p, "delta") ?? Str(p, "text");
