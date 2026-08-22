@@ -426,7 +426,7 @@ jobs:
       - name: Append and re-verify rolling unsigned prerelease assets
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           GH_REPO: RedBamboo-Interactive/redcompute
         run: |
           if ($env:GITHUB_REPOSITORY -cne $env:GH_REPO) { throw 'This bridge publishes only in RedBamboo-Interactive/redcompute.' }
