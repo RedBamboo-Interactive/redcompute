@@ -365,7 +365,7 @@ jobs:
           name: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: redcompute/artifacts/**
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   bridge:
     name: Append unsigned RedCompute bytes to rolling prerelease
