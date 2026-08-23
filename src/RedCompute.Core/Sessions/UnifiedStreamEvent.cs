@@ -23,6 +23,8 @@ public class UnifiedStreamEvent
     // (Claude Code's "question" / "question_resolved" events). Echoed back to
     // POST /ai-session/sessions/{id}/question. Null on every other event.
     public string? RequestId { get; init; }
+    public string? Epoch { get; init; }
+    public long? Sequence { get; init; }
     public List<UnifiedAttachment>? Attachments { get; init; }
 }
 

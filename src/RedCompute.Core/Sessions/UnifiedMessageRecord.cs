@@ -18,6 +18,8 @@ public class UnifiedMessageRecord
     // Provider-neutral message uid (see UnifiedStreamEvent.MessageUid).
     // Null on records persisted before the uid rollout.
     public string? MessageUid { get; set; }
+    public string? Epoch { get; set; }
+    public long? Sequence { get; set; }
     public DateTimeOffset Timestamp { get; set; }
     public string? AttachmentsJson { get; set; }
 }

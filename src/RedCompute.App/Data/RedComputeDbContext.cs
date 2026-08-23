@@ -103,6 +103,12 @@ public class RedComputeDbContext : DbContext
             CREATE INDEX IF NOT EXISTS IX_Jobs_IdempotencyScope_Key ON Jobs(IdempotencyScope, IdempotencyKey);
             CREATE INDEX IF NOT EXISTS IX_Jobs_ParentJobId ON Jobs(ParentJobId);
             CREATE INDEX IF NOT EXISTS IX_Jobs_ExternalLease ON Jobs(ExternalExecution, Status, LeaseExpiresAt);
+
+            CREATE TABLE IF NOT EXISTS TranscriptCursors (
+                SessionKey TEXT PRIMARY KEY,
+                Epoch TEXT NOT NULL,
+                LastSequence INTEGER NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
     }

@@ -23,6 +23,7 @@ public sealed class SessionTranscriptPipeline
     private readonly WebSocketBroadcaster _broadcaster;
     private readonly Action<string, Guid?> _log;
     private readonly Func<string, string, bool> _isConfidential;
+    private readonly ITranscriptSequenceStore _sequences;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _livePayloads = new();
 
     public SessionTranscriptPipeline(
@@ -30,11 +31,22 @@ public sealed class SessionTranscriptPipeline
         WebSocketBroadcaster broadcaster,
         Action<string, Guid?> log,
         Func<string, string, bool>? isConfidential = null)
+        : this(streams, broadcaster, log, isConfidential, new TranscriptSequenceStore())
+    {
+    }
+
+    internal SessionTranscriptPipeline(
+        RedLeafStreamClient streams,
+        WebSocketBroadcaster broadcaster,
+        Action<string, Guid?> log,
+        Func<string, string, bool>? isConfidential,
+        ITranscriptSequenceStore sequences)
     {
         _streams = streams;
         _broadcaster = broadcaster;
         _log = log;
         _isConfidential = isConfidential ?? ((_, _) => false);
+        _sequences = sequences;
     }
 
     public void HandleLiveEvent(string provider, string sessionId, UnifiedStreamEvent evt)
@@ -44,6 +56,9 @@ public sealed class SessionTranscriptPipeline
         // durable payload plus one lightweight completion event.
         if (evt.Type == "tool_result" && evt.IsPartial)
             return;
+
+        var stamp = _sequences.Next(provider, sessionId);
+        evt = WithStamp(evt, stamp);
 
         if (evt.Type != "tool_result" || Output(evt) is not { Length: > 0 } output)
         {
@@ -58,7 +73,8 @@ public sealed class SessionTranscriptPipeline
                     evt.ToolInput?.ToString(), evt.MessageId, evt.MessageUid,
                     DateTimeOffset.UtcNow,
                     evt.Attachments is { Count: > 0 } ? JsonSerializer.Serialize(evt.Attachments) : null,
-                    output)
+                    output,
+                    stamp)
                 .GetAwaiter().GetResult();
 
             _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, output)] = DateTimeOffset.UtcNow;
@@ -106,7 +122,8 @@ public sealed class SessionTranscriptPipeline
                     PersistToolOutputAsync(
                             message.Provider, message.SessionId, message.Role,
                             message.ToolName, message.ToolInput, message.MessageId,
-                            message.MessageUid, message.Timestamp, message.AttachmentsJson, output)
+                            message.MessageUid, message.Timestamp, message.AttachmentsJson, output,
+                            _sequences.Next(message.Provider, message.SessionId))
                         .GetAwaiter().GetResult();
                     continue;
                 }
@@ -116,7 +133,7 @@ public sealed class SessionTranscriptPipeline
                 }
             }
 
-            EnqueueInline(message);
+            EnqueueInline(message, _sequences.Next(message.Provider, message.SessionId));
         }
     }
 
@@ -130,7 +147,8 @@ public sealed class SessionTranscriptPipeline
         string? messageUid,
         DateTimeOffset timestamp,
         string? attachmentsJson,
-        string output)
+        string output,
+        TranscriptStamp stamp)
     {
         var bytes = Encoding.UTF8.GetBytes(output);
         var descriptor = await _streams.AppendPayloadForEntityAsync(
@@ -146,6 +164,8 @@ public sealed class SessionTranscriptPipeline
                 tool_input = toolInput,
                 message_id = messageId,
                 message_uid = messageUid,
+                epoch = stamp.Epoch,
+                sequence = stamp.Sequence,
                 timestamp = timestamp.ToString("O"),
                 attachments_json = attachmentsJson,
                 payload_kind = "tool-output",
@@ -167,7 +187,7 @@ public sealed class SessionTranscriptPipeline
         };
     }
 
-    private void EnqueueInline(AiMessageSnapshot message) =>
+    private void EnqueueInline(AiMessageSnapshot message, TranscriptStamp stamp) =>
         _streams.EnqueueForEntity("session-messages", SessionEntitySlug(message.Provider, message.SessionId), new
         {
             provider = message.Provider,
@@ -181,6 +201,8 @@ public sealed class SessionTranscriptPipeline
             message_id = message.MessageId,
             phase = message.Phase,
             message_uid = message.MessageUid,
+            epoch = stamp.Epoch,
+            sequence = stamp.Sequence,
             timestamp = message.Timestamp.ToString("O"),
             attachments_json = message.AttachmentsJson,
         });
@@ -212,6 +234,24 @@ public sealed class SessionTranscriptPipeline
     }
 
     private static string? Output(UnifiedStreamEvent evt) => evt.ToolResult ?? evt.Content;
+
+    private static UnifiedStreamEvent WithStamp(UnifiedStreamEvent evt, TranscriptStamp stamp) => new()
+    {
+        Type = evt.Type,
+        Content = evt.Content,
+        ToolName = evt.ToolName,
+        ToolInput = evt.ToolInput,
+        ToolResult = evt.ToolResult,
+        PayloadRef = evt.PayloadRef,
+        IsPartial = evt.IsPartial,
+        MessageId = evt.MessageId,
+        Phase = evt.Phase,
+        MessageUid = evt.MessageUid,
+        RequestId = evt.RequestId,
+        Epoch = stamp.Epoch,
+        Sequence = stamp.Sequence,
+        Attachments = evt.Attachments,
+    };
 
     private static string Fingerprint(
         string provider, string sessionId, string? messageUid, string? messageId, string output)

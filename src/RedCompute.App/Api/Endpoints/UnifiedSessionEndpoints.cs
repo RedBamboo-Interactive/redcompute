@@ -296,7 +296,8 @@ public static class UnifiedSessionEndpoints
                 return ComputeResourceAccess.SessionDenied(info);
 
             var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
-            return Results.Json(new { session = info, messages = history, inputQueue = queue });
+            var transcript = TranscriptOrdering.Cursor(info.Provider, info.Id, history);
+            return Results.Json(new { session = info, messages = history, inputQueue = queue, transcript });
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("tail", "integer", description: "Return only the newest transcript records, in chronological order (max 10000)", location: ParamLocation.Query);
@@ -424,7 +425,12 @@ public static class UnifiedSessionEndpoints
             }
 
             if (info != null)
-                return Results.Json(new { session = info, messages = history });
+                return Results.Json(new
+                {
+                    session = info,
+                    messages = history,
+                    transcript = TranscriptOrdering.Cursor(info.Provider, info.Id, history),
+                });
             return Results.Json(new ErrorResponse { Error = "not_found", Message = $"No session for job '{jobId}'" }, statusCode: 404);
         });
 

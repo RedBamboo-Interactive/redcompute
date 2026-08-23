@@ -35,6 +35,8 @@ public sealed class RedLeafSessionReaderTests
         Assert.Equal([2L, 3L], history.Select(message => message.Id));
         Assert.Equal(["second", "third"], history.Select(message => message.Content));
         Assert.All(history, message => Assert.Equal("final_answer", message.Phase));
+        Assert.All(history, message => Assert.Equal("epoch-1", message.Epoch));
+        Assert.Equal([2L, 3L], history.Select(message => message.Sequence));
         Assert.Contains(handler.Requests, path => path.Contains("order=desc") && path.Contains("limit=2"));
         Assert.DoesNotContain(handler.Requests, path => path.Contains("after_id="));
     }
@@ -124,6 +126,8 @@ public sealed class RedLeafSessionReaderTests
                 event_type = "text",
                 content,
                 phase = "final_answer",
+                epoch = "epoch-1",
+                sequence = id,
                 timestamp = $"2026-08-02T18:00:0{id}Z",
             }),
         };

@@ -121,6 +121,8 @@ public sealed class RedLeafSessionReader
                 MessageId = Str(d, "message_id"),
                 Phase = Str(d, "phase"),
                 MessageUid = Str(d, "message_uid"),
+                Epoch = Str(d, "epoch"),
+                Sequence = Long(d, "sequence"),
                 Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
                     ? t : default,
                 AttachmentsJson = Str(d, "attachments_json"),
@@ -260,6 +262,9 @@ public sealed class RedLeafSessionReader
 
     private static int? Int(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
+
+    private static long? Long(JsonElement e, string key) =>
+        e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : null;
 
     private static double? Dbl(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
