@@ -266,8 +266,9 @@ public sealed class ReleaseToolTests
         Assert.DoesNotContain("$visibility -cne 'public'", workflow, StringComparison.Ordinal);
         Assert.Contains("Expected exactly one RedCompute ZIP matching the unsigned descriptor", workflow, StringComparison.Ordinal);
         Assert.Contains("if ($existingNames -notcontains $file.Name)", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain("gh release upload $tag $file.FullName --clobber", workflow, StringComparison.Ordinal);
-        Assert.Contains("gh release download $tag --pattern $file.Name", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("--clobber", workflow, StringComparison.Ordinal);
+        Assert.Contains("gh release upload $tag --repo $env:GH_REPO $file.FullName", workflow, StringComparison.Ordinal);
+        Assert.Contains("gh release download $tag --repo $env:GH_REPO --pattern $file.Name", workflow, StringComparison.Ordinal);
         Assert.Contains("Rolling prerelease already contains different bytes", workflow, StringComparison.Ordinal);
         Assert.Contains("bridge-assets/${candidateId}.candidate.json", workflow, StringComparison.Ordinal);
         Assert.Contains("bridge-assets/$producerArtifactName", workflow, StringComparison.Ordinal);

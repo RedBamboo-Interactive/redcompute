@@ -429,27 +429,26 @@ jobs:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           GH_REPO: RedBamboo-Interactive/redcompute
         run: |
-          if ($env:GITHUB_REPOSITORY -cne $env:GH_REPO) { throw 'This bridge publishes only in RedBamboo-Interactive/redcompute.' }
           $tag = 'redcompute-unsigned-candidates'
-          $releaseJson = & gh release view $tag --json isDraft,isPrerelease,assets 2>$null
+          $releaseJson = & gh release view $tag --repo $env:GH_REPO --json isDraft,isPrerelease,assets 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --prerelease --latest=false --target $env:REDCOMPUTE_SHA `
+            gh release create $tag --repo $env:GH_REPO --prerelease --latest=false --target $env:REDCOMPUTE_SHA `
               --title 'Rolling unsigned RedCompute candidates' `
               --notes 'Unsigned producer inputs for exact central component publication. Trust comes only from central signed metadata.'
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the rolling RedCompute candidate prerelease.' }
-            $releaseJson = gh release view $tag --json isDraft,isPrerelease,assets
+            $releaseJson = gh release view $tag --repo $env:GH_REPO --json isDraft,isPrerelease,assets
           }
           $release = $releaseJson | ConvertFrom-Json
           if ($release.isDraft -or -not $release.isPrerelease) { throw 'Candidate bridge tag must remain a prerelease.' }
           $existingNames = @($release.assets | ForEach-Object { $_.name })
           foreach ($file in @(Get-ChildItem bridge-assets -File | Sort-Object Name)) {
             if ($existingNames -notcontains $file.Name) {
-              gh release upload $tag $file.FullName
+              gh release upload $tag --repo $env:GH_REPO $file.FullName
               if ($LASTEXITCODE -ne 0) { throw "Could not append bridge asset '$($file.Name)'." }
             }
             $verifyDirectory = "bridge-verify/$($file.BaseName)"
             New-Item -ItemType Directory -Path $verifyDirectory -Force | Out-Null
-            gh release download $tag --pattern $file.Name --dir $verifyDirectory
+            gh release download $tag --repo $env:GH_REPO --pattern $file.Name --dir $verifyDirectory
             if ($LASTEXITCODE -ne 0) { throw "Could not download bridge asset '$($file.Name)' for verification." }
             $downloaded = Join-Path $verifyDirectory $file.Name
             if ((Get-FileHash -LiteralPath $downloaded -Algorithm SHA256).Hash -ne
