@@ -29,6 +29,7 @@ public static class UnifiedSessionEndpoints
     private static ProviderConfigService? _providerConfig;
     private static InputAttachmentStore? _attachmentStore;
     private static SessionInputQueueService? _inputQueue;
+    private static MaintenanceDeploymentCoordinator? _maintenance;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
@@ -37,6 +38,7 @@ public static class UnifiedSessionEndpoints
         ProviderConfigService? providerConfig = null, InputAttachmentStore? attachmentStore = null,
         SessionInputQueueService? inputQueue = null,
         RepositoryReferenceValidator? repositoryValidator = null,
+        MaintenanceDeploymentCoordinator? maintenance = null,
         Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null)
     {
         _docker = docker;
@@ -46,6 +48,15 @@ public static class UnifiedSessionEndpoints
         _providerConfig = providerConfig;
         _attachmentStore = attachmentStore ?? new InputAttachmentStore(config);
         _inputQueue = inputQueue ?? throw new ArgumentNullException(nameof(inputQueue));
+        _maintenance = maintenance;
+
+        bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
+            => ComputeResourceAccess.CanReadSession(
+                context,
+                session,
+                session.Confidential && session.JobId is { } jobId
+                    ? jobTracker.GetJob(jobId)
+                    : null);
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
@@ -144,7 +155,7 @@ public static class UnifiedSessionEndpoints
             if (excludeSource != null)
                 allSessions.RemoveAll(s => s.Source == excludeSource);
 
-            allSessions.RemoveAll(session => !ComputeResourceAccess.CanReadSession(ctx, session));
+            allSessions.RemoveAll(session => !CanReadSession(ctx, session));
 
             return Results.Json(allSessions);
         })
@@ -156,6 +167,8 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions",
             "Start a new interactive session in a project directory. Requests authenticated with signed execution identity launch the provider process with a derived child identity in REDLEAF_EXECUTION_TOKEN so AI tools can authenticate, inspect, and verify subsequent suite API calls.", async (HttpContext ctx) =>
         {
+            if (_maintenance?.IsDraining == true)
+                return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
             var userId = ResolveUserId(ctx);
             if (userId == null)
                 return Error(401, "unauthorized", "Authentication required to create sessions");
@@ -292,7 +305,7 @@ public static class UnifiedSessionEndpoints
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
 
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
             var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
@@ -366,7 +379,7 @@ public static class UnifiedSessionEndpoints
                 return Error(404, "not_found", $"Session '{id}' not found");
 
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
             HttpResponseMessage upstream;
@@ -441,7 +454,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
@@ -599,6 +612,28 @@ public static class UnifiedSessionEndpoints
                     attachmentIds,
                     idempotencyKey);
                 var admitted = await _inputQueue!.AdmitAsync(submission, ctx.RequestAborted);
+                var resumeAttempted = false;
+                var resumed = false;
+                if (IsRestartRecoverable(provider, info))
+                {
+                    resumeAttempted = true;
+                    try
+                    {
+                        UnifiedSessionInfo? resumedSession;
+                        using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
+                            resumedSession = await provider.ResumeSessionAsync(id, invocationProvenance);
+                        resumed = resumedSession is not null;
+                        if (resumedSession?.Status == SessionStatus.Idle)
+                            _inputQueue.Signal(id);
+                    }
+                    catch (Exception ex)
+                    {
+                        log($"Automatic restart recovery failed for session {id}: {ex.Message}", info.JobId);
+                    }
+                }
+                var queueSummary = resumeAttempted
+                    ? await _inputQueue.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted)
+                    : admitted.Queue;
                 return Results.Json(new
                 {
                     accepted = true,
@@ -607,8 +642,10 @@ public static class UnifiedSessionEndpoints
                     queueItemId = admitted.Item.Id,
                     messageUid = admitted.Item.MessageUid,
                     deliveredMessageUid = admitted.Item.DeliveredMessageUid,
+                    resumeAttempted,
+                    resumed,
                     attachments = referenced.Select(PublicAttachment).ToArray(),
-                    queue = admitted.Queue,
+                    queue = queueSummary,
                     item = PublicQueueItem(admitted.Item, referenced),
                 }, statusCode: admitted.Disposition == "delivered" ? 200 : 202);
             }
@@ -669,7 +706,7 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             var owner = userId ?? "local-user";
             var includeTerminal = bool.TryParse(ctx.Request.Query["includeTerminal"].FirstOrDefault(), out var include) && include;
@@ -691,7 +728,7 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             var item = await _inputQueue!.GetAsync(id, itemId, userId ?? "local-user", ctx.RequestAborted);
             return item is null
@@ -709,7 +746,7 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             try
             {
@@ -731,7 +768,7 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             try
             {
@@ -753,7 +790,7 @@ public static class UnifiedSessionEndpoints
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             var requested = await _inputQueue!.SendNowAsync(id, userId ?? "local-user", ctx.RequestAborted);
             if (!requested) return Error(409, "queue_empty", "There is no active queued input to send");
@@ -779,7 +816,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
             JsonElement body;
@@ -827,7 +864,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
@@ -855,7 +892,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.SendMessage))
                 return NotSupported(provider.ProviderId, "interactive messaging");
@@ -940,7 +977,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Interrupt))
                 return NotSupported(provider.ProviderId, "session interrupts");
@@ -952,11 +989,13 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/resume",
             "Resume a stopped session", async (HttpContext ctx, string id) =>
         {
+            if (_maintenance?.IsDraining == true)
+                return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Resume))
                 return NotSupported(provider.ProviderId, "session resume");
@@ -980,7 +1019,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
             await provider!.StopSessionAsync(id);
@@ -994,7 +1033,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
             provider!.DismissSession(id);
@@ -1012,7 +1051,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
             JsonElement body;
@@ -1037,7 +1076,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.PermissionMode))
                 return NotSupported(provider.ProviderId, "permission modes");
@@ -1064,7 +1103,7 @@ public static class UnifiedSessionEndpoints
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
-            if (!ComputeResourceAccess.CanReadSession(ctx, info))
+            if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
             await provider!.ForceKillAsync(id);
@@ -1639,6 +1678,22 @@ public static class UnifiedSessionEndpoints
                 return (provider, info, history);
         }
         return (null, null, null);
+    }
+
+    private static bool IsRestartRecoverable(ISessionProvider provider, UnifiedSessionInfo info)
+    {
+        if (!provider.Capabilities.HasFlag(SessionCapabilities.Resume)
+            || info.Status is not (SessionStatus.Stopped or SessionStatus.Error)
+            || string.IsNullOrWhiteSpace(info.ProviderSessionId))
+            return false;
+
+        if (info.StopReason is "maintenance_restart" or "orphaned_on_restart")
+            return true;
+
+        // OpenCode did not persist stop reasons before planned-restart recovery existed.
+        // New explicit stops persist user_stopped, so only legacy null-valued shells enter here.
+        return provider.ProviderId.Equals("opencode", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(info.StopReason);
     }
 
     private static List<string> FormatCapabilities(SessionCapabilities caps)

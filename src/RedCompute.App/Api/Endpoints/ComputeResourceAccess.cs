@@ -7,12 +7,15 @@ namespace RedCompute.App.Api.Endpoints;
 
 internal static class ComputeResourceAccess
 {
-    public static bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
+    public static bool CanReadSession(
+        HttpContext context,
+        UnifiedSessionInfo session,
+        JobRecord? job = null)
     {
         if (IsTrustedInfrastructure(context)) return true;
         if (session.Confidential)
             return ConfidentialResourcePolicy.CanRead(context, new ConfidentialResource(
-                session.UserId, session.OwnerAgentId, true));
+                session.UserId, session.OwnerAgentId, true, TrustedOwnerAppId(job)));
 
         var userId = UserInfoHelper.ResolveUserId(context);
         return userId is null or "local-user"
@@ -27,7 +30,8 @@ internal static class ComputeResourceAccess
         var provenance = job.CreationProvenance;
         var ownerAgentId = provenance?.Actor.EntityId ?? provenance?.Actor.Id;
         return ConfidentialResourcePolicy.CanRead(context, new ConfidentialResource(
-            job.UserId ?? provenance?.OnBehalfOf.Id, ownerAgentId, true));
+            job.UserId ?? provenance?.OnBehalfOf.Id, ownerAgentId, true,
+            TrustedOwnerAppId(job)));
     }
 
     public static IResult SessionDenied(UnifiedSessionInfo session)
@@ -44,4 +48,19 @@ internal static class ComputeResourceAccess
                 StringComparison.OrdinalIgnoreCase)
             && string.Equals(context.User.FindFirst("compute_provenance")?.Value, "true",
                 StringComparison.OrdinalIgnoreCase);
+
+    private static string? TrustedOwnerAppId(JobRecord? job)
+    {
+        var provenance = job?.CreationProvenance;
+        if (provenance is null
+            || provenance.Assurance is not (JobProvenanceAssurance.Verified
+                or JobProvenanceAssurance.BackfilledExact)
+            || !(string.Equals(provenance.Origin.Service, "redcompute",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(provenance.Origin.Service, "redleaf",
+                    StringComparison.OrdinalIgnoreCase)))
+            return null;
+
+        return provenance.Origin.App.Id;
+    }
 }

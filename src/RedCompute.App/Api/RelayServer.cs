@@ -320,14 +320,17 @@ public class RelayServer
         var redLeafReader = new RedLeafSessionReader(
             _config.RedLeafUrl, redLeafJwt, _qualityModes);
         var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
+        var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
             _jobTracker, broadcaster, _log,
             sessionId => _confidentialSessions.Any(pair =>
-                pair.Value && pair.Key.EndsWith($":{sessionId}", StringComparison.OrdinalIgnoreCase)));
+                pair.Value && pair.Key.EndsWith($":{sessionId}", StringComparison.OrdinalIgnoreCase)),
+            () => maintenance.IsDraining);
+        maintenance.AttachInputQueue(inputQueue);
         UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks,
             _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue,
-            repositoryValidator,
+            repositoryValidator, maintenance,
             async (session, job, token) => await _streamClient.PatchEntityDataAsync(
                 SessionEntitySlug(session.Provider, session.Id),
                 new
@@ -337,6 +340,7 @@ public class RelayServer
                         ?? job.CreationProvenance?.Actor.Id,
                     confidential = true,
                 }, token));
+        MaintenanceEndpoints.Map(registry, maintenance);
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 

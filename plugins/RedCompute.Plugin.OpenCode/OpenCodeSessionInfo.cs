@@ -7,6 +7,7 @@ public class OpenCodeSessionInfo
     public required string ProjectPath { get; init; }
     public Guid? RepositoryId { get; set; }
     public string Status { get; set; } = "Starting";
+    public string? StopReason { get; set; }
     public DateTimeOffset StartedAt { get; init; }
     public string? Model { get; set; }
     public string? Title { get; set; }

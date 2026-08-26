@@ -620,7 +620,7 @@ public class JobTrackingService : IJobTracker
     public void SetConfidential(Guid jobId)
         => MutateProjection(jobId, job => job.Confidential = true);
 
-    public int RecoverOrphanedJobs()
+    public int RecoverOrphanedJobs(IReadOnlySet<Guid>? plannedRestartJobs = null)
     {
         var changed = new List<(JobRecord Job, JobLifecycleEvent Event)>();
         lock (_lock)
@@ -631,10 +631,12 @@ public class JobTrackingService : IJobTracker
             // restart must not manufacture a failure while the RedLeaf worker is still
             // running, and a suite restart must leave the same attempt reclaimable once
             // its lease expires.
+            var planned = plannedRestartJobs ?? new HashSet<Guid>();
             var orphaned = db.Jobs.Where(j => !j.ExternalExecution &&
                 (j.Status == JobStatus.Running || j.Status == JobStatus.Queued)).ToList();
             foreach (var job in orphaned)
             {
+                if (planned.Contains(job.Id)) continue;
                 job.Status = JobStatus.Failed;
                 job.CompletedAt = DateTimeOffset.UtcNow;
                 job.ErrorMessage = "Interrupted by application restart";

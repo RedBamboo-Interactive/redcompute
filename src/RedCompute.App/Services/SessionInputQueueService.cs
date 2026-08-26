@@ -48,6 +48,7 @@ public sealed class SessionInputQueueService
     private readonly WebSocketBroadcaster _broadcaster;
     private readonly Action<string, Guid?> _log;
     private readonly Func<string, bool> _isConfidential;
+    private readonly Func<bool> _deliveryPaused;
     private readonly string _leaseOwner = $"redcompute:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new(StringComparer.Ordinal);
     private readonly Channel<string> _signals = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
@@ -63,7 +64,8 @@ public sealed class SessionInputQueueService
         IJobTracker jobTracker,
         WebSocketBroadcaster broadcaster,
         Action<string, Guid?> log,
-        Func<string, bool>? isConfidential = null)
+        Func<string, bool>? isConfidential = null,
+        Func<bool>? deliveryPaused = null)
     {
         _store = store;
         _attachments = attachments;
@@ -72,6 +74,7 @@ public sealed class SessionInputQueueService
         _broadcaster = broadcaster;
         _log = log;
         _isConfidential = isConfidential ?? (_ => false);
+        _deliveryPaused = deliveryPaused ?? (() => false);
 
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
             source.PluginEvent += OnProviderEvent;
@@ -119,7 +122,9 @@ public sealed class SessionInputQueueService
         var admitted = await _store.EnqueueAsync(submission, ct);
         await PublishAsync(submission.SessionId, [admitted.Item.Id], admitted.Existing ? "idempotent_replay" : "queued", ct);
 
-        if (!admitted.Existing && submission.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent)
+        if (!_deliveryPaused()
+            && !admitted.Existing
+            && submission.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent)
         {
             var (provider, info) = FindSession(submission.SessionId);
             if (provider is not null && info?.Status == SessionStatus.Active)
@@ -199,6 +204,7 @@ public sealed class SessionInputQueueService
         var (_, info) = FindSession(sessionId);
         var blocked = head?.State == SessionInputQueueState.Failed
             ? "failed_head"
+            : _deliveryPaused() ? "maintenance_drain"
             : info?.Status switch
             {
                 SessionStatus.Active => "active_turn",
@@ -216,12 +222,28 @@ public sealed class SessionInputQueueService
 
     public void Signal(string sessionId) => _signals.Writer.TryWrite(sessionId);
 
+    /// <summary>
+    /// Called only after delivery has been paused. Crossing every existing per-session gate proves
+    /// that work which entered before the pause has either reached the provider or fully exited.
+    /// </summary>
+    public async Task WaitForDeliveryQuiescenceAsync(CancellationToken ct = default)
+    {
+        var gates = _sessionLocks.Values.ToArray();
+        foreach (var gate in gates)
+        {
+            await gate.WaitAsync(ct);
+            gate.Release();
+        }
+    }
+
     private async Task ProcessSessionAsync(string sessionId, CancellationToken ct)
     {
+        if (_deliveryPaused()) return;
         var gate = _sessionLocks.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
         if (!await gate.WaitAsync(0, ct)) return;
         try
         {
+            if (_deliveryPaused()) return;
             var (provider, info) = FindSession(sessionId);
             if (provider is null || info is null || info.Status != SessionStatus.Idle) return;
 

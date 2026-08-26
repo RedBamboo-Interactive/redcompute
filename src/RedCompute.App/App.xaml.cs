@@ -10,6 +10,7 @@ using RedCompute.App.Api;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App;
@@ -93,9 +94,12 @@ public partial class App : Application
         if (ConfigManager.Config.AutoStartDocker)
             _ = DockerDesktopService.EnsureRunningAsync(s => Log(s));
 
-        var recovered = JobTracker.RecoverOrphanedJobs();
+        var plannedRestart = PlannedRestartCheckpoint.LoadForStartup();
+        var recovered = JobTracker.RecoverOrphanedJobs(PlannedRestartCheckpoint.JobIds());
         if (recovered > 0)
             Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");
+        if (plannedRestart is not null)
+            Log($"[App] Recovering {plannedRestart.Sessions.Count} session(s) from planned restart {plannedRestart.RunId}");
 
         ProviderDiscovery = new ProviderDiscovery(s => Log(s));
         ProviderDiscovery.ScanAssemblies();
@@ -274,6 +278,7 @@ public partial class App : Application
             tasks.Add(StartCapability(slug, entry));
         }
         await Task.WhenAll(tasks);
+        PlannedRestartCheckpoint.Consume();
 
         _ = RetryFailedBackends();
     }

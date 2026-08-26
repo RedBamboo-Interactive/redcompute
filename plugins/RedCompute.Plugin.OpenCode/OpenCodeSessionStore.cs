@@ -14,6 +14,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         ProjectPath = r.ProjectPath,
         RepositoryId = r.RepositoryId,
         Status = r.Status,
+        StopReason = r.StopReason,
         StartedAt = r.StartedAt,
         Model = r.Model,
         ExternalSessionId = r.OpenCodeSessionId,
@@ -87,6 +88,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.ProjectPath = record.ProjectPath;
             existing.RepositoryId = record.RepositoryId;
             existing.Status = record.Status;
+            existing.StopReason = record.StopReason;
             existing.StartedAt = record.StartedAt;
             existing.Model = record.Model;
             existing.Title = record.Title;

@@ -73,6 +73,9 @@ public class OpenCodeSessionService
             {
                 TryKillByPid(s.ProcessId);
                 s.Status = "Stopped";
+                s.StopReason = PlannedRestartCheckpoint.ContainsSession("opencode", s.Id)
+                    ? "maintenance_restart"
+                    : "orphaned_on_restart";
                 s.ProcessId = null;
                 _log($"[OpenCode] Killed orphaned session {s.Id} ({s.ProjectName}, PID {s.ProcessId})", null);
                 _store.SaveSession(s);
@@ -156,6 +159,7 @@ public class OpenCodeSessionService
             ProjectPath = projectPath,
             RepositoryId = repositoryId,
             Status = "Starting",
+            StopReason = null,
             StartedAt = DateTimeOffset.UtcNow,
             UserId = userId,
             UserName = userName,
@@ -243,6 +247,7 @@ public class OpenCodeSessionService
             ProjectPath = record.ProjectPath,
             RepositoryId = record.RepositoryId,
             Status = "Starting",
+            StopReason = null,
             StartedAt = record.StartedAt,
             Model = record.Model,
             OpenCodeSessionId = record.OpenCodeSessionId,
@@ -647,6 +652,7 @@ public class OpenCodeSessionService
             catch (Exception ex) { _log($"[OpenCode] Error during graceful stop of {sessionId}: {ex.Message}", null); }
 
             session.Info.Status = "Stopped";
+            session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
 
             foreach (var (_, tcs) in session.PendingRequests)
@@ -672,6 +678,7 @@ public class OpenCodeSessionService
         TryKillByPid(record.ProcessId);
 
         record.Status = "Stopped";
+        record.StopReason = reason ?? "user_stopped";
         record.ProcessId = null;
         _store.SaveSession(record);
 
@@ -1150,6 +1157,7 @@ public class OpenCodeSessionService
             ProjectPath = info.ProjectPath,
             RepositoryId = info.RepositoryId,
             Status = info.Status,
+            StopReason = info.StopReason,
             StartedAt = info.StartedAt,
             Model = info.Model,
             Title = info.Title,

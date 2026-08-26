@@ -49,6 +49,25 @@ public sealed class JobAuditTests : IDisposable
     }
 
     [Fact]
+    public void Planned_restart_preserves_checkpointed_interactive_jobs_and_fails_other_orphans()
+    {
+        var provenance = Provenance("nova", "agent-nova", "user-1", "/nova/message");
+        var preserved = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", "{}", provenance, Name: "preserved"));
+        var orphaned = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", "{}", provenance, Name: "orphaned"));
+        _jobs.StartInvocation(preserved.Id, provenance);
+        _jobs.StartInvocation(orphaned.Id, provenance);
+
+        var recovered = _jobs.RecoverOrphanedJobs(new HashSet<Guid> { preserved.Id });
+
+        Assert.Equal(1, recovered);
+        Assert.Equal(JobStatus.Running, _jobs.GetJob(preserved.Id)!.Status);
+        Assert.Equal(JobStatus.Failed, _jobs.GetJob(orphaned.Id)!.Status);
+        Assert.Equal("Interrupted by application restart", _jobs.GetJob(orphaned.Id)!.ErrorMessage);
+    }
+
+    [Fact]
     public void Idempotency_is_scoped_and_conflicting_reuse_is_rejected()
     {
         var nova = Provenance("nova", "agent-nova", "user-1", "/nova/message");
@@ -211,7 +230,93 @@ public sealed class JobAuditTests : IDisposable
         Assert.True(ComputeResourceAccess.CanReadJob(Human("user-1"), job));
         Assert.False(ComputeResourceAccess.CanReadJob(LocalDefault(), job));
         Assert.True(ComputeResourceAccess.CanReadJob(Agent("agent-nova", "user-1"), job));
+        Assert.True(ComputeResourceAccess.CanReadJob(Browser("nova", "user-1"), job));
+        Assert.True(ComputeResourceAccess.CanReadJob(
+            Browser("nova", "user-1", parentExecutionId: "browser-root",
+                includeRedComputeCall: true), job));
         Assert.False(ComputeResourceAccess.CanReadJob(Agent("another-agent", "user-1"), job));
+        Assert.False(ComputeResourceAccess.CanReadJob(Browser("codered", "user-1"), job));
+        Assert.False(ComputeResourceAccess.CanReadJob(Browser("nova", "another-user"), job));
+        Assert.False(ComputeResourceAccess.CanReadJob(
+            Browser("nova", "user-1", parentExecutionId: Guid.NewGuid().ToString()), job));
+        Assert.False(ComputeResourceAccess.CanReadJob(
+            Browser("nova", "user-1", includeBrowserContext: false), job));
+        Assert.False(ComputeResourceAccess.CanReadJob(
+            Browser("nova", "user-1", parentExecutionId: "browser-root",
+                includeRedComputeCall: true, includeExtraContext: true), job));
+
+        var assertedJob = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", "{}",
+            Provenance("nova", "agent-nova", "user-1", "/nova/message") with
+            {
+                Assurance = JobProvenanceAssurance.Asserted,
+            },
+            Confidential: true));
+        Assert.False(ComputeResourceAccess.CanReadJob(
+            Browser("nova", "user-1"), assertedJob));
+    }
+
+    [Fact]
+    public void ConfidentialSessionUsesLinkedVerifiedJobToAuthorizeOwningBrowserApp()
+    {
+        // This is the production shape for a job created from a signed browser execution:
+        // RedCompute captures the immutable provenance itself while preserving the Nova app.
+        var baseProvenance = Provenance(
+            "nova", "agent-gemma", "user-1", "/api/apps/nova/discussions/{id}/messages");
+        var browserProvenance = baseProvenance with
+        {
+            Origin = baseProvenance.Origin with { Service = "redcompute" },
+        };
+        var job = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "OpenCode", "{}",
+            browserProvenance,
+            Confidential: true));
+        var session = new UnifiedSessionInfo
+        {
+            Id = "bc5a4c0a094b",
+            Provider = "opencode",
+            ProjectName = "Gemma",
+            ProjectPath = "C:\\Gemma",
+            Status = SessionStatus.Stopped,
+            StartedAt = DateTimeOffset.UtcNow,
+            JobId = job.Id,
+            UserId = "user-1",
+            OwnerAgentId = "agent-gemma",
+            Confidential = true,
+        };
+
+        Assert.True(ComputeResourceAccess.CanReadSession(Human("user-1"), session, job));
+        Assert.True(ComputeResourceAccess.CanReadSession(
+            Agent("agent-gemma", "user-1"), session, job));
+        Assert.True(ComputeResourceAccess.CanReadSession(
+            Browser("nova", "user-1"), session, job));
+        Assert.True(ComputeResourceAccess.CanReadSession(
+            Browser("nova", "user-1", parentExecutionId: "browser-root",
+                includeRedComputeCall: true), session, job));
+        Assert.False(ComputeResourceAccess.CanReadSession(
+            Browser("codered", "user-1"), session, job));
+        Assert.False(ComputeResourceAccess.CanReadSession(
+            Browser("codered", "user-1", parentExecutionId: "browser-root",
+                includeRedComputeCall: true), session, job));
+        Assert.False(ComputeResourceAccess.CanReadSession(
+            Browser("nova", "another-user", parentExecutionId: "browser-root",
+                includeRedComputeCall: true), session, job));
+        Assert.False(ComputeResourceAccess.CanReadSession(
+            Browser("nova", "user-1", parentExecutionId: "browser-root",
+                includeBrowserContext: false, includeRedComputeCall: true), session, job));
+        Assert.False(ComputeResourceAccess.CanReadSession(
+            Browser("nova", "user-1"), session));
+        Assert.False(ComputeResourceAccess.CanReadSession(LocalDefault(), session, job));
+
+        var foreignServiceJob = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "OpenCode", "{}",
+            browserProvenance with
+            {
+                Origin = browserProvenance.Origin with { Service = "untrusted-service" },
+            },
+            Confidential: true));
+        Assert.False(ComputeResourceAccess.CanReadSession(
+            Browser("nova", "user-1"), session, foreignServiceJob));
     }
 
     [Fact]
@@ -591,6 +696,38 @@ public sealed class JobAuditTests : IDisposable
             new ExecutionActorIdentity("agent", "nova", "Nova", agentId),
             new ExecutionBeneficiaryIdentity("user", beneficiaryId),
             []);
+        return context;
+    }
+
+    private static DefaultHttpContext Browser(
+        string appId,
+        string beneficiaryId,
+        string? parentExecutionId = null,
+        bool includeBrowserContext = true,
+        bool includeRedComputeCall = false,
+        bool includeExtraContext = false)
+    {
+        var context = Context([
+            new Claim("sub", beneficiaryId),
+            new Claim(ExecutionIdentityClaims.TokenUseClaim, ExecutionIdentityClaims.TokenUse),
+        ]);
+        var appEntityId = $"plugin-{appId}";
+        var executionContext = new List<ExecutionContextReference>();
+        if (includeBrowserContext)
+            executionContext.Add(new ExecutionContextReference("browser", Route: $"/apps/{appId}"));
+        if (includeExtraContext)
+            executionContext.Add(new ExecutionContextReference("unrelated", "other"));
+        if (includeRedComputeCall)
+            executionContext.Add(new ExecutionContextReference("redcompute-call"));
+
+        context.Items[ExecutionIdentityClaims.HttpContextItemKey] = new ExecutionIdentity(
+            ExecutionIdentity.CurrentSchemaVersion,
+            Guid.NewGuid().ToString(),
+            new ExecutionAppIdentity(appId, appId, appEntityId),
+            new ExecutionActorIdentity("app", appId, appId, appEntityId),
+            new ExecutionBeneficiaryIdentity("user", beneficiaryId),
+            executionContext,
+            parentExecutionId);
         return context;
     }
 

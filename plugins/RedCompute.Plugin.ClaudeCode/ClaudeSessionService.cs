@@ -55,7 +55,9 @@ public class ClaudeSessionService
             {
                 TryKillByPid(s.ProcessId);
                 s.Status = "Stopped";
-                s.StopReason = "orphaned_on_restart";
+                s.StopReason = PlannedRestartCheckpoint.ContainsSession("claude-code", s.Id)
+                    ? "maintenance_restart"
+                    : "orphaned_on_restart";
                 s.ProcessId = null;
                 _log($"[Claude] Killed orphaned session {s.Id} ({s.ProjectName}, PID {s.ProcessId})", null);
                 BackfillFromJsonl(s);

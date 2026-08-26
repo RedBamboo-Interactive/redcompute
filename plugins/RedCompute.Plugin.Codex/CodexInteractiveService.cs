@@ -101,7 +101,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 if (s.ProcessId is { } pid) TryKillByPid(pid);
                 s.Status = "Stopped";
                 s.ProcessId = null;
-                s.StopReason = "orphaned_on_restart";
+                s.StopReason = PlannedRestartCheckpoint.ContainsSession("codex", s.Id)
+                    ? "maintenance_restart"
+                    : "orphaned_on_restart";
                 _store.SaveSession(s);
                 _log($"[Codex] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
             }

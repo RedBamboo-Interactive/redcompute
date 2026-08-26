@@ -19,7 +19,11 @@ public sealed class RedLeafSessionReader
     public RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService, QualityModeService qualityModes)
     {
         _qualityModes = qualityModes;
-        var token = jwtService.GenerateAccessToken("system", "system@redsuite", "System", ["admin"]);
+        // RedLeaf deliberately permits its signed RedCompute projection owner to enumerate
+        // confidential session entities. Keep the reader's existing admin permission while
+        // emitting that service identity instead of the unrelated "system" user subject.
+        var token = jwtService.GenerateServiceAccessToken(
+            "redcompute", roles: ["service", "admin"]);
         _http = new HttpClient
         {
             BaseAddress = new Uri(redLeafBaseUrl.TrimEnd('/') + "/"),
