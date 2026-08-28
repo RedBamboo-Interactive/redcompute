@@ -520,14 +520,27 @@ public sealed class SessionInputQueueStore
         cmd.CommandText = """
             SELECT * FROM SessionQueuedInputs
             WHERE SessionId = $sessionId AND OwnerUserId = $ownerUserId
-              AND ProvenanceScope = $provenanceScope AND IdempotencyKey = $idempotencyKey
-            LIMIT 1
+              AND IdempotencyKey = $idempotencyKey
+            ORDER BY Sequence
             """;
         Add(cmd, "$sessionId", sessionId); Add(cmd, "$ownerUserId", ownerUserId);
-        Add(cmd, "$provenanceScope", provenanceScope); Add(cmd, "$idempotencyKey", idempotencyKey);
+        Add(cmd, "$idempotencyKey", idempotencyKey);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
-        if (!await reader.ReadAsync(ct)) return null;
-        return (ReadItem(reader), reader.GetString(reader.GetOrdinal("IdempotencyFingerprint")));
+        while (await reader.ReadAsync(ct))
+        {
+            var item = ReadItem(reader);
+            if (!string.Equals(ComputeProvenanceScope(item.Provenance), provenanceScope, StringComparison.Ordinal))
+                continue;
+
+            // Recompute with the stable scope instead of trusting a fingerprint produced by an
+            // older build whose scope included request-unique execution lineage.
+            var normalizedSubmission = new SessionInputQueueSubmission(
+                item.SessionId, item.OwnerUserId, item.Input, item.DisplayContent, item.MetadataJson,
+                item.Provenance, item.DeliveryPolicy, item.MessageUid, item.AttachmentIds, item.ClientId);
+            var attachmentsJson = JsonSerializer.Serialize(item.AttachmentIds, JsonOptions);
+            return (item, ComputeFingerprint(normalizedSubmission, attachmentsJson, provenanceScope));
+        }
+        return null;
     }
 
     private static async Task<SessionInputQueueItem?> GetCoreAsync(
@@ -588,7 +601,13 @@ public sealed class SessionInputQueueStore
             App = new { provenance.Origin.App.Kind, provenance.Origin.App.Id, provenance.Origin.App.EntityId },
             Actor = new { provenance.Actor.Kind, provenance.Actor.EntityId, provenance.Actor.Id },
             Beneficiary = new { provenance.OnBehalfOf.Kind, provenance.OnBehalfOf.Id },
-            Context = provenance.Context.Select(c => new { c.Kind, c.Id, c.EntityId, c.Route }).ToArray(),
+            // Signed execution and parent-execution IDs identify this HTTP attempt, not the
+            // logical browser outbox entry. Keeping them here defeats idempotency on retry while
+            // the immutable provenance stored on the queue item still retains the full lineage.
+            Context = provenance.Context
+                .Where(c => c.Kind is not ("execution" or "parent-execution"))
+                .Select(c => new { c.Kind, c.Id, c.EntityId, c.Route })
+                .ToArray(),
         };
         return Sha256(JsonSerializer.Serialize(scope, JsonOptions));
     }

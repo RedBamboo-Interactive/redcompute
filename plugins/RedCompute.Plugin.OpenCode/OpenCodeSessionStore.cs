@@ -1,4 +1,6 @@
 using RedCompute.PluginSdk;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 
 namespace RedCompute.Plugin.OpenCode;
 
@@ -133,17 +135,22 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
     {
         using var db = new OpenCodeDbContext();
         db.Messages.Add(message);
-        db.SaveChanges();
+        try
+        {
+            db.SaveChanges();
+        }
+        catch (DbUpdateException ex) when (IsDuplicateProviderPart(ex, message.ProviderPartId))
+        {
+            return;
+        }
         SuiteMirror.PublishMessages([ToSnapshot(message)]);
     }
 
     public void AddMessages(List<OpenCodeMessageRecord> messages)
     {
         if (messages.Count == 0) return;
-        using var db = new OpenCodeDbContext();
-        db.Messages.AddRange(messages);
-        db.SaveChanges();
-        SuiteMirror.PublishMessages(messages.Select(ToSnapshot).ToList());
+        foreach (var message in messages)
+            AddMessage(message);
     }
 
     public List<OpenCodeMessageRecord> GetMessages(string sessionId, int limit = 50_000)
@@ -168,4 +175,8 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             .ToList()
             .ToDictionary(r => r.JobId!.Value, r => r.Status);
     }
+
+    private static bool IsDuplicateProviderPart(DbUpdateException exception, string? providerPartId) =>
+        providerPartId != null
+        && exception.InnerException is SqliteException { SqliteExtendedErrorCode: 2067 };
 }

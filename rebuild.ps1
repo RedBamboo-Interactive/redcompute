@@ -82,14 +82,28 @@ $appOutputDirectory = $appExecutables[0].Directory.FullName
 Invoke-RedBambooMirrorTree -Source $appOutputDirectory -Destination $stageDirectory | Out-Null
 
 $stagedPluginDirectory = Join-Path $stageDirectory 'plugins'
+$isolatedPluginDirectory = Join-Path $stageRunDirectory 'compiled-plugins'
+$pluginProjects = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'plugins') `
+    -Filter 'RedCompute.Plugin.*.csproj' -File -Recurse)
+New-Item -ItemType Directory -Path $isolatedPluginDirectory -Force | Out-Null
+foreach ($pluginProject in $pluginProjects) {
+    $projectName = $pluginProject.BaseName
+    $projectOutputRoot = Join-Path $artifactsDirectory "bin\$projectName"
+    $pluginOutputs = @(Get-ChildItem -LiteralPath $projectOutputRoot -Filter "$projectName.dll" `
+        -File -Recurse -ErrorAction SilentlyContinue)
+    if ($pluginOutputs.Count -ne 1) {
+        throw "Expected one isolated output for $projectName, found $($pluginOutputs.Count) under $projectOutputRoot."
+    }
+    Copy-Item -LiteralPath $pluginOutputs[0].FullName -Destination $isolatedPluginDirectory -Force
+}
+Invoke-RedBambooMirrorTree -Source $isolatedPluginDirectory -Destination $stagedPluginDirectory | Out-Null
 
 foreach ($requiredFile in @('RedCompute.exe', 'RedCompute.dll', 'RedBamboo.AppHost.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $stageDirectory $requiredFile))) {
         throw "RedCompute Release stage is incomplete: missing $requiredFile"
     }
 }
-$expectedPluginCount = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'plugins') `
-    -Filter 'RedCompute.Plugin.*.csproj' -File -Recurse).Count
+$expectedPluginCount = $pluginProjects.Count
 $pluginCount = @(Get-ChildItem -LiteralPath $stagedPluginDirectory `
     -Filter 'RedCompute.Plugin.*.dll' -File -ErrorAction SilentlyContinue).Count
 if ($pluginCount -ne $expectedPluginCount) {
@@ -132,23 +146,38 @@ $request | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $requestPath -Enco
 $runningCompute = Get-Process -Name RedCompute -ErrorAction SilentlyContinue |
     Sort-Object StartTime -Descending | Select-Object -First 1
 if ($runningCompute -and -not $BootstrapMaintenance) {
-    if ([string]::IsNullOrWhiteSpace($env:REDLEAF_EXECUTION_TOKEN)) {
-        throw 'A live RedCompute deployment requires REDLEAF_EXECUTION_TOKEN so the runtime can drain sessions safely.'
-    }
-
-    Write-Host '=== Arming authenticated RedCompute drain and desktop handoff ===' -ForegroundColor Cyan
-    $headers = @{ Authorization = "Bearer $($env:REDLEAF_EXECUTION_TOKEN)" }
-    $body = @{ requestPath = $requestPath } | ConvertTo-Json -Compress
-    try {
-        $admission = Invoke-RestMethod -Method Post `
-            -Uri 'http://127.0.0.1:18800/maintenance/deploy-staged' `
-            -Headers $headers -Body $body -ContentType 'application/json' -TimeoutSec 30
-    } finally {
-        $headers.Clear()
-        $body = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:REDLEAF_EXECUTION_TOKEN)) {
+        Write-Host '=== Arming authenticated RedCompute drain and desktop handoff ===' -ForegroundColor Cyan
+        $headers = @{ Authorization = "Bearer $($env:REDLEAF_EXECUTION_TOKEN)" }
+        $body = @{ requestPath = $requestPath } | ConvertTo-Json -Compress
+        try {
+            $admission = Invoke-RestMethod -Method Post `
+                -Uri 'http://127.0.0.1:18800/maintenance/deploy-staged' `
+                -Headers $headers -Body $body -ContentType 'application/json' -TimeoutSec 30
+        } finally {
+            $headers.Clear()
+            $body = $null
+        }
+    } else {
+        Write-Host '=== Authorizing local owner and arming RedCompute drain ===' -ForegroundColor Cyan
+        $runningLeaf = Get-Process -Name RedLeaf -ErrorAction SilentlyContinue |
+            Sort-Object StartTime -Descending | Select-Object -First 1
+        if (-not $runningLeaf -or -not $runningLeaf.Path) {
+            throw 'The local-owner maintenance client is unavailable because RedLeaf is not running.'
+        }
+        $admissionPath = $requestPath -replace '\.request\.json$', '.admission.json'
+        Remove-Item -LiteralPath $admissionPath -Force -ErrorAction SilentlyContinue
+        $argumentList = '--local-maintenance-deploy "{0}"' -f $requestPath
+        $clientProcess = Start-Process -FilePath $runningLeaf.Path `
+            -ArgumentList $argumentList -WindowStyle Hidden -Wait -PassThru
+        if ($clientProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $admissionPath)) {
+            throw 'The local-owner maintenance client rejected the deployment. Rebuild RedLeaf first if it predates local-owner maintenance, then run this script from an interactive desktop terminal.'
+        }
+        $admission = Get-Content -LiteralPath $admissionPath -Raw | ConvertFrom-Json
     }
     if (-not $admission -or -not $admission.accepted) {
-        throw 'RedCompute did not accept the staged deployment handoff.'
+        $detail = if ($admission.error) { ": $($admission.error)" } else { '' }
+        throw "RedCompute did not accept the staged deployment handoff$detail"
     }
     [pscustomobject]@{
         runId = $runId

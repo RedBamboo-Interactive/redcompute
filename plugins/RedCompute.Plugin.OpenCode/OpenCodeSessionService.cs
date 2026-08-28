@@ -16,6 +16,7 @@ public class OpenCodeSessionService
     private readonly OpenCodeConfig _config;
     private readonly IJobTracker _jobTracker;
     private readonly IOpenCodeSessionStore _store;
+    private readonly IOpenCodeNativeSessionReader _nativeSessionReader;
     private readonly Action<string, Guid?> _log;
 
     public event Action<OpenCodeSessionInfo>? SessionCreated;
@@ -37,6 +38,13 @@ public class OpenCodeSessionService
         // turn; cleared when a user message starts the next turn.
         public string? CurrentAssistantUid { get; set; }
         public string? AcpSessionId { get; set; }
+        public HashSet<string> KnownNativePartIds { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> FinalizedProviderMessageIds { get; } = new(StringComparer.Ordinal);
+        public Dictionary<(string MessageId, string Type), StringBuilder> StreamedContent { get; } = new();
+        public Dictionary<string, OpenCodeNativeMessageVisibility> MessageVisibility { get; } = new(StringComparer.Ordinal);
+        public object TurnStateLock { get; } = new();
+        public SemaphoreSlim AdmissionLock { get; } = new(1, 1);
+        public bool IsLoadingHistory { get; set; }
         public ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> PendingRequests { get; } = new();
         private int _nextRequestId;
         private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -52,11 +60,19 @@ public class OpenCodeSessionService
         public SemaphoreSlim WriteLock => _writeLock;
     }
 
-    public OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store, Action<string, Guid?> log)
+    public OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
+        Action<string, Guid?> log)
+        : this(config, jobTracker, store, log, new OpenCodeNativeSessionReader())
+    {
+    }
+
+    internal OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
+        Action<string, Guid?> log, IOpenCodeNativeSessionReader nativeSessionReader)
     {
         _config = config;
         _jobTracker = jobTracker;
         _store = store;
+        _nativeSessionReader = nativeSessionReader;
         _log = log;
         RecoverSessions();
     }
@@ -202,10 +218,10 @@ public class OpenCodeSessionService
 
     public async Task<OpenCodeSessionInfo?> ResumeSession(string sessionId, JobProvenance? provenance = null)
     {
-        if (_sessions.ContainsKey(sessionId))
+        if (_sessions.TryGetValue(sessionId, out var running))
         {
-            LastStartError = "Session is already running";
-            return null;
+            LastStartError = null;
+            return running.Info;
         }
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -302,7 +318,7 @@ public class OpenCodeSessionService
 
         PersistSessionRecord(info);
         _log($"[OpenCode] Session {sessionId} resumed for {info.ProjectName} (PID {session.Process.Id}, ACP session {session.AcpSessionId}, Job {info.JobId})", null);
-        SessionCreated?.Invoke(info);
+        SessionUpdated?.Invoke(info);
 
         return info;
     }
@@ -354,7 +370,7 @@ public class OpenCodeSessionService
 
         try
         {
-            await SendRequest(session, "initialize", new
+            var initializeResult = await SendRequest(session, "initialize", new
             {
                 protocolVersion = 1,
                 clientCapabilities = new
@@ -367,12 +383,37 @@ public class OpenCodeSessionService
             JsonElement sessionResult;
             if (existingSessionId != null)
             {
-                sessionResult = await SendRequest(session, "session/load", new
+                SeedKnownNativeParts(session, existingSessionId);
+                var resumeSupported = initializeResult.TryGetProperty("agentCapabilities", out var capabilities)
+                    && capabilities.TryGetProperty("sessionCapabilities", out var sessionCapabilities)
+                    && sessionCapabilities.TryGetProperty("resume", out _);
+
+                if (resumeSupported)
                 {
-                    sessionId = existingSessionId,
-                    cwd = projectPath,
-                    mcpServers = Array.Empty<object>(),
-                }, timeoutSeconds: 60);
+                    sessionResult = await SendRequest(session, "session/resume", new
+                    {
+                        sessionId = existingSessionId,
+                        cwd = projectPath,
+                        mcpServers = Array.Empty<object>(),
+                    }, timeoutSeconds: 60);
+                }
+                else
+                {
+                    session.IsLoadingHistory = true;
+                    try
+                    {
+                        sessionResult = await SendRequest(session, "session/load", new
+                        {
+                            sessionId = existingSessionId,
+                            cwd = projectPath,
+                            mcpServers = Array.Empty<object>(),
+                        }, timeoutSeconds: 60);
+                    }
+                    finally
+                    {
+                        session.IsLoadingHistory = false;
+                    }
+                }
                 session.AcpSessionId = existingSessionId;
             }
             else
@@ -454,54 +495,69 @@ public class OpenCodeSessionService
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
 
-        if (session.Info.Status is "Stopped" or "Error")
-            return false;
-
-        if (session.Info.Status == "Active")
-            return false;
-
+        await session.AdmissionLock.WaitAsync(session.Cts.Token);
         try
         {
-            var content = SessionInputFormatting.UserText(input);
-            var promptBlocks = BuildPromptBlocks(input);
+            if (session.Info.Status != "Idle") return false;
 
-            var requestId = session.GetNextRequestId();
-            var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-            session.PendingRequests[requestId] = tcs;
-
-            await WriteJsonLine(session, new
+            try
             {
-                jsonrpc = "2.0",
-                id = requestId,
-                method = "session/prompt",
-                @params = new { sessionId = session.AcpSessionId, prompt = promptBlocks },
-            });
+                var content = SessionInputFormatting.UserText(input);
+                var promptBlocks = BuildPromptBlocks(input);
+                var acceptedMessageUid = messageUid ?? Guid.NewGuid().ToString("N");
 
-            session.Info.MessageCount++;
-            session.Info.Status = "Active";
-            SessionUpdated?.Invoke(session.Info);
+                lock (session.TurnStateLock)
+                {
+                    session.CurrentAssistantUid = Guid.NewGuid().ToString("N");
+                    session.StreamedContent.Clear();
+                    session.MessageVisibility.Clear();
+                }
 
-            // A user message ends the previous assistant turn.
-            session.CurrentAssistantUid = null;
-            _store.AddMessage(new OpenCodeMessageRecord
+                _store.AddMessage(new OpenCodeMessageRecord
+                {
+                    SessionId = sessionId,
+                    Role = "user",
+                    EventType = "text",
+                    Content = content,
+                    MessageUid = acceptedMessageUid,
+                    ProviderPartId = $"accepted-user:{acceptedMessageUid}",
+                    Timestamp = DateTimeOffset.UtcNow,
+                    AttachmentsJson = attachmentsJson,
+                });
+
+                session.Info.MessageCount++;
+                session.Info.Status = "Active";
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+
+                var requestId = session.GetNextRequestId();
+                var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+                session.PendingRequests[requestId] = tcs;
+
+                await WriteJsonLine(session, new
+                {
+                    jsonrpc = "2.0",
+                    id = requestId,
+                    method = "session/prompt",
+                    @params = new { sessionId = session.AcpSessionId, prompt = promptBlocks },
+                });
+
+                _ = HandlePromptResponse(session, tcs.Task);
+
+                return true;
+            }
+            catch (Exception ex)
             {
-                SessionId = sessionId,
-                Role = "user",
-                EventType = "text",
-                Content = content,
-                MessageUid = messageUid ?? Guid.NewGuid().ToString("N"),
-                Timestamp = DateTimeOffset.UtcNow,
-                AttachmentsJson = attachmentsJson,
-            });
-
-            _ = HandlePromptResponse(session, tcs.Task);
-
-            return true;
+                _log($"[OpenCode] Failed to send message to {sessionId}: {ex.Message}", null);
+                session.Info.Status = "Idle";
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                return false;
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            _log($"[OpenCode] Failed to send message to {sessionId}: {ex.Message}", null);
-            return false;
+            session.AdmissionLock.Release();
         }
     }
 
@@ -545,6 +601,8 @@ public class OpenCodeSessionService
             if (stopReason == "cancelled")
                 StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent { Type = "status", Content = "interrupted" });
 
+            if (stopReason != "cancelled")
+                await ReconcileCompletedTurn(session);
             session.Info.Status = "Idle";
             TryFetchOpenCodeTitle(session);
             PersistSessionRecord(session.Info);
@@ -625,7 +683,8 @@ public class OpenCodeSessionService
 
         try
         {
-            _ = SendNotification(session, "session/cancel", new { sessionId = session.AcpSessionId });
+            SendNotification(session, "session/cancel", new { sessionId = session.AcpSessionId })
+                .GetAwaiter().GetResult();
             return InterruptResult.Interrupted;
         }
         catch
@@ -902,11 +961,6 @@ public class OpenCodeSessionService
         foreach (var opt in options.EnumerateArray())
         {
             var kind = opt.GetProperty("kind").GetString();
-            if (kind == "allow_always")
-            {
-                selectedOptionId = opt.GetProperty("optionId").GetString();
-                break;
-            }
             if (kind == "allow_once" && selectedOptionId == null)
                 selectedOptionId = opt.GetProperty("optionId").GetString();
         }
@@ -922,6 +976,7 @@ public class OpenCodeSessionService
         var path = root.GetProperty("params").GetProperty("path").GetString()!;
         try
         {
+            EnsureProjectPathAllowed(session.Info.ProjectPath, path);
             var content = await File.ReadAllTextAsync(path);
             await RespondToRequest(session, root, new { content });
         }
@@ -938,6 +993,7 @@ public class OpenCodeSessionService
         var content = @params.GetProperty("content").GetString()!;
         try
         {
+            EnsureProjectPathAllowed(session.Info.ProjectPath, path);
             await File.WriteAllTextAsync(path, content);
             await RespondToRequest(session, root, new { });
         }
@@ -947,11 +1003,242 @@ public class OpenCodeSessionService
         }
     }
 
+    internal static void EnsureProjectPathAllowed(string projectRoot, string requestedPath)
+    {
+        if (!Path.IsPathFullyQualified(requestedPath))
+            throw new UnauthorizedAccessException("OpenCode filesystem requests must use an absolute path");
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(projectRoot));
+        var target = Path.GetFullPath(requestedPath);
+        var relative = Path.GetRelativePath(root, target);
+        if (relative == ".." || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+            || Path.IsPathFullyQualified(relative))
+            throw new UnauthorizedAccessException("OpenCode filesystem request is outside the project workspace");
+
+        var current = root;
+        if (IsReparsePoint(current))
+            throw new UnauthorizedAccessException("OpenCode project roots may not be filesystem links");
+
+        foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (string.IsNullOrEmpty(segment) || segment == ".") continue;
+            current = Path.Combine(current, segment);
+            if (!File.Exists(current) && !Directory.Exists(current)) break;
+            if (IsReparsePoint(current))
+                throw new UnauthorizedAccessException("OpenCode filesystem requests may not traverse filesystem links");
+        }
+    }
+
+    private static bool IsReparsePoint(string path) =>
+        (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+
+    private void SeedKnownNativeParts(ManagedSession session, string providerSessionId)
+    {
+        try
+        {
+            foreach (var part in _nativeSessionReader.GetCompletedAssistantParts(providerSessionId))
+            {
+                session.KnownNativePartIds.Add(part.Id);
+                session.FinalizedProviderMessageIds.Add(part.MessageId);
+                if (part.CallId != null) session.FinalizedProviderMessageIds.Add(part.CallId);
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Cannot establish the OpenCode transcript baseline for {providerSessionId}", ex);
+        }
+    }
+
+    private void HandleLiveChunk(ManagedSession session, string type, string content, string? messageId)
+    {
+        if (session.Info.Status != "Active" || string.IsNullOrEmpty(messageId)) return;
+
+        OpenCodeNativeMessageVisibility visibility;
+        lock (session.TurnStateLock)
+        {
+            if (session.FinalizedProviderMessageIds.Contains(messageId)) return;
+            session.MessageVisibility.TryGetValue(messageId, out visibility);
+        }
+
+        if (visibility == OpenCodeNativeMessageVisibility.Missing)
+        {
+            try
+            {
+                visibility = _nativeSessionReader.GetMessageVisibility(session.AcpSessionId!, messageId);
+                if (visibility != OpenCodeNativeMessageVisibility.Missing)
+                    lock (session.TurnStateLock)
+                        session.MessageVisibility[messageId] = visibility;
+            }
+            catch (Exception ex)
+            {
+                _log($"[OpenCode] Failed to classify provider message {messageId}: {ex.Message}", null);
+                return;
+            }
+        }
+
+        if (visibility != OpenCodeNativeMessageVisibility.Visible) return;
+
+        lock (session.TurnStateLock)
+        {
+            if (session.FinalizedProviderMessageIds.Contains(messageId)) return;
+            var key = (messageId, type);
+            if (!session.StreamedContent.TryGetValue(key, out var streamed))
+                session.StreamedContent[key] = streamed = new StringBuilder();
+            streamed.Append(content);
+            EmitLive(session, new OpenCodeStreamEvent
+            {
+                Type = type,
+                Content = content,
+                IsPartial = true,
+                MessageId = messageId,
+            });
+        }
+    }
+
+    private async Task ReconcileCompletedTurn(ManagedSession session)
+    {
+        if (string.IsNullOrEmpty(session.AcpSessionId))
+            throw new InvalidOperationException("OpenCode session has no provider session ID");
+
+        IReadOnlyList<OpenCodeNativePart> snapshot;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (true)
+        {
+            snapshot = _nativeSessionReader.GetCompletedAssistantParts(session.AcpSessionId);
+            bool hasNewParts;
+            lock (session.TurnStateLock)
+            {
+                hasNewParts = snapshot.Any(part => !session.KnownNativePartIds.Contains(part.Id));
+            }
+            if (hasNewParts) break;
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException("OpenCode native completion did not settle within 5 seconds of end_turn");
+            await Task.Delay(25, session.Cts.Token);
+        }
+
+        List<OpenCodeNativePart> completed;
+        var suffixEvents = new List<OpenCodeStreamEvent>();
+        var records = new List<OpenCodeMessageRecord>();
+        var messageUid = session.CurrentAssistantUid ??= Guid.NewGuid().ToString("N");
+
+        lock (session.TurnStateLock)
+        {
+            completed = snapshot.Where(part => !session.KnownNativePartIds.Contains(part.Id)).ToList();
+            foreach (var part in completed)
+                session.KnownNativePartIds.Add(part.Id);
+
+            foreach (var group in completed
+                         .Where(part => part.Type is "text" or "reasoning")
+                         .GroupBy(part => (part.MessageId, EventType: part.Type == "reasoning" ? "thinking" : "text")))
+            {
+                var authoritative = string.Concat(group.Select(part => part.Text));
+                var key = (group.Key.MessageId, group.Key.EventType);
+                var delivered = session.StreamedContent.TryGetValue(key, out var streamed)
+                    ? streamed.ToString()
+                    : string.Empty;
+                if (MissingLiveSuffix(authoritative, delivered) is { Length: > 0 } suffix)
+                {
+                    suffixEvents.Add(new OpenCodeStreamEvent
+                    {
+                        Type = group.Key.EventType,
+                        Content = suffix,
+                        IsPartial = true,
+                        MessageId = group.Key.MessageId,
+                    });
+                }
+                else if (!string.Equals(authoritative, delivered, StringComparison.Ordinal))
+                {
+                    _log($"[OpenCode] Live/native content diverged for {session.Info.Id}/{group.Key.MessageId}; durable native content wins", null);
+                }
+            }
+
+            foreach (var part in completed)
+            {
+                if (part.Type == "tool")
+                {
+                    var toolMessageId = part.CallId ?? part.MessageId;
+                    if (!session.StreamedContent.ContainsKey((toolMessageId, "tool_use")))
+                    {
+                        suffixEvents.Add(new OpenCodeStreamEvent
+                        {
+                            Type = "tool_use",
+                            ToolName = part.ToolName,
+                            ToolInput = ParseJsonOrString(part.ToolInput),
+                            MessageId = toolMessageId,
+                        });
+                    }
+                    if (!session.StreamedContent.ContainsKey((toolMessageId, "tool_result")))
+                    {
+                        suffixEvents.Add(new OpenCodeStreamEvent
+                        {
+                            Type = "tool_result",
+                            ToolName = part.ToolName,
+                            Content = part.ToolResult,
+                            ToolResult = part.ToolResult,
+                            MessageId = toolMessageId,
+                        });
+                    }
+
+                    records.Add(ToMessageRecord(session, part, "tool_use", messageUid));
+                    records.Add(ToMessageRecord(session, part, "tool_result", messageUid));
+                }
+                else
+                {
+                    records.Add(ToMessageRecord(session, part,
+                        part.Type == "reasoning" ? "thinking" : "text", messageUid));
+                }
+                session.FinalizedProviderMessageIds.Add(part.MessageId);
+                if (part.CallId != null) session.FinalizedProviderMessageIds.Add(part.CallId);
+            }
+        }
+
+        foreach (var evt in suffixEvents)
+            EmitLive(session, evt);
+        _store.AddMessages(records);
+    }
+
+    private static OpenCodeMessageRecord ToMessageRecord(
+        ManagedSession session, OpenCodeNativePart part, string eventType, string messageUid) => new()
+    {
+        SessionId = session.Info.Id,
+        Role = "assistant",
+        EventType = eventType,
+        Content = eventType is "text" or "thinking" ? part.Text : eventType == "tool_result" ? part.ToolResult : null,
+        ToolName = eventType is "tool_use" or "tool_result" ? part.ToolName : null,
+        ToolInput = eventType == "tool_use" ? part.ToolInput : null,
+        ToolResult = eventType == "tool_result" ? part.ToolResult : null,
+        MessageId = part.Type == "tool" ? part.CallId ?? part.MessageId : part.MessageId,
+        MessageUid = messageUid,
+        ProviderPartId = part.Id,
+        Timestamp = part.Timestamp,
+    };
+
+    private static object? ParseJsonOrString(string? value)
+    {
+        if (value == null) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(value);
+            return document.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return value;
+        }
+    }
+
+    internal static string? MissingLiveSuffix(string authoritative, string delivered) =>
+        authoritative.StartsWith(delivered, StringComparison.Ordinal)
+            ? authoritative[delivered.Length..]
+            : null;
+
     // ===== Session Update Notification Handler =====
 
     private void HandleSessionUpdate(ManagedSession session, JsonElement @params)
     {
         if (!@params.TryGetProperty("update", out var update)) return;
+        if (session.IsLoadingHistory) return;
 
         var updateType = update.TryGetProperty("sessionUpdate", out var ut) ? ut.GetString() : null;
 
@@ -970,12 +1257,8 @@ public class OpenCodeSessionService
                     ? t.GetString() : null;
                 if (text != null)
                 {
-                    var evt = new OpenCodeStreamEvent
-                    {
-                        Type = "text", Content = text, IsPartial = true,
-                        MessageId = update.TryGetProperty("messageId", out var mid) ? mid.GetString() : null,
-                    };
-                    EmitAndStore(session, evt);
+                    HandleLiveChunk(session, "text", text,
+                        update.TryGetProperty("messageId", out var mid) ? mid.GetString() : null);
                 }
                 break;
             }
@@ -985,12 +1268,8 @@ public class OpenCodeSessionService
                     ? t.GetString() : null;
                 if (text != null)
                 {
-                    var evt = new OpenCodeStreamEvent
-                    {
-                        Type = "thinking", Content = text, IsPartial = true,
-                        MessageId = update.TryGetProperty("messageId", out var mid) ? mid.GetString() : null,
-                    };
-                    EmitAndStore(session, evt);
+                    HandleLiveChunk(session, "thinking", text,
+                        update.TryGetProperty("messageId", out var mid) ? mid.GetString() : null);
                 }
                 break;
             }
@@ -999,7 +1278,13 @@ public class OpenCodeSessionService
                 var toolName = update.TryGetProperty("title", out var title) ? title.GetString() : null;
                 var toolCallId = update.TryGetProperty("toolCallId", out var tcid) ? tcid.GetString() : null;
                 object? input = update.TryGetProperty("rawInput", out var ri) ? ri.Clone() : null;
-                EmitAndStore(session, new OpenCodeStreamEvent { Type = "tool_use", ToolName = toolName, ToolInput = input, MessageId = toolCallId });
+                lock (session.TurnStateLock)
+                {
+                    if (toolCallId != null && session.FinalizedProviderMessageIds.Contains(toolCallId)) break;
+                    if (toolCallId != null)
+                        session.StreamedContent.TryAdd((toolCallId, "tool_use"), new StringBuilder());
+                    EmitLive(session, new OpenCodeStreamEvent { Type = "tool_use", ToolName = toolName, ToolInput = input, MessageId = toolCallId });
+                }
                 break;
             }
             case "tool_call_update":
@@ -1009,6 +1294,8 @@ public class OpenCodeSessionService
 
                 if (status is "completed" or "failed")
                 {
+                    lock (session.TurnStateLock)
+                        if (toolCallId != null && session.FinalizedProviderMessageIds.Contains(toolCallId)) break;
                     string? resultContent = null;
                     var attachments = new List<OpenCodeAttachment>();
                     if (update.TryGetProperty("content", out var contentArr) && contentArr.ValueKind == JsonValueKind.Array)
@@ -1042,15 +1329,20 @@ public class OpenCodeSessionService
                         if (sb.Length > 0) resultContent = sb.ToString();
                     }
 
-                    EmitAndStore(session, new OpenCodeStreamEvent
+                    lock (session.TurnStateLock)
                     {
-                        Type = "tool_result",
-                        Content = resultContent,
-                        ToolResult = resultContent,
-                        ToolName = update.TryGetProperty("title", out var title) ? title.GetString() : null,
-                        MessageId = toolCallId,
-                        Attachments = attachments.Count > 0 ? attachments : null,
-                    });
+                        if (toolCallId != null)
+                            session.StreamedContent.TryAdd((toolCallId, "tool_result"), new StringBuilder());
+                        EmitLive(session, new OpenCodeStreamEvent
+                        {
+                            Type = "tool_result",
+                            Content = resultContent,
+                            ToolResult = resultContent,
+                            ToolName = update.TryGetProperty("title", out var title) ? title.GetString() : null,
+                            MessageId = toolCallId,
+                            Attachments = attachments.Count > 0 ? attachments : null,
+                        });
+                    }
                 }
                 break;
             }
@@ -1078,10 +1370,8 @@ public class OpenCodeSessionService
         }
     }
 
-    private void EmitAndStore(ManagedSession session, OpenCodeStreamEvent evt)
+    private void EmitLive(ManagedSession session, OpenCodeStreamEvent evt)
     {
-        // Stamp the turn uid before the event is broadcast or persisted so
-        // the streamed copy and the stored record carry the same identity.
         if (evt.Type is "status" or "error")
             session.CurrentAssistantUid = null;
         else
@@ -1091,21 +1381,6 @@ public class OpenCodeSessionService
         session.MessageHistory.Add(evt);
         if (session.MessageHistory.Count > 500)
             session.MessageHistory.RemoveRange(0, session.MessageHistory.Count - 400);
-
-        _store.AddMessage(new OpenCodeMessageRecord
-        {
-            SessionId = session.Info.Id,
-            Role = "assistant",
-            EventType = evt.Type,
-            Content = evt.Content,
-            ToolName = evt.ToolName,
-            ToolInput = evt.ToolInput is string s ? s : evt.ToolInput != null ? JsonSerializer.Serialize(evt.ToolInput) : null,
-            ToolResult = evt.ToolResult,
-            MessageId = evt.MessageId,
-            MessageUid = evt.MessageUid,
-            Timestamp = DateTimeOffset.UtcNow,
-            AttachmentsJson = evt.Attachments != null && evt.Attachments.Count > 0 ? JsonSerializer.Serialize(evt.Attachments) : null,
-        });
     }
 
     // ===== Process Lifecycle =====
@@ -1115,7 +1390,9 @@ public class OpenCodeSessionService
         if (!_sessions.TryRemove(sessionId, out var session)) return;
 
         _log($"[OpenCode] ACP process exited unexpectedly for session {sessionId}", null);
-        session.Info.Status = "Stopped";
+        session.Info.Status = "Error";
+        session.Info.StopReason = "process_exited";
+        session.Info.ProcessId = null;
 
         foreach (var (_, tcs) in session.PendingRequests)
             tcs.TrySetException(new Exception("ACP process exited"));
@@ -1123,10 +1400,11 @@ public class OpenCodeSessionService
 
         CleanupSessionResources(session);
 
-        CompleteSessionJob(session);
+        if (session.Info.JobId.HasValue)
+            _jobTracker.MarkFailed(session.Info.JobId.Value, "OpenCode ACP process exited unexpectedly");
         PersistSessionRecord(session.Info);
 
-        SessionEnded?.Invoke(sessionId, "process_exited");
+        SessionEnded?.Invoke(sessionId, "error");
     }
 
     private void CleanupSessionResources(ManagedSession session)

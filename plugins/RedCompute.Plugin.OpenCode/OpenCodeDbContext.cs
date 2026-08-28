@@ -44,6 +44,15 @@ public class OpenCodeDbContext : DbContext
             cmd.CommandText = "ALTER TABLE Messages ADD COLUMN MessageUid TEXT";
             try { cmd.ExecuteNonQuery(); }
             catch { }
+            cmd.CommandText = "ALTER TABLE Messages ADD COLUMN ProviderPartId TEXT";
+            try { cmd.ExecuteNonQuery(); }
+            catch { }
+            cmd.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS IX_Messages_SessionId_ProviderPartId_EventType
+                ON Messages (SessionId, ProviderPartId, EventType)
+                WHERE ProviderPartId IS NOT NULL
+                """;
+            cmd.ExecuteNonQuery();
             foreach (var col in new[] { "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER" })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";
@@ -70,6 +79,9 @@ public class OpenCodeDbContext : DbContext
             entity.Property(m => m.Id).ValueGeneratedOnAdd();
             entity.HasIndex(m => m.SessionId);
             entity.HasIndex(m => m.Timestamp);
+            entity.HasIndex(m => new { m.SessionId, m.ProviderPartId, m.EventType })
+                .IsUnique()
+                .HasFilter("ProviderPartId IS NOT NULL");
             entity.Property(m => m.Timestamp).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));

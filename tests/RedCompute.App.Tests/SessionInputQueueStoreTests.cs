@@ -1,6 +1,7 @@
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -59,6 +60,75 @@ public sealed class SessionInputQueueStoreTests : IDisposable
         var error = await Assert.ThrowsAsync<SessionInputQueueStoreException>(() =>
             queue.EnqueueAsync(Submission("different", idempotencyKey: "client-message-1")));
         Assert.Equal("idempotency_conflict", error.Code);
+    }
+
+    [Fact]
+    public async Task IdempotencyIgnoresRequestExecutionLineageButPreservesStableContext()
+    {
+        var (_, queue) = Stores();
+        var firstProvenance = Provenance("test-app",
+        [
+            new JobContextReference("discussion", "discussion-1"),
+            new JobContextReference("execution", "execution-1"),
+            new JobContextReference("parent-execution", "parent-1"),
+        ]);
+        var retryProvenance = Provenance("test-app",
+        [
+            new JobContextReference("discussion", "discussion-1"),
+            new JobContextReference("execution", "execution-2"),
+            new JobContextReference("parent-execution", "parent-2"),
+        ]);
+
+        var first = await queue.EnqueueAsync(Submission("hello", idempotencyKey: "client-message-1",
+            provenance: firstProvenance));
+        var retry = await queue.EnqueueAsync(Submission("hello", idempotencyKey: "client-message-1",
+            provenance: retryProvenance));
+
+        Assert.True(retry.Existing);
+        Assert.Equal(first.Item.Id, retry.Item.Id);
+
+        var differentDiscussion = Provenance("test-app",
+        [
+            new JobContextReference("discussion", "discussion-2"),
+            new JobContextReference("execution", "execution-3"),
+        ]);
+        var distinct = await queue.EnqueueAsync(Submission("hello", idempotencyKey: "client-message-1",
+            provenance: differentDiscussion));
+        Assert.False(distinct.Existing);
+        Assert.NotEqual(first.Item.Id, distinct.Item.Id);
+    }
+
+    [Fact]
+    public async Task IdempotencyRecognizesRowsWrittenWithTheLegacyVolatileScope()
+    {
+        var (attachments, queue) = Stores();
+        var original = Provenance("test-app",
+        [
+            new JobContextReference("discussion", "discussion-1"),
+            new JobContextReference("execution", "execution-1"),
+        ]);
+        var first = await queue.EnqueueAsync(Submission("hello", idempotencyKey: "legacy-key",
+            provenance: original));
+
+        await using (var connection = new SqliteConnection($"Data Source={attachments.DatabasePath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            var command = connection.CreateCommand();
+            command.CommandText = "UPDATE SessionQueuedInputs SET ProvenanceScope='legacy-scope', IdempotencyFingerprint='legacy-fingerprint' WHERE Id=$id";
+            command.Parameters.AddWithValue("$id", first.Item.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var retry = Provenance("test-app",
+        [
+            new JobContextReference("discussion", "discussion-1"),
+            new JobContextReference("execution", "execution-2"),
+        ]);
+        var replay = await queue.EnqueueAsync(Submission("hello", idempotencyKey: "legacy-key",
+            provenance: retry));
+
+        Assert.True(replay.Existing);
+        Assert.Equal(first.Item.Id, replay.Item.Id);
     }
 
     [Fact]
@@ -140,13 +210,13 @@ public sealed class SessionInputQueueStoreTests : IDisposable
             attachments ?? [],
             idempotencyKey);
 
-    private static JobProvenance Provenance(string appId) => new(
+    private static JobProvenance Provenance(string appId, IReadOnlyList<JobContextReference>? context = null) => new(
         JobProvenance.CurrentSchemaVersion,
         new JobOrigin("redcompute", new JobAppReference("app", appId, null, appId),
             new JobEntrypoint("http", "/test", "POST")),
         new JobActor("user", "Owner", Id: "owner-a"),
         new JobBeneficiary("user", "owner-a", "Owner"),
-        [],
+        context ?? [],
         new JobTrace(),
         JobProvenanceAssurance.Verified,
         DateTimeOffset.UtcNow);
