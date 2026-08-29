@@ -4,7 +4,7 @@
     {
       "id": "redbamboo-apphost",
       "repositoryUrl": "https://github.com/RedBamboo-Interactive/redbamboo-packages",
-      "commit": "f6409d1cac0873824e1131474926f48dc43d5b93",
+      "commit": "c7b28d7091562f172155a21711e04be02851222b",
       "sourcePath": "dotnet/RedBamboo.AppHost"
     }
   ]
