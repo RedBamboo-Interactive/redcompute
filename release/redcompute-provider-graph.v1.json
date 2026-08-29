@@ -188,8 +188,8 @@
           "management": "userExternalService",
           "requirement": "required",
           "versionConstraint": "unresolved",
-          "interface": "configurable Suno-compatible HTTP API; default https://api.sunoapi.org/api/v1",
-          "sourceMarkers": ["https://api.sunoapi.org", "/api/v1/generate"]
+          "interface": "configurable Suno-compatible API for generate, sounds, extend, stem separation, and WAV conversion; every request carries explicit paid-operation approval",
+          "sourceMarkers": ["https://api.sunoapi.org", "/api/v1/generate", "/api/v1/vocal-removal/generate", "/api/v1/wav/generate"]
         }
       ]
     },
