@@ -1,7 +1,7 @@
 {
   "slug": "music-gen",
   "displayName": "Music Generation",
-  "description": "Generate, extend, separate, and convert music through providers with post-operation credit accounting",
+  "description": "Generate, extend, separate, recover, and convert music through providers with post-operation credit accounting",
   "icon": "ph-fill ph-music-notes",
   "color": "#8B5CF6",
   "category": "audio"

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -15,6 +16,8 @@ namespace RedCompute.Plugin.Suno;
 internal sealed record SunoProviderTiming(TimeSpan PollInterval, TimeSpan PollTimeout)
 {
     public static SunoProviderTiming Default { get; } = new(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(600));
+    public TimeSpan MediaRetryInterval { get; init; } = TimeSpan.FromSeconds(4);
+    public TimeSpan MediaRetryTimeout { get; init; } = TimeSpan.FromSeconds(90);
 }
 
 public sealed class SunoProvider : IPluginProvider
@@ -47,7 +50,8 @@ public sealed class SunoProvider : IPluginProvider
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
-        ["operation"] = new() { Type = "string", Required = false, Default = "generate", Description = "generate, sounds, extend, split_stem, split_stem_advanced, separate_vocal, or wav" },
+        ["operation"] = new() { Type = "string", Required = false, Default = "generate", Description = "generate, sounds, extend, split_stem, split_stem_advanced, separate_vocal, wav, or recover" },
+        ["sourceOperation"] = new() { Type = "string", Required = false, Description = "Original operation for a no-charge recovery of an existing provider task" },
         ["prompt"] = new() { Type = "string", Required = false, Description = "Musical or structural description" },
         ["style"] = new() { Type = "string", Required = false, Description = "Genre and production tags" },
         ["title"] = new() { Type = "string", Required = false, Description = "Track title" },
@@ -136,7 +140,7 @@ public sealed class SunoProvider : IPluginProvider
         var operation = Operation(parameters);
         var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "generate", "sounds", "extend", "split_stem", "split_stem_advanced", "separate_vocal", "wav",
+            "generate", "sounds", "extend", "split_stem", "split_stem_advanced", "separate_vocal", "wav", "recover",
         };
         if (!supported.Contains(operation)) errors["operation"] = "unsupported";
         var requestedModel = ProviderHelpers.GetParam<string>(parameters, "model") ?? _model;
@@ -173,6 +177,12 @@ public sealed class SunoProvider : IPluginProvider
             case "wav":
                 Require(parameters, errors, "taskId", "audioId");
                 break;
+            case "recover":
+                Require(parameters, errors, "taskId", "sourceOperation");
+                var sourceOperation = SourceOperation(parameters);
+                if (sourceOperation is not ("generate" or "sounds" or "extend" or "split_stem" or "split_stem_advanced" or "separate_vocal" or "wav"))
+                    errors["sourceOperation"] = "must identify a recoverable Suno operation";
+                break;
         }
         return errors;
     }
@@ -186,23 +196,37 @@ public sealed class SunoProvider : IPluginProvider
             return Failure("Another Suno operation is in progress. Try again shortly.");
 
         var operation = Operation(request.Parameters);
+        var sourceOperation = operation == "recover" ? SourceOperation(request.Parameters) : operation;
+        var recovering = operation == "recover";
         int? creditsBefore = null;
+        int? creditsAfter = null;
+        int? reportedConsumed = null;
+        int? reportedRemaining = null;
         string? taskId = null;
+        JsonElement? taskData = null;
         try
         {
-            creditsBefore = await TryGetCreditsAsync(ct);
-            taskId = await SubmitAsync(operation, request.Parameters, ct);
-            _log($"[Suno] Submitted {operation} task {taskId}");
+            if (recovering)
+            {
+                taskId = ProviderHelpers.GetParam<string>(request.Parameters, "taskId")!;
+                _log($"[Suno] Recovering existing {sourceOperation} task {taskId} without a new submission");
+            }
+            else
+            {
+                creditsBefore = await TryGetCreditsAsync(ct);
+                taskId = await SubmitAsync(operation, request.Parameters, ct);
+                _log($"[Suno] Submitted {operation} task {taskId}");
+            }
             ProgressCallback?.Invoke(0.08);
-            var taskData = await PollUntilDoneAsync(operation, taskId, ct);
-            ProgressCallback?.Invoke(0.75);
-            var prepared = await PrepareOutputsAsync(operation, taskId, taskData, ct);
-            var reportedConsumed = FindNamedInt(taskData,
+            taskData = await PollUntilDoneAsync(sourceOperation, taskId, ct);
+            reportedConsumed = FindNamedInt(taskData.Value,
                 "creditsConsumed", "creditConsumed", "consumedCredits", "credits_used");
-            var reportedRemaining = FindNamedInt(taskData,
+            reportedRemaining = FindNamedInt(taskData.Value,
                 "creditsRemaining", "remainingCredits", "remaining_credits", "balance");
-            var creditsAfter = reportedRemaining ?? await TryGetCreditsAsync(ct);
-            var consumed = reportedConsumed ?? (creditsBefore.HasValue && creditsAfter.HasValue
+            creditsAfter = reportedRemaining ?? await TryGetCreditsAsync(ct);
+            ProgressCallback?.Invoke(0.75);
+            var prepared = await PrepareOutputsAsync(sourceOperation, taskId, taskData.Value, ct);
+            var consumed = reportedConsumed ?? (!recovering && creditsBefore.HasValue && creditsAfter.HasValue
                 ? Math.Max(0, creditsBefore.Value - creditsAfter.Value)
                 : (int?)null);
             var measurement = reportedConsumed.HasValue
@@ -210,7 +234,7 @@ public sealed class SunoProvider : IPluginProvider
                 : consumed.HasValue ? "balance_delta" : "unavailable";
 
             ProgressCallback?.Invoke(1);
-            return BuildJobResult(operation, taskId, prepared, creditsBefore, creditsAfter, consumed, measurement);
+            return BuildJobResult(sourceOperation, taskId, prepared, creditsBefore, creditsAfter, consumed, measurement, recovering);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -219,13 +243,22 @@ public sealed class SunoProvider : IPluginProvider
         catch (Exception ex)
         {
             _log($"[Suno] Operation failed: {ex.Message}");
-            var creditsAfter = await TryGetCreditsAsync(ct);
-            var consumed = creditsBefore.HasValue && creditsAfter.HasValue
+            creditsAfter ??= reportedRemaining ?? await TryGetCreditsAsync(ct);
+            if (taskData.HasValue)
+            {
+                reportedConsumed ??= FindNamedInt(taskData.Value,
+                    "creditsConsumed", "creditConsumed", "consumedCredits", "credits_used");
+                reportedRemaining ??= FindNamedInt(taskData.Value,
+                    "creditsRemaining", "remainingCredits", "remaining_credits", "balance");
+                creditsAfter ??= reportedRemaining;
+            }
+            var consumed = reportedConsumed ?? (!recovering && creditsBefore.HasValue && creditsAfter.HasValue
                 ? Math.Max(0, creditsBefore.Value - creditsAfter.Value)
-                : (int?)null;
+                : (int?)null);
             return Failure(ex.Message, BuildFailureAudit(
-                operation, taskId, ex.Message, creditsBefore, creditsAfter, consumed,
-                consumed.HasValue ? "balance_delta" : "unavailable"));
+                sourceOperation, taskId, ex.Message, creditsBefore, creditsAfter, consumed,
+                reportedConsumed.HasValue ? "provider_task" : consumed.HasValue ? "balance_delta" : "unavailable",
+                recovering));
         }
         finally
         {
@@ -361,20 +394,42 @@ public sealed class SunoProvider : IPluginProvider
             foreach (var clip in sunoData.EnumerateArray())
             {
                 var audioUrl = GetString(clip, "audioUrl", "audio_url");
-                if (string.IsNullOrWhiteSpace(audioUrl)) continue;
+                var streamAudioUrl = GetString(clip, "streamAudioUrl", "stream_audio_url");
+                var audioUrls = new[] { audioUrl, streamAudioUrl }
+                    .Where(url => !string.IsNullOrWhiteSpace(url))
+                    .Select(url => url!)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                if (audioUrls.Length == 0) continue;
                 var clipId = GetString(clip, "id") ?? $"clip-{index}";
                 var title = GetString(clip, "title") ?? $"Track {index + 1}";
                 var tags = GetString(clip, "tags");
                 var duration = GetDouble(clip, "duration");
                 var audioName = $"clip-{index}";
-                var audio = await DownloadAsync(audioUrl, audioName, $"{Slug(title)}-{Short(clipId)}", "audio", null, clipId, duration, ct);
+                var audio = await DownloadAsync(
+                    audioUrls, audioName, $"{Slug(title)}-{Short(clipId)}", "audio", null, clipId, duration,
+                    retryTransient: true, ct);
                 artifacts.Add(audio);
                 string? coverName = null;
                 var imageUrl = GetString(clip, "imageUrl", "image_url");
                 if (!string.IsNullOrWhiteSpace(imageUrl))
                 {
                     coverName = $"cover-{index}";
-                    artifacts.Add(await DownloadAsync(imageUrl, coverName, $"{Slug(title)}-{Short(clipId)}-cover", "cover", null, clipId, null, ct));
+                    try
+                    {
+                        artifacts.Add(await DownloadAsync(
+                            [imageUrl], coverName, $"{Slug(title)}-{Short(clipId)}-cover", "cover", null, clipId, null,
+                            retryTransient: false, ct));
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _log($"[Suno] Optional cover '{coverName}' was skipped: {ex.Message}");
+                        coverName = null;
+                    }
                 }
                 tracks.Add(new JsonObject
                 {
@@ -391,7 +446,7 @@ public sealed class SunoProvider : IPluginProvider
                     ClipId = clipId,
                     Title = title,
                     Tags = tags ?? "",
-                    AudioUrl = audioUrl,
+                    AudioUrl = audioUrls[0],
                     ImageUrl = imageUrl ?? "",
                     Filename = audio.FileName,
                 });
@@ -449,7 +504,7 @@ public sealed class SunoProvider : IPluginProvider
         return new PreparedOutput([artifact], []);
     }
 
-    private async Task<PreparedArtifact> DownloadAsync(
+    private Task<PreparedArtifact> DownloadAsync(
         string url,
         string name,
         string fileStem,
@@ -458,13 +513,111 @@ public sealed class SunoProvider : IPluginProvider
         string? providerId,
         double? duration,
         CancellationToken ct)
+        => DownloadAsync([url], name, fileStem, kind, role, providerId, duration, retryTransient: true, ct);
+
+    private async Task<PreparedArtifact> DownloadAsync(
+        IEnumerable<string> urls,
+        string name,
+        string fileStem,
+        string kind,
+        string? role,
+        string? providerId,
+        double? duration,
+        bool retryTransient,
+        CancellationToken ct)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
-            throw new InvalidDataException($"Suno returned an unsafe download URL for artifact '{name}'");
-        await EnsurePublicDownloadTargetAsync(uri, name, ct);
+        var candidates = new List<Uri>();
+        foreach (var url in urls.Distinct(StringComparer.Ordinal))
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            {
+                _log($"[Suno] Ignored an unsafe URL for artifact '{name}'");
+                continue;
+            }
+            try
+            {
+                await EnsurePublicDownloadTargetAsync(uri, name, ct);
+                candidates.Add(uri);
+            }
+            catch (InvalidDataException ex)
+            {
+                _log($"[Suno] Ignored an unsafe URL for artifact '{name}': {ex.Message}");
+            }
+        }
+        if (candidates.Count == 0)
+            throw new InvalidDataException($"Suno returned no safe download URL for artifact '{name}'");
+
+        var retryTimeout = retryTransient ? _timing.MediaRetryTimeout : TimeSpan.Zero;
+        var deadline = DateTimeOffset.UtcNow + retryTimeout;
+        var attempts = 0;
+        DownloadAttemptFailure? lastFailure = null;
+        do
+        {
+            var cycleHasRetryableFailure = false;
+            DownloadAttemptFailure? cycleTerminalFailure = null;
+            foreach (var uri in candidates)
+            {
+                attempts++;
+                DownloadAttempt attempt;
+                try
+                {
+                    attempt = await TryDownloadOnceAsync(
+                        uri, name, fileStem, kind, role, providerId, duration, ct);
+                }
+                catch (HttpRequestException)
+                {
+                    attempt = new DownloadAttempt(null,
+                        new DownloadAttemptFailure(uri.Host, "network failure", true));
+                }
+                catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    attempt = new DownloadAttempt(null,
+                        new DownloadAttemptFailure(uri.Host, "request timeout", true));
+                }
+                if (attempt.Artifact is not null) return attempt.Artifact;
+                lastFailure = attempt.Failure;
+                if (lastFailure is { Retryable: true }) cycleHasRetryableFailure = true;
+                else cycleTerminalFailure ??= lastFailure;
+            }
+
+            if (!cycleHasRetryableFailure && cycleTerminalFailure is not null)
+                throw new InvalidDataException(
+                    $"Suno artifact '{name}' from '{cycleTerminalFailure.Host}' failed: {cycleTerminalFailure.Detail}");
+            if (DateTimeOffset.UtcNow >= deadline) break;
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            var delay = remaining < _timing.MediaRetryInterval ? remaining : _timing.MediaRetryInterval;
+            if (delay > TimeSpan.Zero)
+            {
+                _log($"[Suno] Artifact '{name}' is not ready ({lastFailure?.Detail ?? "unknown response"} from '{lastFailure?.Host ?? "unknown host"}'); retrying");
+                await Task.Delay(delay, ct);
+            }
+        } while (DateTimeOffset.UtcNow <= deadline);
+
+        throw new HttpRequestException(
+            $"Suno artifact '{name}' from '{lastFailure?.Host ?? "unknown host"}' remained unavailable ({lastFailure?.Detail ?? "unknown response"}) after {attempts} attempt(s)");
+    }
+
+    private async Task<DownloadAttempt> TryDownloadOnceAsync(
+        Uri uri,
+        string name,
+        string fileStem,
+        string kind,
+        string? role,
+        string? providerId,
+        double? duration,
+        CancellationToken ct)
+    {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.UserAgent.ParseAdd("RedCompute/1.0");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(kind == "cover" ? "image/*" : "audio/*"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*", 0.1));
         using var response = await _downloadHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = $"HTTP {(int)response.StatusCode} ({response.StatusCode})";
+            return new DownloadAttempt(null,
+                new DownloadAttemptFailure(uri.Host, detail, IsTransientMediaStatus(response.StatusCode)));
+        }
         if (response.Content.Headers.ContentLength is { } length && length > _maxDownloadBytes)
             throw new InvalidDataException($"Suno artifact '{name}' exceeds the {_maxDownloadBytes}-byte download limit");
         await using var source = await response.Content.ReadAsStreamAsync(ct);
@@ -487,22 +640,26 @@ public sealed class SunoProvider : IPluginProvider
         if (memory.Length == 0)
         {
             memory.Dispose();
-            throw new InvalidDataException($"Suno artifact '{name}' was empty");
+            return new DownloadAttempt(null,
+                new DownloadAttemptFailure(uri.Host, "empty response", true));
         }
         var declaredType = response.Content.Headers.ContentType?.MediaType;
         var contentType = string.IsNullOrWhiteSpace(declaredType) ||
-                          declaredType.Equals("application/octet-stream", StringComparison.OrdinalIgnoreCase)
+                          declaredType.Equals("application/octet-stream", StringComparison.OrdinalIgnoreCase) ||
+                          declaredType.Equals("binary/octet-stream", StringComparison.OrdinalIgnoreCase)
             ? ContentTypeFromUri(uri, kind)
             : declaredType;
         var expectedPrefix = kind == "cover" ? "image/" : "audio/";
         if (!contentType.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
         {
             memory.Dispose();
-            throw new InvalidDataException(
-                $"Suno artifact '{name}' returned unexpected content type '{contentType}'");
+            return new DownloadAttempt(null,
+                new DownloadAttemptFailure(uri.Host, $"content type '{contentType}'", true));
         }
         var extension = ExtensionFor(contentType, kind);
-        return new PreparedArtifact(name, $"{fileStem}{extension}", contentType, kind, role, providerId, duration, memory);
+        return new DownloadAttempt(
+            new PreparedArtifact(name, $"{fileStem}{extension}", contentType, kind, role, providerId, duration, memory),
+            null);
     }
 
     private JobResult BuildJobResult(
@@ -512,7 +669,8 @@ public sealed class SunoProvider : IPluginProvider
         int? creditsBefore,
         int? creditsAfter,
         int? creditsConsumed,
-        string measurement)
+        string measurement,
+        bool recovered)
     {
         var primary = prepared.Artifacts[0];
         var artifactRows = new JsonArray(prepared.Artifacts.Select(artifact => (JsonNode?)new JsonObject
@@ -530,6 +688,7 @@ public sealed class SunoProvider : IPluginProvider
             ["schemaVersion"] = 3,
             ["operation"] = operation,
             ["providerTaskId"] = taskId,
+            ["recovered"] = recovered,
             ["tracks"] = prepared.Tracks,
             ["artifacts"] = artifactRows,
             ["credits"] = new JsonObject
@@ -567,30 +726,50 @@ public sealed class SunoProvider : IPluginProvider
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
             using var response = await _apiHttp.GetAsync(_baseUrl + "/api/v1/generate/credit", timeout.Token);
-            if (!response.IsSuccessStatusCode) return null;
-            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            if (!response.IsSuccessStatusCode)
+            {
+                _log($"[Suno] Credit balance unavailable: HTTP {(int)response.StatusCode} ({response.StatusCode})");
+                return null;
+            }
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
             var root = document.RootElement;
-            return (GetInt(root, "code") ?? 200) == 200 && root.TryGetProperty("data", out var data)
-                ? ReadCreditValue(data)
-                : null;
+            if ((GetInt(root, "code") ?? 200) != 200 || !root.TryGetProperty("data", out var data))
+            {
+                _log($"[Suno] Credit balance unavailable: {DescribeCreditEnvelope(root)}");
+                return null;
+            }
+            var credits = ReadCreditValue(data);
+            if (!credits.HasValue)
+                _log($"[Suno] Credit balance unreadable: {DescribeCreditEnvelope(root)}");
+            return credits;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
-        catch
+        catch (Exception ex)
         {
+            _log($"[Suno] Credit balance probe failed: {ex.GetType().Name}");
             return null;
         }
     }
 
     private static int? ReadCreditValue(JsonElement value)
     {
-        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numeric)) return numeric;
-        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out var text)) return text;
-        if (value.ValueKind != JsonValueKind.Object) return null;
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            if (value.TryGetInt32(out var numeric)) return numeric;
+            if (value.TryGetDecimal(out var decimalValue) && decimalValue is >= 0 and <= int.MaxValue && decimalValue == Math.Truncate(decimalValue))
+                return (int)decimalValue;
+        }
+        if (value.ValueKind == JsonValueKind.String &&
+            decimal.TryParse(value.GetString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var textValue) &&
+            textValue is >= 0 and <= int.MaxValue && textValue == Math.Truncate(textValue))
+            return (int)textValue;
+        if (value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)) return null;
         return FindNamedInt(value,
-            "credits", "credit", "creditsRemaining", "remainingCredits", "remaining_credits", "balance");
+            "credits", "credit", "totalCredits", "availableCredits", "creditBalance",
+            "creditsRemaining", "remainingCredits", "remaining_credits", "balance");
     }
 
     private static int? FindNamedInt(JsonElement value, params string[] names)
@@ -620,6 +799,33 @@ public sealed class SunoProvider : IPluginProvider
             }
         }
         return null;
+    }
+
+    private static string DescribeCreditEnvelope(JsonElement root)
+    {
+        var code = GetInt(root, "code")?.ToString(CultureInfo.InvariantCulture) ?? "missing";
+        var data = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var value)
+            ? DescribeJsonShape(value, 0)
+            : "missing";
+        return $"code={code}; data={data}";
+    }
+
+    private static string DescribeJsonShape(JsonElement value, int depth)
+    {
+        if (depth >= 3) return value.ValueKind.ToString().ToLowerInvariant();
+        return value.ValueKind switch
+        {
+            JsonValueKind.Object => "object{" + string.Join(',', value.EnumerateObject().Take(12)
+                .Select(property => $"{property.Name}:{DescribeJsonShape(property.Value, depth + 1)}")) + "}",
+            JsonValueKind.Array => value.GetArrayLength() == 0
+                ? "array[0]"
+                : $"array[{value.GetArrayLength()}]<{DescribeJsonShape(value[0], depth + 1)}>",
+            JsonValueKind.String => "string",
+            JsonValueKind.Number => "number",
+            JsonValueKind.True or JsonValueKind.False => "boolean",
+            JsonValueKind.Null => "null",
+            _ => value.ValueKind.ToString().ToLowerInvariant(),
+        };
     }
 
     private static Dictionary<string, object?> GeneratePayload(Dictionary<string, object?> p, string model, string callback) => new()
@@ -679,6 +885,9 @@ public sealed class SunoProvider : IPluginProvider
     private static string Operation(Dictionary<string, object?> p)
         => (ProviderHelpers.GetParam<string>(p, "operation") ?? "generate").Trim().ToLowerInvariant();
 
+    private static string SourceOperation(Dictionary<string, object?> p)
+        => (ProviderHelpers.GetParam<string>(p, "sourceOperation") ?? "").Trim().ToLowerInvariant();
+
     private static void Require(Dictionary<string, object?> p, Dictionary<string, string> errors, params string[] fields)
     {
         foreach (var field in fields)
@@ -692,11 +901,13 @@ public sealed class SunoProvider : IPluginProvider
         int? creditsBefore,
         int? creditsAfter,
         int? creditsConsumed,
-        string measurement) => new JsonObject
+        string measurement,
+        bool recovered) => new JsonObject
     {
         ["schemaVersion"] = 3,
         ["operation"] = operation,
         ["providerTaskId"] = taskId,
+        ["recovered"] = recovered,
         ["status"] = "failed",
         ["error"] = error,
         ["credits"] = new JsonObject
@@ -719,6 +930,12 @@ public sealed class SunoProvider : IPluginProvider
     private static bool HasError(JsonElement data)
         => data.TryGetProperty("errorCode", out var code) && code.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) &&
            !(code.ValueKind == JsonValueKind.Number && code.TryGetInt32(out var number) && number == 0);
+
+    private static bool IsTransientMediaStatus(HttpStatusCode status)
+        => status is HttpStatusCode.Forbidden or HttpStatusCode.NotFound or HttpStatusCode.Conflict or
+           HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout or
+           HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or
+           HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout || (int)status == 425;
 
     private static bool TryPath(JsonElement root, out JsonElement value, params string[] path)
     {
@@ -818,6 +1035,8 @@ public sealed class SunoProvider : IPluginProvider
     private static long ParseLong(string value, long fallback) => long.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
 
     private sealed record PreparedOutput(List<PreparedArtifact> Artifacts, JsonArray Tracks);
+    private sealed record DownloadAttempt(PreparedArtifact? Artifact, DownloadAttemptFailure? Failure);
+    private sealed record DownloadAttemptFailure(string Host, string Detail, bool Retryable);
     private sealed record PreparedArtifact(
         string Name,
         string FileName,

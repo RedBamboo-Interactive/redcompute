@@ -188,7 +188,7 @@
           "management": "userExternalService",
           "requirement": "required",
           "versionConstraint": "unresolved",
-          "interface": "configurable Suno-compatible API for generate, sounds, extend, stem separation, and WAV conversion; every request carries explicit paid-operation approval",
+          "interface": "configurable Suno-compatible API for generate, sounds, extend, stem separation, WAV conversion, and no-charge recovery of existing provider tasks",
           "sourceMarkers": ["https://api.sunoapi.org", "/api/v1/generate", "/api/v1/vocal-removal/generate", "/api/v1/wav/generate"]
         }
       ]
