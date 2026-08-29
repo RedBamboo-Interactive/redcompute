@@ -136,6 +136,53 @@ public sealed class SunoProviderTests
     }
 
     [Fact]
+    public async Task SplitStemUsesItsLongerOperationSpecificPollTimeout()
+    {
+        var polls = 0;
+        var creditReads = 0;
+        var apiHandler = new DelegateHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/generate/credit"))
+                return Json($"{{\"code\":200,\"data\":{(++creditReads == 1 ? 100 : 50)}}}");
+            if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath.EndsWith("/vocal-removal/generate"))
+                return Json("{\"code\":200,\"data\":{\"taskId\":\"slow-stem-task\"}}");
+            if (request.Method == HttpMethod.Get && request.RequestUri.AbsolutePath.EndsWith("/vocal-removal/record-info"))
+            {
+                if (++polls == 1) return Json("{\"code\":200,\"data\":{\"status\":\"PENDING\"}}");
+                return Json("""
+                    {"code":200,"data":{"status":"SUCCESS","response":{"originData":[
+                      {"id":"drums-id","audio_url":"https://1.1.1.1/drums.mp3","stem_type_group_name":"Drums","duration":32.0}
+                    ]}}}
+                    """);
+            }
+            throw new InvalidOperationException($"Unexpected API request {request.Method} {request.RequestUri}");
+        });
+        await using var provider = new SunoProvider(
+            Config([]), "music-gen", _ => { }, new HttpClient(apiHandler),
+            new HttpClient(new DelegateHandler(_ => Bytes("audio/mpeg", [1, 2, 3]))),
+            new SunoProviderTiming(
+                TimeSpan.FromMilliseconds(20),
+                TimeSpan.FromMilliseconds(5),
+                TimeSpan.FromSeconds(5)));
+
+        var result = await provider.ExecuteAsync(new JobRequest
+        {
+            CapabilitySlug = "music-gen",
+            Parameters = new Dictionary<string, object?>
+            {
+                ["operation"] = "split_stem",
+                ["taskId"] = "source-task",
+                ["audioId"] = "source-audio",
+                ["separationType"] = "split_stem",
+            },
+        });
+
+        Assert.True(result!.Success, result.ErrorMessage);
+        Assert.Equal(2, polls);
+        result.OutputStream!.Dispose();
+    }
+
+    [Fact]
     public async Task OrdinaryOperationNeedsNoBillingControlInputs()
     {
         var provider = new SunoProvider(Config([]), "music-gen", _ => { });
@@ -323,7 +370,7 @@ public sealed class SunoProviderTests
             new SunoProviderTiming(TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2))
             {
                 MediaRetryInterval = TimeSpan.FromMilliseconds(1),
-                MediaRetryTimeout = TimeSpan.FromMilliseconds(50),
+                MediaRetryTimeout = TimeSpan.FromMilliseconds(500),
             });
 
         var result = await provider.ExecuteAsync(new JobRequest

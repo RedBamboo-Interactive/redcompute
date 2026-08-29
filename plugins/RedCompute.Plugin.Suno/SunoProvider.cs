@@ -13,9 +13,15 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Suno;
 
-internal sealed record SunoProviderTiming(TimeSpan PollInterval, TimeSpan PollTimeout)
+internal sealed record SunoProviderTiming(
+    TimeSpan PollInterval,
+    TimeSpan PollTimeout,
+    TimeSpan? StemPollTimeout = null)
 {
-    public static SunoProviderTiming Default { get; } = new(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(600));
+    public static SunoProviderTiming Default { get; } = new(
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(600),
+        TimeSpan.FromSeconds(1200));
     public TimeSpan MediaRetryInterval { get; init; } = TimeSpan.FromSeconds(4);
     public TimeSpan MediaRetryTimeout { get; init; } = TimeSpan.FromSeconds(90);
 }
@@ -323,7 +329,10 @@ public sealed class SunoProvider : IPluginProvider
             "split_stem" or "split_stem_advanced" or "separate_vocal" => "/api/v1/vocal-removal/record-info",
             _ => "/api/v1/generate/record-info",
         };
-        var deadline = DateTimeOffset.UtcNow + _timing.PollTimeout;
+        var timeout = operation is "split_stem" or "split_stem_advanced" or "separate_vocal"
+            ? _timing.StemPollTimeout ?? _timing.PollTimeout
+            : _timing.PollTimeout;
+        var deadline = DateTimeOffset.UtcNow + timeout;
         var seenIntermediate = false;
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -366,7 +375,7 @@ public sealed class SunoProvider : IPluginProvider
             }
             await Task.Delay(_timing.PollInterval, ct);
         }
-        throw new TimeoutException($"Suno {operation} timed out after {_timing.PollTimeout.TotalSeconds:0} seconds");
+        throw new TimeoutException($"Suno {operation} timed out after {timeout.TotalSeconds:0} seconds");
     }
 
     private async Task<PreparedOutput> PrepareOutputsAsync(
