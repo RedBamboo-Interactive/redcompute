@@ -11,14 +11,16 @@ namespace RedCompute.App.Tests;
 public sealed class SunoProviderTests
 {
     [Fact]
-    public async Task GenerateUsesSpendGateAndReturnsNamedIngestedArtifactsWithoutLeakingCredential()
+    public async Task GenerateRecordsActualCreditsAndReturnsNamedIngestedArtifactsWithoutLeakingCredential()
     {
         var creditReads = 0;
         var apiHandler = new DelegateHandler(request =>
         {
             Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
             if (request.RequestUri!.AbsolutePath.EndsWith("/generate/credit"))
-                return Json($"{{\"code\":200,\"data\":{(++creditReads == 1 ? 100 : 90)}}}");
+                return ++creditReads == 1
+                    ? Json("{\"code\":200,\"data\":{\"creditsRemaining\":\"100\"}}")
+                    : Json("{\"code\":200,\"data\":{\"balance\":90}}");
             if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath.EndsWith("/generate"))
                 return Json("{\"code\":200,\"data\":{\"taskId\":\"task-1\"}}");
             if (request.Method == HttpMethod.Get && request.RequestUri.AbsolutePath.EndsWith("/generate/record-info"))
@@ -42,7 +44,6 @@ public sealed class SunoProviderTests
         {
             ["BaseUrl"] = "https://api.sunoapi.org",
             ["Model"] = "V5",
-            ["Credits.Generate"] = 10,
         });
         await using var provider = new SunoProvider(
             config, "music-gen", _ => { }, new HttpClient(apiHandler), new HttpClient(downloadHandler),
@@ -59,8 +60,6 @@ public sealed class SunoProviderTests
                 ["style"] = "retro industrial dubstep",
                 ["title"] = "Signal Below",
                 ["instrumental"] = true,
-                ["confirmPaid"] = true,
-                ["approvedMaxCredits"] = 10,
             },
         });
 
@@ -73,10 +72,11 @@ public sealed class SunoProviderTests
         Assert.Contains(result.ExtraOutputs, part => part.Name == "clip-1");
         Assert.Contains(result.ExtraOutputs, part => part.Name == "cover-1");
         var metadata = JsonNode.Parse(result.ResultJson!)!.AsObject();
-        Assert.Equal(2, metadata["schemaVersion"]!.GetValue<int>());
+        Assert.Equal(3, metadata["schemaVersion"]!.GetValue<int>());
         Assert.Equal(2, metadata["tracks"]!.AsArray().Count);
         Assert.Equal(4, metadata["artifacts"]!.AsArray().Count);
         Assert.Equal(10, metadata["credits"]!["consumed"]!.GetValue<int>());
+        Assert.Equal("balance_delta", metadata["credits"]!["measurement"]!.GetValue<string>());
         Assert.Equal(4, downloadRequests.Count);
 
         result.OutputStream!.Dispose();
@@ -106,7 +106,6 @@ public sealed class SunoProviderTests
         var config = Config(new Dictionary<string, object?>
         {
             ["BaseUrl"] = "https://api.sunoapi.org",
-            ["Credits.SplitStem"] = 50,
         });
         await using var provider = new SunoProvider(
             config, "music-gen", _ => { }, new HttpClient(apiHandler), new HttpClient(downloadHandler),
@@ -122,8 +121,6 @@ public sealed class SunoProviderTests
                 ["taskId"] = "source-task",
                 ["audioId"] = "source-audio",
                 ["separationType"] = "split_stem",
-                ["confirmPaid"] = true,
-                ["approvedMaxCredits"] = 50,
             },
         });
 
@@ -139,7 +136,7 @@ public sealed class SunoProviderTests
     }
 
     [Fact]
-    public async Task MissingSpendApprovalIsRejectedBeforeAnyVendorCall()
+    public async Task OrdinaryOperationNeedsNoBillingControlInputs()
     {
         var provider = new SunoProvider(Config([]), "music-gen", _ => { });
         var errors = provider.ValidateParameters(new Dictionary<string, object?>
@@ -149,8 +146,7 @@ public sealed class SunoProviderTests
             ["style"] = "style",
             ["title"] = "title",
         });
-        Assert.Contains("confirmPaid", errors.Keys);
-        Assert.Contains("approvedMaxCredits", errors.Keys);
+        Assert.Empty(errors);
         await provider.DisposeAsync();
     }
 
@@ -160,7 +156,6 @@ public sealed class SunoProviderTests
         var provider = new SunoProvider(Config(new Dictionary<string, object?>
         {
             ["Model"] = "V5",
-            ["Credits.Generate"] = 10,
         }), "music-gen", _ => { });
         var errors = provider.ValidateParameters(new Dictionary<string, object?>
         {
@@ -169,8 +164,6 @@ public sealed class SunoProviderTests
             ["style"] = "style",
             ["title"] = "title",
             ["duration"] = 32,
-            ["confirmPaid"] = true,
-            ["approvedMaxCredits"] = 10,
         });
 
         Assert.Contains("duration", errors.Keys);
@@ -189,15 +182,22 @@ public sealed class SunoProviderTests
     }
 
     [Fact]
-    public async Task Rejected_admission_keeps_a_credit_audit_in_the_failed_result()
+    public async Task FailedOperationStillRecordsTheActualCreditDelta()
     {
+        var creditReads = 0;
         var apiHandler = new DelegateHandler(request =>
         {
-            Assert.EndsWith("/generate/credit", request.RequestUri!.AbsolutePath, StringComparison.Ordinal);
-            return Json("{\"code\":200,\"data\":20}");
+            if (request.RequestUri!.AbsolutePath.EndsWith("/generate/credit", StringComparison.Ordinal))
+                return Json($"{{\"code\":200,\"data\":{(++creditReads == 1 ? 20 : 17)}}}");
+            if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath.EndsWith("/generate"))
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                {
+                    Content = new StringContent("provider failed", Encoding.UTF8, "text/plain"),
+                };
+            throw new InvalidOperationException($"Unexpected API request {request.Method} {request.RequestUri}");
         });
         await using var provider = new SunoProvider(
-            Config(new Dictionary<string, object?> { ["Credits.Generate"] = 50 }),
+            Config([]),
             "music-gen", _ => { }, new HttpClient(apiHandler), new HttpClient(new DelegateHandler(_ => throw new Exception())),
             new SunoProviderTiming(TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2)));
 
@@ -210,8 +210,6 @@ public sealed class SunoProviderTests
                 ["prompt"] = "prompt",
                 ["style"] = "style",
                 ["title"] = "title",
-                ["confirmPaid"] = true,
-                ["approvedMaxCredits"] = 50,
             },
         });
 
@@ -219,7 +217,9 @@ public sealed class SunoProviderTests
         var audit = JsonNode.Parse(result.ResultJson!)!.AsObject();
         Assert.Equal("failed", audit["status"]!.GetValue<string>());
         Assert.Equal(20, audit["credits"]!["before"]!.GetValue<int>());
-        Assert.Equal(0, audit["credits"]!["consumed"]!.GetValue<int>());
+        Assert.Equal(17, audit["credits"]!["after"]!.GetValue<int>());
+        Assert.Equal(3, audit["credits"]!["consumed"]!.GetValue<int>());
+        Assert.Equal("balance_delta", audit["credits"]!["measurement"]!.GetValue<string>());
     }
 
     private static ProviderConfig Config(Dictionary<string, object?> extra) => new()

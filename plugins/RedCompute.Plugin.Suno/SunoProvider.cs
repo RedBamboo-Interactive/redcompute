@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -64,8 +63,6 @@ public sealed class SunoProvider : IPluginProvider
         ["soundLoop"] = new() { Type = "boolean", Required = false, Default = false, Description = "Ask the V5 sounds endpoint for a loop" },
         ["soundTempo"] = new() { Type = "integer", Required = false, Description = "Sounds endpoint tempo from 1 to 300 BPM" },
         ["soundKey"] = new() { Type = "string", Required = false, Default = "Any", Description = "Sounds endpoint musical key" },
-        ["confirmPaid"] = new() { Type = "boolean", Required = true, Description = "Explicit confirmation that this request may consume credits" },
-        ["approvedMaxCredits"] = new() { Type = "integer", Required = true, Description = "Maximum credits authorized for this operation" },
     };
 
     public ReturnSchema OutputSchema => new()
@@ -146,14 +143,6 @@ public sealed class SunoProvider : IPluginProvider
         if (operation is "generate" or "extend" && requestedModel is not ("V4" or "V4_5" or "V4_5PLUS" or "V4_5ALL" or "V5" or "V5_5"))
             errors["model"] = "must be V4, V4_5, V4_5PLUS, V4_5ALL, V5, or V5_5";
 
-        var confirmed = ProviderHelpers.GetParam<bool?>(parameters, "confirmPaid") ?? false;
-        var approved = ProviderHelpers.GetParam<int?>(parameters, "approvedMaxCredits");
-        if (!confirmed) errors["confirmPaid"] = "explicit confirmation is required for paid Suno operations";
-        if (approved is null or <= 0) errors["approvedMaxCredits"] = "a positive credit cap is required";
-        var estimate = CreditEstimate(operation);
-        if (approved.HasValue && estimate.HasValue && approved.Value < estimate.Value)
-            errors["approvedMaxCredits"] = $"configured estimate is {estimate.Value} credits";
-
         switch (operation)
         {
             case "generate":
@@ -197,37 +186,31 @@ public sealed class SunoProvider : IPluginProvider
             return Failure("Another Suno operation is in progress. Try again shortly.");
 
         var operation = Operation(request.Parameters);
-        var approved = ProviderHelpers.GetParam<int?>(request.Parameters, "approvedMaxCredits")!.Value;
-        var estimate = CreditEstimate(operation);
         int? creditsBefore = null;
         string? taskId = null;
         try
         {
             creditsBefore = await TryGetCreditsAsync(ct);
-            var admissionCredits = estimate ?? approved;
-            if (creditsBefore.HasValue && creditsBefore.Value < admissionCredits)
-            {
-                var message = $"Suno credit balance {creditsBefore.Value} is below the {admissionCredits}-credit admission ceiling";
-                return Failure(message, BuildFailureAudit(
-                    operation, null, message, creditsBefore, creditsBefore, 0, approved, estimate, false));
-            }
-
             taskId = await SubmitAsync(operation, request.Parameters, ct);
             _log($"[Suno] Submitted {operation} task {taskId}");
             ProgressCallback?.Invoke(0.08);
             var taskData = await PollUntilDoneAsync(operation, taskId, ct);
             ProgressCallback?.Invoke(0.75);
             var prepared = await PrepareOutputsAsync(operation, taskId, taskData, ct);
-            var creditsAfter = await TryGetCreditsAsync(ct);
-            var consumed = creditsBefore.HasValue && creditsAfter.HasValue
+            var reportedConsumed = FindNamedInt(taskData,
+                "creditsConsumed", "creditConsumed", "consumedCredits", "credits_used");
+            var reportedRemaining = FindNamedInt(taskData,
+                "creditsRemaining", "remainingCredits", "remaining_credits", "balance");
+            var creditsAfter = reportedRemaining ?? await TryGetCreditsAsync(ct);
+            var consumed = reportedConsumed ?? (creditsBefore.HasValue && creditsAfter.HasValue
                 ? Math.Max(0, creditsBefore.Value - creditsAfter.Value)
-                : (int?)null;
-            var breached = consumed.HasValue && consumed.Value > approved;
-            if (breached)
-                _log($"[Suno] CREDIT CAP BREACH: {operation} consumed {consumed} after {approved} were approved");
+                : (int?)null);
+            var measurement = reportedConsumed.HasValue
+                ? "provider_task"
+                : consumed.HasValue ? "balance_delta" : "unavailable";
 
             ProgressCallback?.Invoke(1);
-            return BuildJobResult(operation, taskId, prepared, creditsBefore, creditsAfter, consumed, approved, estimate, breached);
+            return BuildJobResult(operation, taskId, prepared, creditsBefore, creditsAfter, consumed, measurement);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -240,11 +223,9 @@ public sealed class SunoProvider : IPluginProvider
             var consumed = creditsBefore.HasValue && creditsAfter.HasValue
                 ? Math.Max(0, creditsBefore.Value - creditsAfter.Value)
                 : (int?)null;
-            var breached = consumed.HasValue && consumed.Value > approved;
-            if (breached)
-                _log($"[Suno] CREDIT CAP BREACH ON FAILED OPERATION: {operation} consumed {consumed} after {approved} were approved");
             return Failure(ex.Message, BuildFailureAudit(
-                operation, taskId, ex.Message, creditsBefore, creditsAfter, consumed, approved, estimate, breached));
+                operation, taskId, ex.Message, creditsBefore, creditsAfter, consumed,
+                consumed.HasValue ? "balance_delta" : "unavailable"));
         }
         finally
         {
@@ -531,9 +512,7 @@ public sealed class SunoProvider : IPluginProvider
         int? creditsBefore,
         int? creditsAfter,
         int? creditsConsumed,
-        int approved,
-        int? estimate,
-        bool breached)
+        string measurement)
     {
         var primary = prepared.Artifacts[0];
         var artifactRows = new JsonArray(prepared.Artifacts.Select(artifact => (JsonNode?)new JsonObject
@@ -548,7 +527,7 @@ public sealed class SunoProvider : IPluginProvider
         }).ToArray());
         var result = new JsonObject
         {
-            ["schemaVersion"] = 2,
+            ["schemaVersion"] = 3,
             ["operation"] = operation,
             ["providerTaskId"] = taskId,
             ["tracks"] = prepared.Tracks,
@@ -558,9 +537,7 @@ public sealed class SunoProvider : IPluginProvider
                 ["before"] = creditsBefore,
                 ["after"] = creditsAfter,
                 ["consumed"] = creditsConsumed,
-                ["configuredEstimate"] = estimate,
-                ["approvedMaximum"] = approved,
-                ["approvalBreached"] = breached,
+                ["measurement"] = measurement,
             },
         };
         var extras = prepared.Artifacts.Skip(1).Select((artifact, index) => new JobOutputPart
@@ -593,8 +570,8 @@ public sealed class SunoProvider : IPluginProvider
             if (!response.IsSuccessStatusCode) return null;
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
             var root = document.RootElement;
-            return (GetInt(root, "code") ?? 200) == 200 && root.TryGetProperty("data", out var data) && data.TryGetInt32(out var credits)
-                ? credits
+            return (GetInt(root, "code") ?? 200) == 200 && root.TryGetProperty("data", out var data)
+                ? ReadCreditValue(data)
                 : null;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -607,22 +584,42 @@ public sealed class SunoProvider : IPluginProvider
         }
     }
 
-    private int? CreditEstimate(string operation)
+    private static int? ReadCreditValue(JsonElement value)
     {
-        var key = operation switch
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numeric)) return numeric;
+        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out var text)) return text;
+        if (value.ValueKind != JsonValueKind.Object) return null;
+        return FindNamedInt(value,
+            "credits", "credit", "creditsRemaining", "remainingCredits", "remaining_credits", "balance");
+    }
+
+    private static int? FindNamedInt(JsonElement value, params string[] names)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
         {
-            "generate" => "Credits.Generate",
-            "sounds" => "Credits.Sounds",
-            "extend" => "Credits.Extend",
-            "split_stem" => "Credits.SplitStem",
-            "split_stem_advanced" => "Credits.SplitStemAdvanced",
-            "separate_vocal" => "Credits.SeparateVocal",
-            "wav" => "Credits.Wav",
-            _ => "",
-        };
-        if (key.Length == 0) return null;
-        var raw = ProviderHelpers.GetExtra(_config, key, "");
-        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) && value >= 0 ? value : null;
+            foreach (var property in value.EnumerateObject())
+            {
+                if (names.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    var direct = ReadCreditValue(property.Value);
+                    if (direct.HasValue) return direct;
+                }
+            }
+            foreach (var property in value.EnumerateObject())
+            {
+                var nested = FindNamedInt(property.Value, names);
+                if (nested.HasValue) return nested;
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+            {
+                var nested = FindNamedInt(item, names);
+                if (nested.HasValue) return nested;
+            }
+        }
+        return null;
     }
 
     private static Dictionary<string, object?> GeneratePayload(Dictionary<string, object?> p, string model, string callback) => new()
@@ -695,11 +692,9 @@ public sealed class SunoProvider : IPluginProvider
         int? creditsBefore,
         int? creditsAfter,
         int? creditsConsumed,
-        int approved,
-        int? estimate,
-        bool breached) => new JsonObject
+        string measurement) => new JsonObject
     {
-        ["schemaVersion"] = 2,
+        ["schemaVersion"] = 3,
         ["operation"] = operation,
         ["providerTaskId"] = taskId,
         ["status"] = "failed",
@@ -709,9 +704,7 @@ public sealed class SunoProvider : IPluginProvider
             ["before"] = creditsBefore,
             ["after"] = creditsAfter,
             ["consumed"] = creditsConsumed,
-            ["configuredEstimate"] = estimate,
-            ["approvedMaximum"] = approved,
-            ["approvalBreached"] = breached,
+            ["measurement"] = measurement,
         },
     }.ToJsonString();
 

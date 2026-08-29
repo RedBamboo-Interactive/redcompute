@@ -297,13 +297,7 @@ public class ConfigManager
                             Extra = new Dictionary<string, object?>
                             {
                                 ["BaseUrl"] = "https://api.sunoapi.org",
-                                ["Model"] = "V5",
-                                // SunoAPI documents fixed costs for stem operations. Generation,
-                                // extension, sounds and WAV conversion stay unset until their
-                                // current price is explicitly reviewed by an operator.
-                                ["Credits.SeparateVocal"] = 10,
-                                ["Credits.SplitStem"] = 50,
-                                ["Credits.SplitStemAdvanced"] = 20
+                                ["Model"] = "V5"
                             }
                         }
                     }
