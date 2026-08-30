@@ -57,10 +57,14 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
     public ReturnSchema OutputSchema => new()
     {
-        ContentType = "image/png",
+        ContentType = _capabilitySlug.Equals("music-gen", StringComparison.OrdinalIgnoreCase)
+            ? "audio/flac"
+            : "image/png",
         Streaming = false,
-        MediaCategory = "image",
-        OutputEndpoint = "/image-gen/jobs/{id}/output"
+        MediaCategory = _capabilitySlug.Equals("music-gen", StringComparison.OrdinalIgnoreCase)
+            ? "audio"
+            : "image",
+        OutputEndpoint = $"/{_capabilitySlug}/jobs/{{id}}/output"
     };
 
     public ComfyUIProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
@@ -188,10 +192,15 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
         _lastHealthCheck = DateTime.UtcNow;
 
-        if (_status == BackendStatus.Running && !await CheckHealthAsync())
-            _status = BackendStatus.Error;
-        else if (_status == BackendStatus.Error && await CheckHealthAsync())
+        // A single ComfyUI process can back several RedCompute capabilities. A
+        // non-default provider instance is not started during boot, so discover
+        // the already-running shared backend instead of reporting Stopped and
+        // rejecting an explicitly routed job.
+        var healthy = await CheckHealthAsync();
+        if (healthy)
             _status = BackendStatus.Running;
+        else if (_status == BackendStatus.Running)
+            _status = BackendStatus.Error;
         return _status;
     }
 
@@ -267,6 +276,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             {
                 "video" => "video/mp4",
                 "animation" => "image/webp",
+                "audio" => "audio/flac",
                 _ => "image/png"
             },
             ResultJson = resultMeta
@@ -595,6 +605,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                 fallbackContentType = "image/png";
             else if (nodeOutput.TryGetProperty("gifs", out mediaList))
                 fallbackContentType = "video/mp4";
+            else if (nodeOutput.TryGetProperty("audio", out mediaList))
+                fallbackContentType = "audio/flac";
             else
                 return (null, null, "No media in output node");
 
@@ -614,6 +626,11 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                 ".gif" => "image/gif",
                 ".mp4" => "video/mp4",
                 ".webm" => "video/webm",
+                ".flac" => "audio/flac",
+                ".mp3" => "audio/mpeg",
+                ".wav" => "audio/wav",
+                ".ogg" => "audio/ogg",
+                ".opus" => "audio/opus",
                 _ => fallbackContentType
             };
 

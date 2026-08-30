@@ -459,15 +459,17 @@ public static class GenericCapabilityEndpoints
         return false;
     }
 
-    private static string ExtensionFor(string? contentType) => contentType switch
+    internal static string ExtensionFor(string? contentType) => contentType?.ToLowerInvariant() switch
     {
         "image/png" => ".png",
         "image/jpeg" => ".jpg",
         "image/webp" => ".webp",
         "video/mp4" => ".mp4",
+        "audio/flac" => ".flac",
         "audio/wav" => ".wav",
         "audio/mpeg" => ".mp3",
         "audio/ogg" => ".ogg",
+        "audio/opus" => ".opus",
         "application/json" => ".json",
         _ => ".bin"
     };

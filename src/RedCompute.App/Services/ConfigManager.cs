@@ -299,6 +299,18 @@ public class ConfigManager
                                 ["BaseUrl"] = "https://api.sunoapi.org",
                                 ["Model"] = "V5"
                             }
+                        },
+                        ["comfyui"] = new()
+                        {
+                            Type = "ComfyUI",
+                            ServerPath = @"T:\Projects\ComfyUI",
+                            BackendPort = 8188,
+                            HealthEndpoint = "/system_stats",
+                            StartupTimeoutSeconds = 120,
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["Host"] = "127.0.0.1"
+                            }
                         }
                     }
                 },

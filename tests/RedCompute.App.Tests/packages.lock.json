@@ -474,6 +474,12 @@
           "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )"
         }
       },
+      "redcompute.plugin.comfyui": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.PluginSdk": "[1.0.0, )"
+        }
+      },
       "redcompute.plugin.opencode": {
         "type": "Project",
         "dependencies": {

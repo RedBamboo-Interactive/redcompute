@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ClaudeCode\RedCompute.Plugin.ClaudeCode.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenCode\RedCompute.Plugin.OpenCode.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Suno\RedCompute.Plugin.Suno.csproj" />
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ComfyUI\RedCompute.Plugin.ComfyUI.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\rebuild.ps1" Link="rebuild.ps1">
