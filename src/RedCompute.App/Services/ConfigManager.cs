@@ -224,7 +224,7 @@ public class ConfigManager
         if (dirty) Save();
     }
 
-    private static RedComputeConfig CreateDefault()
+    internal static RedComputeConfig CreateDefault()
     {
         return new RedComputeConfig
         {
@@ -303,7 +303,6 @@ public class ConfigManager
                         ["comfyui"] = new()
                         {
                             Type = "ComfyUI",
-                            ServerPath = @"T:\Projects\ComfyUI",
                             BackendPort = 8188,
                             HealthEndpoint = "/system_stats",
                             StartupTimeoutSeconds = 120,
@@ -322,7 +321,6 @@ public class ConfigManager
                         ["comfyui"] = new()
                         {
                             Type = "ComfyUI",
-                            ServerPath = @"T:\Projects\ComfyUI",
                             BackendPort = 8188,
                             HealthEndpoint = "/system_stats",
                             StartupTimeoutSeconds = 120,

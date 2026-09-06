@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using RedCompute.App.Api.Endpoints;
+using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.ComfyUI;
@@ -11,6 +12,96 @@ namespace RedCompute.App.Tests;
 
 public sealed class ComfyUIProviderTests
 {
+    [Fact]
+    public void Default_config_does_not_assume_a_machine_specific_ComfyUI_checkout()
+    {
+        var config = ConfigManager.CreateDefault();
+
+        Assert.Null(config.Capabilities["image-gen"].Providers["comfyui"].ServerPath);
+        Assert.Null(config.Capabilities["music-gen"].Providers["comfyui"].ServerPath);
+    }
+
+    [Fact]
+    public void Native_start_arguments_support_external_storage_and_paths_with_spaces()
+    {
+        var provider = new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            ServerPath = @"C:\Program Files\Comfy UI",
+            VenvPath = @"C:\Python Environments\Comfy UI",
+            BackendPort = 8188,
+            Extra = new Dictionary<string, object?>
+            {
+                ["ModelsDirectory"] = @"F:\AI Models\ComfyUI",
+                ["OutputDirectory"] = @"T:\AI Data\Output",
+                ["InputDirectory"] = @"T:\AI Data\Input",
+                ["TempDirectory"] = @"T:\AI Data\Temp",
+                ["UserDirectory"] = @"T:\AI Data\User",
+                ["ServerArgs"] = "--preview-method auto",
+            },
+        }, "image-gen", _ => { });
+
+        var startInfo = provider.BuildStartInfo();
+
+        Assert.Equal(@"C:\Python Environments\Comfy UI\Scripts\python.exe", startInfo.FileName);
+        Assert.Equal(@"C:\Program Files\Comfy UI", startInfo.WorkingDirectory);
+        Assert.Contains("--models-directory \"F:\\AI Models\\ComfyUI\"", startInfo.Arguments);
+        Assert.Contains("--output-directory \"T:\\AI Data\\Output\"", startInfo.Arguments);
+        Assert.Contains("--input-directory \"T:\\AI Data\\Input\"", startInfo.Arguments);
+        Assert.Contains("--temp-directory \"T:\\AI Data\\Temp\"", startInfo.Arguments);
+        Assert.Contains("--user-directory \"T:\\AI Data\\User\"", startInfo.Arguments);
+        Assert.Contains("--database-url \"sqlite:///T:/AI Data/User/comfyui.db\"", startInfo.Arguments);
+        Assert.Contains("--preview-method auto", startInfo.Arguments);
+    }
+
+    [Fact]
+    public void Explicit_database_url_overrides_the_user_directory_default()
+    {
+        var provider = new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            ServerPath = @"C:\ComfyUI",
+            Extra = new Dictionary<string, object?>
+            {
+                ["UserDirectory"] = @"T:\AI\User",
+                ["DatabaseUrl"] = "sqlite:///F:/Databases/comfy.db",
+            },
+        }, "image-gen", _ => { });
+
+        var startInfo = provider.BuildStartInfo();
+
+        Assert.Contains("--database-url sqlite:///F:/Databases/comfy.db", startInfo.Arguments);
+        Assert.DoesNotContain("T:/AI/User/comfyui.db", startInfo.Arguments);
+    }
+
+    [Fact]
+    public void Wsl_start_arguments_translate_windows_storage_paths()
+    {
+        var provider = new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            ServerPath = @"C:\Program Files\Comfy UI",
+            VenvPath = "~/comfy env",
+            WslDistro = "Ubuntu-24.04",
+            Extra = new Dictionary<string, object?>
+            {
+                ["ModelsDirectory"] = @"F:\AI Models\ComfyUI",
+                ["UserDirectory"] = @"T:\AI Data\User",
+            },
+        }, "image-gen", _ => { });
+
+        var startInfo = provider.BuildStartInfo();
+        var command = startInfo.ArgumentList[4];
+
+        Assert.Equal("wsl.exe", startInfo.FileName);
+        Assert.Equal(new[] { "-d", "Ubuntu-24.04", "bash", "-lc" }, startInfo.ArgumentList.Take(4));
+        Assert.Contains("cd '/mnt/c/Program Files/Comfy UI'", command);
+        Assert.Contains("source \"$HOME\"/'comfy env/bin/activate'", command);
+        Assert.Contains("--models-directory '/mnt/f/AI Models/ComfyUI'", command);
+        Assert.Contains("--user-directory '/mnt/t/AI Data/User'", command);
+        Assert.Contains("--database-url 'sqlite:////mnt/t/AI Data/User/comfyui.db'", command);
+    }
+
     [Fact]
     public void Music_capability_advertises_audio_output()
     {

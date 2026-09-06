@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -110,6 +111,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
         try
         {
+            EnsureConfiguredDirectories();
             var startInfo = BuildStartInfo();
             _process = Process.Start(startInfo);
             if (_process == null)
@@ -322,28 +324,40 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
     // --- Private methods ---
 
-    private ProcessStartInfo BuildStartInfo()
+    internal ProcessStartInfo BuildStartInfo()
     {
-        var listenArgs = $"--listen {_host} --port {_port}";
+        var arguments = BuildComfyArguments(_config.WslDistro != null);
         var serverArgs = ProviderHelpers.GetExtra(_config, "ServerArgs", "");
-        if (!string.IsNullOrWhiteSpace(serverArgs))
-            listenArgs += $" {serverArgs}";
 
         if (_config.WslDistro != null)
         {
-            var venvActivate = _config.VenvPath != null ? $"source {_config.VenvPath}/bin/activate && " : "";
             var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
-            var command = $"{venvActivate}cd {serverPath} && python main.py {listenArgs}";
+            var command = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(_config.VenvPath))
+            {
+                var activatePath = CombinePortablePath(
+                    ProviderHelpers.ConvertToWslPath(_config.VenvPath), "bin/activate");
+                command.Append("source ").Append(QuoteBashArgument(activatePath)).Append(" && ");
+            }
+            command.Append("cd ").Append(QuoteBashArgument(serverPath)).Append(" && python ");
+            command.AppendJoin(' ', arguments.Select(QuoteBashArgument));
+            if (!string.IsNullOrWhiteSpace(serverArgs))
+                command.Append(' ').Append(serverArgs.Trim());
 
-            return new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = "wsl.exe",
-                Arguments = $"-d {_config.WslDistro} bash -c \"{command}\"",
                 CreateNoWindow = true,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            startInfo.ArgumentList.Add("-d");
+            startInfo.ArgumentList.Add(_config.WslDistro);
+            startInfo.ArgumentList.Add("bash");
+            startInfo.ArgumentList.Add("-lc");
+            startInfo.ArgumentList.Add(command.ToString());
+            return startInfo;
         }
 
         // Native Windows — use venv python if configured, otherwise system python
@@ -354,13 +368,139 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         return new ProcessStartInfo
         {
             FileName = pythonExe,
-            Arguments = $"main.py {listenArgs}",
+            Arguments = string.Join(' ', arguments.Select(QuoteWindowsArgument))
+                + (string.IsNullOrWhiteSpace(serverArgs) ? "" : $" {serverArgs.Trim()}"),
             WorkingDirectory = _config.ServerPath,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+    }
+
+    private List<string> BuildComfyArguments(bool forWsl)
+    {
+        var arguments = new List<string>
+        {
+            "main.py", "--listen", _host, "--port", _port.ToString(CultureInfo.InvariantCulture)
+        };
+
+        AddPathArgument(arguments, "ModelsDirectory", "--models-directory", forWsl);
+        AddPathArgument(arguments, "OutputDirectory", "--output-directory", forWsl);
+        AddPathArgument(arguments, "InputDirectory", "--input-directory", forWsl);
+        AddPathArgument(arguments, "TempDirectory", "--temp-directory", forWsl);
+        AddPathArgument(arguments, "UserDirectory", "--user-directory", forWsl);
+
+        var databaseUrl = ProviderHelpers.GetExtra(_config, "DatabaseUrl", "").Trim();
+        if (databaseUrl.Length == 0)
+        {
+            var userDirectory = ProviderHelpers.GetExtra(_config, "UserDirectory", "").Trim();
+            if (userDirectory.Length > 0)
+            {
+                var databasePath = CombinePortablePath(userDirectory, "comfyui.db");
+                if (forWsl) databasePath = ProviderHelpers.ConvertToWslPath(databasePath);
+                databaseUrl = "sqlite:///" + databasePath.Replace('\\', '/');
+            }
+        }
+        else if (forWsl)
+        {
+            databaseUrl = ConvertDatabaseUrlToWsl(databaseUrl);
+        }
+
+        if (databaseUrl.Length > 0)
+        {
+            arguments.Add("--database-url");
+            arguments.Add(databaseUrl);
+        }
+
+        return arguments;
+    }
+
+    private void AddPathArgument(List<string> arguments, string key, string option, bool forWsl)
+    {
+        var value = ProviderHelpers.GetExtra(_config, key, "").Trim();
+        if (value.Length == 0) return;
+        arguments.Add(option);
+        arguments.Add(forWsl ? ProviderHelpers.ConvertToWslPath(value) : value);
+    }
+
+    private void EnsureConfiguredDirectories()
+    {
+        if (_config.WslDistro != null) return;
+
+        foreach (var key in new[]
+                 {
+                     "ModelsDirectory", "OutputDirectory", "InputDirectory",
+                     "TempDirectory", "UserDirectory"
+                 })
+        {
+            var path = ProviderHelpers.GetExtra(_config, key, "").Trim();
+            if (path.Length > 0) Directory.CreateDirectory(path);
+        }
+    }
+
+    private static string CombinePortablePath(string directory, string child)
+    {
+        var separator = directory.Contains('\\') || (directory.Length >= 2 && directory[1] == ':')
+            ? '\\'
+            : '/';
+        return directory.TrimEnd('\\', '/') + separator + child;
+    }
+
+    private static string ConvertDatabaseUrlToWsl(string databaseUrl)
+    {
+        const string sqlitePrefix = "sqlite:///";
+        if (!databaseUrl.StartsWith(sqlitePrefix, StringComparison.OrdinalIgnoreCase))
+            return databaseUrl;
+
+        var path = databaseUrl[sqlitePrefix.Length..];
+        return path.Length >= 2 && path[1] == ':'
+            ? sqlitePrefix + ProviderHelpers.ConvertToWslPath(path)
+            : databaseUrl;
+    }
+
+    private static string QuoteBashArgument(string value)
+    {
+        if (value.Length > 0 && value.All(c => char.IsLetterOrDigit(c) || c is '_' or '-' or '.' or '/' or ':'))
+            return value;
+        if (value == "~") return "\"$HOME\"";
+        if (value.StartsWith("~/", StringComparison.Ordinal))
+            return "\"$HOME\"/" + QuoteBashLiteral(value[2..]);
+        if (value.StartsWith("sqlite:///~/", StringComparison.OrdinalIgnoreCase))
+            return QuoteBashLiteral("sqlite:///") + "\"$HOME\"/" + QuoteBashLiteral(value[12..]);
+        return QuoteBashLiteral(value);
+    }
+
+    private static string QuoteBashLiteral(string value)
+        => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
+
+    private static string QuoteWindowsArgument(string value)
+    {
+        if (value.Length > 0 && value.All(c => !char.IsWhiteSpace(c) && c != '"')) return value;
+
+        var quoted = new StringBuilder("\"");
+        var backslashes = 0;
+        foreach (var c in value)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                quoted.Append('\\', backslashes * 2 + 1).Append('"');
+                backslashes = 0;
+                continue;
+            }
+
+            quoted.Append('\\', backslashes).Append(c);
+            backslashes = 0;
+        }
+
+        quoted.Append('\\', backslashes * 2).Append('"');
+        return quoted.ToString();
     }
 
     private async Task<bool> CheckHealthAsync()
