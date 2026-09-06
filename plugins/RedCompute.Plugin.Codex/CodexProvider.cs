@@ -10,12 +10,13 @@ using RedCompute.PluginSdk;
 namespace RedCompute.Plugin.Codex;
 
 public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider,
-    ISessionProvider, IImageAttachmentSupportProvider
+    ISessionProvider, IImageAttachmentSupportProvider, IProviderUsageSource
 {
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
     private readonly CodexInteractiveService _interactive;
     private readonly CodexModelCatalog _models;
+    private readonly CodexAccountUsageService _accountUsage;
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
 
@@ -61,8 +62,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var codexConfig = BuildConfig(config);
         _codex = new CodexSessionService(codexConfig, jobTracker, store, log);
         _models = new CodexModelCatalog(codexConfig, log);
+        _accountUsage = new CodexAccountUsageService(codexConfig, log);
         _interactive = new CodexInteractiveService(
-            codexConfig, store, _models, _codex, jobTracker, qualityModes,
+            codexConfig, store, _models, _codex, jobTracker, _accountUsage, qualityModes,
             () => GetTitleQualityTier(config), log);
 
         _codex.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
@@ -105,6 +107,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         await _codex.StopAllAsync();
     }
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
+    public Task<ProviderUsageSnapshot?> GetProviderUsageAsync(bool forceRefresh = false, CancellationToken ct = default)
+        => _accountUsage.GetAsync(forceRefresh, ct);
     public string? GetProxyTargetUrl() => null;
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
     public async ValueTask DisposeAsync() => await _interactive.DisposeAsync();

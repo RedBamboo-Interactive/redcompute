@@ -58,6 +58,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private readonly ICodexSessionStore _store;
     private readonly CodexModelCatalog _catalog;
     private readonly CodexSessionJobLifecycle _jobLifecycle;
+    private readonly CodexAccountUsageService _accountUsage;
     private readonly IProviderQualityModeResolver _qualityModes;
     private readonly Func<string?> _titleQualityTier;
 
@@ -71,9 +72,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     public event Action<string, string>? SessionEnded;
     public event Action<string, CodexStreamEvent>? StreamEvent;
 
-    public CodexInteractiveService(
+    internal CodexInteractiveService(
         CodexConfig config, ICodexSessionStore store, CodexModelCatalog catalog,
         CodexSessionService exec, IJobTracker jobTracker,
+        CodexAccountUsageService accountUsage,
         IProviderQualityModeResolver qualityModes, Func<string?> titleQualityTier,
         Action<string, Guid?> log)
     {
@@ -82,6 +84,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         _catalog = catalog;
         _exec = exec;
         _jobLifecycle = new CodexSessionJobLifecycle(jobTracker);
+        _accountUsage = accountUsage;
         _qualityModes = qualityModes;
         _titleQualityTier = titleQualityTier;
         _log = log;
@@ -651,6 +654,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         switch (method)
         {
+            case "account/rateLimits/updated":
+                _accountUsage.ApplyNotification(@params);
+                return;
+
             case "turn/started":
                 if (@params.TryGetProperty("turn", out var startedTurn) &&
                     startedTurn.TryGetProperty("id", out var startedTurnId) &&

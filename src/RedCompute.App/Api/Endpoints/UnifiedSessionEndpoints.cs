@@ -60,6 +60,11 @@ public static class UnifiedSessionEndpoints
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
+        var usageProviderReferences = providerIds
+            .Concat(_providerConfig?.GetAll().Select(item => item.Slug) ?? [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var usageProviderEnum = usageProviderReferences.Count > 0 ? usageProviderReferences : null;
 
         endpoints.MapPost("/ai-session/input-attachments",
             "Stage one provider input attachment before a session or message exists", async (HttpContext ctx) =>
@@ -130,6 +135,42 @@ public static class UnifiedSessionEndpoints
             });
             return Results.Json(providers);
         });
+
+        endpoints.MapGet("/ai-session/providers/{provider}/usage",
+            "Read normalized provider-wide subscription and quota windows for the authenticated user. Providers without account usage support return 404.",
+            async (HttpContext ctx, string provider) =>
+        {
+            if (ResolveUserId(ctx) is null)
+                return Error(401, "unauthorized", "Authentication required to read provider usage");
+
+            var backendReference = _providerConfig is null
+                ? provider
+                : _providerConfig.Resolve(_providerConfig.ResolveReference(provider)).Backend;
+            var source = FindProviderUsageSource(
+                registry.FindProviders<IProviderUsageSource>(), provider, backendReference);
+            if (source is null)
+                return Error(404, "usage_not_supported", $"Provider '{provider}' does not expose account usage");
+
+            var forceRefresh = bool.TryParse(ctx.Request.Query["refresh"], out var refresh) && refresh;
+            try
+            {
+                var snapshot = await source.GetProviderUsageAsync(forceRefresh, ctx.RequestAborted);
+                return snapshot is null
+                    ? Error(503, "usage_unavailable", $"Provider '{provider}' did not return account usage")
+                    : Results.Json(snapshot);
+            }
+            catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+            {
+                return Results.Empty;
+            }
+            catch (Exception ex)
+            {
+                log($"[ProviderUsage] Failed to read {provider}: {ex.Message}", null);
+                return Error(503, "usage_unavailable", ex.Message);
+            }
+        })
+            .WithParam("provider", "string", description: "AI session provider id or configured provider reference", enumValues: usageProviderEnum)
+            .WithParam("refresh", "boolean", description: "Bypass the short provider cache", defaultValue: false, location: ParamLocation.Query);
 
         endpoints.MapGet("/ai-session/sessions",
             "List sessions across all providers, newest first", async (HttpContext ctx) =>
@@ -1483,6 +1524,18 @@ public static class UnifiedSessionEndpoints
         return providers
             .Where(provider => inferenceProviderSlugs.Contains(provider.Slug))
             .ToList();
+    }
+
+    internal static IProviderUsageSource? FindProviderUsageSource(
+        IEnumerable<IProviderUsageSource> sources,
+        string reference,
+        string? backendReference)
+    {
+        var candidates = sources.ToList();
+        return candidates.FirstOrDefault(source =>
+                   source.ProviderId.Equals(reference, StringComparison.OrdinalIgnoreCase))
+               ?? candidates.FirstOrDefault(source =>
+                   string.Equals(source.ProviderId, backendReference, StringComparison.OrdinalIgnoreCase));
     }
 
     internal static bool TryGetNonNullImages(JsonElement body, out JsonElement images)
