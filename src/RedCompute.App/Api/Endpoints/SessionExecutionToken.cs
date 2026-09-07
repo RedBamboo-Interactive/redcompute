@@ -42,6 +42,24 @@ internal static class SessionExecutionToken
         return childEnvironment;
     }
 
+    public static Dictionary<string, string> CreateStatelessEnvironmentWithoutSuiteIdentity(
+        Dictionary<string, string>? environment)
+    {
+        var childEnvironment = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+            {
+                if (!string.Equals(key, "REDLEAF_EXECUTION_TOKEN", StringComparison.OrdinalIgnoreCase))
+                    childEnvironment.Add(key, value);
+            }
+        }
+
+        // Explicitly shadow any ambient value inherited by the provider process.
+        childEnvironment["REDLEAF_EXECUTION_TOKEN"] = "";
+        return childEnvironment;
+    }
+
     private static string? Issue(
         HttpContext context,
         string providerId,

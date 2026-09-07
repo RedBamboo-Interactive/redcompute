@@ -166,7 +166,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string projectPath, string? model, string? userId, string? userName,
         string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory = null, bool confidential = false)
+        string? scratchDirectory = null, bool confidential = false,
+        string? developerInstructions = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -187,6 +188,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             Effort = effort,
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
+            DeveloperInstructions = developerInstructions,
             UserId = userId,
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
@@ -203,6 +205,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             {
                 cwd = projectPath,
                 model,
+                developerInstructions,
             }, timeoutSeconds: 60);
 
             // The id lives at result.thread.id — not result.threadId, which is the obvious guess.
@@ -262,6 +265,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 threadId = record.ThreadId,
                 cwd = record.ProjectPath,
                 model = record.Model,
+                developerInstructions = record.DeveloperInstructions,
             }, timeoutSeconds: 60);
 
             info.ProcessId = conn.ProcessId;
@@ -1201,6 +1205,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Effort = info.Effort,
         QualityTier = info.QualityTier,
         ProviderEntity = info.ProviderEntity,
+        DeveloperInstructions = info.DeveloperInstructions,
         Source = info.Source,
         ContextWindow = info.ContextWindow,
         UserId = info.UserId,
@@ -1232,6 +1237,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Effort = r.Effort,
         QualityTier = r.QualityTier,
         ProviderEntity = r.ProviderEntity,
+        DeveloperInstructions = r.DeveloperInstructions,
         Source = r.Source,
         ContextWindow = r.ContextWindow,
         UserId = r.UserId,

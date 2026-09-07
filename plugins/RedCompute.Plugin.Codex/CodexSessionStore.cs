@@ -123,6 +123,7 @@ public class CodexSessionStore : ICodexSessionStore
             existing.Effort = record.Effort;
             existing.QualityTier = record.QualityTier;
             existing.ProviderEntity = record.ProviderEntity;
+            existing.DeveloperInstructions = record.DeveloperInstructions;
             existing.Source = record.Source;
             existing.ContextWindow = record.ContextWindow;
             existing.UserId = record.UserId;

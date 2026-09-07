@@ -16,6 +16,23 @@ public interface ISessionProvider
         string? endpointUrl, string? apiKey, int? thinkingBudget, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory = null, bool confidential = false);
+
+    /// <summary>
+    /// Starts a persistent session with provider-native developer instructions. Providers must
+    /// override this overload before accepting a non-empty instruction; silently demoting it to a
+    /// user message would break the caller's security boundary.
+    /// </summary>
+    Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort,
+        string? endpointUrl, string? apiKey, int? thinkingBudget, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory, bool confidential, string? developerInstructions)
+        => string.IsNullOrWhiteSpace(developerInstructions)
+            ? StartSessionAsync(projectPath, model, userId, userName, userAvatarUrl, effort,
+                endpointUrl, apiKey, thinkingBudget, qualityTier, providerEntity, repositoryId,
+                provenance, scratchDirectory, confidential)
+            : throw new NotSupportedException(
+                $"Provider '{ProviderId}' does not support session developer instructions");
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId);
     Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
         => ResumeSessionAsync(sessionId);

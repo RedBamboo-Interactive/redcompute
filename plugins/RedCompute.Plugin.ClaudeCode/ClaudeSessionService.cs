@@ -256,7 +256,7 @@ public class ClaudeSessionService
     public async Task<ExecuteResult> ExecuteAgentAsync(
         string prompt, string? container, string? workingDir,
         string? model, string? effort, int maxTurns,
-        string[]? allowedTools, string[]? addDirs, int timeout,
+        string[]? tools, string[]? allowedTools, string[]? addDirs, int timeout,
         CancellationToken ct,
         string? streamKey = null,
         Dictionary<string, string>? env = null)
@@ -288,7 +288,7 @@ public class ClaudeSessionService
         {
             DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "claude", workingDir, env);
             var args = new List<string>();
-            AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
+            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs);
             if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }
@@ -301,7 +301,7 @@ public class ClaudeSessionService
                 foreach (var (k, v) in env)
                     startInfo.EnvironmentVariables[k] = v;
             var args = new List<string>();
-            AddAgentArgs(args, model, effort, maxTurns, allowedTools, addDirs);
+            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs);
             if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }
@@ -405,12 +405,24 @@ public class ClaudeSessionService
         }
     }
 
-    private static void AddAgentArgs(List<string> args, string? model, string? effort,
-        int maxTurns, string[]? allowedTools, string[]? addDirs)
+    internal static void AddAgentArgs(List<string> args, string? model, string? effort,
+        int maxTurns, string[]? tools, string[]? allowedTools, string[]? addDirs)
     {
         args.AddRange(["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
         args.AddRange(["--max-turns", maxTurns.ToString()]);
         args.Add("--dangerously-skip-permissions");
+        if (tools is not null)
+        {
+            // `--allowedTools` controls permission prompts, not tool availability. An explicit
+            // empty `tools` grant must remove every built-in and prevent ambient plugins/MCP from
+            // repopulating the tool surface for narrow reviewer jobs.
+            args.Add("--bare");
+            args.Add("--tools");
+            args.Add(string.Join(',', tools));
+            args.Add("--strict-mcp-config");
+            args.Add("--mcp-config");
+            args.Add("{}");
+        }
         // Opus 4.7+ and Fable 5 default thinking.display to "omitted", so thinking blocks
         // stream with an empty body (signature only). Request "summarized" to restore the
         // visible reasoning text. Harmless on 4.6 (already its default) and ignored when

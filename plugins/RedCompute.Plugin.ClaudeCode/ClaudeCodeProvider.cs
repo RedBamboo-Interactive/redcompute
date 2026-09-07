@@ -190,6 +190,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     {
         string? effort = null;
         int maxTurns = 1;
+        string[]? tools = null;
         string[]? allowedTools = null;
         string[]? addDirs = null;
         string? container = null;
@@ -198,13 +199,14 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         {
             if (providerParams.TryGetValue("effort", out var e) && e is string es) effort = es;
             if (providerParams.TryGetValue("maxTurns", out var mt) && mt is int mti) maxTurns = mti;
+            if (providerParams.TryGetValue("tools", out var toolsValue) && toolsValue is string[] toolNames) tools = toolNames;
             if (providerParams.TryGetValue("allowedTools", out var at) && at is string[] ats) allowedTools = ats;
             if (providerParams.TryGetValue("addDirs", out var ad) && ad is string[] ads) addDirs = ads;
             if (providerParams.TryGetValue("container", out var c) && c is string cs) container = cs;
         }
 
         var result = await _claude.ExecuteAgentAsync(prompt, container, workingDir, model, effort,
-            maxTurns, allowedTools, addDirs, timeout, ct, streamKey, env);
+            maxTurns, tools, allowedTools, addDirs, timeout, ct, streamKey, env);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }

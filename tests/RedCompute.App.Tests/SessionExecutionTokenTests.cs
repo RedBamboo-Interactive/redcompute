@@ -198,6 +198,24 @@ public sealed class SessionExecutionTokenTests
             context, "codex", "Codex", timeoutSeconds: 1800, environment: null));
     }
 
+    [Fact]
+    public void Credential_suppressed_stateless_environment_preserves_other_keys_and_shadows_suite_identity()
+    {
+        var caller = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["OPENAI_API_KEY"] = "provider-key",
+            ["redleaf_execution_token"] = "must-not-survive",
+        };
+
+        var environment = SessionExecutionToken.CreateStatelessEnvironmentWithoutSuiteIdentity(caller);
+
+        Assert.Equal("provider-key", environment["OPENAI_API_KEY"]);
+        Assert.Equal("", environment["REDLEAF_EXECUTION_TOKEN"]);
+        Assert.DoesNotContain(environment.Keys, key =>
+            key == "redleaf_execution_token");
+        Assert.Equal("must-not-survive", caller["redleaf_execution_token"]);
+    }
+
     private static (DefaultHttpContext Context, JwtService Jwt, ExecutionIdentity Parent) CreateFixture()
     {
         var options = new JwtOptions

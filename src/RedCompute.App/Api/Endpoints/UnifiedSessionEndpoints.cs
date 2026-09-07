@@ -264,6 +264,16 @@ public static class UnifiedSessionEndpoints
 
             var model = q.Model;
             var effort = q.Effort;
+            string? developerInstructions = null;
+            if (body.TryGetProperty("developerInstructions", out var instructionValue)
+                && instructionValue.ValueKind != JsonValueKind.Null)
+            {
+                if (instructionValue.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(instructionValue.GetString()))
+                    return Error(422, "validation_failed",
+                        "developerInstructions must be a non-empty string when supplied");
+                developerInstructions = instructionValue.GetString();
+            }
             var confidential = body.TryGetProperty("confidential", out var confidentialValue)
                 && confidentialValue.ValueKind == JsonValueKind.True;
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
@@ -297,10 +307,17 @@ public static class UnifiedSessionEndpoints
                 };
             }
             UnifiedSessionInfo? session;
-            using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
-                session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
-                    effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
-                    repository?.Id, provenance, scratchDirectory, confidential);
+            try
+            {
+                using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
+                    session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
+                        effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
+                        repository?.Id, provenance, scratchDirectory, confidential, developerInstructions);
+            }
+            catch (NotSupportedException ex) when (!string.IsNullOrWhiteSpace(developerInstructions))
+            {
+                return Error(422, "developer_instructions_not_supported", ex.Message);
+            }
             if (session == null)
                 return Error(500, "start_failed", provider.LastStartError ?? "Failed to start session");
             if (session.JobId is not { } jobId || jobTracker.GetJob(jobId) == null)
@@ -321,6 +338,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
             .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body)
             .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body)
+            .WithParam("developerInstructions", "string", description: "Provider-native developer instructions applied to the persistent session. Unsupported providers reject the request.", location: ParamLocation.Body)
             .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body);
 
 
@@ -1286,6 +1304,8 @@ public static class UnifiedSessionEndpoints
 
             var workingDir = body.TryGetProperty("workingDir", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : null;
             var model = q.Model;
+            var suiteAccess = !body.TryGetProperty("suiteAccess", out var suiteAccessValue)
+                || suiteAccessValue.ValueKind != JsonValueKind.False;
 
             var timeout = 1800;
             if (body.TryGetProperty("timeout", out var to) && to.ValueKind == JsonValueKind.Number)
@@ -1296,7 +1316,7 @@ public static class UnifiedSessionEndpoints
                 env = envProp.EnumerateObject().ToDictionary(ep => ep.Name, ep => ep.Value.GetString() ?? "");
 
             var providerParams = new Dictionary<string, object?>();
-            foreach (var key in new[] { "effort", "maxTurns", "allowedTools", "addDirs", "container", "dockerImage", "sandbox", "networkAccess" })
+            foreach (var key in new[] { "effort", "maxTurns", "tools", "allowedTools", "addDirs", "container", "dockerImage", "sandbox", "networkAccess" })
             {
                 if (body.TryGetProperty(key, out var val))
                 {
@@ -1381,8 +1401,10 @@ public static class UnifiedSessionEndpoints
             {
                 // Materialize before the sync/async split. Detached execution must not depend on
                 // request-scoped AsyncLocal state surviving after this handler returns.
-                env = SessionExecutionToken.CreateStatelessEnvironment(
-                    ctx, provider.ProviderId, provider.ProviderDisplayName, timeout, env);
+                env = suiteAccess
+                    ? SessionExecutionToken.CreateStatelessEnvironment(
+                        ctx, provider.ProviderId, provider.ProviderDisplayName, timeout, env)
+                    : SessionExecutionToken.CreateStatelessEnvironmentWithoutSuiteIdentity(env);
             }
             catch (Exception ex)
             {
@@ -1478,6 +1500,7 @@ public static class UnifiedSessionEndpoints
                     dockerImage = new { type = "string", description = "Docker image — a container is created/reused automatically when no container is given" },
                     sandbox = new { type = "string", description = "Sandbox mode (provider-specific, e.g. read-only, workspace-write, danger-full-access)" },
                     networkAccess = new { type = "boolean", description = "Enable command network access for workspace-write executions" },
+                    suiteAccess = new { type = "boolean", description = "Pass a derived REDLEAF_EXECUTION_TOKEN to the provider process", @default = true },
                 },
             });
 
