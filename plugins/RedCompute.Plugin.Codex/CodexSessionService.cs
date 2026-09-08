@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Codex;
@@ -28,24 +29,29 @@ public class CodexSessionService
         _jobTracker = jobTracker;
         _store = store;
         _log = log;
-        RecoverSessions();
+        RecoverSessions(_store, _log);
     }
 
-    private void RecoverSessions()
+    internal static void RecoverSessions(
+        ICodexSessionStore store,
+        Action<string, Guid?> log)
     {
         try
         {
-            var active = _store.GetActiveSessions();
+            var active = store.GetActiveSessions();
             foreach (var s in active)
             {
                 s.Status = "Stopped";
-                _log($"[Codex] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
-                _store.SaveSession(s);
+                s.StopReason = PlannedRestartCheckpoint.ContainsSession("codex", s.Id)
+                    ? "maintenance_restart"
+                    : "orphaned_on_restart";
+                log($"[Codex] Marked recovered session {s.Id} ({s.ProjectName}) as stopped ({s.StopReason})", null);
+                store.SaveSession(s);
             }
         }
         catch (Exception ex)
         {
-            _log($"[Codex] Failed to recover sessions: {ex.Message}", null);
+            log($"[Codex] Failed to recover sessions: {ex.Message}", null);
         }
     }
 
