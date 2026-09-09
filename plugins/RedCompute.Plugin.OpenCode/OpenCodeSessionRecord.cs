@@ -28,4 +28,5 @@ public class OpenCodeSessionRecord
     public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
     public DateTimeOffset? LastActivity { get; set; }
+    public string? DeveloperInstructions { get; set; }
 }

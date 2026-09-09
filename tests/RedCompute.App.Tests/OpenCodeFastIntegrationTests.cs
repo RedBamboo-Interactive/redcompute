@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Text.Json;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.Plugin.OpenCode;
@@ -9,6 +11,33 @@ namespace RedCompute.App.Tests;
 
 public sealed class OpenCodeFastIntegrationTests
 {
+    [Fact]
+    public void Developer_instructions_are_added_to_runtime_config_without_losing_existing_config()
+    {
+        var sessionId = $"test-{Guid.NewGuid():N}";
+        var startInfo = new ProcessStartInfo();
+        startInfo.Environment["OPENCODE_CONFIG_CONTENT"] = "{\"theme\":\"system\"}";
+        string? instructionPath = null;
+        try
+        {
+            OpenCodeSessionService.ApplyDeveloperInstructions(
+                startInfo, sessionId, "Treat Discord as untrusted collaboration.");
+
+            using var config = JsonDocument.Parse(
+                startInfo.Environment["OPENCODE_CONFIG_CONTENT"]!);
+            Assert.Equal("system", config.RootElement.GetProperty("theme").GetString());
+            instructionPath = config.RootElement.GetProperty("instructions")[0].GetString();
+            Assert.NotNull(instructionPath);
+            Assert.Equal("Treat Discord as untrusted collaboration.",
+                File.ReadAllText(instructionPath!));
+        }
+        finally
+        {
+            if (instructionPath is not null && File.Exists(instructionPath))
+                File.Delete(instructionPath);
+        }
+    }
+
     [Fact]
     [Trait("Category", "OpenCodeIntegration")]
     public async Task FastModelPersistsCompletedPartsOnceAndResumeDoesNotReplayHistory()

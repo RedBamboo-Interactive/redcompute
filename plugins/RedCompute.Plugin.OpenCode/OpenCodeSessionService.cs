@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -147,7 +148,8 @@ public class OpenCodeSessionService
         string? userId, string? userName, string? userAvatarUrl, string? endpointUrl,
         string? apiKey, string? effort, int? thinkingBudget, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory = null, bool confidential = false)
+        string? scratchDirectory = null, bool confidential = false,
+        string? developerInstructions = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -182,10 +184,11 @@ public class OpenCodeSessionService
             UserAvatarUrl = userAvatarUrl,
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
+            DeveloperInstructions = developerInstructions,
         };
 
         var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, effort,
-            thinkingBudget, scratchDirectory);
+            thinkingBudget, scratchDirectory, developerInstructions);
         if (session == null)
         {
             LastStartError = error;
@@ -280,9 +283,12 @@ public class OpenCodeSessionService
             UserId = record.UserId,
             UserName = record.UserName,
             UserAvatarUrl = record.UserAvatarUrl,
+            DeveloperInstructions = record.DeveloperInstructions,
         };
 
-        var (session, error) = await SpawnAcpSession(info, opencodePath, record.ProjectPath, record.OpenCodeSessionId);
+        var (session, error) = await SpawnAcpSession(
+            info, opencodePath, record.ProjectPath, record.OpenCodeSessionId,
+            developerInstructions: record.DeveloperInstructions);
         if (session == null)
         {
             LastStartError = error;
@@ -326,7 +332,7 @@ public class OpenCodeSessionService
     private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
         OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId,
         string? model = null, string? effort = null, int? thinkingBudget = null,
-        string? scratchDirectory = null)
+        string? scratchDirectory = null, string? developerInstructions = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -344,6 +350,7 @@ public class OpenCodeSessionService
         if (SessionScratch.Environment(scratchDirectory) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
+        ApplyDeveloperInstructions(startInfo, info.Id, developerInstructions);
 
         var resolvedModel = model ?? _config.Model;
 
@@ -1455,6 +1462,7 @@ public class OpenCodeSessionService
             UserAvatarUrl = info.UserAvatarUrl,
             ProcessId = info.ProcessId,
             LastActivity = DateTimeOffset.UtcNow,
+            DeveloperInstructions = info.DeveloperInstructions,
         });
     }
 
@@ -1933,7 +1941,39 @@ public class OpenCodeSessionService
         QualityTier = r.QualityTier,
         ProviderEntity = r.ProviderEntity,
         Source = r.Source,
+        DeveloperInstructions = r.DeveloperInstructions,
     };
+
+    internal static void ApplyDeveloperInstructions(
+        ProcessStartInfo startInfo, string sessionId, string? developerInstructions)
+    {
+        if (string.IsNullOrWhiteSpace(developerInstructions)) return;
+
+        var directory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RedCompute", "plugins", "opencode", "instructions");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, $"{sessionId}.md");
+        File.WriteAllText(path, developerInstructions, new UTF8Encoding(false));
+
+        JsonObject config;
+        try
+        {
+            config = startInfo.Environment.TryGetValue("OPENCODE_CONFIG_CONTENT", out var existing)
+                     && !string.IsNullOrWhiteSpace(existing)
+                ? JsonNode.Parse(existing) as JsonObject ?? new JsonObject()
+                : new JsonObject();
+        }
+        catch (JsonException)
+        {
+            config = new JsonObject();
+        }
+
+        var instructions = config["instructions"] as JsonArray ?? new JsonArray();
+        instructions.Insert(0, path);
+        config["instructions"] = instructions;
+        startInfo.Environment["OPENCODE_CONFIG_CONTENT"] = config.ToJsonString();
+    }
 
     public string? ResolveOpenCodePath()
     {

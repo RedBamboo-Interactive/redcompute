@@ -26,4 +26,5 @@ public class OpenCodeSessionInfo
     public string? UserName { get; set; }
     public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
+    public string? DeveloperInstructions { get; set; }
 }
