@@ -15,6 +15,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
     private readonly CodexInteractiveService _interactive;
+    private readonly CodexSessionStore _store;
+    private readonly object _injectionGate = new();
     private readonly CodexModelCatalog _models;
     private readonly CodexAccountUsageService _accountUsage;
     private readonly IJobTracker _jobTracker;
@@ -58,13 +60,13 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _jobTracker = jobTracker;
 
         using (var db = new CodexDbContext()) { db.Initialize(); }
-        var store = new CodexSessionStore();
+        _store = new CodexSessionStore();
         var codexConfig = BuildConfig(config);
-        _codex = new CodexSessionService(codexConfig, jobTracker, store, log);
+        _codex = new CodexSessionService(codexConfig, jobTracker, _store, log);
         _models = new CodexModelCatalog(codexConfig, log);
         _accountUsage = new CodexAccountUsageService(codexConfig, log);
         _interactive = new CodexInteractiveService(
-            codexConfig, store, _models, _codex, jobTracker, _accountUsage, qualityModes,
+            codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
             () => GetTitleQualityTier(config), log);
 
         _codex.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
@@ -178,6 +180,36 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
         => _interactive.SendInputAsync(sessionId, input, attachmentsJson, messageUid);
+
+    public Task<bool> InjectMessageAsync(string sessionId, string role, string content,
+        string? attachmentsJson = null, string? messageUid = null)
+    {
+        lock (_injectionGate)
+        {
+            var (info, history) = _interactive.GetSession(sessionId);
+            if (info is null) return Task.FromResult(false);
+            var existing = messageUid is null
+                ? null
+                : history.FirstOrDefault(message =>
+                    message.EventType == "text" && message.MessageUid == messageUid);
+            if (existing is not null)
+                return Task.FromResult(existing.Role == role
+                    && existing.Content == content
+                    && existing.AttachmentsJson == attachmentsJson);
+
+            _store.AddMessage(new CodexMessageRecord
+            {
+                SessionId = sessionId,
+                Role = role,
+                EventType = "text",
+                Content = content,
+                MessageUid = messageUid,
+                AttachmentsJson = attachmentsJson,
+                Timestamp = DateTimeOffset.UtcNow,
+            });
+            return Task.FromResult(true);
+        }
+    }
 
     public ImageAttachmentSupport GetImageAttachmentSupport(string sessionId)
     {

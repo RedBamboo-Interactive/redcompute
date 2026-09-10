@@ -13,6 +13,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 {
     private readonly string _capabilitySlug;
     private readonly OpenCodeSessionService _opencode;
+    private readonly OpenCodeSessionStore _store;
+    private readonly object _injectionGate = new();
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
 
@@ -50,9 +52,9 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         _jobTracker = jobTracker;
 
         using (var db = new OpenCodeDbContext()) { db.Initialize(); }
-        var store = new OpenCodeSessionStore();
+        _store = new OpenCodeSessionStore();
         var openCodeConfig = BuildConfig(config);
-        _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, store, log);
+        _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log);
 
         _opencode.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _opencode.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
@@ -131,6 +133,37 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
         => _opencode.SendInput(sessionId, input, attachmentsJson, messageUid);
+
+    public Task<bool> InjectMessageAsync(string sessionId, string role, string content,
+        string? attachmentsJson = null, string? messageUid = null)
+    {
+        lock (_injectionGate)
+        {
+            var (info, history) = _opencode.GetSession(sessionId);
+            if (info is null) return Task.FromResult(false);
+            var existing = messageUid is null
+                ? null
+                : history.FirstOrDefault(message =>
+                    message.EventType == "text" && message.MessageUid == messageUid);
+            if (existing is not null)
+                return Task.FromResult(existing.Role == role
+                    && existing.Content == content
+                    && existing.AttachmentsJson == attachmentsJson);
+
+            _store.AddMessage(new OpenCodeMessageRecord
+            {
+                SessionId = sessionId,
+                Role = role,
+                EventType = "text",
+                Content = content,
+                MessageUid = messageUid,
+                AttachmentsJson = attachmentsJson,
+                ProviderPartId = messageUid is null ? null : $"injected:{messageUid}",
+                Timestamp = DateTimeOffset.UtcNow,
+            });
+            return Task.FromResult(true);
+        }
+    }
 
     public bool SendAnswer(string sessionId, string answer)
         => _opencode.SendAnswer(sessionId, answer);

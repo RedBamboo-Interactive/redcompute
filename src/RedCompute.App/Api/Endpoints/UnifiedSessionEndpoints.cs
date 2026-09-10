@@ -907,7 +907,10 @@ public static class UnifiedSessionEndpoints
                     ? mu.GetString()! : Guid.NewGuid().ToString("N");
 
             var injected = await provider!.InjectMessageAsync(id, role, content, attachmentsJson, messageUid);
-            return Results.Json(new { injected, messageUid });
+            return injected
+                ? Results.Json(new { injected = true, messageUid })
+                : Error(409, "injection_rejected",
+                    $"Provider '{provider.ProviderId}' did not persist message '{messageUid}' in session '{id}'");
         })
             .WithParam("role", "string", required: true, description: "Role of the injected message (e.g. user, assistant)", location: ParamLocation.Body)
             .WithParam("content", "string", required: true, description: "Message content to inject", location: ParamLocation.Body)

@@ -14,6 +14,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
     private readonly ClaudeSessionStore _store;
+    private readonly object _injectionGate = new();
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
 
@@ -63,22 +64,34 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         };
     }
 
-    public Task<bool> InjectMessageAsync(string sessionId, string role, string content, string? attachmentsJson = null, string? messageUid = null)
+    public Task<bool> InjectMessageAsync(string sessionId, string role, string content,
+        string? attachmentsJson = null, string? messageUid = null)
     {
-        var session = _store.FindSession(sessionId);
-        if (session == null) return Task.FromResult(false);
-
-        _store.AddMessage(new ClaudeMessageRecord
+        lock (_injectionGate)
         {
-            SessionId = sessionId,
-            Role = role,
-            EventType = "text",
-            Content = content,
-            MessageUid = messageUid,
-            Timestamp = DateTimeOffset.UtcNow,
-            AttachmentsJson = attachmentsJson,
-        });
-        return Task.FromResult(true);
+            var session = _store.FindSession(sessionId);
+            if (session == null) return Task.FromResult(false);
+            var existing = messageUid is null
+                ? null
+                : _store.GetMessages(sessionId).FirstOrDefault(message =>
+                    message.EventType == "text" && message.MessageUid == messageUid);
+            if (existing is not null)
+                return Task.FromResult(existing.Role == role
+                    && existing.Content == content
+                    && existing.AttachmentsJson == attachmentsJson);
+
+            _store.AddMessage(new ClaudeMessageRecord
+            {
+                SessionId = sessionId,
+                Role = role,
+                EventType = "text",
+                Content = content,
+                MessageUid = messageUid,
+                Timestamp = DateTimeOffset.UtcNow,
+                AttachmentsJson = attachmentsJson,
+            });
+            return Task.FromResult(true);
+        }
     }
 
     public Task<bool> StartAsync(CancellationToken ct = default)
