@@ -260,13 +260,35 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         try
         {
             conn = await ConnectAsync(sessionId, record.ProjectPath);
-            await conn.SendRequestAsync("thread/resume", new
+            try
             {
-                threadId = record.ThreadId,
-                cwd = record.ProjectPath,
-                model = record.Model,
-                developerInstructions = record.DeveloperInstructions,
-            }, timeoutSeconds: 60);
+                await conn.SendRequestAsync("thread/resume", new
+                {
+                    threadId = record.ThreadId,
+                    cwd = record.ProjectPath,
+                    model = record.Model,
+                    developerInstructions = record.DeveloperInstructions,
+                }, timeoutSeconds: 60);
+            }
+            catch (Exception ex) when (CanRecreateMissingEmptyRollout(record, ex))
+            {
+                var started = await conn.SendRequestAsync("thread/start", new
+                {
+                    cwd = record.ProjectPath,
+                    model = record.Model,
+                    developerInstructions = record.DeveloperInstructions,
+                }, timeoutSeconds: 60);
+                var replacementThreadId = ThreadIdFromStartResult(started);
+                if (replacementThreadId is null)
+                    throw new InvalidOperationException(
+                        $"Codex returned no thread id while recovering empty session {sessionId}", ex);
+
+                _log(
+                    $"[Codex] Recovered empty session {sessionId} from missing thread " +
+                    $"{record.ThreadId} onto new thread {replacementThreadId}",
+                    null);
+                info.ThreadId = replacementThreadId;
+            }
 
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
@@ -296,10 +318,35 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 _jobLifecycle.Fail(info, $"Interactive Codex session failed to resume: {ex.Message}");
                 try { Persist(info); } catch { }
             }
+            else if (IsMissingRollout(ex))
+            {
+                info.Status = "Error";
+                info.StopReason = "provider_session_missing";
+                info.ProcessId = null;
+                info.LastActivity = DateTimeOffset.UtcNow;
+                try { Persist(info); } catch { }
+                SessionUpdated?.Invoke(info);
+            }
             _log($"[Codex] Failed to resume {sessionId}: {ex.Message}", null);
             return null;
         }
     }
+
+    internal static bool CanRecreateMissingEmptyRollout(
+        CodexSessionRecord record,
+        Exception error)
+        => record.MessageCount == 0 && IsMissingRollout(error);
+
+    internal static bool IsMissingRollout(Exception error)
+        => error is CodexAppServerException
+           && error.Message.Contains("no rollout found for thread id", StringComparison.OrdinalIgnoreCase);
+
+    internal static string? ThreadIdFromStartResult(JsonElement result)
+        => result.TryGetProperty("thread", out var thread)
+           && thread.TryGetProperty("id", out var threadId)
+           && threadId.ValueKind == JsonValueKind.String
+            ? threadId.GetString()
+            : null;
 
     private async Task<CodexAppServerConnection> ConnectAsync(string sessionId, string projectPath,
         string? scratchDirectory = null)

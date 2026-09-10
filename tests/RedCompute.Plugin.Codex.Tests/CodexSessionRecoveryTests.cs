@@ -1,5 +1,6 @@
 using RedCompute.Core.Sessions;
 using RedCompute.Plugin.Codex;
+using System.Text.Json;
 using Xunit;
 
 namespace RedCompute.Plugin.Codex.Tests;
@@ -56,6 +57,32 @@ public sealed class CodexSessionRecoveryTests
             if (Directory.Exists(directory))
                 Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void Missing_rollout_can_be_recreated_only_for_an_empty_session()
+    {
+        var error = new CodexAppServerException(
+            "{\"code\":-32600,\"message\":\"no rollout found for thread id thread-1\"}");
+        var withHistory = Session("with-history");
+        withHistory.MessageCount = 1;
+
+        Assert.True(CodexInteractiveService.CanRecreateMissingEmptyRollout(
+            Session("empty"), error));
+        Assert.False(CodexInteractiveService.CanRecreateMissingEmptyRollout(
+            withHistory, error));
+        Assert.False(CodexInteractiveService.CanRecreateMissingEmptyRollout(
+            Session("other-error"), new CodexAppServerException("transport unavailable")));
+    }
+
+    [Fact]
+    public void Replacement_thread_id_uses_the_thread_start_contract()
+    {
+        using var document = JsonDocument.Parse("""{"thread":{"id":"thread-2"}}""");
+
+        Assert.Equal(
+            "thread-2",
+            CodexInteractiveService.ThreadIdFromStartResult(document.RootElement));
     }
 
     private static string CheckpointPath()

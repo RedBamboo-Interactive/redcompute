@@ -264,7 +264,8 @@ public sealed class SunoProvider : IPluginProvider
             return Failure(ex.Message, BuildFailureAudit(
                 sourceOperation, taskId, ex.Message, creditsBefore, creditsAfter, consumed,
                 reportedConsumed.HasValue ? "provider_task" : consumed.HasValue ? "balance_delta" : "unavailable",
-                recovering));
+                recovering,
+                taskData.HasValue));
         }
         finally
         {
@@ -911,12 +912,14 @@ public sealed class SunoProvider : IPluginProvider
         int? creditsAfter,
         int? creditsConsumed,
         string measurement,
-        bool recovered) => new JsonObject
+        bool recovered,
+        bool recoverableProviderTask) => new JsonObject
     {
         ["schemaVersion"] = 3,
         ["operation"] = operation,
         ["providerTaskId"] = taskId,
         ["recovered"] = recovered,
+        ["recoverableProviderTask"] = recoverableProviderTask,
         ["status"] = "failed",
         ["error"] = error,
         ["credits"] = new JsonObject

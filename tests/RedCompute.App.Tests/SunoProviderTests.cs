@@ -434,9 +434,48 @@ public sealed class SunoProviderTests
         Assert.DoesNotContain("do-not-log", result.ErrorMessage, StringComparison.Ordinal);
         var audit = JsonNode.Parse(result.ResultJson!)!.AsObject();
         Assert.Equal("failed-ingest-task", audit["providerTaskId"]!.GetValue<string>());
+        Assert.True(audit["recoverableProviderTask"]!.GetValue<bool>());
         Assert.Equal(10, audit["credits"]!["consumed"]!.GetValue<int>());
         Assert.Equal(90, audit["credits"]!["after"]!.GetValue<int>());
         Assert.Equal("provider_task", audit["credits"]!["measurement"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task TerminalProviderFailureIsNotMarkedRecoverable()
+    {
+        var creditReads = 0;
+        var apiHandler = new DelegateHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/generate/credit"))
+                return Json($"{{\"code\":200,\"data\":{(++creditReads == 1 ? 100 : 100)}}}");
+            if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath.EndsWith("/vocal-removal/generate"))
+                return Json("{\"code\":200,\"data\":{\"taskId\":\"terminal-stem-task\"}}");
+            if (request.Method == HttpMethod.Get && request.RequestUri.AbsolutePath.EndsWith("/vocal-removal/record-info"))
+                return Json("{\"code\":200,\"data\":{\"status\":\"FAILED\",\"errorMessage\":\"We couldn't verify your audio. Please try again.\"}}");
+            throw new InvalidOperationException($"Unexpected API request {request.Method} {request.RequestUri}");
+        });
+        await using var provider = new SunoProvider(
+            Config([]), "music-gen", _ => { }, new HttpClient(apiHandler),
+            new HttpClient(new DelegateHandler(_ => throw new Exception())),
+            new SunoProviderTiming(TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2)));
+
+        var result = await provider.ExecuteAsync(new JobRequest
+        {
+            CapabilitySlug = "music-gen",
+            Parameters = new Dictionary<string, object?>
+            {
+                ["operation"] = "split_stem",
+                ["taskId"] = "source-task",
+                ["audioId"] = "source-audio",
+                ["separationType"] = "split_stem",
+            },
+        });
+
+        Assert.False(result!.Success);
+        var audit = JsonNode.Parse(result.ResultJson!)!.AsObject();
+        Assert.Equal("terminal-stem-task", audit["providerTaskId"]!.GetValue<string>());
+        Assert.False(audit["recoverableProviderTask"]!.GetValue<bool>());
+        Assert.Equal(0, audit["credits"]!["consumed"]!.GetValue<int>());
     }
 
     private static ProviderConfig Config(Dictionary<string, object?> extra) => new()
