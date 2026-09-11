@@ -92,6 +92,94 @@ public sealed class JobAuditTests : IDisposable
     }
 
     [Fact]
+    public void Idempotency_ignores_execution_transport_context_but_audits_each_retry()
+    {
+        var automationId = Guid.NewGuid();
+        var firstProvenance = Provenance(
+            "redleaf", "automation-scheduler", "user-1", "/jobs/external", actorKind: "service") with
+        {
+            Context =
+            [
+                new JobContextReference("automation", automationId.ToString()),
+                new JobContextReference("execution", Guid.NewGuid().ToString()),
+                new JobContextReference("parent-execution", Guid.NewGuid().ToString()),
+            ],
+        };
+        var retryProvenance = firstProvenance with
+        {
+            Context =
+            [
+                firstProvenance.Context[0],
+                new JobContextReference("execution", Guid.NewGuid().ToString()),
+                new JobContextReference("parent-execution", Guid.NewGuid().ToString()),
+            ],
+        };
+        var submission = new JobSubmission(
+            "workflow", "RedLeaf Workflow Engine", "{\"scheduledFor\":\"2026-09-07T11:55:00Z\"}",
+            firstProvenance, IdempotencyKey: $"automation:{automationId:N}:638928717000000000",
+            ExternalExecution: true,
+            IdempotencyScope: $"redleaf:automation:{automationId:N}");
+
+        var first = _jobs.CreateJob(submission);
+        var reused = _jobs.CreateJob(submission with { Provenance = retryProvenance });
+
+        Assert.Equal(first.Id, reused.Id);
+        Assert.True(reused.IsIdempotencyReuse);
+        var reuse = Assert.Single(_jobs.GetJobEvents(first.Id),
+            item => item.Kind == JobEventKind.Reused);
+        Assert.Contains(reuse.Provenance!.Context,
+            item => item.Kind == "execution" && item.Id == retryProvenance.Context[1].Id);
+    }
+
+    [Fact]
+    public void Idempotency_reuses_and_migrates_legacy_execution_context_hashes()
+    {
+        var automationId = Guid.NewGuid();
+        var originalProvenance = Provenance(
+            "redleaf", "automation-scheduler", "user-1", "/jobs/external", actorKind: "service") with
+        {
+            Context =
+            [
+                new JobContextReference("automation", automationId.ToString()),
+                new JobContextReference("execution", Guid.NewGuid().ToString()),
+                new JobContextReference("parent-execution", Guid.NewGuid().ToString()),
+            ],
+        };
+        var submission = new JobSubmission(
+            "workflow", "RedLeaf Workflow Engine", "{\"scheduledFor\":\"2026-09-07T11:55:00Z\"}",
+            originalProvenance, IdempotencyKey: $"automation:{automationId:N}:638928717000000000",
+            ExternalExecution: true);
+        var first = _jobs.CreateJob(submission);
+        var legacyScope = JobTrackingService.ComputeLegacyIdempotencyScopeForCompatibility(
+            submission.CapabilitySlug, originalProvenance);
+        var legacyFingerprint = JobTrackingService
+            .ComputeLegacyIdempotencyFingerprintForCompatibility(submission);
+        using (var db = Db())
+        {
+            var row = db.Jobs.Single(item => item.Id == first.Id);
+            row.IdempotencyScope = legacyScope;
+            row.IdempotencyFingerprint = legacyFingerprint;
+            db.SaveChanges();
+        }
+        var retryProvenance = originalProvenance with
+        {
+            Context =
+            [
+                originalProvenance.Context[0],
+                new JobContextReference("execution", Guid.NewGuid().ToString()),
+                new JobContextReference("parent-execution", Guid.NewGuid().ToString()),
+            ],
+        };
+
+        var reused = _jobs.CreateJob(submission with { Provenance = retryProvenance });
+
+        Assert.Equal(first.Id, reused.Id);
+        Assert.True(reused.IsIdempotencyReuse);
+        Assert.NotEqual(legacyScope, reused.IdempotencyScope);
+        Assert.NotEqual(legacyFingerprint, reused.IdempotencyFingerprint);
+    }
+
+    [Fact]
     public void Explicit_idempotency_scope_prevents_duplicate_roots_across_capabilities()
     {
         var provenance = Provenance("redleaf", "automation-scheduler", "user-1", "/automations/tick",
@@ -108,6 +196,16 @@ public sealed class JobAuditTests : IDisposable
             IdempotencyKey: key, ExternalExecution: true, IdempotencyScope: scope)));
 
         Assert.Equal(legacy.Id, conflict.ExistingJobId);
+
+        var otherBeneficiary = provenance with
+        {
+            OnBehalfOf = new JobBeneficiary("user", "user-2", "Second user"),
+        };
+        var beneficiaryConflict = Assert.Throws<IdempotencyConflictException>(() =>
+            _jobs.CreateJob(new JobSubmission("automation", "RedLeaf automation worker",
+                "{\"definition\":1}", otherBeneficiary, IdempotencyKey: key,
+                ExternalExecution: true, IdempotencyScope: scope)));
+        Assert.Equal(legacy.Id, beneficiaryConflict.ExistingJobId);
     }
 
     [Fact]

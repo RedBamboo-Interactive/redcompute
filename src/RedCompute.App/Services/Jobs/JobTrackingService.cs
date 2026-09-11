@@ -47,13 +47,32 @@ public class JobTrackingService : IJobTracker
 
             if (!string.IsNullOrWhiteSpace(submission.IdempotencyKey))
             {
+                // Signed execution tokens are deliberately short-lived. A retry of the
+                // same logical operation therefore arrives with fresh execution and
+                // parent-execution audit references. Older RedCompute builds included
+                // those references in both hashes, so compare their persisted hashes
+                // against the legacy algorithm before migrating an exact match in place.
                 var candidates = db.Jobs
-                    .Where(j => j.IdempotencyKey == submission.IdempotencyKey && j.IdempotencyScope == scope)
+                    .Where(j => j.IdempotencyKey == submission.IdempotencyKey
+                                && j.IdempotencyScope == scope)
                     .OrderBy(j => j.QueuedAt)
                     .ToList();
-                var exact = candidates.FirstOrDefault(j => j.IdempotencyFingerprint == fingerprint);
+                if (candidates.Count == 0 && string.IsNullOrWhiteSpace(submission.IdempotencyScope))
+                {
+                    candidates = db.Jobs
+                        .Where(j => j.IdempotencyKey == submission.IdempotencyKey)
+                        .OrderBy(j => j.QueuedAt)
+                        .ToList()
+                        .Where(candidate => IsCompatibleIdempotencyScope(
+                            candidate, submission, scope))
+                        .ToList();
+                }
+                var exact = candidates.FirstOrDefault(candidate =>
+                    IsCompatibleIdempotencyFingerprint(candidate, fingerprint));
                 if (exact != null)
                 {
+                    exact.IdempotencyScope = scope;
+                    exact.IdempotencyFingerprint = fingerprint;
                     exact.IsIdempotencyReuse = true;
                     reuseEvent = AppendEvent(db, exact, JobEventKind.Reused, submission.Provenance,
                         new { idempotencyKey = submission.IdempotencyKey });
@@ -1091,10 +1110,82 @@ public class JobTrackingService : IJobTracker
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
     }
 
-    private static string SemanticContext(JobProvenance provenance)
+    private static bool IsCompatibleIdempotencyScope(
+        JobRecord candidate, JobSubmission submission, string requestedScope)
+    {
+        if (string.Equals(candidate.IdempotencyScope, requestedScope, StringComparison.Ordinal))
+            return true;
+        if (!string.IsNullOrWhiteSpace(submission.IdempotencyScope)
+            || candidate.CreationProvenance is not { } provenance)
+            return false;
+
+        return string.Equals(candidate.IdempotencyScope,
+                   ComputeLegacyIdempotencyScopeForCompatibility(
+                       candidate.CapabilitySlug, provenance), StringComparison.Ordinal)
+               && string.Equals(ComputeIdempotencyScope(candidate.CapabilitySlug, provenance),
+                   requestedScope, StringComparison.Ordinal);
+    }
+
+    private static bool IsCompatibleIdempotencyFingerprint(
+        JobRecord candidate, string requestedFingerprint)
+    {
+        if (string.Equals(candidate.IdempotencyFingerprint, requestedFingerprint,
+                StringComparison.Ordinal))
+            return true;
+        if (candidate.CreationProvenance is not { } provenance)
+            return false;
+
+        var persisted = new JobSubmission(
+            candidate.CapabilitySlug, candidate.ProviderName, candidate.InputJson, provenance,
+            candidate.IdempotencyKey, candidate.Name, candidate.Rationale,
+            ExternalExecution: candidate.ExternalExecution,
+            Confidential: candidate.Confidential);
+        return string.Equals(candidate.IdempotencyFingerprint,
+                   ComputeLegacyIdempotencyFingerprintForCompatibility(persisted),
+                   StringComparison.Ordinal)
+               && string.Equals(ComputeIdempotencyFingerprint(persisted),
+                   requestedFingerprint, StringComparison.Ordinal);
+    }
+
+    internal static string ComputeLegacyIdempotencyFingerprintForCompatibility(
+        JobSubmission submission)
+    {
+        var p = submission.Provenance;
+        var material = string.Join('\n', submission.CapabilitySlug, submission.ProviderName,
+            submission.InputJson, submission.ExternalExecution, submission.Confidential,
+            p.Origin.Service, p.Origin.App.Kind, p.Origin.App.Id, p.Origin.App.EntityId,
+            p.Origin.Entrypoint.Kind, p.Origin.Entrypoint.Method, p.Origin.Entrypoint.Route,
+            p.Actor.Kind, p.Actor.EntityId, p.Actor.Id,
+            p.OnBehalfOf.Kind, p.OnBehalfOf.Id, p.OnBehalfOf.Reason,
+            SemanticContext(p, includeExecutionReferences: true));
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
+    }
+
+    internal static string ComputeLegacyIdempotencyScopeForCompatibility(
+        string capability, JobProvenance provenance)
+    {
+        var material = string.Join("\n", capability, provenance.Origin.Service,
+            provenance.Origin.App.Kind, provenance.Origin.App.Id,
+            provenance.Origin.Entrypoint.Kind, provenance.Origin.Entrypoint.Method,
+            provenance.Origin.Entrypoint.Route, provenance.Actor.Kind,
+            provenance.Actor.EntityId, provenance.Actor.Id,
+            provenance.OnBehalfOf.Kind, provenance.OnBehalfOf.Id,
+            provenance.OnBehalfOf.Reason,
+            SemanticContext(provenance, includeExecutionReferences: true));
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
+    }
+
+    private static string SemanticContext(
+        JobProvenance provenance, bool includeExecutionReferences = false)
         => string.Join('|', provenance.Context
+            .Where(context => includeExecutionReferences
+                || !IsExecutionReference(context.Kind))
             .Select(c => $"{c.Kind}:{c.Id}:{c.EntityId}:{c.Route}")
             .OrderBy(value => value, StringComparer.Ordinal));
+
+    private static bool IsExecutionReference(string kind)
+        => kind.Equals("execution", StringComparison.OrdinalIgnoreCase)
+           || kind.Equals("parent-execution", StringComparison.OrdinalIgnoreCase);
 
     private static JobProvenance BackfilledUnknown(JobRecord job) => new(
         JobProvenance.CurrentSchemaVersion,
