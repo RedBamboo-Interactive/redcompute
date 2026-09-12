@@ -409,7 +409,130 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new { session = info, messages = history, inputQueue = queue, transcript });
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
-            .WithParam("tail", "integer", description: "Return only the newest transcript records, in chronological order (max 10000)", location: ParamLocation.Query);
+            .WithParam("tail", "integer", description: "Legacy bounded newest-record read. Use transcript-page for complete keyset pagination; the backing stream clamps this compatibility read to 1000 records.", location: ParamLocation.Query);
+
+        endpoints.MapGet("/ai-session/sessions/{id}/transcript-page",
+            "Read one canonical durable transcript page without splitting a messageUid boundary",
+            async (HttpContext ctx, string id) =>
+        {
+            var before = ctx.Request.Query["before"].FirstOrDefault();
+            var after = ctx.Request.Query["after"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(before) && !string.IsNullOrWhiteSpace(after))
+                return Error(400, "invalid_pagination", "before and after are mutually exclusive");
+
+            var limit = RedLeafSessionReader.MaxTranscriptPageLimit;
+            var requestedLimit = ctx.Request.Query["limit"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(requestedLimit))
+            {
+                if (!int.TryParse(requestedLimit, out limit))
+                    return Error(400, "invalid_pagination", "limit must be an integer");
+                limit = Math.Clamp(limit, 1, RedLeafSessionReader.MaxTranscriptPageLimit);
+            }
+
+            UnifiedSessionInfo? info;
+            string? entityId;
+            try
+            {
+                (info, entityId) = await _redLeafReader!.GetSessionInfoAsync(id);
+            }
+            catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
+            if (info == null || entityId == null)
+                return Error(404, "not_found", $"Session '{id}' not found");
+
+            // Resolve authorization before cursor validation. A cursor must not become
+            // an oracle for another user's confidential session or transcript epoch.
+            if (!CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
+
+            var epoch = TranscriptOrdering.Epoch(info.Provider, info.Id);
+            TranscriptPageCursor? cursor = null;
+            var direction = "newest";
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(before))
+                {
+                    direction = "before";
+                    cursor = TranscriptPageCursorCodec.Decode(
+                        before, info.Id, epoch, TranscriptPageCursorEdge.Oldest);
+                }
+                else if (!string.IsNullOrWhiteSpace(after))
+                {
+                    direction = "after";
+                    cursor = TranscriptPageCursorCodec.Decode(
+                        after, info.Id, epoch, TranscriptPageCursorEdge.Newest);
+                }
+            }
+            catch (TranscriptPageCursorException ex)
+            {
+                return Error(
+                    ex.Code == "invalid_cursor" ? 400 : 409,
+                    ex.Code,
+                    ex.Message);
+            }
+
+            TranscriptPageReadResult page;
+            try
+            {
+                page = await _redLeafReader.GetTranscriptPageAsync(
+                    entityId,
+                    info.Id,
+                    limit,
+                    beforeRecordId: direction == "before" ? cursor?.RecordId : null,
+                    afterRecordId: direction == "after" ? cursor?.RecordId : null,
+                    ctx.RequestAborted);
+            }
+            catch (TranscriptPageTooLargeException ex)
+            {
+                log(
+                    $"Transcript page rejected for {info.Provider}/{info.Id}: " +
+                    $"boundaryRecords={ex.RecordCount}, boundaryInlineBytes={ex.InlineBytes}",
+                    null);
+                return Error(413, "transcript_message_too_large", ex.Message);
+            }
+            catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
+            var sequenced = page.Messages
+                .Where(message => message.Sequence.HasValue
+                    && string.Equals(message.Epoch, epoch, StringComparison.Ordinal))
+                .Select(message => message.Sequence!.Value)
+                .ToArray();
+            var response = new TranscriptPageResponse
+            {
+                Session = info,
+                Messages = page.Messages,
+                Page = new TranscriptPageMetadata
+                {
+                    Epoch = epoch,
+                    Direction = direction,
+                    OldestCursor = page.OldestRecordId is { } oldestId
+                        ? TranscriptPageCursorCodec.Encode(new TranscriptPageCursor(
+                            info.Id, epoch, oldestId, TranscriptPageCursorEdge.Oldest))
+                        : null,
+                    NewestCursor = page.NewestRecordId is { } newestId
+                        ? TranscriptPageCursorCodec.Encode(new TranscriptPageCursor(
+                            info.Id, epoch, newestId, TranscriptPageCursorEdge.Newest))
+                        : null,
+                    HasEarlier = page.HasEarlier,
+                    HasLater = page.HasLater,
+                    FromSequence = sequenced.Length == 0 ? null : sequenced.Min(),
+                    ThroughSequence = sequenced.Length == 0 ? null : sequenced.Max(),
+                    BoundaryComplete = true,
+                },
+            };
+            return Results.Json(response);
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("limit", "integer", description: "Soft raw-record target, clamped to 1..500; a complete boundary UID may expand the response", defaultValue: 500, location: ParamLocation.Query)
+            .WithParam("before", "string", description: "Opaque oldest-edge cursor returned by a previous page", location: ParamLocation.Query)
+            .WithParam("after", "string", description: "Opaque newest-edge cursor returned by a previous page", location: ParamLocation.Query)
+            .WithResponse(TranscriptPageResponseSchema);
 
         endpoints.MapPut("/ai-session/sessions/{id}/confidential",
             "Permanently tighten a session and its linked job to the verified owning Agent and beneficiary user.",
@@ -1901,10 +2024,42 @@ public static class UnifiedSessionEndpoints
             state = new { type = "string", @enum = new[] { "empty", "ready", "delivering", "waiting_for_session", "failed" } },
             blockedReason = new { type = new[] { "string", "null" } },
             headItemId = new { type = new[] { "string", "null" } },
-
             errorCode = new { type = new[] { "string", "null" } },
         },
     };
+
+    private static readonly object TranscriptPageResponseSchema = new
+    {
+        type = "object",
+        required = new[] { "session", "messages", "page" },
+        properties = new
+        {
+            session = new { type = "object" },
+            messages = new { type = "array", items = new { type = "object" } },
+            page = new
+            {
+                type = "object",
+                required = new[]
+                {
+                    "epoch", "direction", "hasEarlier", "hasLater",
+                    "fromSequence", "throughSequence", "boundaryComplete",
+                },
+                properties = new
+                {
+                    epoch = new { type = "string" },
+                    direction = new { type = "string", @enum = new[] { "newest", "before", "after" } },
+                    oldestCursor = new { type = new[] { "string", "null" } },
+                    newestCursor = new { type = new[] { "string", "null" } },
+                    hasEarlier = new { type = "boolean" },
+                    hasLater = new { type = "boolean" },
+                    fromSequence = new { type = new[] { "integer", "null" } },
+                    throughSequence = new { type = new[] { "integer", "null" } },
+                    boundaryComplete = new { type = "boolean" },
+                },
+            },
+        },
+    };
+
     internal static string CreateConversationWorkspace()
     {
         var root = Path.Combine(

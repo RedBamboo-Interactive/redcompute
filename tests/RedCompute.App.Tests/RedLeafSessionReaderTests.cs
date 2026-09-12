@@ -37,6 +37,12 @@ public sealed class RedLeafSessionReaderTests
         Assert.All(history, message => Assert.Equal("final_answer", message.Phase));
         Assert.All(history, message => Assert.Equal("epoch-1", message.Epoch));
         Assert.Equal([2L, 3L], history.Select(message => message.Sequence));
+        Assert.Equal(
+            [
+                DateTimeOffset.Parse("2026-08-03T18:00:02Z"),
+                DateTimeOffset.Parse("2026-08-03T18:00:03Z"),
+            ],
+            history.Select(message => message.RecordCreatedAt));
         Assert.Contains(handler.Requests, path => path.Contains("order=desc") && path.Contains("limit=2"));
         Assert.DoesNotContain(handler.Requests, path => path.Contains("after_id="));
     }
@@ -119,6 +125,7 @@ public sealed class RedLeafSessionReaderTests
         private static object Record(long id, string content) => new
         {
             id,
+            createdAt = $"2026-08-03T18:00:0{id}Z",
             data = JsonSerializer.Serialize(new
             {
                 session_id = "session-1",

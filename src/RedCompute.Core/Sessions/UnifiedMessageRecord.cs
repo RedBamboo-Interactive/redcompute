@@ -21,5 +21,8 @@ public class UnifiedMessageRecord
     public string? Epoch { get; set; }
     public long? Sequence { get; set; }
     public DateTimeOffset Timestamp { get; set; }
+    // Durable RedLeaf record creation time. This is distinct from the provider
+    // event timestamp and is the safe cross-stream pagination/alignment bound.
+    public DateTimeOffset? RecordCreatedAt { get; set; }
     public string? AttachmentsJson { get; set; }
 }

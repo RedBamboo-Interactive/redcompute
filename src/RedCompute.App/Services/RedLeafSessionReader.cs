@@ -1,9 +1,30 @@
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using RedBamboo.AppHost.Auth;
 using RedCompute.Core.Sessions;
 
 namespace RedCompute.App.Services;
+
+internal sealed record TranscriptPageReadResult(
+    IReadOnlyList<UnifiedMessageRecord> Messages,
+    long? OldestRecordId,
+    long? NewestRecordId,
+    bool HasEarlier,
+    bool HasLater);
+
+internal sealed class TranscriptPageTooLargeException : Exception
+{
+    public TranscriptPageTooLargeException(int recordCount, int inlineBytes)
+        : base("One logical transcript message exceeds the safe page response budget")
+    {
+        RecordCount = recordCount;
+        InlineBytes = inlineBytes;
+    }
+
+    public int RecordCount { get; }
+    public int InlineBytes { get; }
+}
 
 /// <summary>
 /// RedLeaf-backed session reads (read-path cutover): the UI's session list
@@ -13,6 +34,11 @@ namespace RedCompute.App.Services;
 /// </summary>
 public sealed class RedLeafSessionReader
 {
+    internal const int MaxTranscriptPageLimit = 500;
+    internal const int MaxTranscriptBoundaryRecords = 10_000;
+    internal const int MaxTranscriptBoundaryBytes = 16 * 1024 * 1024;
+    private const int RedLeafMaxPageSize = 1000;
+
     private readonly HttpClient _http;
     private readonly QualityModeService _qualityModes;
 
@@ -75,6 +101,142 @@ public sealed class RedLeafSessionReader
         return (MapSession(entity), entity.GetProperty("id").GetString());
     }
 
+    internal async Task<TranscriptPageReadResult> GetTranscriptPageAsync(
+        string entityId,
+        string sessionId,
+        int limit,
+        long? beforeRecordId,
+        long? afterRecordId,
+        CancellationToken ct = default)
+    {
+        if (beforeRecordId.HasValue && afterRecordId.HasValue)
+            throw new ArgumentException("before and after are mutually exclusive");
+
+        limit = Math.Clamp(limit, 1, MaxTranscriptPageLimit);
+        var ascending = afterRecordId.HasValue;
+        var anchor = beforeRecordId ?? afterRecordId;
+        var selected = new List<MappedTranscriptRecord>(limit);
+        var batchAnchor = anchor;
+        var hasOutsideBoundary = false;
+        string? boundaryUid = null;
+        var boundaryRecordCount = 0;
+        var boundaryBytes = 0;
+        var extendingBoundary = false;
+
+        while (true)
+        {
+            var requestLimit = extendingBoundary
+                ? RedLeafMaxPageSize
+                : Math.Min(RedLeafMaxPageSize, limit + 1);
+            var batch = await GetRecordBatchAsync(
+                entityId,
+                sessionId,
+                ascending,
+                requestLimit,
+                beforeRecordId: ascending ? null : batchAnchor,
+                afterRecordId: ascending ? batchAnchor : null,
+                ct);
+
+            if (batch.Count == 0)
+                break;
+
+            var stop = false;
+            foreach (var record in batch)
+            {
+                if (selected.Count < limit)
+                {
+                    selected.Add(record);
+                    continue;
+                }
+
+                if (!extendingBoundary)
+                {
+                    boundaryUid = selected[^1].Message.MessageUid;
+                    if (string.IsNullOrWhiteSpace(boundaryUid))
+                    {
+                        hasOutsideBoundary = true;
+                        stop = true;
+                        break;
+                    }
+
+                    (boundaryRecordCount, boundaryBytes) = BoundarySize(selected, boundaryUid);
+                    EnsureBoundaryBudget(boundaryRecordCount, boundaryBytes);
+                    extendingBoundary = true;
+                }
+
+                if (!string.Equals(record.Message.MessageUid, boundaryUid, StringComparison.Ordinal))
+                {
+                    hasOutsideBoundary = true;
+                    stop = true;
+                    break;
+                }
+
+                boundaryRecordCount++;
+                boundaryBytes += record.InlineBytes;
+                EnsureBoundaryBudget(boundaryRecordCount, boundaryBytes);
+                selected.Add(record);
+            }
+
+            if (stop || batch.Count < requestLimit)
+                break;
+
+            batchAnchor = batch[^1].Id;
+        }
+
+        if (selected.Count > 0)
+        {
+            var edgeUid = selected[^1].Message.MessageUid;
+            if (!string.IsNullOrWhiteSpace(edgeUid))
+            {
+                var size = BoundarySize(selected, edgeUid);
+                EnsureBoundaryBudget(size.Count, size.Bytes);
+            }
+            else
+            {
+                EnsureBoundaryBudget(1, selected[^1].InlineBytes);
+            }
+        }
+
+        if (!ascending)
+            selected.Reverse();
+
+        var messages = selected.Select(record => record.Message).ToList();
+        long? oldestRecordId = messages.Count == 0 ? null : messages[0].Id;
+        long? newestRecordId = messages.Count == 0 ? null : messages[^1].Id;
+        bool hasEarlier;
+        bool hasLater;
+        if (messages.Count > 0)
+        {
+            hasEarlier = ascending
+                ? await HasRecordBeforeAsync(entityId, sessionId, oldestRecordId!.Value, ct)
+                : hasOutsideBoundary;
+            hasLater = ascending
+                ? hasOutsideBoundary
+                : await HasRecordAfterAsync(entityId, sessionId, newestRecordId!.Value, ct);
+        }
+        else if (anchor.HasValue)
+        {
+            hasEarlier = ascending
+                ? await HasRecordAtOrBeforeAsync(entityId, sessionId, anchor.Value, ct)
+                : await HasRecordBeforeAsync(entityId, sessionId, anchor.Value, ct);
+            hasLater = ascending
+                ? await HasRecordAfterAsync(entityId, sessionId, anchor.Value, ct)
+                : await HasRecordAtOrAfterAsync(entityId, sessionId, anchor.Value, ct);
+        }
+        else
+        {
+            hasEarlier = false;
+            hasLater = false;
+        }
+
+        return new TranscriptPageReadResult(
+            messages,
+            oldestRecordId,
+            newestRecordId,
+            hasEarlier,
+            hasLater);
+    }
+
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionByJobIdAsync(Guid jobId)
     {
         // Migrated entities carry the SQLite text form (uppercase), the live
@@ -106,12 +268,113 @@ public sealed class RedLeafSessionReader
     {
         var history = new List<UnifiedMessageRecord>();
 
-        void AddRecord(JsonElement rec)
+        if (tail is { } requestedTail)
         {
-            var id = rec.GetProperty("id").GetInt64();
-            using var data = JsonDocument.Parse(rec.GetProperty("data").GetString()!);
-            var d = data.RootElement;
-            history.Add(new UnifiedMessageRecord
+            var pageSize = Math.Clamp(requestedTail, 1, 10_000);
+            using var doc = await GetJsonAsync(
+                $"api/streams/session-messages/records?entity_id={entityId}&order=desc&limit={pageSize}");
+            var records = doc.RootElement.GetProperty("items").EnumerateArray().ToArray();
+            for (var i = records.Length - 1; i >= 0; i--)
+                history.Add(MapRecord(records[i], sessionId).Message);
+            return history;
+        }
+
+        long afterId = 0;
+        while (true)
+        {
+            using var doc = await GetJsonAsync(
+                $"api/streams/session-messages/records?entity_id={entityId}&order=asc&limit=1000&after_id={afterId}");
+            var items = doc.RootElement.GetProperty("items");
+            foreach (var rec in items.EnumerateArray())
+            {
+                afterId = rec.GetProperty("id").GetInt64();
+                history.Add(MapRecord(rec, sessionId).Message);
+            }
+            if (items.GetArrayLength() < 1000) break;
+        }
+        return history;
+    }
+
+    private async Task<List<MappedTranscriptRecord>> GetRecordBatchAsync(
+        string entityId,
+        string sessionId,
+        bool ascending,
+        int limit,
+        long? beforeRecordId,
+        long? afterRecordId,
+        CancellationToken ct)
+    {
+        var url =
+            $"api/streams/session-messages/records?entity_id={Uri.EscapeDataString(entityId)}" +
+            $"&order={(ascending ? "asc" : "desc")}&limit={Math.Clamp(limit, 1, RedLeafMaxPageSize)}";
+        if (beforeRecordId.HasValue)
+            url += $"&before_id={beforeRecordId.Value}";
+        if (afterRecordId.HasValue)
+            url += $"&after_id={afterRecordId.Value}";
+
+        using var doc = await GetJsonAsync(url, ct);
+        return doc.RootElement.GetProperty("items")
+            .EnumerateArray()
+            .Select(record => MapRecord(record, sessionId))
+            .ToList();
+    }
+
+    private async Task<bool> HasRecordBeforeAsync(
+        string entityId,
+        string sessionId,
+        long recordId,
+        CancellationToken ct) =>
+        (await GetRecordBatchAsync(
+            entityId, sessionId, ascending: false, limit: 1,
+            beforeRecordId: recordId, afterRecordId: null, ct)).Count > 0;
+
+    private async Task<bool> HasRecordAfterAsync(
+        string entityId,
+        string sessionId,
+        long recordId,
+        CancellationToken ct) =>
+        (await GetRecordBatchAsync(
+            entityId, sessionId, ascending: true, limit: 1,
+            beforeRecordId: null, afterRecordId: recordId, ct)).Count > 0;
+
+    private async Task<bool> HasRecordAtAsync(
+        string entityId,
+        string sessionId,
+        long recordId,
+        CancellationToken ct)
+    {
+        if (recordId <= 0) return false;
+        var records = await GetRecordBatchAsync(
+            entityId, sessionId, ascending: true, limit: 1,
+            beforeRecordId: null, afterRecordId: recordId - 1, ct);
+        return records.Count == 1 && records[0].Id == recordId;
+    }
+
+    private async Task<bool> HasRecordAtOrBeforeAsync(
+        string entityId,
+        string sessionId,
+        long recordId,
+        CancellationToken ct) =>
+        await HasRecordAtAsync(entityId, sessionId, recordId, ct)
+        || await HasRecordBeforeAsync(entityId, sessionId, recordId, ct);
+
+    private async Task<bool> HasRecordAtOrAfterAsync(
+        string entityId,
+        string sessionId,
+        long recordId,
+        CancellationToken ct) =>
+        await HasRecordAtAsync(entityId, sessionId, recordId, ct)
+        || await HasRecordAfterAsync(entityId, sessionId, recordId, ct);
+
+    private static MappedTranscriptRecord MapRecord(JsonElement rec, string sessionId)
+    {
+        var id = rec.GetProperty("id").GetInt64();
+        var dataJson = rec.GetProperty("data").GetString()!;
+        using var data = JsonDocument.Parse(dataJson);
+        var d = data.RootElement;
+        return new MappedTranscriptRecord(
+            id,
+            new UnifiedMessageRecord
             {
                 Id = id,
                 SessionId = Str(d, "session_id") ?? sessionId,
@@ -129,35 +392,37 @@ public sealed class RedLeafSessionReader
                 Sequence = Long(d, "sequence"),
                 Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
                     ? t : default,
+                RecordCreatedAt = rec.TryGetProperty("createdAt", out var createdAt)
+                    && createdAt.ValueKind == JsonValueKind.String
+                    && DateTimeOffset.TryParse(createdAt.GetString(), out var recordCreatedAt)
+                        ? recordCreatedAt
+                        : null,
                 AttachmentsJson = Str(d, "attachments_json"),
-            });
-        }
+            },
+            Encoding.UTF8.GetByteCount(dataJson));
+    }
 
-        if (tail is { } requestedTail)
+    private static (int Count, int Bytes) BoundarySize(
+        IReadOnlyList<MappedTranscriptRecord> records,
+        string boundaryUid)
+    {
+        var count = 0;
+        var bytes = 0;
+        for (var i = records.Count - 1; i >= 0; i--)
         {
-            var pageSize = Math.Clamp(requestedTail, 1, 10_000);
-            using var doc = await GetJsonAsync(
-                $"api/streams/session-messages/records?entity_id={entityId}&order=desc&limit={pageSize}");
-            var records = doc.RootElement.GetProperty("items").EnumerateArray().ToArray();
-            for (var i = records.Length - 1; i >= 0; i--)
-                AddRecord(records[i]);
-            return history;
+            var record = records[i];
+            if (!string.Equals(record.Message.MessageUid, boundaryUid, StringComparison.Ordinal))
+                break;
+            count++;
+            bytes = checked(bytes + record.InlineBytes);
         }
+        return (count, bytes);
+    }
 
-        long afterId = 0;
-        while (true)
-        {
-            using var doc = await GetJsonAsync(
-                $"api/streams/session-messages/records?entity_id={entityId}&order=asc&limit=1000&after_id={afterId}");
-            var items = doc.RootElement.GetProperty("items");
-            foreach (var rec in items.EnumerateArray())
-            {
-                afterId = rec.GetProperty("id").GetInt64();
-                AddRecord(rec);
-            }
-            if (items.GetArrayLength() < 1000) break;
-        }
-        return history;
+    private static void EnsureBoundaryBudget(int recordCount, int inlineBytes)
+    {
+        if (recordCount > MaxTranscriptBoundaryRecords || inlineBytes > MaxTranscriptBoundaryBytes)
+            throw new TranscriptPageTooLargeException(recordCount, inlineBytes);
     }
 
     public async Task<HttpResponseMessage> OpenPayloadAsync(
@@ -250,11 +515,11 @@ public sealed class RedLeafSessionReader
         };
     }
 
-    private async Task<JsonDocument> GetJsonAsync(string url)
+    private async Task<JsonDocument> GetJsonAsync(string url, CancellationToken ct = default)
     {
-        var response = await _http.GetAsync(url);
+        using var response = await _http.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
-        return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
     }
 
     private static string? Str(JsonElement e, string key) =>
@@ -289,4 +554,9 @@ public sealed class RedLeafSessionReader
             Sha256 = Str(payload, "sha256") ?? "",
         };
     }
+
+    private sealed record MappedTranscriptRecord(
+        long Id,
+        UnifiedMessageRecord Message,
+        int InlineBytes);
 }
