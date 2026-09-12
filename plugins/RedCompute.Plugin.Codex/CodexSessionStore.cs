@@ -32,6 +32,7 @@ public class CodexSessionStore : ICodexSessionStore
         Effort = r.Effort,
         QualityTier = r.QualityTier,
         Source = r.Source,
+        ExecutionProfile = r.ExecutionProfile,
         UserId = r.UserId,
     };
 
@@ -124,6 +125,7 @@ public class CodexSessionStore : ICodexSessionStore
             existing.QualityTier = record.QualityTier;
             existing.ProviderEntity = record.ProviderEntity;
             existing.DeveloperInstructions = record.DeveloperInstructions;
+            existing.ExecutionProfile = record.ExecutionProfile;
             existing.Source = record.Source;
             existing.ContextWindow = record.ContextWindow;
             existing.UserId = record.UserId;

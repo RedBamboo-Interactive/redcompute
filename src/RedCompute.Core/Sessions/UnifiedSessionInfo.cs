@@ -27,6 +27,7 @@ public class UnifiedSessionInfo
     public Guid? JobId { get; set; }
     public string? PermissionMode { get; set; }
     public string? Source { get; set; }
+    public string? ExecutionProfile { get; set; }
     public string? UserId { get; set; }
     public string? UserName { get; set; }
     public string? UserAvatarUrl { get; set; }

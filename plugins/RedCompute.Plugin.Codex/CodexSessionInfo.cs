@@ -1,3 +1,5 @@
+using RedCompute.PluginSdk;
+
 namespace RedCompute.Plugin.Codex;
 
 public class CodexSessionInfo
@@ -29,6 +31,7 @@ public class CodexSessionInfo
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }
     public string? DeveloperInstructions { get; set; }
+    public string ExecutionProfile { get; set; } = SessionExecutionProfile.Default;
     public string? Source { get; set; }
     public int? ContextWindow { get; set; }
     public int? ProcessId { get; set; }

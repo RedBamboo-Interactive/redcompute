@@ -206,7 +206,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("excludeSource", "string", description: "Exclude sessions whose source matches this value", location: ParamLocation.Query);
 
         endpoints.MapPost("/ai-session/sessions",
-            "Start a new interactive session in a project directory. Requests authenticated with signed execution identity launch the provider process with a derived child identity in REDLEAF_EXECUTION_TOKEN so AI tools can authenticate, inspect, and verify subsequent suite API calls.", async (HttpContext ctx) =>
+            "Start a new persistent session. The optional conversation-only profile uses an isolated empty workspace, read-only/no-network execution, denied approvals, and no derived suite credential.", async (HttpContext ctx) =>
         {
             if (_maintenance?.IsDraining == true)
                 return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
@@ -228,8 +228,29 @@ public static class UnifiedSessionEndpoints
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.PersistentSessions))
                 return NotSupported(provider.ProviderId, "persistent sessions");
 
+            var requestedExecutionProfile = body.TryGetProperty("executionProfile", out var profileValue)
+                && profileValue.ValueKind != JsonValueKind.Null
+                    ? profileValue.GetString()
+                    : null;
+            if (!SessionExecutionProfile.TryNormalize(requestedExecutionProfile, out var executionProfile))
+                return Error(422, "validation_failed",
+                    $"executionProfile must be '{SessionExecutionProfile.Default}' or '{SessionExecutionProfile.ConversationOnly}'");
+            var conversationOnly = SessionExecutionProfile.IsConversationOnly(executionProfile);
+            if (conversationOnly && !provider.ProviderId.Equals("codex", StringComparison.OrdinalIgnoreCase))
+                return Error(422, "execution_profile_not_supported",
+                    $"Provider '{provider.ProviderId}' does not support the conversation-only execution profile");
+
             var projectPath = body.TryGetProperty("projectPath", out var pp) ? pp.GetString() : null;
-            if (string.IsNullOrWhiteSpace(projectPath))
+            if (conversationOnly)
+            {
+                if (!string.IsNullOrWhiteSpace(projectPath)
+                    || body.TryGetProperty("repositoryId", out _)
+                    || body.TryGetProperty("scratchDir", out _))
+                    return Error(422, "validation_failed",
+                        "conversation-only sessions allocate their own isolated workspace; projectPath, repositoryId, and scratchDir must be omitted");
+                projectPath = CreateConversationWorkspace();
+            }
+            else if (string.IsNullOrWhiteSpace(projectPath))
                 return Error(422, "validation_failed", "projectPath is required");
 
             RepositoryReference? repository = null;
@@ -253,8 +274,8 @@ public static class UnifiedSessionEndpoints
                 repository = validation.Repository;
             }
 
-            string? scratchDirectory = null;
-            if (body.TryGetProperty("scratchDir", out var scratchValue)
+            string? scratchDirectory = conversationOnly ? projectPath : null;
+            if (!conversationOnly && body.TryGetProperty("scratchDir", out var scratchValue)
                 && scratchValue.ValueKind != JsonValueKind.Null)
             {
                 if (scratchValue.ValueKind != JsonValueKind.String
@@ -276,6 +297,9 @@ public static class UnifiedSessionEndpoints
             }
             var confidential = body.TryGetProperty("confidential", out var confidentialValue)
                 && confidentialValue.ValueKind == JsonValueKind.True;
+            if (conversationOnly && confidential)
+                return Error(422, "validation_failed",
+                    "conversation-only and confidential are separate ownership contracts and cannot be combined");
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
             thinkingBudget ??= q.ThinkingBudget;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
@@ -309,10 +333,22 @@ public static class UnifiedSessionEndpoints
             UnifiedSessionInfo? session;
             try
             {
-                using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
-                    session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
-                        effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
-                        repository?.Id, provenance, scratchDirectory, confidential, developerInstructions);
+                using (SessionExecutionProfile.Push(executionProfile))
+                {
+                    if (conversationOnly)
+                    {
+                        session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
+                            effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
+                            repository?.Id, provenance, scratchDirectory, confidential, developerInstructions);
+                    }
+                    else
+                    {
+                        using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
+                            session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
+                                effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
+                                repository?.Id, provenance, scratchDirectory, confidential, developerInstructions);
+                    }
+                }
             }
             catch (NotSupportedException ex) when (!string.IsNullOrWhiteSpace(developerInstructions))
             {
@@ -330,7 +366,7 @@ public static class UnifiedSessionEndpoints
 
             return Results.Json(session);
         })
-            .WithParam("projectPath", "string", required: true, description: "Path to the project directory", location: ParamLocation.Body)
+            .WithParam("projectPath", "string", description: "Path to the project directory. Omit for conversation-only sessions, which receive an isolated workspace.", location: ParamLocation.Body)
             .WithParam("repositoryId", "string", description: "Stable RedLeaf Repository entity UUID. When supplied, its active local_path must exactly match projectPath.", location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Provider to use. Defaults to the active provider.", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("model", "string", description: "Model to use. Overrides qualityTier when both are given.", location: ParamLocation.Body)
@@ -339,6 +375,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body)
             .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body)
             .WithParam("developerInstructions", "string", description: "Provider-native developer instructions applied to the persistent session. Unsupported providers reject the request.", location: ParamLocation.Body)
+            .WithParam("executionProfile", "string", description: "Persisted provider execution restrictions. conversation-only is currently supported by Codex.", enumValues: [SessionExecutionProfile.Default, SessionExecutionProfile.ConversationOnly], defaultValue: SessionExecutionProfile.Default, location: ParamLocation.Body)
             .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body);
 
 
@@ -1864,9 +1901,21 @@ public static class UnifiedSessionEndpoints
             state = new { type = "string", @enum = new[] { "empty", "ready", "delivering", "waiting_for_session", "failed" } },
             blockedReason = new { type = new[] { "string", "null" } },
             headItemId = new { type = new[] { "string", "null" } },
+
             errorCode = new { type = new[] { "string", "null" } },
         },
     };
+    internal static string CreateConversationWorkspace()
+    {
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RedCompute",
+            "conversation-sessions");
+        Directory.CreateDirectory(root);
+        var directory = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
 
     private static readonly object QueueItemResponseSchema = new
     {

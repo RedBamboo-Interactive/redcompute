@@ -41,6 +41,36 @@ public sealed class SessionScratchTests : IDisposable
         Assert.Null(SessionScratch.Environment(null));
     }
 
+    [Fact]
+    public void SuiteAccessFalseExplicitlyShadowsAnyInheritedExecutionToken()
+    {
+        using (SessionScratch.PushExecutionToken("must-not-escape"))
+        {
+            var environment = SessionScratch.Environment(null, suiteAccess: false)!;
+            Assert.True(environment.ContainsKey("REDLEAF_EXECUTION_TOKEN"));
+            Assert.Equal("", environment["REDLEAF_EXECUTION_TOKEN"]);
+        }
+    }
+
+    [Fact]
+    public void ConversationProfileNormalizesAndRestoresAcrossNestedScopes()
+    {
+        Assert.Equal(SessionExecutionProfile.Default, SessionExecutionProfile.Current);
+        Assert.True(SessionExecutionProfile.TryNormalize("CONVERSATION-ONLY", out var normalized));
+        Assert.Equal(SessionExecutionProfile.ConversationOnly, normalized);
+        Assert.False(SessionExecutionProfile.TryNormalize("unknown", out _));
+
+        using (SessionExecutionProfile.Push(SessionExecutionProfile.ConversationOnly))
+        {
+            Assert.Equal(SessionExecutionProfile.ConversationOnly, SessionExecutionProfile.Current);
+            using (SessionExecutionProfile.Push(SessionExecutionProfile.Default))
+                Assert.Equal(SessionExecutionProfile.Default, SessionExecutionProfile.Current);
+            Assert.Equal(SessionExecutionProfile.ConversationOnly, SessionExecutionProfile.Current);
+        }
+
+        Assert.Equal(SessionExecutionProfile.Default, SessionExecutionProfile.Current);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);

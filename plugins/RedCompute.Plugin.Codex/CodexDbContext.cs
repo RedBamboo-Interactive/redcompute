@@ -46,6 +46,7 @@ public class CodexDbContext : DbContext
                          "ContextWindow INTEGER",
                          "UserId TEXT", "UserName TEXT", "UserAvatarUrl TEXT",
                          "DeveloperInstructions TEXT",
+                         "ExecutionProfile TEXT NOT NULL DEFAULT 'default'",
                          "StopReason TEXT",
                      })
             {

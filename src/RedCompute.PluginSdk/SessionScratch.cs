@@ -18,9 +18,9 @@ public static class SessionScratch
         catch { return false; }
     }
 
-    public static IReadOnlyDictionary<string, string>? Environment(string? directory)
+    public static IReadOnlyDictionary<string, string>? Environment(string? directory, bool suiteAccess = true)
     {
-        if (directory is null && CurrentExecutionToken.Value is null) return null;
+        if (directory is null && CurrentExecutionToken.Value is null && suiteAccess) return null;
         var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (directory is not null)
         {
@@ -30,7 +30,9 @@ public static class SessionScratch
             environment["TMP"] = directory;
             environment["TMPDIR"] = directory;
         }
-        if (CurrentExecutionToken.Value is { } token)
+        if (!suiteAccess)
+            environment["REDLEAF_EXECUTION_TOKEN"] = "";
+        else if (CurrentExecutionToken.Value is { } token)
             environment["REDLEAF_EXECUTION_TOKEN"] = token;
         return environment;
     }

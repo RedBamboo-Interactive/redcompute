@@ -243,6 +243,7 @@ public sealed class RedLeafSessionReader
             QualityTier = Str(d, "quality_tier"),
             JobId = Str(d, "job_id") is { } j && Guid.TryParse(j, out var g) ? g : null,
             Source = Str(d, "source"),
+            ExecutionProfile = Str(d, "execution_profile"),
             UserId = Str(d, "user_id"),
             OwnerAgentId = Str(d, "owner_agent_id"),
             Confidential = Bool(d, "confidential") ?? false,

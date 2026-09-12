@@ -14,12 +14,17 @@ namespace RedCompute.Plugin.Codex;
 /// own rollout on disk. That also means a thread started here is resumable from the Codex CLI and
 /// desktop app, since all surfaces share the same store.
 ///
-/// Approval behaviour mirrors Claude Code's <c>--permission-mode bypassPermissions</c>: command and
-/// file-change approvals are auto-accepted, and only a question the model *deliberately* asked
-/// (<c>item/tool/requestUserInput</c>) is surfaced to the user. See CodexApprovals below.
+/// Normal approval behaviour mirrors Claude Code's <c>--permission-mode bypassPermissions</c>.
+/// Conversation-only sessions are a separate persisted security profile: they deny approvals,
+/// run read-only without network or suite identity, and never surface provider tool questions.
 /// </summary>
 public sealed class CodexInteractiveService : IAsyncDisposable
 {
+    internal const string ConversationBaseInstructions =
+        "You are a conversational intelligence. Respond directly to the user in natural language. " +
+        "Do not call tools, run commands, inspect files, access external systems, or perform coding work. " +
+        "Treat the developer instructions as the complete trusted context for this conversation.";
+
     private sealed class ManagedSession
     {
         public required CodexSessionInfo Info { get; init; }
@@ -167,7 +172,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory = null, bool confidential = false,
-        string? developerInstructions = null)
+        string? developerInstructions = null,
+        string executionProfile = SessionExecutionProfile.Default)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -189,6 +195,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
             DeveloperInstructions = developerInstructions,
+            ExecutionProfile = executionProfile,
             UserId = userId,
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
@@ -198,15 +205,12 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         CodexAppServerConnection? conn = null;
         try
         {
-            conn = await ConnectAsync(id, projectPath, scratchDirectory);
+            conn = await ConnectAsync(id, projectPath, scratchDirectory,
+                suiteAccess: !SessionExecutionProfile.IsConversationOnly(executionProfile));
             var session = new ManagedSession { Info = info, Connection = conn };
 
-            var result = await conn.SendRequestAsync("thread/start", new
-            {
-                cwd = projectPath,
-                model,
-                developerInstructions,
-            }, timeoutSeconds: 60);
+            var result = await conn.SendRequestAsync(
+                "thread/start", BuildThreadStartParams(info), timeoutSeconds: 60);
 
             // The id lives at result.thread.id — not result.threadId, which is the obvious guess.
             info.ThreadId = result.TryGetProperty("thread", out var thread) && thread.TryGetProperty("id", out var tid)
@@ -259,25 +263,21 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         var jobRunning = false;
         try
         {
-            conn = await ConnectAsync(sessionId, record.ProjectPath);
+            var conversationOnly = SessionExecutionProfile.IsConversationOnly(record.ExecutionProfile);
+            conn = await ConnectAsync(
+                sessionId,
+                record.ProjectPath,
+                conversationOnly ? record.ProjectPath : null,
+                suiteAccess: !conversationOnly);
             try
             {
-                await conn.SendRequestAsync("thread/resume", new
-                {
-                    threadId = record.ThreadId,
-                    cwd = record.ProjectPath,
-                    model = record.Model,
-                    developerInstructions = record.DeveloperInstructions,
-                }, timeoutSeconds: 60);
+                await conn.SendRequestAsync(
+                    "thread/resume", BuildThreadResumeParams(info), timeoutSeconds: 60);
             }
             catch (Exception ex) when (CanRecreateMissingEmptyRollout(record, ex))
             {
-                var started = await conn.SendRequestAsync("thread/start", new
-                {
-                    cwd = record.ProjectPath,
-                    model = record.Model,
-                    developerInstructions = record.DeveloperInstructions,
-                }, timeoutSeconds: 60);
+                var started = await conn.SendRequestAsync(
+                    "thread/start", BuildThreadStartParams(info), timeoutSeconds: 60);
                 var replacementThreadId = ThreadIdFromStartResult(started);
                 if (replacementThreadId is null)
                     throw new InvalidOperationException(
@@ -349,10 +349,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             : null;
 
     private async Task<CodexAppServerConnection> ConnectAsync(string sessionId, string projectPath,
-        string? scratchDirectory = null)
+        string? scratchDirectory = null, bool suiteAccess = true)
     {
         var conn = await CodexAppServerConnection.StartAsync(
-            _config.CodexPath, projectPath, _log, SessionScratch.Environment(scratchDirectory));
+            _config.CodexPath, projectPath, _log,
+            SessionScratch.Environment(scratchDirectory, suiteAccess));
         conn.Notification += (method, p) => OnNotification(sessionId, method, p);
         conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);
         conn.Exited += code => OnExited(sessionId, code);
@@ -437,6 +438,14 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         var info = session.Info;
         if (info.Status is "Active" or "Starting") return false;
+        if (SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            && !IsConversationInputAllowed(input))
+        {
+            const string error = "Conversation-only sessions accept text input only";
+            _log($"[Codex] {error} for session {sessionId}", null);
+            Emit(session, new CodexStreamEvent { Type = "error", Content = error });
+            return false;
+        }
         if (input.Any(p => p.LegacyImage is not null || p.Attachment?.Kind == "image"))
         {
             var support = GetImageAttachmentSupport(info.Model, _catalog.Cached);
@@ -476,22 +485,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         try
         {
-            var result = await session.Connection.SendRequestAsync("turn/start", new
-            {
-                threadId = info.ThreadId,
-                input = turnInput,
-                model = info.Model,
-                effort = info.Effort,
-
-                // Without this, reasoning items arrive with empty summary/content and every
-                // thinking block renders blank. It is not on by default.
-                summary = "detailed",
-
-                // bypassPermissions equivalent: ask us rather than self-denying, and we accept.
-                // "never" would mean never ask, which the server treats as decline.
-                approvalPolicy = "on-request",
-                sandboxPolicy = BuildSandboxPolicy(info.ProjectPath),
-            }, timeoutSeconds: 120);
+            var result = await session.Connection.SendRequestAsync(
+                "turn/start", BuildTurnStartParams(info, turnInput), timeoutSeconds: 120);
 
             var returnedTurnId = result.TryGetProperty("turn", out var turn) && turn.TryGetProperty("id", out var tid)
                 ? tid.GetString()
@@ -551,6 +546,12 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         return BuildTurnInput(parts);
     }
 
+    internal static bool IsConversationInputAllowed(IReadOnlyList<SessionInputPart> input)
+        => input.Count > 0 && input.All(part =>
+            part.Type == "text"
+            && part.LegacyImage is null
+            && part.Attachment is null);
+
     internal static ImageAttachmentSupport GetImageAttachmentSupport(
         string? modelId, IReadOnlyList<CodexModel> catalog)
     {
@@ -569,18 +570,72 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     /// and is ignored here; the per-turn policy is an object, and without writableRoots every edit
     /// is refused as "writing outside of the project".
     /// </summary>
-    private object BuildSandboxPolicy(string projectPath) =>
-        _config.SandboxMode switch
-        {
-            "danger-full-access" => new { type = "dangerFullAccess" },
-            "read-only" => new { type = "readOnly", networkAccess = false },
-            _ => new
+    internal object BuildSandboxPolicy(CodexSessionInfo info) =>
+        SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? new { type = "readOnly", networkAccess = false }
+            : _config.SandboxMode switch
             {
-                type = "workspaceWrite",
-                writableRoots = new[] { projectPath },
-                networkAccess = true,
-            },
-        };
+                "danger-full-access" => new { type = "dangerFullAccess" },
+                "read-only" => new { type = "readOnly", networkAccess = false },
+                _ => new
+                {
+                    type = "workspaceWrite",
+                    writableRoots = new[] { info.ProjectPath },
+                    networkAccess = true,
+                },
+            };
+
+    internal object BuildTurnStartParams(CodexSessionInfo info, object[] input) => new
+    {
+        threadId = info.ThreadId,
+        input,
+        model = info.Model,
+        effort = info.Effort,
+        summary = "detailed",
+        approvalPolicy = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? "never"
+            : "on-request",
+        sandboxPolicy = BuildSandboxPolicy(info),
+    };
+
+    internal static object BuildThreadStartParams(CodexSessionInfo info) => new
+    {
+        cwd = info.ProjectPath,
+        model = info.Model,
+        developerInstructions = info.DeveloperInstructions,
+        baseInstructions = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? ConversationBaseInstructions
+            : null,
+        approvalPolicy = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? "never"
+            : null,
+        sandbox = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? "read-only"
+            : null,
+        config = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? new { web_search = "disabled" }
+            : null,
+    };
+
+    internal static object BuildThreadResumeParams(CodexSessionInfo info) => new
+    {
+        threadId = info.ThreadId,
+        cwd = info.ProjectPath,
+        model = info.Model,
+        developerInstructions = info.DeveloperInstructions,
+        baseInstructions = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? ConversationBaseInstructions
+            : null,
+        approvalPolicy = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? "never"
+            : null,
+        sandbox = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? "read-only"
+            : null,
+        config = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            ? new { web_search = "disabled" }
+            : null,
+    };
 
     /// <summary>
     /// Last-resort safety net for <see cref="InterruptSession"/>. <c>turn/interrupt</c> is a request
@@ -852,6 +907,25 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         try
         {
+            if (SessionExecutionProfile.IsConversationOnly(session.Info.ExecutionProfile))
+            {
+                switch (method)
+                {
+                    case "item/commandExecution/requestApproval":
+                    case "item/fileChange/requestApproval":
+                    case "applyPatchApproval":
+                    case "execCommandApproval":
+                        await conn.RespondAsync(id, new { decision = "decline" });
+                        return;
+                    case "item/permissions/requestApproval":
+                        await conn.RespondAsync(id, new { permissions = new { }, scope = "turn" });
+                        return;
+                    case "item/tool/requestUserInput":
+                        await conn.RespondErrorAsync(id, "Tools are disabled for conversation-only sessions");
+                        return;
+                }
+            }
+
             switch (method)
             {
                 // Parity with Claude Code's bypassPermissions: these never reach the user.
@@ -990,7 +1064,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         var derived = DeriveTitle(firstUserMessage);
         if (derived != null) ApplyTitle(session, derived);
 
-        if (_titleQualityTier() is { } qualityTier)
+        if (!SessionExecutionProfile.IsConversationOnly(session.Info.ExecutionProfile)
+            && _titleQualityTier() is { } qualityTier)
         {
             var candidate = new Lazy<Task>(
                 () => GenerateTitleAsync(session, firstUserMessage, qualityTier),
@@ -1253,6 +1328,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         QualityTier = info.QualityTier,
         ProviderEntity = info.ProviderEntity,
         DeveloperInstructions = info.DeveloperInstructions,
+        ExecutionProfile = info.ExecutionProfile,
         Source = info.Source,
         ContextWindow = info.ContextWindow,
         UserId = info.UserId,
@@ -1285,6 +1361,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         QualityTier = r.QualityTier,
         ProviderEntity = r.ProviderEntity,
         DeveloperInstructions = r.DeveloperInstructions,
+        ExecutionProfile = r.ExecutionProfile,
         Source = r.Source,
         ContextWindow = r.ContextWindow,
         UserId = r.UserId,

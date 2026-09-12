@@ -138,7 +138,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     {
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential);
+            scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -150,7 +150,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     {
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential, developerInstructions);
+            scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -216,6 +216,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var (info, _) = _interactive.GetSession(sessionId);
         return info is null
             ? new(false, $"Session '{sessionId}' was not found")
+            : SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+                ? new(false, "Conversation-only sessions accept text input only")
             : CodexInteractiveService.GetImageAttachmentSupport(info.Model, _models.Cached);
     }
 
@@ -404,6 +406,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Effort = s.Effort,
         QualityTier = s.QualityTier,
         Source = s.Source,
+        ExecutionProfile = s.ExecutionProfile,
         UserId = s.UserId,
         UserName = s.UserName,
         UserAvatarUrl = s.UserAvatarUrl,
@@ -412,6 +415,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         // The Codex thread id, which is what makes a session resumable — and resumable from the
         // Codex CLI and desktop app too, since every surface shares the same thread store.
         ProviderSessionId = s.ThreadId,
+        ProviderMetadata = new() { ["executionProfile"] = s.ExecutionProfile },
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(CodexStreamEvent e) => new()

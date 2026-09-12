@@ -257,6 +257,7 @@ public class RelayServer
                 job_id = snap.JobId,
                 dismissed = snap.Dismissed,
                 source = snap.Source,
+                execution_profile = snap.ExecutionProfile,
                 user_id = snap.UserId,
                 owner_id = job?.UserId ?? snap.UserId,
                 owner_agent_id = ownerAgentId,

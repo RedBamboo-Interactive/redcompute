@@ -34,6 +34,7 @@ public sealed class AiSessionSnapshot
     public Guid? JobId { get; init; }
     public bool Dismissed { get; init; }
     public string? Source { get; init; }
+    public string? ExecutionProfile { get; init; }
     public string? UserId { get; init; }
 }
 
