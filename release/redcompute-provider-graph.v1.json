@@ -75,7 +75,7 @@
           "requirement": "optionalCapability",
           "versionConstraint": "unresolved",
           "interface": "configured Python main.py process; lifecycle only, no installation",
-          "sourceMarkers": ["python main.py", "ServerPath not configured"]
+          "sourceMarkers": ["BuildComfyArguments", "\"main.py\"", "ServerPath not configured"]
         },
         {
           "id": "python-runtime",
