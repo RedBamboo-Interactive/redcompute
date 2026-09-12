@@ -8,10 +8,12 @@ namespace RedCompute.App.Services;
 public class LoggingService : IDisposable
 {
     private readonly LogService _logService;
+    private readonly Func<string?> _configuredMinimum;
 
-    public LoggingService(LogService logService)
+    public LoggingService(LogService logService, Func<string?>? configuredMinimum = null)
     {
         _logService = logService;
+        _configuredMinimum = configuredMinimum ?? (() => "Info");
     }
 
     public CoreLogEntry Log(string rawMessage, Guid? jobId = null)
@@ -19,10 +21,22 @@ public class LoggingService : IDisposable
         var parsed = LogEntryParser.Parse(rawMessage);
         parsed.JobId = jobId;
 
-        Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {rawMessage}");
+        var level = parsed.IsError
+            ? RedBamboo.AppHost.Logging.LogLevel.Error
+            : RedBamboo.AppHost.Logging.LogLevel.Info;
+
+        if (RedComputeLoggingPolicy.IsEnabled(_configuredMinimum(), level))
+            ManagedProcessLogProtocol.Write(new ManagedProcessLogRecord(
+                level,
+                parsed.TagCategory,
+                parsed.Message,
+                FullMessage: parsed.FullMessage,
+                JobId: jobId?.ToString(),
+                Tag: parsed.Tag != "" ? parsed.Tag : null,
+                TagColor: parsed.TagColor));
 
         _logService.Log(
-            parsed.IsError ? RedBamboo.AppHost.Logging.LogLevel.Error : RedBamboo.AppHost.Logging.LogLevel.Info,
+            level,
             parsed.TagCategory,
             parsed.Message,
             fullMessage: parsed.FullMessage,

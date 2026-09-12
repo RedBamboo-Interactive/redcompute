@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Extensions;
@@ -71,6 +72,10 @@ public class RelayServer
     public async Task StartAsync(CancellationToken ct)
     {
         var builder = WebApplication.CreateSlimBuilder();
+        builder.Logging.ClearProviders();
+        builder.Logging.AddProvider(new ManagedProcessConsoleLoggerProvider());
+        builder.Logging.AddFilter((category, level) =>
+            RedComputeLoggingPolicy.IsEnabled(_config.LogLevel, category, level));
         // Loopback only: the outside world reaches Compute through the Leaf kernel's
         // /compute/* proxy (one origin, one tunnel). Nothing dials this port directly.
         builder.WebHost.UseUrls($"http://127.0.0.1:{_config.ApiPort}");

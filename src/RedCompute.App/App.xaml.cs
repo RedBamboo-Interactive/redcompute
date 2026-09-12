@@ -63,7 +63,7 @@ public partial class App : Application
         InitializeDatabase();
 
         FileLogger.AttachTo(LogService);
-        Logger = new LoggingService(LogService);
+        Logger = new LoggingService(LogService, () => ConfigManager.Config.LogLevel);
 
         ConfigManager.Load();
         ApplyCliArgs(e.Args);

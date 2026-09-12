@@ -58,7 +58,7 @@ public static class SettingsEndpoints
             return Results.Ok(new { message = "Settings updated", config.ApiPort, config.LogLevel });
         })
             .WithParam("apiPort", "integer", description: "HTTP port the service listens on (applies after restart)", location: ParamLocation.Body)
-            .WithParam("logLevel", "string", description: "Log verbosity", location: ParamLocation.Body);
+            .WithParam("logLevel", "string", description: "Minimum application log level; successful ASP.NET request diagnostics remain suppressed", location: ParamLocation.Body);
 
         endpoints.MapPost("/settings/provider-secrets/refresh",
             "Reload vaulted provider credentials from RedLeaf and recreate only providers whose runtime credential changed.",
