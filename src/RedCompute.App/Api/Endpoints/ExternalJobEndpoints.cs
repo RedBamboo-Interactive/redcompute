@@ -146,6 +146,12 @@ public static partial class ExternalJobEndpoints
                 {
                     return Results.UnprocessableEntity(new { error = "invalid_provenance", message = ex.Message });
                 }
+                if (body.Confidential && !HasConfidentialOwner(provenance))
+                    return Results.UnprocessableEntity(new
+                    {
+                        error = "invalid_confidential_owner",
+                        message = "Confidential external jobs require a verified Agent actor and user beneficiary",
+                    });
 
                 try
                 {
@@ -160,7 +166,8 @@ public static partial class ExternalJobEndpoints
                         body.Name,
                         body.Rationale,
                         ExternalExecution: true,
-                        IdempotencyScope: idempotencyScope));
+                        IdempotencyScope: idempotencyScope,
+                        Confidential: body.Confidential));
 
                     if (!job.IsIdempotencyReuse)
                         jobs.AppendJobEvent(job.Id, JobEventKind.Scheduled, new
@@ -331,7 +338,15 @@ public static partial class ExternalJobEndpoints
         job.AttemptCount,
         job.LeaseOwner,
         job.LeaseExpiresAt,
+        job.Confidential,
     };
+
+    internal static bool HasConfidentialOwner(JobProvenance provenance)
+        => provenance.Assurance == JobProvenanceAssurance.Verified
+            && provenance.Actor.Kind.Equals("agent", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(provenance.Actor.EntityId)
+            && provenance.OnBehalfOf.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(provenance.OnBehalfOf.Id);
 
     private static async Task<T?> ReadAsync<T>(HttpContext ctx)
     {
@@ -371,7 +386,8 @@ public static partial class ExternalJobEndpoints
         string? Rationale,
         DateTimeOffset? ScheduledFor,
         string? Trigger,
-        string? DefinitionVersion);
+        string? DefinitionVersion,
+        bool Confidential = false);
 
     private sealed record ExternalJobBackfillRequest(
         Guid Id,

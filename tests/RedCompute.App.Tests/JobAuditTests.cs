@@ -49,6 +49,30 @@ public sealed class JobAuditTests : IDisposable
     }
 
     [Fact]
+    public void Confidential_external_jobs_require_verified_agent_ownership()
+    {
+        var valid = Provenance(
+            "nova", "agent-nova", "user-1", "/jobs/external");
+        var serviceActor = valid with
+        {
+            Actor = valid.Actor with { Kind = "service", EntityId = null },
+        };
+        var systemBeneficiary = valid with
+        {
+            OnBehalfOf = new JobBeneficiary("system", Reason: "maintenance"),
+        };
+        var unverified = valid with
+        {
+            Assurance = JobProvenanceAssurance.Asserted,
+        };
+
+        Assert.True(ExternalJobEndpoints.HasConfidentialOwner(valid));
+        Assert.False(ExternalJobEndpoints.HasConfidentialOwner(serviceActor));
+        Assert.False(ExternalJobEndpoints.HasConfidentialOwner(systemBeneficiary));
+        Assert.False(ExternalJobEndpoints.HasConfidentialOwner(unverified));
+    }
+
+    [Fact]
     public void Planned_restart_preserves_checkpointed_interactive_jobs_and_fails_other_orphans()
     {
         var provenance = Provenance("nova", "agent-nova", "user-1", "/nova/message");
