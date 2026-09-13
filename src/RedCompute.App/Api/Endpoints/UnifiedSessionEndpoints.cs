@@ -1285,11 +1285,20 @@ public static class UnifiedSessionEndpoints
                 return Error(422, "validation_failed", "url is required");
 
             var force = body.TryGetProperty("force", out var f) && f.GetBoolean();
-            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force);
+            string? callbackId = null;
+            if (body.TryGetProperty("callbackId", out var callback))
+            {
+                if (callback.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(callback.GetString())
+                    || callback.GetString()!.Length > 200)
+                    return Error(422, "validation_failed", "callbackId must be a nonempty string of at most 200 characters");
+                callbackId = callback.GetString();
+            }
+            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId);
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         })
             .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body)
-            .WithParam("force", "boolean", description: "Register even if session is already idle (for pre-registering before sending a message)", location: ParamLocation.Body);
+            .WithParam("force", "boolean", description: "Register even if session is already idle (for pre-registering before sending a message)", location: ParamLocation.Body)
+            .WithParam("callbackId", "string", description: "Optional logical completion identity, echoed unchanged across callback retries; use a distinct value for each invocation", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
             "Set the session's permission mode", async (HttpContext ctx, string id) =>
