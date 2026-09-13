@@ -287,10 +287,13 @@ public sealed class SessionInputQueueService
                     .Select(json => JsonSerializer.Deserialize<JsonElement>(json!))
                     .ToArray();
                 string? attachmentsJson = null;
-                if (publicAttachments.Count > 0 || metadata.Length > 0)
+                if (publicAttachments.Count > 0 || metadata.Length > 0 || batch.Count > 1)
                 {
                     attachmentsJson = JsonSerializer.Serialize(new
                     {
+                        // The user record can be mirrored before provider acknowledgement.
+                        // Persist the represented inputs with that same record, not a later event.
+                        inputMessageUids = batch.Select(item => item.MessageUid).ToArray(),
                         attachments = publicAttachments,
                         metadata = metadata.Length switch
                         {
