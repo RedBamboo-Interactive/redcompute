@@ -44,6 +44,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        ProviderPartId = m.ProviderPartId,
         MessageUid = m.MessageUid,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
@@ -149,8 +150,19 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
     public void AddMessages(List<OpenCodeMessageRecord> messages)
     {
         if (messages.Count == 0) return;
+        // Persist locally first, then mirror the whole semantic prefix. Publish
+        // duplicates too: a prior mirror may have failed after the local commit.
         foreach (var message in messages)
-            AddMessage(message);
+        {
+            using var db = new OpenCodeDbContext();
+            if (message.ProviderPartId is { } partId && db.Messages.Any(existing =>
+                    existing.SessionId == message.SessionId && existing.ProviderPartId == partId
+                    && existing.EventType == message.EventType)) continue;
+            db.Messages.Add(message);
+            try { db.SaveChanges(); }
+            catch (DbUpdateException ex) when (IsDuplicateProviderPart(ex, message.ProviderPartId)) { }
+        }
+        SuiteMirror.PublishCompletedMessages(messages.Select(ToSnapshot).ToList());
     }
 
     public List<OpenCodeMessageRecord> GetMessages(string sessionId, int limit = 50_000)

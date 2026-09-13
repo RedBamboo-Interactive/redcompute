@@ -41,6 +41,7 @@ public sealed class RedLeafSessionReader
 
     private readonly HttpClient _http;
     private readonly QualityModeService _qualityModes;
+    internal TranscriptCheckpointCoordinator? Checkpoints { get; init; }
 
     public RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService, QualityModeService qualityModes)
     {
@@ -108,6 +109,16 @@ public sealed class RedLeafSessionReader
         long? beforeRecordId,
         long? afterRecordId,
         CancellationToken ct = default)
+    {
+        if (Checkpoints is not null)
+            return await Checkpoints.ReadAsync(sessionId,
+                () => ReadTranscriptPageAsync(entityId, sessionId, limit, beforeRecordId, afterRecordId, ct), ct);
+        return await ReadTranscriptPageAsync(entityId, sessionId, limit, beforeRecordId, afterRecordId, ct);
+    }
+
+    private async Task<TranscriptPageReadResult> ReadTranscriptPageAsync(
+        string entityId, string sessionId, int limit, long? beforeRecordId, long? afterRecordId,
+        CancellationToken ct)
     {
         if (beforeRecordId.HasValue && afterRecordId.HasValue)
             throw new ArgumentException("before and after are mutually exclusive");
@@ -261,7 +272,10 @@ public sealed class RedLeafSessionReader
             return (null, []);
 
         var entityId = entity.GetProperty("id").GetString()!;
-        return (info, await GetHistoryAsync(entityId, info.Id, tail));
+        var history = Checkpoints is null
+            ? await GetHistoryAsync(entityId, info.Id, tail)
+            : await Checkpoints.ReadAsync(info.Id, () => GetHistoryAsync(entityId, info.Id, tail));
+        return (info, history);
     }
 
     private async Task<List<UnifiedMessageRecord>> GetHistoryAsync(string entityId, string sessionId, int? tail)

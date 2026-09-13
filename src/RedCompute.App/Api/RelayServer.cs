@@ -272,6 +272,7 @@ public class RelayServer
         };
 
         SuiteMirror.MessagesAdded = transcriptPipeline.MirrorMessages;
+        SuiteMirror.CompletedMessagesAdded = transcriptPipeline.MirrorCompletedMessages;
 
         // Jobs mirror as compute-job entities — the parent type compute-logs
         // records link to. Progress is deliberately excluded (churns per tick;
@@ -324,7 +325,7 @@ public class RelayServer
         // (dual-write) until the verification window closes.
         var redLeafJwt = new JwtService(new JwtOptions { SigningKey = signingKey });
         var redLeafReader = new RedLeafSessionReader(
-            _config.RedLeafUrl, redLeafJwt, _qualityModes);
+            _config.RedLeafUrl, redLeafJwt, _qualityModes) { Checkpoints = transcriptPipeline.Checkpoints };
         var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
@@ -570,6 +571,7 @@ public class RelayServer
 
         SuiteMirror.SessionUpserted = null;
         SuiteMirror.MessagesAdded = null;
+        SuiteMirror.CompletedMessagesAdded = null;
 
         if (_jobAuditCts != null)
         {

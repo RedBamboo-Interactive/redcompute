@@ -29,7 +29,7 @@ public class OpenCodeSessionService
 
     public string? LastStartError { get; private set; }
 
-    private class ManagedSession
+    internal class ManagedSession
     {
         public OpenCodeSessionInfo Info { get; }
         public Process Process { get; }
@@ -43,6 +43,10 @@ public class OpenCodeSessionService
         public HashSet<string> FinalizedProviderMessageIds { get; } = new(StringComparer.Ordinal);
         public Dictionary<(string MessageId, string Type), StringBuilder> StreamedContent { get; } = new();
         public Dictionary<string, OpenCodeNativeMessageVisibility> MessageVisibility { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, List<OpenCodeAttachment>> PendingToolAttachments { get; } = new(StringComparer.Ordinal);
+        public bool HasCompletedTerminalMessage { get; set; }
+        public bool PendingCheckpoint { get; set; }
+        public List<(string Type, string Content, string MessageId)> DeferredLiveChunks { get; } = new();
         public object TurnStateLock { get; } = new();
         public SemaphoreSlim AdmissionLock { get; } = new(1, 1);
         public bool IsLoadingHistory { get; set; }
@@ -509,6 +513,9 @@ public class OpenCodeSessionService
 
             try
             {
+                // Finish a failed preceding checkpoint under its original turn
+                // identity before admitting another user turn.
+                if (session.PendingCheckpoint) ReconcileAvailableParts(session);
                 var content = SessionInputFormatting.UserText(input);
                 var promptBlocks = BuildPromptBlocks(input);
                 var acceptedMessageUid = messageUid ?? Guid.NewGuid().ToString("N");
@@ -518,6 +525,9 @@ public class OpenCodeSessionService
                     session.CurrentAssistantUid = Guid.NewGuid().ToString("N");
                     session.StreamedContent.Clear();
                     session.MessageVisibility.Clear();
+                    session.PendingToolAttachments.Clear();
+                    session.HasCompletedTerminalMessage = false;
+                    session.DeferredLiveChunks.Clear();
                 }
 
                 _store.AddMessage(new OpenCodeMessageRecord
@@ -606,9 +616,11 @@ public class OpenCodeSessionService
 
             var stopReason = result.TryGetProperty("stopReason", out var sr) ? sr.GetString() : null;
             if (stopReason == "cancelled")
+            {
+                ReconcileAvailableParts(session);
                 StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent { Type = "status", Content = "interrupted" });
-
-            if (stopReason != "cancelled")
+            }
+            else
                 await ReconcileCompletedTurn(session);
             session.Info.Status = "Idle";
             TryFetchOpenCodeTitle(session);
@@ -907,6 +919,12 @@ public class OpenCodeSessionService
                 {
                     _log($"[OpenCode] Non-JSON stdout: {(line.Length > 200 ? line[..200] + "..." : line)}", null);
                 }
+                catch (Exception ex)
+                {
+                    // A failed notification/checkpoint must not terminate the
+                    // RPC reader or strand the pending session/prompt response.
+                    _log($"[OpenCode] Session notification failed: {ex.Message}", null);
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -1057,10 +1075,33 @@ public class OpenCodeSessionService
         }
     }
 
-    private void HandleLiveChunk(ManagedSession session, string type, string content, string? messageId)
+    internal void HandleLiveChunk(ManagedSession session, string type, string content, string? messageId)
     {
         if (session.Info.Status != "Active" || string.IsNullOrEmpty(messageId)) return;
 
+        // The first chunk of a new native message is a semantic boundary. Save
+        // completed predecessors before allocating any events for the new step.
+        lock (session.TurnStateLock)
+        {
+            if (session.PendingCheckpoint || !session.MessageVisibility.ContainsKey(messageId))
+            {
+                try { ReconcileAvailableParts(session); }
+                catch (Exception ex)
+                {
+                    session.DeferredLiveChunks.Add((type, content, messageId));
+                    _log($"[OpenCode] Deferring live chunk until transcript checkpoint recovers: {ex.Message}", null);
+                    return;
+                }
+            }
+            foreach (var chunk in session.DeferredLiveChunks)
+                ProjectLiveChunk(session, chunk.Type, chunk.Content, chunk.MessageId);
+            session.DeferredLiveChunks.Clear();
+            ProjectLiveChunk(session, type, content, messageId);
+        }
+    }
+
+    private void ProjectLiveChunk(ManagedSession session, string type, string content, string messageId)
+    {
         OpenCodeNativeMessageVisibility visibility;
         lock (session.TurnStateLock)
         {
@@ -1103,27 +1144,43 @@ public class OpenCodeSessionService
         }
     }
 
-    private async Task ReconcileCompletedTurn(ManagedSession session)
+    internal async Task ReconcileCompletedTurn(ManagedSession session)
     {
         if (string.IsNullOrEmpty(session.AcpSessionId))
             throw new InvalidOperationException("OpenCode session has no provider session ID");
 
-        IReadOnlyList<OpenCodeNativePart> snapshot;
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
         while (true)
         {
-            snapshot = _nativeSessionReader.GetCompletedAssistantParts(session.AcpSessionId);
-            bool hasNewParts;
+            ReconcileAvailableParts(session);
             lock (session.TurnStateLock)
-            {
-                hasNewParts = snapshot.Any(part => !session.KnownNativePartIds.Contains(part.Id));
-            }
-            if (hasNewParts) break;
+                if (session.HasCompletedTerminalMessage) return;
             if (DateTimeOffset.UtcNow >= deadline)
                 throw new TimeoutException("OpenCode native completion did not settle within 5 seconds of end_turn");
             await Task.Delay(25, session.Cts.Token);
         }
+    }
 
+    internal void ReconcileAvailableParts(ManagedSession session)
+    {
+        if (string.IsNullOrEmpty(session.AcpSessionId)) return;
+        lock (session.TurnStateLock)
+        {
+            try
+            {
+                ReconcileNativeParts(session, _nativeSessionReader.GetCompletedAssistantParts(session.AcpSessionId));
+                session.PendingCheckpoint = false;
+            }
+            catch
+            {
+                session.PendingCheckpoint = true;
+                throw;
+            }
+        }
+    }
+
+    private void ReconcileNativeParts(ManagedSession session, IReadOnlyList<OpenCodeNativePart> snapshot)
+    {
         List<OpenCodeNativePart> completed;
         var suffixEvents = new List<OpenCodeStreamEvent>();
         var records = new List<OpenCodeMessageRecord>();
@@ -1132,8 +1189,7 @@ public class OpenCodeSessionService
         lock (session.TurnStateLock)
         {
             completed = snapshot.Where(part => !session.KnownNativePartIds.Contains(part.Id)).ToList();
-            foreach (var part in completed)
-                session.KnownNativePartIds.Add(part.Id);
+            if (completed.Count == 0) return;
 
             foreach (var group in completed
                          .Where(part => part.Type is "text" or "reasoning")
@@ -1175,18 +1231,8 @@ public class OpenCodeSessionService
                             MessageId = toolMessageId,
                         });
                     }
-                    if (!session.StreamedContent.ContainsKey((toolMessageId, "tool_result")))
-                    {
-                        suffixEvents.Add(new OpenCodeStreamEvent
-                        {
-                            Type = "tool_result",
-                            ToolName = part.ToolName,
-                            Content = part.ToolResult,
-                            ToolResult = part.ToolResult,
-                            MessageId = toolMessageId,
-                        });
-                    }
-
+                    // Completed tool results are published by the checkpoint
+                    // writer with their durable stamp, after the entire prefix.
                     records.Add(ToMessageRecord(session, part, "tool_use", messageUid));
                     records.Add(ToMessageRecord(session, part, "tool_result", messageUid));
                 }
@@ -1195,14 +1241,31 @@ public class OpenCodeSessionService
                     records.Add(ToMessageRecord(session, part,
                         part.Type == "reasoning" ? "thinking" : "text", messageUid));
                 }
-                session.FinalizedProviderMessageIds.Add(part.MessageId);
-                if (part.CallId != null) session.FinalizedProviderMessageIds.Add(part.CallId);
             }
         }
 
         foreach (var evt in suffixEvents)
+        {
             EmitLive(session, evt);
+            var key = (evt.MessageId!, evt.Type);
+            if (!session.StreamedContent.TryGetValue(key, out var streamed))
+                session.StreamedContent[key] = streamed = new StringBuilder();
+            if (evt.Content is { } content) streamed.Append(content);
+        }
         _store.AddMessages(records);
+        // Only acknowledged checkpoints suppress later ACP duplicates. A failed
+        // mirror can retry the same locally persisted native IDs.
+        foreach (var part in completed)
+        {
+            session.KnownNativePartIds.Add(part.Id);
+            session.FinalizedProviderMessageIds.Add(part.MessageId);
+            if (part.CallId != null)
+            {
+                session.FinalizedProviderMessageIds.Add(part.CallId);
+                session.PendingToolAttachments.Remove(part.CallId);
+            }
+            session.HasCompletedTerminalMessage |= part.IsTerminalMessage;
+        }
     }
 
     private static OpenCodeMessageRecord ToMessageRecord(
@@ -1218,6 +1281,9 @@ public class OpenCodeSessionService
         MessageId = part.Type == "tool" ? part.CallId ?? part.MessageId : part.MessageId,
         MessageUid = messageUid,
         ProviderPartId = part.Id,
+        AttachmentsJson = eventType == "tool_result" && part.CallId is { } callId
+            && session.PendingToolAttachments.TryGetValue(callId, out var attachments)
+                ? JsonSerializer.Serialize(attachments) : null,
         Timestamp = part.Timestamp,
     };
 
@@ -1242,7 +1308,7 @@ public class OpenCodeSessionService
 
     // ===== Session Update Notification Handler =====
 
-    private void HandleSessionUpdate(ManagedSession session, JsonElement @params)
+    internal void HandleSessionUpdate(ManagedSession session, JsonElement @params)
     {
         if (!@params.TryGetProperty("update", out var update)) return;
         if (session.IsLoadingHistory) return;
@@ -1303,21 +1369,15 @@ public class OpenCodeSessionService
                 {
                     lock (session.TurnStateLock)
                         if (toolCallId != null && session.FinalizedProviderMessageIds.Contains(toolCallId)) break;
-                    string? resultContent = null;
                     var attachments = new List<OpenCodeAttachment>();
                     if (update.TryGetProperty("content", out var contentArr) && contentArr.ValueKind == JsonValueKind.Array)
                     {
-                        var sb = new StringBuilder();
                         foreach (var item in contentArr.EnumerateArray())
                         {
                             if (item.TryGetProperty("type", out var itemType) && itemType.GetString() == "content"
                                 && item.TryGetProperty("content", out var innerContent))
                             {
-                                if (innerContent.TryGetProperty("text", out var text))
-                                {
-                                    sb.Append(text.GetString());
-                                }
-                                else if (innerContent.TryGetProperty("type", out var ct) && ct.GetString() == "image")
+                                if (innerContent.TryGetProperty("type", out var ct) && ct.GetString() == "image")
                                 {
                                     var mimeType = innerContent.TryGetProperty("mimeType", out var mt) ? mt.GetString() : null;
                                     var data = innerContent.TryGetProperty("data", out var d) ? d.GetString() : null;
@@ -1333,22 +1393,16 @@ public class OpenCodeSessionService
                                 }
                             }
                         }
-                        if (sb.Length > 0) resultContent = sb.ToString();
                     }
 
                     lock (session.TurnStateLock)
                     {
-                        if (toolCallId != null)
-                            session.StreamedContent.TryAdd((toolCallId, "tool_result"), new StringBuilder());
-                        EmitLive(session, new OpenCodeStreamEvent
-                        {
-                            Type = "tool_result",
-                            Content = resultContent,
-                            ToolResult = resultContent,
-                            ToolName = update.TryGetProperty("title", out var title) ? title.GetString() : null,
-                            MessageId = toolCallId,
-                            Attachments = attachments.Count > 0 ? attachments : null,
-                        });
+                        if (toolCallId != null && attachments.Count > 0)
+                            session.PendingToolAttachments[toolCallId] = attachments;
+                        // ACP output may precede native message completion. Keep
+                        // its attachments, but let native completed parts own the
+                        // canonical output and publish it with its full prefix.
+                        ReconcileAvailableParts(session);
                     }
                 }
                 break;

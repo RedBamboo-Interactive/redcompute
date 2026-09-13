@@ -21,7 +21,8 @@ internal sealed record OpenCodeNativePart(
     string? ToolResult,
     string? ToolTitle,
     bool ToolFailed,
-    DateTimeOffset Timestamp);
+    DateTimeOffset Timestamp,
+    bool IsTerminalMessage = false);
 
 internal interface IOpenCodeNativeSessionReader
 {
@@ -64,7 +65,7 @@ internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
             throw new FileNotFoundException("OpenCode native session database was not found", _dbPath);
 
         using var connection = Open();
-        var messages = new HashSet<string>(StringComparer.Ordinal);
+        var messages = new Dictionary<string, bool>(StringComparer.Ordinal);
         using (var command = connection.CreateCommand())
         {
             command.CommandText = "SELECT id, time_created, data FROM message WHERE session_id=$session ORDER BY time_created, id";
@@ -77,7 +78,7 @@ internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
                 if (String(data, "role") != "assistant" || IsCompaction(data) || !IsCompleted(data))
                     continue;
 
-                messages.Add(reader.GetString(0));
+                messages.Add(reader.GetString(0), String(data, "finish") != "tool-calls");
             }
         }
 
@@ -93,11 +94,11 @@ internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
             {
                 var providerPartId = reader.GetString(0);
                 var messageId = reader.GetString(1);
-                if (!messages.Contains(messageId)) continue;
+                if (!messages.TryGetValue(messageId, out var terminal)) continue;
                 using var document = JsonDocument.Parse(reader.GetString(3));
                 if (ParsePart(providerPartId, messageId, document.RootElement,
                         DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)), out var part))
-                    parts.Add(part!);
+                    parts.Add(part! with { IsTerminalMessage = terminal });
             }
         }
 

@@ -51,6 +51,8 @@ public sealed class AiMessageSnapshot
     public string? ToolResult { get; init; }
     public TranscriptPayloadRef? PayloadRef { get; init; }
     public string? MessageId { get; init; }
+    // Existing provider-native identity, used only to retry compact checkpoints.
+    public string? ProviderPartId { get; init; }
     public string? Phase { get; init; }
     // Provider-neutral message uid minted by RedCompute; shared by all
     // events of one assistant turn and carried into the RedLeaf mirror.
@@ -69,6 +71,16 @@ public static class SuiteMirror
 {
     public static Action<AiSessionSnapshot>? SessionUpserted { get; set; }
     public static Action<IReadOnlyList<AiMessageSnapshot>>? MessagesAdded { get; set; }
+
+    /// <summary>Publish a complete semantic prefix before further live events.
+    /// Unlike the asynchronous mirror, failure propagates so the provider can
+    /// retry the same native parts and history cannot expose half a checkpoint.</summary>
+    public static Action<IReadOnlyList<AiMessageSnapshot>>? CompletedMessagesAdded { get; set; }
+
+    public static void PublishCompletedMessages(IReadOnlyList<AiMessageSnapshot> messages)
+    {
+        if (messages.Count > 0) CompletedMessagesAdded?.Invoke(messages);
+    }
 
     public static void PublishSession(AiSessionSnapshot snapshot)
     {

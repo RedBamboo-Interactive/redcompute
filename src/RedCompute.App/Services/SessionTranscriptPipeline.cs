@@ -24,6 +24,8 @@ public sealed class SessionTranscriptPipeline
     private readonly Action<string, Guid?> _log;
     private readonly Func<string, string, bool> _isConfidential;
     private readonly ITranscriptSequenceStore _sequences;
+    private readonly CompletedTranscriptPublisher _completed;
+    internal TranscriptCheckpointCoordinator Checkpoints { get; } = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _livePayloads = new();
 
     public SessionTranscriptPipeline(
@@ -47,6 +49,7 @@ public sealed class SessionTranscriptPipeline
         _log = log;
         _isConfidential = isConfidential ?? ((_, _) => false);
         _sequences = sequences;
+        _completed = new CompletedTranscriptPublisher(Checkpoints, sequences, PersistCompletedMessage, Broadcast);
     }
 
     public void HandleLiveEvent(string provider, string sessionId, UnifiedStreamEvent evt)
@@ -78,27 +81,29 @@ public sealed class SessionTranscriptPipeline
                 .GetAwaiter().GetResult();
 
             _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, output)] = DateTimeOffset.UtcNow;
-            Broadcast(provider, sessionId, new UnifiedStreamEvent
-            {
-                Type = evt.Type,
-                Content = null,
-                ToolName = evt.ToolName,
-                ToolInput = evt.ToolInput,
-                ToolResult = null,
-                PayloadRef = payloadRef,
-                IsPartial = false,
-                MessageId = evt.MessageId,
-                Phase = evt.Phase,
-                MessageUid = evt.MessageUid,
-                RequestId = evt.RequestId,
-                Attachments = evt.Attachments,
-            });
+            Broadcast(provider, sessionId, WithPayload(evt, payloadRef));
         }
         catch (Exception ex)
         {
             _log($"[Transcript] Payload append failed for {provider}/{sessionId}; using inline fallback: {ex.Message}", null);
             Broadcast(provider, sessionId, evt);
         }
+    }
+
+    public void MirrorCompletedMessages(IReadOnlyList<AiMessageSnapshot> messages) => _completed.Publish(messages);
+
+    private TranscriptPayloadRef? PersistCompletedMessage(AiMessageSnapshot message, TranscriptStamp stamp)
+    {
+        var output = message.EventType == "tool_result" ? message.ToolResult ?? message.Content : null;
+        if (!string.IsNullOrEmpty(output))
+            return PersistToolOutputAsync(message.Provider, message.SessionId, message.Role,
+                message.ToolName, message.ToolInput, message.MessageId, message.MessageUid,
+                message.Timestamp, message.AttachmentsJson, output, stamp).GetAwaiter().GetResult();
+
+        _streams.AppendForEntityAsync("session-messages", SessionEntitySlug(message.Provider, message.SessionId),
+            InlineData(message, stamp), $"transcript:{stamp.Epoch}:{stamp.Sequence}",
+            createdAt: message.Timestamp).GetAwaiter().GetResult();
+        return null;
     }
 
     public void MirrorMessages(IReadOnlyList<AiMessageSnapshot> messages)
@@ -188,7 +193,9 @@ public sealed class SessionTranscriptPipeline
     }
 
     private void EnqueueInline(AiMessageSnapshot message, TranscriptStamp stamp) =>
-        _streams.EnqueueForEntity("session-messages", SessionEntitySlug(message.Provider, message.SessionId), new
+        _streams.EnqueueForEntity("session-messages", SessionEntitySlug(message.Provider, message.SessionId), InlineData(message, stamp));
+
+    private static object InlineData(AiMessageSnapshot message, TranscriptStamp stamp) => new
         {
             provider = message.Provider,
             session_id = message.SessionId,
@@ -205,7 +212,7 @@ public sealed class SessionTranscriptPipeline
             sequence = stamp.Sequence,
             timestamp = message.Timestamp.ToString("O"),
             attachments_json = message.AttachmentsJson,
-        });
+        };
 
     private void Broadcast(string provider, string sessionId, UnifiedStreamEvent evt)
     {
@@ -232,6 +239,24 @@ public sealed class SessionTranscriptPipeline
             timestamp = DateTimeOffset.UtcNow.ToString("O"),
         });
     }
+
+    internal static UnifiedStreamEvent WithPayload(UnifiedStreamEvent evt, TranscriptPayloadRef payloadRef) => new()
+    {
+        Type = evt.Type,
+        Content = null,
+        ToolName = evt.ToolName,
+        ToolInput = evt.ToolInput,
+        ToolResult = null,
+        PayloadRef = payloadRef,
+        IsPartial = false,
+        MessageId = evt.MessageId,
+        Phase = evt.Phase,
+        MessageUid = evt.MessageUid,
+        RequestId = evt.RequestId,
+        Epoch = evt.Epoch,
+        Sequence = evt.Sequence,
+        Attachments = evt.Attachments,
+    };
 
     private static string? Output(UnifiedStreamEvent evt) => evt.ToolResult ?? evt.Content;
 

@@ -42,6 +42,8 @@ public sealed class OpenCodeTranscriptProjectionTests
                     Assert.False(tool.ToolFailed);
                 });
 
+            Assert.All(parts, part => Assert.False(part.IsTerminalMessage));
+
             Assert.Equal(OpenCodeNativeMessageVisibility.Visible,
                 reader.GetMessageVisibility("session-1", "build-message"));
             Assert.Equal(OpenCodeNativeMessageVisibility.Compaction,
@@ -97,7 +99,7 @@ public sealed class OpenCodeTranscriptProjectionTests
         command.ExecuteNonQuery();
 
         Insert(connection, "message", "build-message", "session-1", "build-message", 1,
-            """{"role":"assistant","mode":"build","time":{"created":1,"completed":9}}""");
+            """{"role":"assistant","mode":"build","finish":"tool-calls","time":{"created":1,"completed":9}}""");
         Insert(connection, "message", "compaction-message", "session-1", "compaction-message", 2,
             """{"role":"assistant","mode":"compaction","summary":true,"time":{"created":2,"completed":9}}""");
         Insert(connection, "message", "incomplete-message", "session-1", "incomplete-message", 3,

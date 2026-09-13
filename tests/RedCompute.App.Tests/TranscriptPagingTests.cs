@@ -10,6 +10,39 @@ namespace RedCompute.App.Tests;
 public sealed class TranscriptPagingTests
 {
     [Fact]
+    public async Task CanonicalPagedReaderRejectsAnIncompleteCheckpointBeforeReadingRecords()
+    {
+        var checkpoints = new TranscriptCheckpointCoordinator();
+        var handler = new PagingHandler([Record(1, "turn")]);
+        var reader = CreateReader(handler, checkpoints);
+        Assert.Throws<IOException>(() => checkpoints.Write(SessionId, () => throw new IOException("write failed")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.GetTranscriptPageAsync(
+            EntityId, SessionId, 500, null, null));
+        Assert.Empty(handler.StreamRequestLimits);
+        checkpoints.Write(SessionId, () => { });
+        Assert.Single((await reader.GetTranscriptPageAsync(EntityId, SessionId, 500, null, null)).Messages);
+    }
+
+    [Fact]
+    public async Task CanonicalRawReaderRejectsAnIncompleteCheckpointBeforeReadingRecords()
+    {
+        var checkpoints = new TranscriptCheckpointCoordinator();
+        var reader = CreateReader(new EntityOnlyHandler(), checkpoints);
+        Assert.Throws<IOException>(() => checkpoints.Write(SessionId, () => throw new IOException("write failed")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.GetSessionAsync(SessionId));
+    }
+
+    private sealed class EntityOnlyHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Assert.Equal("/api/entities", request.RequestUri!.AbsolutePath);
+            return Task.FromResult(Json(new { items = new[] { new { id = EntityId, name = "fixture",
+                data = JsonSerializer.Serialize(new { session_id = SessionId, provider = "opencode", status = "Active" }) } } }));
+        }
+    }
+
+    [Fact]
     public async Task Reader_PagesEveryRecordBeyondRedLeafCapWithoutGapsOrDuplicates()
     {
         var handler = new PagingHandler(Enumerable.Range(1, 1085)
@@ -207,7 +240,7 @@ public sealed class TranscriptPagingTests
     private const string SessionId = "session-1";
     private const string EntityId = "1910ac53-d68a-4ccc-883d-0541c0091d9b";
 
-    private static RedLeafSessionReader CreateReader(HttpMessageHandler handler)
+    private static RedLeafSessionReader CreateReader(HttpMessageHandler handler, TranscriptCheckpointCoordinator? checkpoints = null)
     {
         var config = new RedComputeConfig { RedLeafUrl = "http://redleaf" };
         var log = new Action<string, Guid?>((_, _) => { });
@@ -222,7 +255,7 @@ public sealed class TranscriptPagingTests
             TimeSpan.FromMilliseconds(2));
         return new RedLeafSessionReader(
             new HttpClient(handler) { BaseAddress = new Uri("http://redleaf/") },
-            quality);
+            quality) { Checkpoints = checkpoints };
     }
 
     private static TestRecord Record(int id, string uid) => new(id, uid, $"record-{id}");
