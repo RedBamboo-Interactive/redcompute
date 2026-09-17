@@ -52,6 +52,12 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         /// completion record.
         /// </summary>
         public Dictionary<string, string> MessagePhases { get; } = [];
+
+        /// <summary>Whether this turn emitted user-visible final answer text.</summary>
+        public bool HasFinalOutput { get; set; }
+
+        /// <summary>An explicitly interrupted turn may legitimately finish without a final answer.</summary>
+        public bool InterruptRequested { get; set; }
     }
 
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions);
@@ -464,6 +470,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         // A user message opens a new turn, so the previous turn's uid must not leak into it.
         session.CurrentTurnUid = null;
+        session.HasFinalOutput = false;
+        session.InterruptRequested = false;
 
         _store.AddMessage(new CodexMessageRecord
         {
@@ -670,6 +678,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         // assistant's message into two blocks in the live view but not in the rebuilt one.
         StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent { Type = "status", Content = "interrupting" });
 
+        session.InterruptRequested = true;
         _ = InterruptAndEscalateAsync(session, session.ActiveTurnId);
         return Core.Sessions.InterruptResult.Interrupted;
     }
@@ -779,6 +788,14 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             case "turn/completed":
                 ApplyUsage(session, @params);
+                if (!session.HasFinalOutput
+                    && CompletionFinalOutput(@params) is { } recoveredFinal)
+                {
+                    Emit(session, recoveredFinal);
+                    session.HasFinalOutput = true;
+                }
+                var completionError = TurnCompletionError(
+                    @params, session.HasFinalOutput, session.InterruptRequested);
                 session.ActiveTurnId = null;
                 session.StreamedItems.Clear();
                 session.MessagePhases.Clear();
@@ -786,7 +803,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 session.Info.LastActivity = DateTimeOffset.UtcNow;
                 Persist(session.Info);
                 SessionUpdated?.Invoke(session.Info);
-                Emit(session, new CodexStreamEvent { Type = "status", Content = "completed" });
+                Emit(session, completionError is null
+                    ? new CodexStreamEvent { Type = "status", Content = "completed" }
+                    : new CodexStreamEvent { Type = "error", Content = completionError });
+                session.HasFinalOutput = false;
+                session.InterruptRequested = false;
                 return;
 
             case "thread/tokenUsage/updated":
@@ -808,6 +829,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         foreach (var evt in CodexEventMapper.Map(method, @params, session.MessagePhases))
         {
+            if (IsFinalOutput(method, @params, evt)) session.HasFinalOutput = true;
+
             // Text and reasoning arrive twice: streamed as deltas, then whole again on
             // item/completed. The client appends partials into one part, so emitting the complete
             // version too renders the message a second time, concatenated onto itself.
@@ -822,6 +845,108 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             Emit(session, evt, broadcast);
         }
+    }
+
+    internal static bool IsFinalOutput(
+        string method,
+        JsonElement parameters,
+        CodexStreamEvent evt)
+        => evt.Type == "text"
+            && !string.IsNullOrWhiteSpace(evt.Content)
+            && evt.Phase != "commentary"
+            && (method.Replace('.', '/').Contains("agentMessage", StringComparison.Ordinal)
+                || parameters.ValueKind == JsonValueKind.Object
+                    && parameters.TryGetProperty("item", out var item)
+                    && item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("type", out var type)
+                    && type.ValueKind == JsonValueKind.String
+                    && CodexEventMapper.NormaliseItemType(type.GetString()) == "agentMessage");
+
+    internal static string? TurnCompletionError(
+        JsonElement parameters,
+        bool hasFinalOutput,
+        bool interruptRequested)
+    {
+        if (interruptRequested) return null;
+
+        JsonElement turn = default;
+        var hasTurn = parameters.ValueKind == JsonValueKind.Object
+            && parameters.TryGetProperty("turn", out turn)
+            && turn.ValueKind == JsonValueKind.Object;
+        var status = hasTurn && turn.TryGetProperty("status", out var statusElement)
+            && statusElement.ValueKind == JsonValueKind.String
+                ? statusElement.GetString()
+                : null;
+        var error = hasTurn ? TurnError(turn) : null;
+
+        if (!string.IsNullOrWhiteSpace(status)
+            && !status.Equals("completed", StringComparison.OrdinalIgnoreCase))
+            return error ?? $"Codex turn ended with status '{status}'";
+
+        if (hasFinalOutput || hasTurn && CompletionContainsFinalOutput(turn))
+            return null;
+
+        return error ?? "Codex turn completed without final output";
+    }
+
+    private static bool CompletionContainsFinalOutput(JsonElement turn)
+        => CompletionFinalOutputFromTurn(turn) is not null;
+
+    internal static CodexStreamEvent? CompletionFinalOutput(JsonElement parameters)
+        => parameters.ValueKind == JsonValueKind.Object
+            && parameters.TryGetProperty("turn", out var turn)
+            && turn.ValueKind == JsonValueKind.Object
+                ? CompletionFinalOutputFromTurn(turn)
+                : null;
+
+    private static CodexStreamEvent? CompletionFinalOutputFromTurn(JsonElement turn)
+    {
+        if (!turn.TryGetProperty("items", out var items)
+            || items.ValueKind != JsonValueKind.Array)
+            return null;
+
+        CodexStreamEvent? result = null;
+        foreach (var item in items.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String
+                || CodexEventMapper.NormaliseItemType(type.GetString()) != "agentMessage")
+                continue;
+            var phase = item.TryGetProperty("phase", out var phaseElement)
+                && phaseElement.ValueKind == JsonValueKind.String
+                    ? phaseElement.GetString()
+                    : null;
+            if (phase == "commentary") continue;
+            if (item.TryGetProperty("text", out var text)
+                && text.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(text.GetString()))
+            {
+                result = new CodexStreamEvent
+                {
+                    Type = "text",
+                    Content = text.GetString(),
+                    MessageId = item.TryGetProperty("id", out var id)
+                        && id.ValueKind == JsonValueKind.String ? id.GetString() : null,
+                    Phase = phase,
+                };
+            }
+        }
+        return result;
+    }
+
+    private static string? TurnError(JsonElement turn)
+    {
+        if (!turn.TryGetProperty("error", out var error)
+            || error.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            return null;
+        if (error.ValueKind == JsonValueKind.String)
+            return error.GetString();
+        if (error.ValueKind == JsonValueKind.Object
+            && error.TryGetProperty("message", out var message)
+            && message.ValueKind == JsonValueKind.String)
+            return message.GetString();
+        return error.ToString();
     }
 
     /// <summary>

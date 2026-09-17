@@ -21,6 +21,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     private readonly CodexAccountUsageService _accountUsage;
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
+    private string? _lastStartError;
 
     public event Action<string, object>? PluginEvent;
     public event Action<string, UnifiedStreamEvent>? SessionStreamEvent;
@@ -49,7 +50,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public SessionCapabilities Capabilities => DeclaredCapabilities;
     // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch).
 
-    public string? LastStartError => null;
+    public string? LastStartError => Volatile.Read(ref _lastStartError);
 
     public CodexProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
@@ -136,6 +137,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential = false)
     {
+        if (!await ValidateRequestedModelAsync(model)) return null;
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
             scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current);
@@ -148,10 +150,24 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential, string? developerInstructions)
     {
+        if (!await ValidateRequestedModelAsync(model)) return null;
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
             scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current);
         return info != null ? ToUnified(info) : null;
+    }
+
+    private async Task<bool> ValidateRequestedModelAsync(string? model)
+    {
+        Volatile.Write(ref _lastStartError, null);
+        if (string.IsNullOrWhiteSpace(model)
+            || await _models.IsValidModelAsync(model))
+            return true;
+
+        var error = $"Model '{model}' is not available in the active Codex catalog";
+        Volatile.Write(ref _lastStartError, error);
+        _log($"[Codex] {error}", null);
+        return false;
     }
 
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)

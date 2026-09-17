@@ -115,7 +115,15 @@ public sealed class CodexModelCatalog(CodexConfig config, Action<string, Guid?> 
     public async Task<bool> IsValidModelAsync(string modelId, CancellationToken ct = default)
     {
         var models = await GetAsync(ct: ct);
-        return models.Count == 0 || models.Any(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
+        if (models.Count == 0
+            || models.Any(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        // The CLI may have been updated since the ten-minute cache was populated. Refresh once
+        // before rejecting an explicit model so a freshly available model is not falsely blocked.
+        models = await GetAsync(forceRefresh: true, ct);
+        return models.Count == 0
+            || models.Any(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<IReadOnlyList<string>> GetSupportedEffortsAsync(string modelId, CancellationToken ct = default)
