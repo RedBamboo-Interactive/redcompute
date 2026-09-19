@@ -377,7 +377,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             session.Info.StopReason = stopReason;
             session.Info.ProcessId = null;
             session.Info.LastActivity = DateTimeOffset.UtcNow;
-            _jobLifecycle.Complete(session.Info);
+            if (stopReason != "maintenance_restart")
+                _jobLifecycle.Complete(session.Info);
             Persist(session.Info);
             SessionEnded?.Invoke(sessionId, "stopped");
             return;
@@ -395,7 +396,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (stored.JobId != null)
         {
             var info = ToInfo(stored);
-            _jobLifecycle.Complete(info);
+            if (stopReason != "maintenance_restart")
+                _jobLifecycle.Complete(info);
         }
         else
         {
@@ -407,6 +409,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     }
 
     public Task ForceKillAsync(string sessionId) => StopSessionAsync(sessionId);
+
+    public Task ForceKillAsync(string sessionId, string stopReason)
+        => StopSessionAsync(sessionId, stopReason);
 
     private void OnExited(string sessionId, int code)
     {

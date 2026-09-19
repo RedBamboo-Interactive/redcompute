@@ -18,8 +18,11 @@ public sealed record MaintenanceDeploymentAdmission(
 /// </summary>
 public sealed class MaintenanceDeploymentCoordinator
 {
-    private static readonly TimeSpan DrainTimeout = TimeSpan.FromMinutes(15);
-    private readonly CapabilityRegistry _registry;
+    private static readonly TimeSpan GracefulDrainTimeout = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan ForcedDrainTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DrainPollInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan HandoffTimeout = TimeSpan.FromMinutes(2);
+    private readonly MaintenanceSessionDrain _sessionDrain;
     private readonly Action<string, Guid?> _log;
     private readonly object _gate = new();
     private SessionInputQueueService? _inputQueue;
@@ -27,9 +30,20 @@ public sealed class MaintenanceDeploymentCoordinator
     private string? _runId;
 
     public MaintenanceDeploymentCoordinator(CapabilityRegistry registry, Action<string, Guid?> log)
+        : this(registry, log, GracefulDrainTimeout, ForcedDrainTimeout, DrainPollInterval)
     {
-        _registry = registry;
+    }
+
+    internal MaintenanceDeploymentCoordinator(
+        CapabilityRegistry registry,
+        Action<string, Guid?> log,
+        TimeSpan gracefulDrainTimeout,
+        TimeSpan forcedDrainTimeout,
+        TimeSpan drainPollInterval)
+    {
         _log = log;
+        _sessionDrain = new MaintenanceSessionDrain(
+            registry, log, gracefulDrainTimeout, forcedDrainTimeout, drainPollInterval);
     }
 
     public bool IsDraining
@@ -63,53 +77,33 @@ public sealed class MaintenanceDeploymentCoordinator
             _log($"[Maintenance] Deployment {request.RunId} armed; queue delivery paused while active turns drain", null);
             if (_inputQueue is null)
                 throw new InvalidOperationException("The durable input queue is not attached");
-            using var drainTimeout = new CancellationTokenSource(DrainTimeout);
-            await _inputQueue.WaitForDeliveryQuiescenceAsync(drainTimeout.Token);
-            var deadline = DateTimeOffset.UtcNow + DrainTimeout;
-            while (DateTimeOffset.UtcNow < deadline)
+            var sessions = await _sessionDrain.DrainAsync(_inputQueue.WaitForDeliveryQuiescenceAsync);
+            var checkpoint = new PlannedRestartData(request.RunId, DateTimeOffset.UtcNow, sessions);
+            PlannedRestartCheckpoint.Write(checkpoint);
+            lock (_gate) _state = "launching";
+            await LaunchDesktopHandoffAsync(request);
+            _log($"[Maintenance] Deployment {request.RunId} handed to the Windows desktop", null);
+            using var handoffTimeout = new CancellationTokenSource(HandoffTimeout);
+            try
             {
-                var sessions = CurrentSessions();
-                if (!sessions.Any(session => session.Status is SessionStatus.Active or SessionStatus.Starting))
-                {
-                    // Confirm quiescence once more after a scheduling boundary. Queue delivery remains
-                    // paused, so no new turn can enter the gap between this check and process handoff.
-                    await Task.Delay(250, drainTimeout.Token);
-                    sessions = CurrentSessions();
-                    if (!sessions.Any(session => session.Status is SessionStatus.Active or SessionStatus.Starting))
-                    {
-                        var checkpoint = new PlannedRestartData(
-                            request.RunId,
-                            DateTimeOffset.UtcNow,
-                            sessions
-                                .Where(session => session.Status == SessionStatus.Idle)
-                                .Select(session => new PlannedRestartSession(
-                                    session.Provider, session.Id, session.JobId))
-                                .ToArray());
-                        PlannedRestartCheckpoint.Write(checkpoint);
-                        lock (_gate) _state = "launching";
-                        await LaunchDesktopHandoffAsync(request);
-                        _log($"[Maintenance] Deployment {request.RunId} handed to the Windows desktop", null);
-                        await ObserveHandoffAsync(request, drainTimeout.Token);
-                        throw new InvalidOperationException(
-                            "Desktop handoff returned without stopping the running RedCompute process");
-                    }
-                }
-                await Task.Delay(250, drainTimeout.Token);
+                await ObserveHandoffAsync(request, handoffTimeout.Token);
             }
-            throw new TimeoutException($"Active provider turns did not drain within {DrainTimeout.TotalMinutes:0} minutes");
+            catch (OperationCanceledException) when (handoffTimeout.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Desktop deployment handoff did not stop RedCompute within {HandoffTimeout.TotalMinutes:0.##} minutes");
+            }
+            throw new InvalidOperationException(
+                "Desktop handoff returned without stopping the running RedCompute process");
         }
         catch (Exception ex)
         {
             PlannedRestartCheckpoint.Consume();
             lock (_gate) _state = "failed";
+            WriteFailureReceipt(request, ex);
             _log($"[Maintenance] Deployment {request.RunId} cancelled without stopping RedCompute: {ex.Message}", null);
         }
     }
-
-    private List<UnifiedSessionInfo> CurrentSessions()
-        => _registry.FindProviders<ISessionProvider>()
-            .SelectMany(provider => provider.GetSessions(100_000, includeDismissed: false))
-            .ToList();
 
     private static async Task LaunchDesktopHandoffAsync(ValidatedRequest request)
     {
@@ -159,6 +153,30 @@ public sealed class MaintenanceDeploymentCoordinator
                 catch (JsonException) { }
             }
             await Task.Delay(250, ct);
+        }
+    }
+
+    private static void WriteFailureReceipt(ValidatedRequest request, Exception exception)
+    {
+        try
+        {
+            var temporaryPath = $"{request.ReceiptPath}.writing-{Environment.ProcessId}";
+            var receipt = JsonSerializer.Serialize(new
+            {
+                runId = request.RunId,
+                state = "failed",
+                phase = "maintenance-coordinator",
+                success = false,
+                updatedAt = DateTimeOffset.Now,
+                error = exception.Message,
+            }, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(temporaryPath, receipt);
+            File.Move(temporaryPath, request.ReceiptPath, overwrite: true);
+        }
+        catch
+        {
+            // Preserve the original deployment failure. Logging still reports it even if the
+            // terminal receipt cannot be written.
         }
     }
 

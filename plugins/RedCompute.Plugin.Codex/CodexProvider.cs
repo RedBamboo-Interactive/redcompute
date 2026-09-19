@@ -192,6 +192,12 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         return _interactive.ForceKillAsync(sessionId);
     }
 
+    public Task ForceKillAsync(string sessionId, string stopReason)
+    {
+        _codex.CancelExecution(sessionId);
+        return _interactive.ForceKillAsync(sessionId, stopReason);
+    }
+
     public void DismissSession(string sessionId) => _codex.DismissSession(sessionId);
 
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)

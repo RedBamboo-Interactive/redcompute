@@ -127,6 +127,12 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         return Task.CompletedTask;
     }
 
+    public Task ForceKillAsync(string sessionId, string stopReason)
+    {
+        _opencode.ForceKill(sessionId, stopReason);
+        return Task.CompletedTask;
+    }
+
     public void DismissSession(string sessionId) => _opencode.DismissSession(sessionId);
 
     // --- ISessionProvider: Messaging ---

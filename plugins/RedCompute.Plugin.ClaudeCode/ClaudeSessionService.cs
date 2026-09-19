@@ -1302,7 +1302,7 @@ public class ClaudeSessionService
         SessionEnded?.Invoke(sessionId, "stopped", record.StopReason);
     }
 
-    public async Task ForceKill(string sessionId)
+    public async Task ForceKill(string sessionId, string? reason = null)
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
@@ -1310,11 +1310,11 @@ public class ClaudeSessionService
             session.Cts.Cancel();
             DiscardPendingQuestions(session, "session_ended");
             session.Info.Status = SessionStatus.Stopped;
-            session.Info.StopReason = "user_stopped";
+            session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
             PersistSessionRecord(session.Info);
 
-            if (session.Info.JobId.HasValue)
+            if (reason != "maintenance_restart" && session.Info.JobId.HasValue)
                 _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
 
             SessionEnded?.Invoke(sessionId, "killed", session.Info.StopReason);
@@ -1328,11 +1328,11 @@ public class ClaudeSessionService
         TryKillByPid(record.ProcessId);
 
         record.Status = "Stopped";
-        record.StopReason = "user_stopped";
+        record.StopReason = reason ?? "user_stopped";
         record.ProcessId = null;
         _sessionStore.SaveSession(record);
 
-        if (record.JobId.HasValue)
+        if (reason != "maintenance_restart" && record.JobId.HasValue)
             _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "killed", record.StopReason);

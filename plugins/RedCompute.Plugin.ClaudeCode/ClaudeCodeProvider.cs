@@ -142,6 +142,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     public Task StopSessionAsync(string sessionId) => _claude.StopSession(sessionId);
     public Task ForceKillAsync(string sessionId) => _claude.ForceKill(sessionId);
+    public Task ForceKillAsync(string sessionId, string stopReason) => _claude.ForceKill(sessionId, stopReason);
     public void DismissSession(string sessionId) => _claude.DismissSession(sessionId);
 
     // --- ISessionProvider: Messaging ---

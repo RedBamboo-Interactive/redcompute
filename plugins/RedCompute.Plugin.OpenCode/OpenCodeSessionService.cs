@@ -766,11 +766,12 @@ public class OpenCodeSessionService
         SessionEnded?.Invoke(sessionId, "stopped");
     }
 
-    public void ForceKill(string sessionId)
+    public void ForceKill(string sessionId, string? reason = null)
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
             session.Info.Status = "Stopped";
+            session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
 
             foreach (var (_, tcs) in session.PendingRequests)
@@ -779,7 +780,8 @@ public class OpenCodeSessionService
 
             CleanupSessionResources(session);
 
-            CompleteSessionJob(session);
+            if (reason != "maintenance_restart")
+                CompleteSessionJob(session);
             PersistSessionRecord(session.Info);
 
             SessionEnded?.Invoke(sessionId, "force_killed");
@@ -795,10 +797,11 @@ public class OpenCodeSessionService
         TryKillByPid(record.ProcessId);
 
         record.Status = "Stopped";
+        record.StopReason = reason ?? "user_stopped";
         record.ProcessId = null;
         _store.SaveSession(record);
 
-        if (record.JobId.HasValue)
+        if (reason != "maintenance_restart" && record.JobId.HasValue)
             _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "force_killed");

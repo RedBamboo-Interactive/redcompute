@@ -38,6 +38,14 @@ public interface ISessionProvider
         => ResumeSessionAsync(sessionId);
     Task StopSessionAsync(string sessionId);
     Task ForceKillAsync(string sessionId);
+
+    /// <summary>
+    /// Force-stops a session for an infrastructure-owned reason. Providers should persist the
+    /// supplied reason and keep a maintenance-restart job resumable instead of completing it as
+    /// an ordinary user stop. The default preserves compatibility with older provider plugins.
+    /// </summary>
+    Task ForceKillAsync(string sessionId, string stopReason)
+        => ForceKillAsync(sessionId);
     void DismissSession(string sessionId);
 
     // Messaging (SendMessage). messageUid is the provider-neutral message
