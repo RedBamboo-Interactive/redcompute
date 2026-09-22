@@ -121,7 +121,7 @@ function Get-ArtifactReceipt {
     [ordered]@{
         path = $item.FullName
         lastWriteTime = $item.LastWriteTime.ToString('o')
-        sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+        sha256 = Get-RedBambooFileSha256 -Path $item.FullName
     }
 }
 
