@@ -8,7 +8,8 @@ public class OpenCodeStreamEvent
     public object? ToolInput { get; init; }
     public string? ToolResult { get; init; }
     public bool IsPartial { get; init; }
-    public string? MessageId { get; init; }
+    public string? MessageId { get; set; }
+    public string? ProviderPartId { get; set; }
     // Provider-neutral message uid, stamped in EmitAndStore (settable — the
     // event constructors don't know the session's current turn).
     public string? MessageUid { get; set; }

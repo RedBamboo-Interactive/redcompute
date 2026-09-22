@@ -11,6 +11,20 @@ namespace RedCompute.App.Tests;
 public sealed class OpenCodeCheckpointTests
 {
     [Fact]
+    public void StatelessJsonPreservesNativePartAndMessageIdentity()
+    {
+        var events = OpenCodeSessionService.ParseStreamLine("""
+            {"type":"text","sessionID":"ses_native","part":{"id":"prt_native","messageID":"msg_native","sessionID":"ses_native","type":"text","text":"READY"}}
+            """);
+
+        var evt = Assert.Single(events);
+        Assert.Equal("text", evt.Type);
+        Assert.Equal("READY", evt.Content);
+        Assert.Equal("prt_native", evt.ProviderPartId);
+        Assert.Equal("msg_native", evt.MessageId);
+    }
+
+    [Fact]
     public void CheckpointFailureBuffersFollowingChunksAndRecoveryKeepsTheirOrder()
     {
         var native = new NativeReader { Parts = FirstStep() };

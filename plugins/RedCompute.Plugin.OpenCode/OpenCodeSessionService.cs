@@ -1602,6 +1602,7 @@ public class OpenCodeSessionService
             var stderrBuilder = new StringBuilder();
             var sessionId = streamKey ?? Guid.NewGuid().ToString("N")[..12];
             var messages = new List<OpenCodeMessageRecord>();
+            string? turnUid = null;
 
             string? line;
             while ((line = await process.StandardOutput.ReadLineAsync(timeoutCts.Token)) != null)
@@ -1614,6 +1615,10 @@ public class OpenCodeSessionService
                     foreach (var evt in events)
                     {
                         StreamEvent?.Invoke(sessionId, evt);
+                        turnUid ??= evt.MessageId;
+                        if (string.IsNullOrWhiteSpace(evt.ProviderPartId)
+                            || string.IsNullOrWhiteSpace(turnUid))
+                            continue;
                         messages.Add(new OpenCodeMessageRecord
                         {
                             SessionId = sessionId,
@@ -1624,6 +1629,8 @@ public class OpenCodeSessionService
                             ToolInput = evt.ToolInput is string s ? s : evt.ToolInput != null ? JsonSerializer.Serialize(evt.ToolInput) : null,
                             ToolResult = evt.ToolResult,
                             MessageId = evt.MessageId,
+                            MessageUid = turnUid,
+                            ProviderPartId = evt.ProviderPartId,
                             Timestamp = DateTimeOffset.UtcNow,
                             AttachmentsJson = evt.Attachments != null && evt.Attachments.Count > 0 ? JsonSerializer.Serialize(evt.Attachments) : null,
                         });
@@ -1810,6 +1817,18 @@ public class OpenCodeSessionService
                 events.Add(new OpenCodeStreamEvent { Type = "status", Content = status });
                 break;
             }
+        }
+
+        var providerPartId = GetString(new[] { "part", "id" }, new[] { "id" });
+        var messageId = GetString(
+            new[] { "part", "messageID" },
+            new[] { "part", "messageId" },
+            new[] { "messageID" },
+            new[] { "messageId" });
+        foreach (var evt in events)
+        {
+            evt.ProviderPartId = providerPartId;
+            evt.MessageId = messageId;
         }
 
         return events;
