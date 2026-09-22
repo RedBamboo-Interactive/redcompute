@@ -162,6 +162,38 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             try { db.SaveChanges(); }
             catch (DbUpdateException ex) when (IsDuplicateProviderPart(ex, message.ProviderPartId)) { }
         }
+        PublishCompletedMessagesWithParent(messages, FindSession(messages[0].SessionId) is not null);
+    }
+
+    /// <summary>
+    /// Completed transcript records are children of an ai-session entity in RedLeaf. Persistent
+    /// sessions publish that parent from SaveSession, while stateless executions intentionally
+    /// have no local session row. Publish a minimal one-shot parent before the checkpoint so the
+    /// transcript pipeline can flush the parent upsert before appending its first message.
+    /// </summary>
+    internal static void PublishCompletedMessagesWithParent(
+        IReadOnlyList<OpenCodeMessageRecord> messages,
+        bool sessionExists)
+    {
+        if (messages.Count == 0) return;
+
+        if (!sessionExists)
+        {
+            var first = messages[0];
+            _ = Guid.TryParse(first.SessionId, out var jobId);
+            SuiteMirror.PublishSession(new AiSessionSnapshot
+            {
+                Provider = "opencode",
+                Id = first.SessionId,
+                Title = "OpenCode one-shot execution",
+                ProjectName = "One-shot execution",
+                Status = "Stopped",
+                StartedAt = messages.Min(message => message.Timestamp),
+                MessageCount = messages.Count,
+                JobId = jobId == Guid.Empty ? null : jobId,
+            });
+        }
+
         SuiteMirror.PublishCompletedMessages(messages.Select(ToSnapshot).ToList());
     }
 

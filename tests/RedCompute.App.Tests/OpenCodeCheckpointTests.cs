@@ -25,6 +25,84 @@ public sealed class OpenCodeCheckpointTests
     }
 
     [Fact]
+    public void StatelessCheckpointPublishesParentSessionBeforeMessages()
+    {
+        var trace = new List<string>();
+        var previousSession = SuiteMirror.SessionUpserted;
+        var previousCompleted = SuiteMirror.CompletedMessagesAdded;
+        try
+        {
+            SuiteMirror.SessionUpserted = session =>
+            {
+                trace.Add($"session:{session.Id}");
+                Assert.Equal("opencode", session.Provider);
+                Assert.Equal(Guid.Parse("8625d4c7-77ee-4192-ae2d-2a9c9de68766"), session.JobId);
+            };
+            SuiteMirror.CompletedMessagesAdded = messages =>
+                trace.Add($"messages:{messages.Count}");
+
+            OpenCodeSessionStore.PublishCompletedMessagesWithParent(
+                [new OpenCodeMessageRecord
+                {
+                    SessionId = "8625d4c7-77ee-4192-ae2d-2a9c9de68766",
+                    Role = "assistant",
+                    EventType = "text",
+                    Content = "READY",
+                    ProviderPartId = "prt_native",
+                    MessageId = "msg_native",
+                    MessageUid = "msg_native",
+                    Timestamp = DateTimeOffset.UnixEpoch,
+                }],
+                sessionExists: false);
+
+            Assert.Equal(
+                ["session:8625d4c7-77ee-4192-ae2d-2a9c9de68766", "messages:1"],
+                trace);
+        }
+        finally
+        {
+            SuiteMirror.SessionUpserted = previousSession;
+            SuiteMirror.CompletedMessagesAdded = previousCompleted;
+        }
+    }
+
+    [Fact]
+    public void PersistentCheckpointDoesNotRepublishParentSession()
+    {
+        var sessionPublishes = 0;
+        var completedPublishes = 0;
+        var previousSession = SuiteMirror.SessionUpserted;
+        var previousCompleted = SuiteMirror.CompletedMessagesAdded;
+        try
+        {
+            SuiteMirror.SessionUpserted = _ => sessionPublishes++;
+            SuiteMirror.CompletedMessagesAdded = _ => completedPublishes++;
+
+            OpenCodeSessionStore.PublishCompletedMessagesWithParent(
+                [new OpenCodeMessageRecord
+                {
+                    SessionId = "persistent-session",
+                    Role = "assistant",
+                    EventType = "text",
+                    Content = "READY",
+                    ProviderPartId = "prt_native",
+                    MessageId = "msg_native",
+                    MessageUid = "msg_native",
+                    Timestamp = DateTimeOffset.UnixEpoch,
+                }],
+                sessionExists: true);
+
+            Assert.Equal(0, sessionPublishes);
+            Assert.Equal(1, completedPublishes);
+        }
+        finally
+        {
+            SuiteMirror.SessionUpserted = previousSession;
+            SuiteMirror.CompletedMessagesAdded = previousCompleted;
+        }
+    }
+
+    [Fact]
     public void CheckpointFailureBuffersFollowingChunksAndRecoveryKeepsTheirOrder()
     {
         var native = new NativeReader { Parts = FirstStep() };
