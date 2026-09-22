@@ -8,6 +8,9 @@ public interface IPluginProvider : IBackendProvider
     string ProviderType { get; }
     Dictionary<string, ParameterSchema> InputParameters { get; }
     ReturnSchema OutputSchema { get; }
+    object? RequestSchema => null;
+    object? ResponseSchema => null;
+    string? ContractVersion => null;
     bool IsProxy { get; }
     string ProxyGeneratePath => "/generate";
     bool SupportsProgress { get; }

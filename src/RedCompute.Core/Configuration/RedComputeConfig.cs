@@ -45,6 +45,17 @@ public class ProviderConfig
     public string? VoicesBasePath { get; set; }
     public string? HealthEndpoint { get; set; }
     public int StartupTimeoutSeconds { get; set; } = 180;
+    // Structured local inference provider settings
+    public string? Endpoint { get; set; }
+    public string? ModelRevision { get; set; }
+    public string? CalibrationRevision { get; set; }
+    public int? TimeoutSeconds { get; set; }
+    /// <summary>
+    /// Optional explicit launch command. Null means RedCompute only attaches to the
+    /// configured endpoint and never provisions or downloads anything.
+    /// </summary>
+    public string? LaunchCommand { get; set; }
+
 
     // RunPod settings
     public string? ApiKey { get; set; }

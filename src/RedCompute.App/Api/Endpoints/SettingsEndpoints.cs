@@ -138,6 +138,11 @@ public static class SettingsEndpoints
             if (body.ServerPath != null) provider.ServerPath = body.ServerPath;
             if (body.BackendPort.HasValue) provider.BackendPort = body.BackendPort.Value;
             if (body.Model != null) provider.Model = body.Model;
+            if (body.Endpoint != null) provider.Endpoint = body.Endpoint;
+            if (body.ModelRevision != null) provider.ModelRevision = body.ModelRevision;
+            if (body.CalibrationRevision != null) provider.CalibrationRevision = body.CalibrationRevision;
+            if (body.TimeoutSeconds.HasValue) provider.TimeoutSeconds = body.TimeoutSeconds.Value;
+            if (body.LaunchCommand != null) provider.LaunchCommand = body.LaunchCommand;
             if (body.VoicesBasePath != null) provider.VoicesBasePath = body.VoicesBasePath;
             if (body.HealthEndpoint != null) provider.HealthEndpoint = body.HealthEndpoint;
             if (body.StartupTimeoutSeconds.HasValue) provider.StartupTimeoutSeconds = body.StartupTimeoutSeconds.Value;
@@ -164,6 +169,11 @@ public static class SettingsEndpoints
             .WithParam("serverPath", "string", description: "Backend server path", location: ParamLocation.Body)
             .WithParam("backendPort", "integer", description: "Port the backend listens on", location: ParamLocation.Body)
             .WithParam("model", "string", description: "Default model for the provider", location: ParamLocation.Body)
+            .WithParam("endpoint", "string", description: "Private-local endpoint for a structured inference provider", location: ParamLocation.Body)
+            .WithParam("modelRevision", "string", description: "Immutable model revision", location: ParamLocation.Body)
+            .WithParam("calibrationRevision", "string", description: "Calibration identity for model output", location: ParamLocation.Body)
+            .WithParam("timeoutSeconds", "integer", description: "Provider request timeout in seconds", location: ParamLocation.Body)
+            .WithParam("launchCommand", "string", description: "Managed local provider launch command", location: ParamLocation.Body)
             .WithParam("voicesBasePath", "string", description: "Base path for TTS voice files", location: ParamLocation.Body)
             .WithParam("healthEndpoint", "string", description: "Health-check endpoint path", location: ParamLocation.Body)
             .WithParam("startupTimeoutSeconds", "integer", description: "Seconds to wait for the backend to become healthy", location: ParamLocation.Body)
@@ -183,6 +193,11 @@ public static class SettingsEndpoints
             p.ServerPath,
             p.BackendPort,
             p.Model,
+            p.Endpoint,
+            p.ModelRevision,
+            p.CalibrationRevision,
+            p.TimeoutSeconds,
+            p.LaunchCommand,
             p.VoicesBasePath,
             p.HealthEndpoint,
             p.StartupTimeoutSeconds,
@@ -224,6 +239,11 @@ public static class SettingsEndpoints
         public string? ServerPath { get; set; }
         public int? BackendPort { get; set; }
         public string? Model { get; set; }
+        public string? Endpoint { get; set; }
+        public string? ModelRevision { get; set; }
+        public string? CalibrationRevision { get; set; }
+        public int? TimeoutSeconds { get; set; }
+        public string? LaunchCommand { get; set; }
         public string? VoicesBasePath { get; set; }
         public string? HealthEndpoint { get; set; }
         public int? StartupTimeoutSeconds { get; set; }

@@ -439,7 +439,7 @@ public class ProviderConfigService
         return matches[0].Key;
     }
 
-    private static void ApplyEntityToProvider(ProviderEntityConfig entity, ProviderConfig provider)
+    internal static void ApplyEntityToProvider(ProviderEntityConfig entity, ProviderConfig provider)
     {
         if (entity.ProviderType != null) provider.Type = entity.ProviderType;
         if (entity.ApiKeyAuthoritative) provider.ApiKey = entity.ApiKey;
@@ -452,6 +452,11 @@ public class ProviderConfigService
         if (GetSettingString(settings, "wslDistro") is { } wd) provider.WslDistro = wd;
         if (GetSettingString(settings, "model") is { } m) provider.Model = m;
         else if (entity.DefaultModel != null) provider.Model = entity.DefaultModel;
+        if (GetSettingString(settings, "endpoint") is { } ep) provider.Endpoint = ep;
+        if (GetSettingString(settings, "modelRevision") is { } mr) provider.ModelRevision = mr;
+        if (GetSettingString(settings, "calibrationRevision") is { } cr) provider.CalibrationRevision = cr;
+        if (GetSettingInt(settings, "timeoutSeconds") is { } ts) provider.TimeoutSeconds = ts;
+        if (GetSettingString(settings, "launchCommand") is { } lc) provider.LaunchCommand = lc;
         if (GetSettingString(settings, "voicesBasePath") is { } vbp) provider.VoicesBasePath = vbp;
         if (GetSettingString(settings, "healthEndpoint") is { } he) provider.HealthEndpoint = he;
         if (GetSettingInt(settings, "startupTimeoutSeconds") is { } sts) provider.StartupTimeoutSeconds = sts;
@@ -477,6 +482,7 @@ public class ProviderConfigService
         var knownKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "serverPath", "venvPath", "backendPort", "wslDistro", "model",
+            "endpoint", "modelRevision", "calibrationRevision", "timeoutSeconds", "launchCommand",
             "voicesBasePath", "healthEndpoint", "startupTimeoutSeconds",
             "apiKey", "podId", "gpuCount", "autoStopOnExit", "extra"
         };

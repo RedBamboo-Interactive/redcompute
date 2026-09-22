@@ -480,6 +480,12 @@
           "RedCompute.PluginSdk": "[1.0.0, )"
         }
       },
+      "redcompute.plugin.kev": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.PluginSdk": "[1.0.0, )"
+        }
+      },
       "redcompute.plugin.opencode": {
         "type": "Project",
         "dependencies": {

@@ -362,6 +362,33 @@ public class JobTrackingService : IJobTracker
             if (resultJson != null) job.ResultJson = resultJson;
         }, JobEventKind.Failed, data: new { errorMessage, errorDetails });
 
+    public bool TryMarkCompletedUnlessCancelled(Guid jobId, string? outputLocation = null,
+        long? outputSizeBytes = null, string? contentType = null,
+        string? resultJson = null, double? costUsd = null)
+        => MutateIf(jobId, job => job.Status != JobStatus.Cancelled, job =>
+        {
+            job.Status = JobStatus.Completed;
+            job.CompletedAt = DateTimeOffset.UtcNow;
+            job.Progress = 1.0;
+            job.OutputLocation = outputLocation;
+            job.OutputSizeBytes = outputSizeBytes;
+            job.OutputContentType = contentType;
+            job.ResultJson = resultJson;
+            job.CostUsd = costUsd;
+        }, JobEventKind.Completed,
+            data: new { outputLocation, outputSizeBytes, contentType, costUsd });
+
+    public bool TryMarkFailedUnlessCancelled(Guid jobId, string errorMessage,
+        string? errorDetails = null, string? resultJson = null)
+        => MutateIf(jobId, job => job.Status != JobStatus.Cancelled, job =>
+        {
+            job.Status = JobStatus.Failed;
+            job.CompletedAt = DateTimeOffset.UtcNow;
+            job.ErrorMessage = errorMessage;
+            job.ErrorDetails = errorDetails;
+            if (resultJson != null) job.ResultJson = resultJson;
+        }, JobEventKind.Failed, data: new { errorMessage, errorDetails });
+
     public void MarkCancelled(Guid jobId)
         => Mutate(jobId, job =>
         {
@@ -965,6 +992,11 @@ public class JobTrackingService : IJobTracker
 
     private void Mutate(Guid jobId, Action<JobRecord> apply, JobEventKind kind,
         JobProvenance? provenance = null, object? data = null)
+        => _ = MutateIf(jobId, _ => true, apply, kind, provenance, data);
+
+    private bool MutateIf(Guid jobId, Func<JobRecord, bool> predicate,
+        Action<JobRecord> apply, JobEventKind kind,
+        JobProvenance? provenance = null, object? data = null)
     {
         JobRecord? updated = null;
         JobLifecycleEvent? evt = null;
@@ -973,7 +1005,7 @@ public class JobTrackingService : IJobTracker
             using var db = _dbFactory();
             using var tx = db.Database.BeginTransaction();
             var job = db.Jobs.Find(jobId);
-            if (job == null) return;
+            if (job == null || !predicate(job)) return false;
             apply(job);
             evt = AppendEvent(db, job, kind, provenance, data);
             EnqueueProjection(db, job);
@@ -983,6 +1015,7 @@ public class JobTrackingService : IJobTracker
         }
         JobUpdated?.Invoke(updated);
         JobEventAppended?.Invoke(evt!);
+        return true;
     }
 
     private void MutateProjection(Guid jobId, Action<JobRecord> apply)

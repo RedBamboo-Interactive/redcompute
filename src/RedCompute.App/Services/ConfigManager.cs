@@ -195,6 +195,14 @@ public class ConfigManager
                 { existingProvider.BackendPort = defaultProvider.BackendPort; dirty = true; }
                 if (existingProvider.HealthEndpoint == null && defaultProvider.HealthEndpoint != null)
                 { existingProvider.HealthEndpoint = defaultProvider.HealthEndpoint; dirty = true; }
+                if (existingProvider.Endpoint == null && defaultProvider.Endpoint != null)
+                { existingProvider.Endpoint = defaultProvider.Endpoint; dirty = true; }
+                if (existingProvider.ModelRevision == null && defaultProvider.ModelRevision != null)
+                { existingProvider.ModelRevision = defaultProvider.ModelRevision; dirty = true; }
+                if (existingProvider.CalibrationRevision == null && defaultProvider.CalibrationRevision != null)
+                { existingProvider.CalibrationRevision = defaultProvider.CalibrationRevision; dirty = true; }
+                if (existingProvider.TimeoutSeconds == null && defaultProvider.TimeoutSeconds != null)
+                { existingProvider.TimeoutSeconds = defaultProvider.TimeoutSeconds; dirty = true; }
             }
         }
         // Migrate LocalWsl → specialized provider types for TTS/STT
@@ -327,6 +335,31 @@ public class ConfigManager
                             Extra = new Dictionary<string, object?>
                             {
                                 ["Host"] = "127.0.0.1"
+                            }
+                        }
+                    }
+                },
+                ["decision"] = new()
+                {
+                    ActiveProvider = "kev-local-quality",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["kev-local-quality"] = new()
+                        {
+                            Type = "KevLocalQuality",
+                            Endpoint = "http://127.0.0.1:8008",
+                            Model = "kev-latest",
+                            ModelRevision = "2629c06a5aeb0feb3b9783bafed17ed8f39ecf5c",
+                            CalibrationRevision = "temperature-2.2973967099940698",
+                            TimeoutSeconds = 120,
+                            StartupTimeoutSeconds = 180,
+                            WslDistro = "Ubuntu-24.04",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["MergeLora"] = false,
+                                ["BaseModelRevision"] = "68c46c4b3498877f3ef123c856ecfde50c39f404",
+                                ["Dtype"] = "bfloat16",
+                                ["KernelBackend"] = "flash-qla-sm120",
                             }
                         }
                     }

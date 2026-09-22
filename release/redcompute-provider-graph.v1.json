@@ -96,6 +96,56 @@
       ]
     },
     {
+      "id": "kev-local-quality",
+      "identitySource": "providerId",
+      "runtimeIdentity": "kev-local-quality",
+      "assembly": "RedCompute.Plugin.Kev.dll",
+      "project": "plugins/RedCompute.Plugin.Kev/RedCompute.Plugin.Kev.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "kev-system-one-service",
+          "management": "userExternalService",
+          "requirement": "required",
+          "versionConstraint": "unresolved; operator supplies an approved local service",
+          "interface": "private-local Kev System One HTTP API including v1/models and v1/systemone",
+          "sourceMarkers": ["v1/models", "v1/systemone"]
+        },
+        {
+          "id": "kev-9b-model",
+          "management": "userExternalService",
+          "requirement": "required",
+          "versionConstraint": "immutable adapter ModelRevision and BaseModelRevision; provisioning remains operator-owned",
+          "interface": "already provisioned local Kev-9B adapter and its provenance-pinned base model",
+          "sourceMarkers": ["ModelRevision", "BaseModelRevision", "MergeLora"]
+        },
+        {
+          "id": "flash-qla-kernels",
+          "management": "systemPrerequisite",
+          "requirement": "optionalCapability",
+          "versionConstraint": "flash-linear-attention 0.5.2 and flash-qla 0.1.2 measured on SM120; fallback is supported",
+          "interface": "optimized SM120 GDN backend for warmed inference",
+          "sourceMarkers": ["flash-qla-sm120"]
+        },
+        {
+          "id": "kev-owned-process",
+          "management": "managedByRedCompute",
+          "requirement": "optionalCapability",
+          "versionConstraint": "explicit LaunchCommand only; no provisioning",
+          "interface": "exact native process tree or WSL process group identified by PID and proc start time",
+          "sourceMarkers": ["LaunchCommand", "setsid", "WslStartTime"]
+        },
+        {
+          "id": "windows-subsystem-for-linux",
+          "management": "systemPrerequisite",
+          "requirement": "conditional",
+          "versionConstraint": "Ubuntu 24.04 measured; distribution is configurable",
+          "interface": "wsl.exe configured distribution for an explicitly launched sidecar",
+          "sourceMarkers": ["wsl.exe", "WslDistro"]
+        }
+      ]
+    },
+    {
       "id": "localwsl",
       "identitySource": "providerType",
       "runtimeIdentity": "LocalWsl",

@@ -2,6 +2,7 @@ using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Logging;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services;
 
@@ -111,7 +112,9 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
             endpoints.Add(new EndpointDescriptor(
                 "POST", $"/{slug}/generate",
                 $"Generate via {schemaPlugin?.DisplayName ?? entry.Definition.DisplayName}",
-                generateParams.Count > 0 ? generateParams : null));
+                generateParams.Count > 0 ? generateParams : null,
+                RequestBody: schemaPlugin?.RequestSchema,
+                Response: schemaPlugin?.ResponseSchema));
 
             endpoints.Add(new EndpointDescriptor(
                 "GET", $"/{slug}/jobs/{{id}}/output",
@@ -122,6 +125,20 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
                 endpoints.Add(new EndpointDescriptor(
                     "GET", $"/{slug}/jobs/{{id}}/progress",
                     "Get real-time progress of a job"));
+            }
+
+            if (schemaPlugin?.ContractVersion is not null)
+            {
+                endpoints.Add(new EndpointDescriptor(
+                    "GET", $"/{slug}/contract",
+                    $"Get the complete {slug} request and response contract"));
+                endpoints.Add(new EndpointDescriptor(
+                    "GET", $"/{slug}/status",
+                    $"Get detailed {slug} provider readiness and model status"));
+                endpoints.Add(new EndpointDescriptor(
+                    "POST", $"/{slug}/validate",
+                    $"Run one synchronous, bounded, job-backed {slug} provider validation",
+                    Response: ProviderValidationContract.ResponseSchema));
             }
         }
 
@@ -143,7 +160,9 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
 
                 endpoints.Add(new EndpointDescriptor(
                     custom.Method, custom.Path, custom.Description,
-                    customParams is { Count: > 0 } ? customParams : null));
+                    customParams is { Count: > 0 } ? customParams : null,
+                    RequestBody: custom.RequestBody,
+                    Response: custom.Response));
             }
         }
 

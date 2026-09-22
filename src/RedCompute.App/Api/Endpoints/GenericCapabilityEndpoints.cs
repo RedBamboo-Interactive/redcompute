@@ -41,7 +41,7 @@ public static class GenericCapabilityEndpoints
             var slug = capSlug;
 
             // POST /{slug}/generate — universal work endpoint
-            endpoints.MapPost($"/{slug}/generate",
+            var generateEndpoint = endpoints.MapPost($"/{slug}/generate",
                 $"Generate {slug} output via the active provider. Body parameters come from the provider's input schema (see the capability entry in /discover).",
                 async (HttpContext ctx) =>
             {
@@ -54,7 +54,9 @@ public static class GenericCapabilityEndpoints
                 if (entry.IsSleeping)
                     return Error(503, "capability_sleeping", $"'{slug}' is sleeping. Wake it via POST /control/wake/{slug}");
 
-                var body = await ReadJsonBody(ctx);
+                var (body, bodyError) = await ReadJsonBody(ctx);
+                if (bodyError is not null)
+                    return Error(400, "invalid_json", bodyError);
 
                 var requestedProvider = ProviderResolver.GetRequestedProvider(ctx, body);
                 var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, slug);
@@ -63,10 +65,14 @@ public static class GenericCapabilityEndpoints
                     return Error(503, "provider_not_configured", $"No provider configured for '{slug}'");
 
                 ProviderResolver.StripProviderFromBody(body);
+                var jobName = body.GetValueOrDefault("name")?.ToString()
+                    ?? ctx.Request.Headers["X-Job-Name"].FirstOrDefault();
+                var jobRationale = body.GetValueOrDefault("rationale")?.ToString()
+                    ?? ctx.Request.Headers["X-Job-Rationale"].FirstOrDefault();
+                body.Remove("name");
+                body.Remove("rationale");
 
-                var status = await provider.GetStatusAsync();
-                if (status != BackendStatus.Running)
-                    return Error(503, "provider_not_running", $"Backend for '{slug}' is {status}. Start via POST /control/start/{slug}");
+
 
                 // Validate against provider's declared schema
                 if (provider is IPluginProvider plugin)
@@ -84,14 +90,11 @@ public static class GenericCapabilityEndpoints
                         }, statusCode: 422);
                 }
 
-                var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
-                var jobName = body.GetValueOrDefault("name")?.ToString()
-                    ?? ctx.Request.Headers["X-Job-Name"].FirstOrDefault();
-                var jobRationale = body.GetValueOrDefault("rationale")?.ToString()
-                    ?? ctx.Request.Headers["X-Job-Rationale"].FirstOrDefault();
+                var status = await provider.GetStatusAsync();
+                if (status != BackendStatus.Running)
+                    return Error(503, "provider_not_running", $"Backend for '{slug}' is {status}. Start via POST /control/start/{slug}");
 
-                body.Remove("name");
-                body.Remove("rationale");
+                var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
 
                 JobProvenance provenance;
                 try
@@ -135,8 +138,7 @@ public static class GenericCapabilityEndpoints
                 if (provider is IPluginProvider pp && pp.SupportsProgress)
                     pp.SetProgressCallback(frac => jobTracker.UpdateProgress(job.Id, frac));
 
-                var isAsync = ctx.Request.Query.ContainsKey("async")
-                    || string.Equals(ctx.Request.Headers["X-Async"].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase);
+                var isAsync = IsAsyncRequested(ctx);
 
                 // Check if this is a proxy provider
                 var isProxy = provider is IPluginProvider px && px.IsProxy;
@@ -153,7 +155,7 @@ public static class GenericCapabilityEndpoints
                         var prepareError = await proxyPlugin.PrepareAsync(body, proxyUrl, ctx.RequestAborted);
                         if (prepareError != null)
                         {
-                            jobTracker.MarkFailed(job.Id, prepareError);
+                            jobTracker.TryMarkFailedUnlessCancelled(job.Id, prepareError);
                             log($"[{slug}] Job {job.Id} prepare failed: {prepareError}", job.Id);
                             return Error(422, "prepare_failed", prepareError);
                         }
@@ -163,7 +165,7 @@ public static class GenericCapabilityEndpoints
                         var (data, contentType) = await StreamingProxy.FetchFromPathAsync(ctx, proxyUrl, backendPath, body);
                         var outputPath = SaveOutput(job.Id, data, contentType);
                         var size = new FileInfo(outputPath).Length;
-                        jobTracker.MarkCompleted(job.Id, outputPath, size, contentType);
+                        jobTracker.TryMarkCompletedUnlessCancelled(job.Id, outputPath, size, contentType);
                         if (_registry != null)
                         {
                             var proxyCost = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry);
@@ -181,7 +183,7 @@ public static class GenericCapabilityEndpoints
                     }
                     catch (HttpRequestException ex)
                     {
-                        jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
+                        jobTracker.TryMarkFailedUnlessCancelled(job.Id, ex.Message, ex.ToString());
                         return Error(502, "backend_unavailable", $"Backend connection failed: {ex.Message}");
                     }
                     catch (TaskCanceledException)
@@ -193,6 +195,9 @@ public static class GenericCapabilityEndpoints
 
                 var request = new JobRequest
                 {
+                    JobId = job.Id,
+                    QueuedAt = job.QueuedAt,
+                    InvocationStartedAt = jobTracker.GetJob(job.Id)?.StartedAt,
                     CapabilitySlug = slug,
                     Parameters = body,
                     IdempotencyKey = idempotencyKey,
@@ -208,9 +213,14 @@ public static class GenericCapabilityEndpoints
                             var result = await provider.ExecuteAsync(request);
                             await HandleResult(job.Id, slug, result, jobTracker, log);
                         }
+                        catch (OperationCanceledException)
+                        {
+                            if (jobTracker.GetJob(job.Id)?.Status != JobStatus.Cancelled)
+                                jobTracker.MarkCancelled(job.Id);
+                        }
                         catch (Exception ex)
                         {
-                            jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
+                            jobTracker.TryMarkFailedUnlessCancelled(job.Id, ex.Message, ex.ToString());
                             log($"[{slug}] Job {job.Id} failed: {ex.Message}", job.Id);
                         }
                     });
@@ -229,7 +239,7 @@ public static class GenericCapabilityEndpoints
                         JobArtifactStore.Save(job.Id, OutputDir, path, result.ContentType,
                             result.PrimaryOutputName, result.PrimaryFileName, result.ExtraOutputs);
                         var size = new FileInfo(path).Length;
-                        jobTracker.MarkCompleted(job.Id, path, size, result.ContentType, result.ResultJson);
+                        jobTracker.TryMarkCompletedUnlessCancelled(job.Id, path, size, result.ContentType, result.ResultJson);
                         if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
                         log($"[{slug}] Job {job.Id} completed ({size / 1024}KB)", job.Id);
 
@@ -243,7 +253,7 @@ public static class GenericCapabilityEndpoints
                     }
                     else if (result is { Success: true, ResultJson: not null })
                     {
-                        jobTracker.MarkCompleted(job.Id, resultJson: result.ResultJson);
+                        jobTracker.TryMarkCompletedUnlessCancelled(job.Id, resultJson: result.ResultJson);
                         if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
                         ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
                         try { return Results.Json(JsonSerializer.Deserialize<object>(result.ResultJson)); }
@@ -251,13 +261,16 @@ public static class GenericCapabilityEndpoints
                     }
                     else
                     {
-                        jobTracker.MarkFailed(job.Id, result?.ErrorMessage ?? "Generation failed", resultJson: result?.ResultJson);
-                        return Error(500, "generation_failed", result?.ErrorMessage ?? "Generation failed");
+                        var errorCode = result?.ErrorCode ?? "generation_failed";
+                        var errorStatus = result?.ErrorStatusCode ?? 500;
+                        jobTracker.TryMarkFailedUnlessCancelled(job.Id, result?.ErrorMessage ?? "Generation failed", resultJson: result?.ResultJson);
+                        return Error(errorStatus, errorCode,
+                            result?.ErrorMessage ?? "Generation failed");
                     }
                 }
                 catch (HttpRequestException ex)
                 {
-                    jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
+                    jobTracker.TryMarkFailedUnlessCancelled(job.Id, ex.Message, ex.ToString());
                     _ = provider.GetStatusAsync();
                     return Error(502, "backend_unavailable", $"Backend connection failed: {ex.Message}");
                 }
@@ -268,7 +281,7 @@ public static class GenericCapabilityEndpoints
                 }
                 catch (Exception ex)
                 {
-                    jobTracker.MarkFailed(job.Id, ex.Message, ex.ToString());
+                    jobTracker.TryMarkFailedUnlessCancelled(job.Id, ex.Message, ex.ToString());
                     log($"[{slug}] Job {job.Id} failed: {ex.Message}", job.Id);
                     return Error(500, "generation_failed", ex.Message);
                 }
@@ -283,6 +296,13 @@ public static class GenericCapabilityEndpoints
                 .WithParam("X-Job-Rationale", "string", description: "Why the job was queued (body 'rationale' takes precedence)", location: ParamLocation.Header)
                 .WithParam("X-Provider", "string", description: "Provider to use for this request (body 'provider' takes precedence)", location: ParamLocation.Header);
 
+
+            if (capability.ActiveProvider is IPluginProvider structured &&
+                structured.RequestSchema is not null && structured.ResponseSchema is not null)
+            {
+                generateEndpoint.WithRequestBody(structured.RequestSchema)
+                    .WithResponse(structured.ResponseSchema);
+            }
             // GET /{slug}/jobs/{id}/progress
             endpoints.MapGet($"/{slug}/jobs/{{id:guid}}/progress",
                 $"Real-time progress and status of a {slug} job", (Guid id) =>
@@ -353,6 +373,58 @@ public static class GenericCapabilityEndpoints
                     location: ParamLocation.Query);
         }
 
+        // Structured capability metadata and bounded provider diagnostics.
+        foreach (var (capSlug, capability) in registry.Capabilities)
+        {
+            var schemaProvider = capability.ActiveProvider as IPluginProvider;
+            if (schemaProvider?.ContractVersion is null ||
+                schemaProvider.RequestSchema is null ||
+                schemaProvider.ResponseSchema is null)
+                continue;
+
+            var slug = capSlug;
+            endpoints.MapGet($"/{slug}/contract",
+                $"Complete machine-readable {slug} request and response contract", () =>
+                Results.Ok(new
+                {
+                    slug,
+                    version = schemaProvider.ContractVersion,
+                    request = schemaProvider.RequestSchema,
+                    response = schemaProvider.ResponseSchema,
+                    notes = new
+                    {
+                        confidence = "Distribution concentration, not probability of correctness.",
+                        actionAuthority = "A decision result is advisory and grants no authority to act.",
+                    },
+                }));
+
+            endpoints.MapGet($"/{slug}/status",
+                $"Detailed readiness and model status for {slug}", async (HttpContext ctx) =>
+            {
+                var requested = ProviderResolver.GetRequestedProvider(ctx);
+                var (provider, error) = ProviderResolver.Resolve(capability, requested, slug);
+                if (error is not null) return error;
+                if (provider is IProviderStatusDetails details)
+                    return Results.Ok(await details.GetStatusDetailsAsync(ctx.RequestAborted));
+                return Results.Ok(new
+                {
+                    provider = provider?.Name,
+                    status = provider is null
+                        ? BackendStatus.Stopped.ToString()
+                        : (await provider.GetStatusAsync(ctx.RequestAborted)).ToString(),
+                });
+            }).WithParam("X-Provider", "string",
+                description: "Provider to inspect", location: ParamLocation.Header);
+
+            endpoints.MapPost($"/{slug}/validate",
+                $"Run one synchronous, bounded, job-backed provider validation for {slug}",
+                (HttpContext ctx) => RunProviderValidationAsync(
+                    ctx, slug, capability, jobTracker, log))
+                .WithParam("X-Provider", "string",
+                    description: "Provider to validate", location: ParamLocation.Header)
+                .WithResponse(ProviderValidationContract.ResponseSchema);
+        }
+
         // Proxy catch-all: /{slug}/{**path} for providers with GetProxyTargetUrl
         foreach (var (capSlug, _) in registry.Capabilities)
         {
@@ -397,9 +469,184 @@ public static class GenericCapabilityEndpoints
             }
         }
     }
+    internal static async Task<IResult> RunProviderValidationAsync(
+        HttpContext ctx,
+        string slug,
+        CapabilityEntry capability,
+        JobTrackingService jobTracker,
+        Action<string, Guid?> log)
+    {
+        ctx.Items["Telemetry.Kind"] = "job";
+        var admissionError = await ValidateValidationBodyAsync(ctx);
+        if (admissionError is not null) return admissionError;
+
+        var requested = ProviderResolver.GetRequestedProvider(ctx);
+        var (provider, error) = ProviderResolver.Resolve(capability, requested, slug);
+        if (error is not null) return error;
+        if (provider is not IProviderSelfValidator validator)
+            return Error(501, "validation_not_supported",
+                $"Provider '{provider?.Name}' does not expose bounded validation");
+        if (await provider.GetStatusAsync(ctx.RequestAborted) != BackendStatus.Running)
+            return Error(503, "provider_not_running",
+                $"Backend for '{slug}' is not running");
+
+        JobProvenance provenance;
+        try
+        {
+            provenance = await ProvenanceCapture.ResolveAsync(ctx, $"/{slug}/validate");
+        }
+        catch (JobProvenanceValidationException ex)
+        {
+            return Error(422, "invalid_provenance", ex.Message);
+        }
+
+        var inputJson = JsonSerializer.Serialize(new
+        {
+            operation = "provider-validation",
+            route = $"/{slug}/validate",
+            contractVersion = (provider as IPluginProvider)?.ContractVersion,
+        });
+        var job = jobTracker.CreateJob(new JobSubmission(
+            slug, provider.Name, inputJson, provenance,
+            Name: $"{slug} provider validation",
+            Rationale: "Bounded real-provider contract validation"));
+        jobTracker.StartInvocation(job.Id, provenance);
+        var startedAt = jobTracker.GetJob(job.Id)?.StartedAt ?? DateTimeOffset.UtcNow;
+        var context = new ProviderValidationContext(
+            job.Id, job.QueuedAt, startedAt, provenance);
+        log($"[{slug}] Validation job {job.Id} started", job.Id);
+
+        try
+        {
+            var result = await validator.ValidateProviderAsync(context, ctx.RequestAborted);
+            var resultJson = ValidationResultJson(result);
+            var validation = JsonSerializer.Deserialize<JsonElement>(resultJson);
+            if (validation.ValueKind != JsonValueKind.Object)
+                throw new JsonException("Provider validation result must be a JSON object");
+
+            if (result.Success)
+            {
+                if (!jobTracker.TryMarkCompletedUnlessCancelled(
+                        job.Id, contentType: "application/json", resultJson: resultJson))
+                    return ValidationCancelled(job.Id);
+                log($"[{slug}] Validation job {job.Id} completed", job.Id);
+                return Results.Json(new { jobId = job.Id, validation },
+                    statusCode: result.StatusCode);
+            }
+
+            var errorCode = result.ErrorCode ?? "provider_validation_failed";
+            var message = result.Message ?? "Provider validation failed";
+            if (!jobTracker.TryMarkFailedUnlessCancelled(
+                    job.Id, message, errorCode, resultJson))
+                return ValidationCancelled(job.Id);
+            log($"[{slug}] Validation job {job.Id} failed: {errorCode}", job.Id);
+            return Results.Json(new
+            {
+                jobId = job.Id,
+                error = errorCode,
+                message,
+                validation,
+            }, statusCode: result.StatusCode);
+        }
+        catch (OperationCanceledException)
+        {
+            if (jobTracker.GetJob(job.Id)?.Status != JobStatus.Cancelled)
+                jobTracker.MarkCancelled(job.Id);
+            return ValidationCancelled(job.Id);
+        }
+        catch (Exception ex)
+        {
+            const string errorCode = "provider_validation_exception";
+            var resultJson = JsonSerializer.Serialize(new
+            {
+                ok = false,
+                error = errorCode,
+                message = ex.Message,
+            });
+            if (!jobTracker.TryMarkFailedUnlessCancelled(
+                    job.Id, ex.Message, errorCode, resultJson))
+                return ValidationCancelled(job.Id);
+            log($"[{slug}] Validation job {job.Id} failed: {errorCode}", job.Id);
+            return Results.Json(new
+            {
+                jobId = job.Id,
+                error = errorCode,
+                message = ex.Message,
+                validation = JsonSerializer.Deserialize<JsonElement>(resultJson),
+            }, statusCode: 500);
+        }
+    }
+
+    private static string ValidationResultJson(ProviderValidationResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.ResultJson))
+        {
+            using var parsed = JsonDocument.Parse(result.ResultJson);
+            if (parsed.RootElement.ValueKind != JsonValueKind.Object)
+                throw new JsonException("Provider validation result must be a JSON object");
+            return parsed.RootElement.GetRawText();
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            ok = result.Success,
+            error = result.Success ? null : result.ErrorCode ?? "provider_validation_failed",
+            message = result.Message,
+        });
+    }
+
+    private static IResult ValidationCancelled(Guid jobId)
+        => Results.Json(new
+        {
+            jobId,
+            error = "job_cancelled",
+            message = "Validation job was cancelled",
+        }, statusCode: 409);
+
+    private static async Task<IResult?> ValidateValidationBodyAsync(HttpContext ctx)
+    {
+        const int maxBytes = 4096;
+        using var buffer = new MemoryStream();
+        var chunk = new byte[1024];
+        while (true)
+        {
+            var read = await ctx.Request.Body.ReadAsync(chunk, ctx.RequestAborted);
+            if (read == 0) break;
+            if (buffer.Length + read > maxBytes)
+                return Error(413, "validation_request_too_large",
+                    $"Validation request body must be empty or at most {maxBytes} bytes");
+            buffer.Write(chunk, 0, read);
+        }
+
+        if (buffer.Length == 0) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(buffer.ToArray());
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return Error(422, "validation_failed",
+                    "Validation request body must be an empty object");
+            if (document.RootElement.EnumerateObject().Any())
+                return Error(422, "validation_failed",
+                    "Validation request body does not accept fields; select providers with X-Provider");
+            return null;
+        }
+        catch (JsonException ex)
+        {
+            return Error(400, "invalid_json", ex.Message);
+        }
+    }
+
 
     private static async Task HandleResult(Guid jobId, string slug, JobResult? result, JobTrackingService jobTracker, Action<string, Guid?> log)
     {
+        if (jobTracker.GetJob(jobId)?.Status == JobStatus.Cancelled)
+        {
+            if (result?.OutputStream is not null)
+                await result.OutputStream.DisposeAsync();
+            log($"[{slug}] Ignored terminal result for cancelled job {jobId}", jobId);
+            return;
+        }
+
         if (result is { Success: true, OutputStream: not null })
         {
             await using var outputStream = result.OutputStream;
@@ -407,17 +654,17 @@ public static class GenericCapabilityEndpoints
             JobArtifactStore.Save(jobId, OutputDir, path, result.ContentType,
                 result.PrimaryOutputName, result.PrimaryFileName, result.ExtraOutputs);
             var size = new FileInfo(path).Length;
-            jobTracker.MarkCompleted(jobId, path, size, result.ContentType, result.ResultJson);
+            jobTracker.TryMarkCompletedUnlessCancelled(jobId, path, size, result.ContentType, result.ResultJson);
             log($"[{slug}] Job {jobId} completed ({size / 1024}KB)", jobId);
         }
         else if (result is { Success: true })
         {
-            jobTracker.MarkCompleted(jobId, resultJson: result.ResultJson);
+            jobTracker.TryMarkCompletedUnlessCancelled(jobId, resultJson: result.ResultJson);
             log($"[{slug}] Job {jobId} completed", jobId);
         }
         else
         {
-            jobTracker.MarkFailed(jobId, result?.ErrorMessage ?? "Generation failed", resultJson: result?.ResultJson);
+            jobTracker.TryMarkFailedUnlessCancelled(jobId, result?.ErrorMessage ?? "Generation failed", resultJson: result?.ResultJson);
             log($"[{slug}] Job {jobId} failed: {result?.ErrorMessage}", jobId);
             return;
         }
@@ -483,16 +730,28 @@ public static class GenericCapabilityEndpoints
         return path;
     }
 
-    private static async Task<Dictionary<string, object?>> ReadJsonBody(HttpContext ctx)
+    private static async Task<(Dictionary<string, object?> Body, string? Error)> ReadJsonBody(HttpContext ctx)
     {
         try
         {
-            var body = await JsonSerializer.DeserializeAsync<Dictionary<string, object?>>(ctx.Request.Body);
-            return body ?? new();
+            var body = await JsonSerializer.DeserializeAsync<Dictionary<string, object?>>(
+                ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+            return (body ?? new(), null);
         }
-        catch { return new(); }
+        catch (JsonException ex) { return (new(), ex.Message); }
     }
 
+    internal static bool IsAsyncRequested(HttpContext ctx)
+    {
+        if (ctx.Request.Query.TryGetValue("async", out var values))
+        {
+            var value = values.FirstOrDefault();
+            return string.IsNullOrEmpty(value) ||
+                   string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+        }
+        return string.Equals(ctx.Request.Headers["X-Async"].FirstOrDefault(),
+            "true", StringComparison.OrdinalIgnoreCase);
+    }
     private static IResult Error(int statusCode, string error, string message) =>
         Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: statusCode);
 

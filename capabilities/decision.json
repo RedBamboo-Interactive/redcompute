@@ -1,0 +1,8 @@
+{
+  "slug": "decision",
+  "displayName": "Decision",
+  "description": "Typed local Choice, Score, and Noul decisions. Results are advisory and grant no action authority.",
+  "icon": "ph-fill ph-git-branch",
+  "color": "#7C3AED",
+  "category": "ai"
+}

@@ -78,6 +78,14 @@ public class EndpointManifest
     [JsonPropertyName("parameters")]
     public Dictionary<string, ParameterSchema>? Parameters { get; init; }
 
+    [JsonPropertyName("requestBody")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public object? RequestBody { get; init; }
+
+    [JsonPropertyName("response")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public object? Response { get; init; }
+
     [JsonPropertyName("returns")]
     public ReturnSchema? Returns { get; init; }
 }

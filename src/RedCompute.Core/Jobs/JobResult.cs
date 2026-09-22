@@ -7,6 +7,10 @@ public class JobResult
     public string? OutputFilePath { get; init; }
     public string? ResultJson { get; init; }
     public string? ErrorMessage { get; init; }
+    /// <summary>Stable machine-readable error code for failed structured jobs.</summary>
+    public string? ErrorCode { get; init; }
+    /// <summary>Suggested HTTP status for a synchronous failed job.</summary>
+    public int? ErrorStatusCode { get; init; }
     public string? ContentType { get; init; }
     /// <summary>Stable logical selector for the primary stream in addition to primary/clip-0.</summary>
     public string? PrimaryOutputName { get; init; }

@@ -10,7 +10,7 @@ The component input is channel-neutral. It contains no Stable/Nightly value, Git
 
 `artifact.installPath` in the producer descriptor is the component-relative path `redcompute`. Candidate ingestion places it under the component-owned, versioned root `releases/redcompute-<version>-win-x64/redcompute`. The workflow derives that root from the component version; it accepts no suite release ID, so the exact candidate bytes remain independently reusable across channel publication and promotion.
 
-The installed ZIP includes the self-contained RedCompute engine and .NET runtime for `win-x64`, capability JSON files, all nine provider/plugin assemblies, and the compact build-evidence JSON. There is no RedCompute web shell: the dashboard is a RedLeaf extension. An installed component needs none of Git, .NET, Node, or pnpm.
+The installed ZIP includes the self-contained RedCompute engine and .NET runtime for `win-x64`, capability JSON files, all ten provider/plugin assemblies, and the compact build-evidence JSON. There is no RedCompute web shell: the dashboard is a RedLeaf extension. An installed component needs none of Git, .NET, Node, or pnpm.
 
 SBOM generation is not a producer input, component contract field, workflow gate, or RedLeaf promotion prerequisite. A developer may generate an SBOM manually for diagnostics, but it is deliberately outside the release candidate contract and this workflow carries no mandatory CycloneDX tool or action.
 
