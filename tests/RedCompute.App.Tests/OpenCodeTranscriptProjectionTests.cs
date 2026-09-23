@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using RedCompute.App.Api.Endpoints;
 using RedCompute.Plugin.OpenCode;
 using Xunit;
 
@@ -7,6 +8,36 @@ namespace RedCompute.App.Tests;
 
 public sealed class OpenCodeTranscriptProjectionTests
 {
+    [Fact]
+    public void ExecuteJobParserProjectsNativeOpenCodeThinkingToolsAndResults()
+    {
+        var stream = string.Join('\n',
+            """{"type":"reasoning","timestamp":1790191505474,"part":{"text":"Check memory first."}}""",
+            """{"type":"tool_use","timestamp":1790191506474,"part":{"tool":"bash","state":{"status":"completed","input":{"command":"curl /discover"},"output":"roleplay routes"}}}""",
+            """{"type":"text","timestamp":1790191508474,"part":{"text":"Final proposal."}}""");
+
+        var events = GlobalEndpoints.ParseStreamOutputToEvents(stream, DateTimeOffset.UnixEpoch);
+
+        Assert.Collection(events,
+            thinking =>
+            {
+                Assert.Equal("thinking", thinking.EventType);
+                Assert.Equal("Check memory first.", thinking.Content);
+            },
+            tool =>
+            {
+                Assert.Equal("tool_use", tool.EventType);
+                Assert.Equal("bash", tool.ToolName);
+                Assert.Equal("{\"command\":\"curl /discover\"}", tool.ToolInput);
+                Assert.Equal("roleplay routes", tool.ToolResult);
+            },
+            text =>
+            {
+                Assert.Equal("text", text.EventType);
+                Assert.Equal("Final proposal.", text.Content);
+            });
+    }
+
     [Fact]
     public void NativeReaderReturnsCompletedBuildPartsAndSuppressesCompactionAndIncompleteMessages()
     {

@@ -694,9 +694,9 @@ public static class GlobalEndpoints
             request.Headers.TryAddWithoutValidation("Authorization", authorization.ToArray());
     }
 
-    private record TranscriptEvent(int Id, string Role, string EventType, string? Content, string? ToolName, string? ToolInput, string? ToolResult, string Timestamp);
+    internal sealed record TranscriptEvent(int Id, string Role, string EventType, string? Content, string? ToolName, string? ToolInput, string? ToolResult, string Timestamp);
 
-    private static List<TranscriptEvent> ParseStreamOutputToEvents(string streamOutput, DateTimeOffset? baseTime)
+    internal static List<TranscriptEvent> ParseStreamOutputToEvents(string streamOutput, DateTimeOffset? baseTime)
     {
         var events = new List<TranscriptEvent>();
         var nextId = 1;
@@ -752,7 +752,89 @@ public static class GlobalEndpoints
             {
                 var root = doc.RootElement;
                 var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (ts is null && root.TryGetProperty("timestamp", out var nativeTimestamp)
+                    && nativeTimestamp.ValueKind == JsonValueKind.Number
+                    && nativeTimestamp.TryGetInt64(out var nativeTimestampMs))
+                    ts = DateTimeOffset.FromUnixTimeMilliseconds(nativeTimestampMs).ToString("O");
                 var fallbackTs = ts ?? DateTimeOffset.FromUnixTimeMilliseconds(baseMs + nextId).ToString("O");
+
+                // OpenCode's JSON stream is already normalized into native part events. Keep
+                // those parts authoritative instead of expecting the Claude stream envelope.
+                if (type is "text" or "content" or "thinking" or "reasoning"
+                    or "tool_use" or "tool_call" or "tool_result" or "error" or "status")
+                {
+                    var part = root.TryGetProperty("part", out var nativePart)
+                        && nativePart.ValueKind == JsonValueKind.Object ? nativePart : root;
+                    static string? StringAt(JsonElement value, params string[] names)
+                    {
+                        foreach (var name in names)
+                            if (value.TryGetProperty(name, out var property)
+                                && property.ValueKind == JsonValueKind.String)
+                                return property.GetString();
+                        return null;
+                    }
+                    static bool ObjectAt(JsonElement value, out JsonElement property, params string[] names)
+                    {
+                        foreach (var name in names)
+                            if (value.TryGetProperty(name, out property)) return true;
+                        property = default;
+                        return false;
+                    }
+
+                    if (type is "text" or "content")
+                    {
+                        var content = StringAt(part, "text", "content") ?? StringAt(root, "text", "content");
+                        if (!string.IsNullOrEmpty(content))
+                            events.Add(new TranscriptEvent(nextId++, "assistant", "text", content,
+                                null, null, null, fallbackTs));
+                    }
+                    else if (type is "thinking" or "reasoning")
+                    {
+                        var content = StringAt(part, "text", "thinking", "content")
+                            ?? StringAt(root, "thinking", "content");
+                        if (!string.IsNullOrEmpty(content))
+                            events.Add(new TranscriptEvent(nextId++, "assistant", "thinking", content,
+                                null, null, null, fallbackTs));
+                    }
+                    else if (type is "tool_use" or "tool_call")
+                    {
+                        var toolName = StringAt(part, "tool", "name") ?? StringAt(root, "tool", "name");
+                        string? toolInput = null;
+                        string? toolResult = null;
+                        if (part.TryGetProperty("state", out var state) && state.ValueKind == JsonValueKind.Object)
+                        {
+                            if (ObjectAt(state, out var input, "input", "arguments"))
+                                toolInput = input.ValueKind == JsonValueKind.String ? input.GetString() : input.GetRawText();
+                            if (ObjectAt(state, out var output, "output", "result"))
+                                toolResult = output.ValueKind == JsonValueKind.String ? output.GetString() : output.GetRawText();
+                        }
+                        if (toolInput is null && ObjectAt(root, out var rootInput, "input", "arguments"))
+                            toolInput = rootInput.ValueKind == JsonValueKind.String ? rootInput.GetString() : rootInput.GetRawText();
+                        events.Add(new TranscriptEvent(nextId++, "assistant", "tool_use", null,
+                            toolName, toolInput, toolResult, fallbackTs));
+                    }
+                    else if (type == "tool_result")
+                    {
+                        var content = StringAt(part, "text", "content", "output", "result")
+                            ?? StringAt(root, "content", "output", "result") ?? part.GetRawText();
+                        events.Add(new TranscriptEvent(nextId++, "user", "tool_result", content,
+                            null, null, content, fallbackTs));
+                    }
+                    else if (type == "error")
+                    {
+                        var content = StringAt(part, "text", "message", "error")
+                            ?? StringAt(root, "message", "error") ?? "OpenCode execution error";
+                        events.Add(new TranscriptEvent(nextId++, "assistant", "error", content,
+                            null, null, null, fallbackTs));
+                    }
+                    else
+                    {
+                        var content = StringAt(part, "status", "text") ?? StringAt(root, "status") ?? "status";
+                        events.Add(new TranscriptEvent(nextId++, "system", "system", content,
+                            null, null, null, fallbackTs));
+                    }
+                    continue;
+                }
 
                 if (type == "stream_event")
                 {
