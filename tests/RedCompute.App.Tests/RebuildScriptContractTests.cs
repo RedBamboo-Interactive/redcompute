@@ -47,7 +47,17 @@ public sealed class RebuildScriptContractTests
             "Stop-Process -Id $listener.OwningProcess -Force -ErrorAction Stop",
             source, StringComparison.Ordinal);
         Assert.Contains(
-            "Stop-CanonicalComputeListener -Reason 'RedLeaf retained an adopted canonical child'",
+            "Stop-CanonicalComputeListener -Reason $reason",
+            source, StringComparison.Ordinal);
+        Assert.Contains(
+            "'RedLeaf retained an adopted canonical child'",
+            source, StringComparison.Ordinal);
+        Assert.Contains(
+            "Compute is not under kernel management -- it was started externally; stop it where it was started",
+            source, StringComparison.Ordinal);
+        Assert.Contains("$serviceReleased = [bool]$stop.ok", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "'RedLeaf confirmed the canonical child is externally adopted'",
             source, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "Get-Process -Name RedCompute -ErrorAction SilentlyContinue |" + Environment.NewLine +

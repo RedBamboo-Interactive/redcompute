@@ -214,13 +214,20 @@ try {
     if (-not [bool]$request.noKernel) {
         Write-Host '=== Asking RedLeaf to release RedCompute ===' -ForegroundColor Cyan
         $stop = Invoke-Kernel -Path '/api/setup/compute/stop' -Body '{"force":true}'
-        if (-not $stop -or -not $stop.ok) {
+        $kernelReportedExternal = $stop -and -not $stop.ok -and
+            [string]$stop.error -eq 'Compute is not under kernel management -- it was started externally; stop it where it was started'
+        if ((-not $stop -or -not $stop.ok) -and -not $kernelReportedExternal) {
             $errorText = if ($stop -and $stop.error) { $stop.error } else { 'no successful response' }
             throw "RedLeaf refused to release RedCompute: $errorText"
         }
-        $serviceReleased = $true
+        $serviceReleased = [bool]$stop.ok
         if (-not (Wait-ForComputeExit -TimeoutSeconds 5 -ReturnFalseOnTimeout)) {
-            Stop-CanonicalComputeListener -Reason 'RedLeaf retained an adopted canonical child'
+            $reason = if ($kernelReportedExternal) {
+                'RedLeaf confirmed the canonical child is externally adopted'
+            } else {
+                'RedLeaf retained an adopted canonical child'
+            }
+            Stop-CanonicalComputeListener -Reason $reason
         }
     } else {
         Stop-CanonicalComputeListener -Reason 'kernel supervision bypass requested'
