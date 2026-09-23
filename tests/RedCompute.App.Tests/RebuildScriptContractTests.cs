@@ -30,4 +30,28 @@ public sealed class RebuildScriptContractTests
             source, StringComparison.Ordinal);
         Assert.Contains("$expectedPluginCount = $pluginProjects.Count", source, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void DesktopDeploymentReclaimsOnlyTheExactCanonicalComputeListener()
+    {
+        var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "deploy-staged.ps1"));
+
+        Assert.Contains(
+            "$listeners = @(Get-NetTCPConnection -LocalPort 18800 -State Listen",
+            source, StringComparison.Ordinal);
+        Assert.Contains("$listeners.Count -ne 1", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "[string]::Equals($actualPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)",
+            source, StringComparison.Ordinal);
+        Assert.Contains(
+            "Stop-Process -Id $listener.OwningProcess -Force -ErrorAction Stop",
+            source, StringComparison.Ordinal);
+        Assert.Contains(
+            "Stop-CanonicalComputeListener -Reason 'RedLeaf retained an adopted canonical child'",
+            source, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Get-Process -Name RedCompute -ErrorAction SilentlyContinue |" + Environment.NewLine +
+            "            Stop-Process -Force",
+            source, StringComparison.Ordinal);
+    }
 }

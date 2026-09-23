@@ -25,5 +25,8 @@
     <Content Include="..\..\rebuild.ps1" Link="rebuild.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\..\deploy-staged.ps1" Link="deploy-staged.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

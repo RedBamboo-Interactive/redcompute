@@ -61,14 +61,45 @@ function Invoke-Kernel {
 }
 
 function Wait-ForComputeExit {
-    $deadline = (Get-Date).AddSeconds(30)
+    param(
+        [int]$TimeoutSeconds = 30,
+        [switch]$ReturnFalseOnTimeout
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         $process = Get-Process -Name RedCompute -ErrorAction SilentlyContinue
         $listener = Get-NetTCPConnection -LocalPort 18800 -State Listen -ErrorAction SilentlyContinue
-        if (-not $process -and -not $listener) { return }
+        if (-not $process -and -not $listener) { return $true }
         Start-Sleep -Milliseconds 250
     }
+    if ($ReturnFalseOnTimeout) { return $false }
     throw 'RedCompute did not stop cleanly within 30 seconds.'
+}
+
+function Stop-CanonicalComputeListener {
+    param([Parameter(Mandatory)][string]$Reason)
+
+    $listeners = @(Get-NetTCPConnection -LocalPort 18800 -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -ne 1) {
+        throw "Cannot reclaim RedCompute shutdown: expected one listener on port 18800, found $($listeners.Count)."
+    }
+
+    $listener = $listeners[0]
+    $process = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+    if (-not $process -or $process.ProcessName -ne 'RedCompute' -or -not $process.Path) {
+        throw "Cannot reclaim RedCompute shutdown: listener PID $($listener.OwningProcess) is not an inspectable RedCompute process."
+    }
+
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path $liveDirectory 'RedCompute.exe'))
+    $actualPath = [IO.Path]::GetFullPath($process.Path)
+    if (-not [string]::Equals($actualPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Cannot reclaim RedCompute shutdown: listener path '$actualPath' is not canonical '$expectedPath'."
+    }
+
+    Write-Host "=== Reclaiming exact canonical RedCompute process ($Reason) ===" -ForegroundColor Cyan
+    Stop-Process -Id $listener.OwningProcess -Force -ErrorAction Stop
+    Wait-ForComputeExit | Out-Null
 }
 
 function Wait-ForComputeHealth {
@@ -94,11 +125,10 @@ function Wait-ForComputeHealth {
 function Stop-Compute {
     if ($serviceReleased) {
         try { Invoke-Kernel -Path '/api/setup/compute/stop' -Body '{"force":true}' | Out-Null } catch { }
-    } else {
-        Get-Process -Name RedCompute -ErrorAction SilentlyContinue |
-            Stop-Process -Force -ErrorAction SilentlyContinue
     }
-    try { Wait-ForComputeExit } catch { }
+    if (-not (Wait-ForComputeExit -TimeoutSeconds 5 -ReturnFalseOnTimeout)) {
+        try { Stop-CanonicalComputeListener -Reason 'rollback cleanup' } catch { }
+    }
 }
 
 function Start-Compute {
@@ -189,11 +219,12 @@ try {
             throw "RedLeaf refused to release RedCompute: $errorText"
         }
         $serviceReleased = $true
+        if (-not (Wait-ForComputeExit -TimeoutSeconds 5 -ReturnFalseOnTimeout)) {
+            Stop-CanonicalComputeListener -Reason 'RedLeaf retained an adopted canonical child'
+        }
     } else {
-        Get-Process -Name RedCompute -ErrorAction SilentlyContinue |
-            Stop-Process -Force -ErrorAction SilentlyContinue
+        Stop-CanonicalComputeListener -Reason 'kernel supervision bypass requested'
     }
-    Wait-ForComputeExit
     $computeStopped = $true
     Write-DeploymentReceipt -State 'accepted' -Phase 'compute-stopped' -Success $false
 
