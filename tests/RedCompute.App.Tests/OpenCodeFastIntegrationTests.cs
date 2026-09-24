@@ -12,6 +12,19 @@ namespace RedCompute.App.Tests;
 public sealed class OpenCodeFastIntegrationTests
 {
     [Fact]
+    public void Stateless_execution_auto_approves_noninteractive_permissions()
+    {
+        var service = new OpenCodeSessionService(new OpenCodeConfig(), new MemoryJobTracker(),
+            new MemoryStore(), (_, _) => { });
+        var startInfo = new ProcessStartInfo();
+
+        service.BuildExecArgs(startInfo, "ollama/gemma4-heretic-fast", "Reply with ACK.");
+
+        Assert.Contains("--auto", startInfo.ArgumentList);
+        Assert.DoesNotContain("--dangerously-skip-permissions", startInfo.ArgumentList);
+    }
+
+    [Fact]
     public void Developer_instructions_are_added_to_runtime_config_without_losing_existing_config()
     {
         var sessionId = $"test-{Guid.NewGuid():N}";

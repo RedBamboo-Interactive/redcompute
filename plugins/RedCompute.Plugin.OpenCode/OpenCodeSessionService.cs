@@ -1664,12 +1664,15 @@ public class OpenCodeSessionService
         }
     }
 
-    private void BuildExecArgs(ProcessStartInfo startInfo, string? model, string prompt)
+    internal void BuildExecArgs(ProcessStartInfo startInfo, string? model, string prompt)
     {
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--format");
         startInfo.ArgumentList.Add("json");
-        startInfo.ArgumentList.Add("--dangerously-skip-permissions");
+        // OpenCode's non-interactive permission switch is --auto. The old Claude-style
+        // flag was silently ignored, which allowed detached executions (and especially
+        // their subagents) to block forever on an approval prompt nobody could answer.
+        startInfo.ArgumentList.Add("--auto");
 
         var resolvedModel = model ?? _config.Model;
         if (!string.IsNullOrEmpty(resolvedModel))

@@ -1581,7 +1581,8 @@ public static class UnifiedSessionEndpoints
             catch (Exception ex)
             {
                 const string message = "Failed to derive provider execution identity";
-                jobTracker.MarkFailed(job.Id, message);
+                jobTracker.MarkFailed(job.Id, message,
+                    resultJson: ExecuteFailureResultJson(model, message));
                 log($"[{provider.ProviderId}] {message}: {ex.Message}", job.Id);
                 return Error(500, "execution_identity_failed", message);
             }
@@ -1610,7 +1611,11 @@ public static class UnifiedSessionEndpoints
                         else
                             jobTracker.MarkFailed(job.Id, result.Error ?? "Execution failed", resultJson: rj);
                     }
-                    catch (Exception ex) { jobTracker.MarkFailed(job.Id, ex.Message); }
+                    catch (Exception ex)
+                    {
+                        jobTracker.MarkFailed(job.Id, ex.Message,
+                            resultJson: ExecuteFailureResultJson(model, ex.Message));
+                    }
                 });
 
                 ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
@@ -1644,7 +1649,8 @@ public static class UnifiedSessionEndpoints
             }
             catch (Exception ex)
             {
-                jobTracker.MarkFailed(job.Id, ex.Message);
+                jobTracker.MarkFailed(job.Id, ex.Message,
+                    resultJson: ExecuteFailureResultJson(model, ex.Message));
                 return Error(500, "execution_failed", ex.Message);
             }
         })
@@ -1967,6 +1973,19 @@ public static class UnifiedSessionEndpoints
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
+
+    internal static string ExecuteFailureResultJson(string? model, string error)
+        => JsonSerializer.Serialize(new
+        {
+            success = false,
+            text = (string?)null,
+            streamOutput = (string?)null,
+            model,
+            inputTokens = 0,
+            outputTokens = 0,
+            costUsd = 0d,
+            error,
+        });
 
     private static async Task<object> PublicQueueItemAsync(
         SessionInputQueueItem item, string ownerUserId, CancellationToken ct)
