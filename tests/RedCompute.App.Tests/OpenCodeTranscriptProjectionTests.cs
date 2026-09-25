@@ -39,6 +39,19 @@ public sealed class OpenCodeTranscriptProjectionTests
     }
 
     [Fact]
+    public void ExecuteJobParserPreservesNativeOpenCodeToolErrors()
+    {
+        const string stream = """{"type":"tool_use","timestamp":1790191506474,"part":{"tool":"roleplay_message_edit","state":{"status":"error","input":{"messageUid":"message-1"},"error":"Roleplay API 422: segmentId is required"}}}""";
+
+        var tool = Assert.Single(GlobalEndpoints.ParseStreamOutputToEvents(stream, DateTimeOffset.UnixEpoch));
+
+        Assert.Equal("tool_use", tool.EventType);
+        Assert.Equal("roleplay_message_edit", tool.ToolName);
+        Assert.Equal("{\"messageUid\":\"message-1\"}", tool.ToolInput);
+        Assert.Equal("Error: Roleplay API 422: segmentId is required", tool.ToolResult);
+    }
+
+    [Fact]
     public void NativeReaderReturnsCompletedBuildPartsAndSuppressesCompactionAndIncompleteMessages()
     {
         var dbPath = Path.Combine(Path.GetTempPath(), $"opencode-native-{Guid.NewGuid():N}.db");

@@ -807,6 +807,11 @@ public static class GlobalEndpoints
                                 toolInput = input.ValueKind == JsonValueKind.String ? input.GetString() : input.GetRawText();
                             if (ObjectAt(state, out var output, "output", "result"))
                                 toolResult = output.ValueKind == JsonValueKind.String ? output.GetString() : output.GetRawText();
+                            if (string.Equals(StringAt(state, "status"), "error", StringComparison.OrdinalIgnoreCase)
+                                && ObjectAt(state, out var error, "error"))
+                                toolResult = error.ValueKind == JsonValueKind.String
+                                    ? $"Error: {error.GetString()}"
+                                    : $"Error: {error.GetRawText()}";
                         }
                         if (toolInput is null && ObjectAt(root, out var rootInput, "input", "arguments"))
                             toolInput = rootInput.ValueKind == JsonValueKind.String ? rootInput.GetString() : rootInput.GetRawText();
