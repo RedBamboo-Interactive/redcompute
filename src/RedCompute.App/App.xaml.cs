@@ -42,6 +42,8 @@ public partial class App : Application
     public static HardwareMonitorService HardwareMonitor { get; } = new();
     public static ProviderConfigService ProviderConfig { get; private set; } = null!;
     public static QualityModeService QualityModes { get; private set; } = null!;
+    public static AcceleratorAdmissionCoordinator AcceleratorAdmission { get; } =
+        new(message => Log(message));
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -147,6 +149,7 @@ public partial class App : Application
         {
             (IJobTracker)JobTracker,
             (IProviderQualityModeResolver)QualityModes,
+            (IAcceleratorAdmissionCoordinator)AcceleratorAdmission,
             (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),
         };
 
@@ -226,6 +229,7 @@ public partial class App : Application
             {
                 (IJobTracker)JobTracker,
                 (IProviderQualityModeResolver)QualityModes,
+                (IAcceleratorAdmissionCoordinator)AcceleratorAdmission,
                 (Action<string, Guid?>)((message, jobId) => Log(message, jobId)),
             };
             foreach (var (capabilitySlug, providerName) in changed)

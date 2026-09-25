@@ -6,6 +6,7 @@ using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.ComfyUI;
+using RedCompute.PluginSdk;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -157,6 +158,109 @@ public sealed class ComfyUIProviderTests
         {
             await provider.DisposeAsync();
             listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Idle_backend_releases_models_and_memory_for_accelerator_transition()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var requests = new List<string>();
+        var server = ServeAsync(listener, requests,
+            "{\"queue_running\":[],\"queue_pending\":[]}", "{}");
+        var provider = new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            BackendPort = port,
+            Extra = new Dictionary<string, object?> { ["Host"] = "127.0.0.1" },
+        }, "image-gen", _ => { });
+
+        try
+        {
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+            await server;
+
+            Assert.True(result.Success, result.Detail);
+            Assert.StartsWith("GET /queue ", requests[0]);
+            Assert.StartsWith("POST /free ", requests[1]);
+            Assert.Contains("\"unload_models\":true", requests[1]);
+            Assert.Contains("\"free_memory\":true", requests[1]);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Busy_backend_refuses_release_without_calling_free()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var requests = new List<string>();
+        var server = ServeAsync(listener, requests,
+            "{\"queue_running\":[[\"prompt\",0]],\"queue_pending\":[]}");
+        var provider = new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            BackendPort = port,
+            Extra = new Dictionary<string, object?> { ["Host"] = "127.0.0.1" },
+        }, "image-gen", _ => { });
+
+        try
+        {
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+            await server;
+
+            Assert.False(result.Success);
+            Assert.Contains("busy", result.Detail);
+            Assert.Single(requests);
+            Assert.StartsWith("GET /queue ", requests[0]);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            listener.Stop();
+        }
+    }
+
+    private static async Task ServeAsync(TcpListener listener, List<string> requests, params string[] responses)
+    {
+        foreach (var responseBody in responses)
+        {
+            using var client = await listener.AcceptTcpClientAsync();
+            await using var stream = client.GetStream();
+            var buffer = new byte[8192];
+            var received = 0;
+            var headerEnd = -1;
+            var contentLength = 0;
+            do
+            {
+                var count = await stream.ReadAsync(buffer.AsMemory(received));
+                if (count == 0) break;
+                received += count;
+                var text = Encoding.ASCII.GetString(buffer, 0, received);
+                headerEnd = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                if (headerEnd >= 0)
+                {
+                    foreach (var line in text[..headerEnd].Split("\r\n"))
+                    {
+                        if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                            contentLength = int.Parse(line["Content-Length:".Length..].Trim());
+                    }
+                }
+            } while (headerEnd < 0 || received < headerEnd + 4 + contentLength);
+
+            requests.Add(Encoding.ASCII.GetString(buffer, 0, received));
+            var body = Encoding.UTF8.GetBytes(responseBody);
+            var headers = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+            await stream.WriteAsync(headers);
+            await stream.WriteAsync(body);
         }
     }
 }

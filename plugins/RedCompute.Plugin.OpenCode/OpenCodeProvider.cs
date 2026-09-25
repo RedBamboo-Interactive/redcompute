@@ -45,7 +45,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     public string? LastStartError => _opencode.LastStartError;
 
     public OpenCodeProvider(ProviderConfig config, string capabilitySlug,
-        IJobTracker jobTracker, Action<string, Guid?> log)
+        IJobTracker jobTracker, Action<string, Guid?> log,
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -54,7 +55,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         using (var db = new OpenCodeDbContext()) { db.Initialize(); }
         _store = new OpenCodeSessionStore();
         var openCodeConfig = BuildConfig(config);
-        _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log);
+        _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,
+            acceleratorAdmission: acceleratorAdmission);
 
         _opencode.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _opencode.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
@@ -323,6 +325,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
             OpenCodePath = string.IsNullOrEmpty(openCodePath) ? null : openCodePath,
             MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
+            AcceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0"),
         };
     }
 

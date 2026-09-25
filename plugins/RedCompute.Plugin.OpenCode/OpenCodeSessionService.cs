@@ -18,6 +18,7 @@ public class OpenCodeSessionService
     private readonly IJobTracker _jobTracker;
     private readonly IOpenCodeSessionStore _store;
     private readonly IOpenCodeNativeSessionReader _nativeSessionReader;
+    private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly Action<string, Guid?> _log;
 
     public event Action<OpenCodeSessionInfo>? SessionCreated;
@@ -66,18 +67,20 @@ public class OpenCodeSessionService
     }
 
     public OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
-        Action<string, Guid?> log)
-        : this(config, jobTracker, store, log, new OpenCodeNativeSessionReader())
+        Action<string, Guid?> log, IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
+        : this(config, jobTracker, store, log, new OpenCodeNativeSessionReader(), acceleratorAdmission)
     {
     }
 
     internal OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
-        Action<string, Guid?> log, IOpenCodeNativeSessionReader nativeSessionReader)
+        Action<string, Guid?> log, IOpenCodeNativeSessionReader nativeSessionReader,
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
     {
         _config = config;
         _jobTracker = jobTracker;
         _store = store;
         _nativeSessionReader = nativeSessionReader;
+        _acceleratorAdmission = acceleratorAdmission;
         _log = log;
         RecoverSessions();
     }
@@ -507,12 +510,14 @@ public class OpenCodeSessionService
             return false;
 
         await session.AdmissionLock.WaitAsync(session.Cts.Token);
+        IAsyncDisposable? acceleratorLease = null;
         try
         {
             if (session.Info.Status != "Idle") return false;
 
             try
             {
+                acceleratorLease = await AcquireForModelAsync(session.Info.Model, session.Cts.Token);
                 // Finish a failed preceding checkpoint under its original turn
                 // identity before admitting another user turn.
                 if (session.PendingCheckpoint) ReconcileAvailableParts(session);
@@ -559,7 +564,8 @@ public class OpenCodeSessionService
                     @params = new { sessionId = session.AcpSessionId, prompt = promptBlocks },
                 });
 
-                _ = HandlePromptResponse(session, tcs.Task);
+                _ = HandlePromptResponse(session, tcs.Task, acceleratorLease);
+                acceleratorLease = null;
 
                 return true;
             }
@@ -574,6 +580,8 @@ public class OpenCodeSessionService
         }
         finally
         {
+            if (acceleratorLease is not null)
+                await acceleratorLease.DisposeAsync();
             session.AdmissionLock.Release();
         }
     }
@@ -605,7 +613,8 @@ public class OpenCodeSessionService
         return SendInput(sessionId, input, attachmentsJson, messageUid);
     }
 
-    private async Task HandlePromptResponse(ManagedSession session, Task<JsonElement> responseTask)
+    private async Task HandlePromptResponse(ManagedSession session, Task<JsonElement> responseTask,
+        IAsyncDisposable? acceleratorLease)
     {
         try
         {
@@ -644,6 +653,11 @@ public class OpenCodeSessionService
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
             }
+        }
+        finally
+        {
+            if (acceleratorLease is not null)
+                await acceleratorLease.DisposeAsync();
         }
     }
 
@@ -1556,6 +1570,8 @@ public class OpenCodeSessionService
                     "Could not find 'opencode' CLI. Install opencode or set OpenCodePath in config.");
         }
 
+        await using var acceleratorLease = await AcquireForModelAsync(model ?? _config.Model, ct);
+
         var startInfo = new ProcessStartInfo
         {
             CreateNoWindow = true,
@@ -1662,6 +1678,17 @@ public class OpenCodeSessionService
             try { process.Kill(entireProcessTree: true); } catch { }
             throw;
         }
+    }
+
+    internal static bool IsLocalAcceleratorModel(string? model)
+        => model?.StartsWith("ollama/", StringComparison.OrdinalIgnoreCase) == true;
+
+    private async ValueTask<IAsyncDisposable?> AcquireForModelAsync(string? model, CancellationToken ct)
+    {
+        if (_acceleratorAdmission is null || !IsLocalAcceleratorModel(model))
+            return null;
+        return await _acceleratorAdmission.AcquireAsync(
+            new AcceleratorWorkload(_config.AcceleratorId, "ollama", $"OpenCode {model}"), ct);
     }
 
     internal void BuildExecArgs(ProcessStartInfo startInfo, string? model, string prompt)

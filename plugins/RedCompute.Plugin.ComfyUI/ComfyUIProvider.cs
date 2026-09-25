@@ -25,6 +25,9 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly int _port;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(30) };
     private readonly HttpClient _healthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
+    private readonly IDisposable? _acceleratorRegistration;
+    private readonly string _acceleratorId;
     private Process? _process;
     private BackendStatus _status = BackendStatus.Stopped;
     private DateTime _lastHealthCheck;
@@ -68,7 +71,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         OutputEndpoint = $"/{_capabilitySlug}/jobs/{{id}}/output"
     };
 
-    public ComfyUIProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
+    public ComfyUIProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
@@ -77,6 +81,14 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         _host = ProviderHelpers.GetExtra(config, "Host", "127.0.0.1");
         _port = config.BackendPort ?? 8188;
         _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
+        _acceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0");
+        _acceleratorAdmission = acceleratorAdmission;
+        _acceleratorRegistration = acceleratorAdmission?.RegisterPreemptibleResident(
+            new AcceleratorResidentRegistration(
+                _acceleratorId,
+                "comfyui",
+                $"comfyui:{BaseUrl}",
+                ReleaseCachedModelsAsync));
     }
 
     public void SetProgressCallback(Action<double>? callback)
@@ -254,6 +266,11 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         await ResolveAssetParamsAsync(extraParams, wfDef.Parameters, ct);
         InjectParameters(workflow, wfDef.Parameters, prompt, negative, actualSeed, extraParams);
 
+        await using var acceleratorLease = _acceleratorAdmission is null
+            ? null
+            : await _acceleratorAdmission.AcquireAsync(
+                new AcceleratorWorkload(_acceleratorId, "comfyui", $"{_capabilitySlug} generation"), ct);
+
         var clientId = Guid.NewGuid().ToString();
         var result = await RunWithWebSocketAsync(workflow, outputNode, clientId, progressCallback, ct);
         if (result == null)
@@ -317,6 +334,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
     public async ValueTask DisposeAsync()
     {
+        _acceleratorRegistration?.Dispose();
         await StopAsync();
         _http.Dispose();
         _healthClient.Dispose();
@@ -511,6 +529,61 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             return resp.IsSuccessStatusCode;
         }
         catch { return false; }
+    }
+
+    internal async Task<AcceleratorReleaseResult> ReleaseCachedModelsAsync(CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            var queueResponse = await _http.GetAsync($"{BaseUrl}/queue", timeout.Token);
+            if (!queueResponse.IsSuccessStatusCode)
+                return AcceleratorReleaseResult.Refused(
+                    $"ComfyUI queue check failed with HTTP {(int)queueResponse.StatusCode}");
+
+            var queue = await queueResponse.Content.ReadFromJsonAsync<JsonElement>(timeout.Token);
+            if (!TryReadQueueCount(queue, "queue_running", out var running)
+                || !TryReadQueueCount(queue, "queue_pending", out var pending))
+                return AcceleratorReleaseResult.Refused("ComfyUI queue response did not contain auditable running and pending queues");
+            if (running > 0 || pending > 0)
+                return AcceleratorReleaseResult.Refused(
+                    $"ComfyUI is busy ({running} running, {pending} pending)");
+
+            var releaseResponse = await _http.PostAsJsonAsync(
+                $"{BaseUrl}/free",
+                new { unload_models = true, free_memory = true },
+                timeout.Token);
+            if (!releaseResponse.IsSuccessStatusCode)
+                return AcceleratorReleaseResult.Refused(
+                    $"ComfyUI cache release failed with HTTP {(int)releaseResponse.StatusCode}");
+
+            _log("[ComfyUI] Released cached models for accelerator transition");
+            return AcceleratorReleaseResult.Released("ComfyUI acknowledged model unload and memory release");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return AcceleratorReleaseResult.Refused("ComfyUI cache release timed out after 30 seconds");
+        }
+        catch (Exception ex)
+        {
+            return AcceleratorReleaseResult.Refused($"ComfyUI cache release failed: {ex.Message}");
+        }
+    }
+
+    private static bool TryReadQueueCount(JsonElement queue, string propertyName, out int count)
+    {
+        count = 0;
+        if (queue.ValueKind != JsonValueKind.Object
+            || !queue.TryGetProperty(propertyName, out var value)
+            || value.ValueKind != JsonValueKind.Array)
+            return false;
+        count = value.GetArrayLength();
+        return true;
     }
 
     private void InjectParameters(
