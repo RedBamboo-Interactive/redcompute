@@ -36,6 +36,15 @@ public class ProviderConfig
 {
     public required string Type { get; set; }
 
+    // Entity-backed runtime identity. These values let a provider plugin remain
+    // independent from the harness it wraps and distinguish dedicated instances
+    // from shared backend profiles such as Ollama and Muse Spark over OpenCode.
+    public string? EntityId { get; set; }
+    public string? EntitySlug { get; set; }
+    public string? DisplayName { get; set; }
+    public string? Backend { get; set; }
+    public string RuntimeBinding { get; set; } = "shared";
+
     // Local provider settings
     public string? WslDistro { get; set; }
     public string? VenvPath { get; set; }

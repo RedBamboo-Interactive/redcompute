@@ -17,6 +17,7 @@ public record ProviderEntityConfig(
     public string? IconSvgPath { get; init; }
     public IReadOnlyList<string> Capabilities { get; init; } = Array.Empty<string>();
     public JsonElement? Settings { get; init; }
+    public string RuntimeBinding { get; init; } = "shared";
     public bool ApiKeyAuthoritative { get; init; }
 }
 
@@ -276,7 +277,7 @@ public class ProviderConfigService
 
         foreach (var entity in snapshot.Values)
         {
-            if (entity.Capabilities.Count == 0 || entity.Settings == null) continue;
+            if (entity.Capabilities.Count == 0) continue;
 
             foreach (var kernelSlug in entity.Capabilities)
             {
@@ -297,14 +298,16 @@ public class ProviderConfigService
                 }
 
                 var entityType = entity.ProviderType ?? entity.Backend;
-                var providerName = FindMatchingProviderName(cap, entityType, entity);
-                if (providerName == null)
+                var providerName = entity.RuntimeBinding.Equals("dedicated", StringComparison.OrdinalIgnoreCase)
+                    ? entity.Slug
+                    : FindMatchingProviderName(cap, entityType, entity);
+                providerName ??= entity.Slug;
+                if (!cap.Providers.TryGetValue(providerName, out var provider))
                 {
-                    providerName = entity.Slug;
-                    cap.Providers[providerName] = new ProviderConfig { Type = entityType };
+                    provider = new ProviderConfig { Type = entityType };
+                    cap.Providers[providerName] = provider;
                 }
 
-                var provider = cap.Providers[providerName];
                 ApplyEntityToProvider(entity, provider);
             }
         }
@@ -326,8 +329,10 @@ public class ProviderConfigService
                 if (mapped && mappedSlug == null) continue;
                 var capabilitySlug = mapped ? mappedSlug! : kernelSlug;
                 if (!config.Capabilities.TryGetValue(capabilitySlug, out var capability)) continue;
-                var providerName = FindMatchingProviderName(
-                    capability, entity.ProviderType ?? entity.Backend, entity);
+                var providerName = entity.RuntimeBinding.Equals("dedicated", StringComparison.OrdinalIgnoreCase)
+                    ? (capability.Providers.ContainsKey(entity.Slug) ? entity.Slug : null)
+                    : FindMatchingProviderName(
+                        capability, entity.ProviderType ?? entity.Backend, entity);
                 if (providerName != null)
                     result.Add(new VaultedProviderCoordinate(capabilitySlug, providerName));
             }
@@ -349,6 +354,9 @@ public class ProviderConfigService
         Dictionary<string, ProviderEntityConfig> snapshot;
         lock (_lock) { snapshot = _providers; }
         if (!snapshot.TryGetValue(reference, out var entity)) return null;
+
+        if (entity.RuntimeBinding.Equals("dedicated", StringComparison.OrdinalIgnoreCase))
+            return cap.Providers.ContainsKey(entity.Slug) ? entity.Slug : null;
 
         var entityType = entity.ProviderType ?? entity.Backend;
         return FindMatchingProviderName(cap, entityType, entity);
@@ -442,7 +450,14 @@ public class ProviderConfigService
     internal static void ApplyEntityToProvider(ProviderEntityConfig entity, ProviderConfig provider)
     {
         if (entity.ProviderType != null) provider.Type = entity.ProviderType;
+        provider.EntityId = entity.Id;
+        provider.EntitySlug = entity.Slug;
+        provider.DisplayName = entity.Name;
+        provider.Backend = entity.Backend;
+        provider.RuntimeBinding = entity.RuntimeBinding;
         if (entity.ApiKeyAuthoritative) provider.ApiKey = entity.ApiKey;
+        if (!string.IsNullOrWhiteSpace(entity.DefaultModel)) provider.Model = entity.DefaultModel;
+        if (!string.IsNullOrWhiteSpace(entity.EndpointUrl)) provider.Endpoint = entity.EndpointUrl;
 
         if (entity.Settings is not { } settings) return;
 
@@ -451,7 +466,6 @@ public class ProviderConfigService
         if (GetSettingInt(settings, "backendPort") is { } bp) provider.BackendPort = bp;
         if (GetSettingString(settings, "wslDistro") is { } wd) provider.WslDistro = wd;
         if (GetSettingString(settings, "model") is { } m) provider.Model = m;
-        else if (entity.DefaultModel != null) provider.Model = entity.DefaultModel;
         if (GetSettingString(settings, "endpoint") is { } ep) provider.Endpoint = ep;
         if (GetSettingString(settings, "modelRevision") is { } mr) provider.ModelRevision = mr;
         if (GetSettingString(settings, "calibrationRevision") is { } cr) provider.CalibrationRevision = cr;
@@ -772,6 +786,7 @@ public class ProviderConfigService
                 IconSvgPath = GetString(data, "icon_svg_path"),
                 Capabilities = ParseCapabilities(data),
                 Settings = settings,
+                RuntimeBinding = GetString(data, "runtime_binding") ?? "shared",
             };
         }
         catch (JsonException) { return null; }

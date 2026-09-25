@@ -30,21 +30,25 @@ public class ConfiguredInferenceProviderTests
     }
 
     [Fact]
-    public void EmptyQualityModeCatalogDoesNotExposeCapabilityOnlyProviders()
+    public void InferenceCapabilityAdmitsProviderWithoutAQualityMode()
     {
         var providers = new[]
         {
-            Provider("suno", "Suno"),
-            Provider("comfyui", "ComfyUI"),
+            Provider("direct", "Direct", "ai-inference"),
+            Provider("suno", "Suno", "music-generation"),
+            Provider("comfyui", "ComfyUI", "image-generation"),
         };
 
         var result = UnifiedSessionEndpoints.FilterInferenceProviders(providers, []);
 
-        Assert.Empty(result);
+        Assert.Collection(result, provider => Assert.Equal("direct", provider.Slug));
     }
 
-    private static ProviderEntityConfig Provider(string slug, string name) =>
-        new(slug, slug, name, "test", null, null, null, null, "active", null);
+    private static ProviderEntityConfig Provider(string slug, string name, params string[] capabilities) =>
+        new ProviderEntityConfig(slug, slug, name, "test", null, null, null, null, "active", null)
+        {
+            Capabilities = capabilities,
+        };
 
     private static QualityMode Mode(string slug, string provider) =>
         new(slug, slug, "deep", provider, "test-model", null, null, null, null, false, null);

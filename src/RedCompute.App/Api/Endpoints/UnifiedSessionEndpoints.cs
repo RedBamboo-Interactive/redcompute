@@ -1426,25 +1426,52 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapGet("/ai-session/providers/configured",
-            "List active AI inference provider configurations referenced by at least one quality mode. Use these slugs in the provider field.", () =>
+            "List active AI inference Provider entities admitted by capability or quality mode, including their runtime binding and models. Use these slugs in the provider field.", () =>
         {
             if (_providerConfig == null || _quality == null)
                 return Error(503, "not_configured", "Provider and quality mode services are not available");
 
             var defaultSlug = _providerConfig.DefaultProviderSlug;
-            var providers = FilterInferenceProviders(_providerConfig.GetAll(), _quality.GetAll()).Select(p => new
+            var entry = registry.Get("ai-session");
+            var providers = FilterInferenceProviders(_providerConfig.GetAll(), _quality.GetAll()).Select(p =>
             {
-                p.Slug,
-                p.Name,
-                p.Backend,
-                p.Icon,
-                p.Color,
-                iconSvgPath = p.IconSvgPath,
-                endpointUrl = p.EndpointUrl,
-                hasApiKey = !string.IsNullOrEmpty(p.ApiKey),
-                isDefault = string.Equals(p.Slug, defaultSlug, StringComparison.OrdinalIgnoreCase),
-                p.Status,
-                p.Description,
+                var runtime = entry == null
+                    ? null
+                    : FindRegisteredSessionProvider(entry, p.Slug, p.Backend);
+                IReadOnlyList<ModelInfo> models = [];
+                string? runtimeError = runtime == null ? "provider_plugin_not_loaded" : null;
+                if (runtime != null)
+                {
+                    try { models = runtime.GetAvailableModels(); }
+                    catch (Exception ex)
+                    {
+                        runtimeError = "model_discovery_failed";
+                        log($"[AI Session] Model discovery failed for provider '{p.Slug}': {ex.Message}", null);
+                    }
+                }
+
+                return new
+                {
+                    p.Slug,
+                    p.Name,
+                    p.Backend,
+                    providerType = p.ProviderType,
+                    runtimeBinding = p.RuntimeBinding,
+                    p.Icon,
+                    p.Color,
+                    iconSvgPath = p.IconSvgPath,
+                    endpointUrl = p.EndpointUrl,
+                    defaultModel = p.DefaultModel,
+                    hasApiKey = !string.IsNullOrEmpty(p.ApiKey),
+                    isDefault = string.Equals(p.Slug, defaultSlug, StringComparison.OrdinalIgnoreCase),
+                    runtimeAvailable = runtime != null,
+                    runtimeProviderId = runtime?.ProviderId,
+                    runtimeCapabilities = runtime?.Capabilities.ToString(),
+                    runtimeError,
+                    models = models.Select(model => new { model.Id, model.Name, model.Fast }),
+                    p.Status,
+                    p.Description,
+                };
             });
             return Results.Json(providers);
         });
@@ -1723,7 +1750,8 @@ public static class UnifiedSessionEndpoints
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return providers
-            .Where(provider => inferenceProviderSlugs.Contains(provider.Slug))
+            .Where(provider => inferenceProviderSlugs.Contains(provider.Slug)
+                || provider.Capabilities.Contains("ai-inference", StringComparer.OrdinalIgnoreCase))
             .ToList();
     }
 
@@ -1849,7 +1877,9 @@ public static class UnifiedSessionEndpoints
             if (explicitProvider != null && _providerConfig != null)
             {
                 var pc = _providerConfig.Resolve(explicitProvider);
-                return (new QualityResolution(model, effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey), null);
+                return (new QualityResolution(
+                    string.IsNullOrWhiteSpace(model) ? pc.DefaultModel : model,
+                    effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey), null);
             }
             return (new QualityResolution(model, effort, explicitProvider), null);
         }
@@ -1906,20 +1936,35 @@ public static class UnifiedSessionEndpoints
 
         if (providerName != null)
         {
-            // Translate provider slug (e.g. "anthropic-direct") to backend ID (e.g. "claude-code")
-            // so ProviderResolver can find the registered ISessionProvider instance.
+            // A dedicated provider entity is registered under its own slug. Shared profiles
+            // continue to fall back to their backend ID (for example Muse Spark -> opencode).
             var backendName = backendOverride
                 ?? (_providerConfig?.Resolve(providerName).Backend ?? providerName);
-            var (backend, err) = ProviderResolver.Resolve(entry, backendName, "ai-session");
-            if (err != null) return (null, err);
-            if (backend is ISessionProvider sp) return (sp, null);
-            return (null, Error(500, "not_session_provider", $"Provider '{providerName}' does not implement ISessionProvider"));
+            var provider = FindRegisteredSessionProvider(entry, providerName, backendName);
+            if (provider != null) return (provider, null);
+
+            var available = string.Join(", ", entry.Providers.Keys);
+            return (null, Error(404, "provider_not_found",
+                $"Provider '{providerName}' is not loaded for ai-session. Available: {available}"));
         }
 
         var active = entry.ActiveProvider as ISessionProvider;
         if (active != null) return (active, null);
 
         return (null, Error(503, "no_providers", "No session providers are registered"));
+    }
+
+    internal static ISessionProvider? FindRegisteredSessionProvider(
+        CapabilityEntry entry, string reference, string? backendReference)
+    {
+        if (entry.Providers.TryGetValue(reference, out var exact))
+            return exact as ISessionProvider;
+
+        if (!string.IsNullOrWhiteSpace(backendReference)
+            && entry.Providers.TryGetValue(backendReference, out var backend))
+            return backend as ISessionProvider;
+
+        return null;
     }
 
     private static (ISessionProvider? provider, UnifiedSessionInfo? info, List<UnifiedMessageRecord>? history)
