@@ -18,10 +18,28 @@ public sealed class OpenCodeFastIntegrationTests
             new MemoryStore(), (_, _) => { });
         var startInfo = new ProcessStartInfo();
 
-        service.BuildExecArgs(startInfo, "ollama/gemma4-heretic-fast", "Reply with ACK.");
+        service.BuildExecArgs(startInfo, "ollama/gemma4-heretic-fast");
 
         Assert.Contains("--auto", startInfo.ArgumentList);
         Assert.DoesNotContain("--dangerously-skip-permissions", startInfo.ArgumentList);
+    }
+
+    [Fact]
+    public async Task Stateless_execution_streams_large_prompts_instead_of_using_the_command_line()
+    {
+        var service = new OpenCodeSessionService(new OpenCodeConfig(), new MemoryJobTracker(),
+            new MemoryStore(), (_, _) => { });
+        var startInfo = new ProcessStartInfo();
+        var prompt = new string('x', 100_000);
+
+        service.BuildExecArgs(startInfo, "ollama/gemma4-heretic-fast");
+
+        Assert.DoesNotContain(prompt, startInfo.ArgumentList);
+        Assert.True(string.Join(' ', startInfo.ArgumentList).Length < 1_024);
+
+        using var standardInput = new StringWriter();
+        await OpenCodeSessionService.WritePromptAsync(standardInput, prompt, CancellationToken.None);
+        Assert.Equal(prompt, standardInput.ToString());
     }
 
     [Fact]

@@ -1579,6 +1579,7 @@ public class OpenCodeSessionService
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardInputEncoding = Encoding.UTF8,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
@@ -1597,7 +1598,7 @@ public class OpenCodeSessionService
                     startInfo.EnvironmentVariables[k] = v;
         }
 
-        BuildExecArgs(startInfo, model, prompt);
+        BuildExecArgs(startInfo, model);
 
         var sw = Stopwatch.StartNew();
         using var process = Process.Start(startInfo);
@@ -1612,6 +1613,7 @@ public class OpenCodeSessionService
 
         try
         {
+            await WritePromptAsync(process.StandardInput, prompt, timeoutCts.Token);
             process.StandardInput.Close();
 
             var stdoutBuilder = new StringBuilder();
@@ -1691,7 +1693,7 @@ public class OpenCodeSessionService
             new AcceleratorWorkload(_config.AcceleratorId, "ollama", $"OpenCode {model}"), ct);
     }
 
-    internal void BuildExecArgs(ProcessStartInfo startInfo, string? model, string prompt)
+    internal void BuildExecArgs(ProcessStartInfo startInfo, string? model)
     {
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--format");
@@ -1708,7 +1710,12 @@ public class OpenCodeSessionService
             startInfo.ArgumentList.Add(resolvedModel);
         }
 
-        startInfo.ArgumentList.Add(prompt);
+    }
+
+    internal static async Task WritePromptAsync(TextWriter standardInput, string prompt, CancellationToken ct)
+    {
+        await standardInput.WriteAsync(prompt.AsMemory(), ct);
+        await standardInput.FlushAsync(ct);
     }
 
     internal static List<OpenCodeStreamEvent> ParseStreamLine(string line)
