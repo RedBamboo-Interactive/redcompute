@@ -167,13 +167,22 @@ internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
         return connection;
     }
 
-    private static string ResolveDbPath()
+    internal static string ResolveDbPath(string? configuredDataHome = null)
     {
-        var dataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        var dataHome = NormalizeConfiguredDataHome(configuredDataHome)
+            ?? Environment.GetEnvironmentVariable("XDG_DATA_HOME");
         if (!string.IsNullOrWhiteSpace(dataHome))
             return Path.Combine(dataHome, "opencode", "opencode.db");
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".local", "share", "opencode", "opencode.db");
+    }
+
+    internal static string? NormalizeConfiguredDataHome(string? configuredDataHome)
+    {
+        if (string.IsNullOrWhiteSpace(configuredDataHome)) return null;
+        if (!Path.IsPathFullyQualified(configuredDataHome))
+            throw new ArgumentException("OpenCodeDataHome must be an absolute path", nameof(configuredDataHome));
+        return Path.GetFullPath(configuredDataHome);
     }
 
     private static string? String(JsonElement value, string name) =>

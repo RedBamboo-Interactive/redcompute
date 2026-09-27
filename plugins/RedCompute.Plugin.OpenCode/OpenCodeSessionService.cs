@@ -68,7 +68,9 @@ public class OpenCodeSessionService
 
     public OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
         Action<string, Guid?> log, IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
-        : this(config, jobTracker, store, log, new OpenCodeNativeSessionReader(), acceleratorAdmission)
+        : this(config, jobTracker, store, log,
+            new OpenCodeNativeSessionReader(OpenCodeNativeSessionReader.ResolveDbPath(config.OpenCodeDataHome)),
+            acceleratorAdmission)
     {
     }
 
@@ -358,6 +360,7 @@ public class OpenCodeSessionService
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
         ApplyDeveloperInstructions(startInfo, info.Id, developerInstructions);
+        ApplyConfiguredDataHome(startInfo, _config.OpenCodeDataHome);
 
         var resolvedModel = model ?? _config.Model;
 
@@ -669,8 +672,7 @@ public class OpenCodeSessionService
 
         try
         {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var dbPath = Path.Combine(home, ".local", "share", "opencode", "opencode.db");
+            var dbPath = OpenCodeNativeSessionReader.ResolveDbPath(_config.OpenCodeDataHome);
             if (!File.Exists(dbPath)) return;
 
             using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
@@ -1562,6 +1564,10 @@ public class OpenCodeSessionService
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
 
+        if (useDocker && !string.IsNullOrWhiteSpace(_config.OpenCodeDataHome))
+            return new ExecuteResult(false, null, null, null, 0, 0, null,
+                "OpenCodeDataHome is not supported for Docker execution");
+
         if (!useDocker)
         {
             var opencodePath = ResolveOpenCodePath();
@@ -1596,6 +1602,7 @@ public class OpenCodeSessionService
             if (env is not null)
                 foreach (var (k, v) in env)
                     startInfo.EnvironmentVariables[k] = v;
+            ApplyConfiguredDataHome(startInfo, _config.OpenCodeDataHome);
         }
 
         BuildExecArgs(startInfo, model);
@@ -1684,6 +1691,12 @@ public class OpenCodeSessionService
 
     internal static bool IsLocalAcceleratorModel(string? model)
         => model?.StartsWith("ollama/", StringComparison.OrdinalIgnoreCase) == true;
+
+    internal static void ApplyConfiguredDataHome(ProcessStartInfo startInfo, string? configuredDataHome)
+    {
+        if (OpenCodeNativeSessionReader.NormalizeConfiguredDataHome(configuredDataHome) is { } dataHome)
+            startInfo.Environment["XDG_DATA_HOME"] = dataHome;
+    }
 
     private async ValueTask<IAsyncDisposable?> AcquireForModelAsync(string? model, CancellationToken ct)
     {

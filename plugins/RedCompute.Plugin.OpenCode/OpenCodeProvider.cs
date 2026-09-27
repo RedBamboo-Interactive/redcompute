@@ -320,9 +320,11 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     private static OpenCodeConfig BuildConfig(ProviderConfig config)
     {
         var openCodePath = ProviderHelpers.GetExtra(config, "OpenCodePath", "");
+        var openCodeDataHome = ProviderHelpers.GetExtra(config, "OpenCodeDataHome", "");
         return new OpenCodeConfig
         {
             OpenCodePath = string.IsNullOrEmpty(openCodePath) ? null : openCodePath,
+            OpenCodeDataHome = string.IsNullOrEmpty(openCodeDataHome) ? null : openCodeDataHome,
             MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
             AcceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0"),

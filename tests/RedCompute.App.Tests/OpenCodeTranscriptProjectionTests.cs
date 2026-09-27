@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RedCompute.App.Api.Endpoints;
@@ -8,6 +9,53 @@ namespace RedCompute.App.Tests;
 
 public sealed class OpenCodeTranscriptProjectionTests
 {
+    [Fact]
+    public void ConfiguredDataHomeSelectsTheNativeDatabaseAndOverridesCallerEnvironment()
+    {
+        var dataHome = Path.Combine(Path.GetTempPath(), $"opencode-data-{Guid.NewGuid():N}");
+        Assert.Equal(Path.Combine(dataHome, "opencode", "opencode.db"),
+            OpenCodeNativeSessionReader.ResolveDbPath(dataHome));
+
+        var startInfo = new ProcessStartInfo();
+        startInfo.Environment["XDG_DATA_HOME"] = Path.Combine(Path.GetTempPath(), "caller-data");
+        OpenCodeSessionService.ApplyConfiguredDataHome(startInfo, dataHome);
+        Assert.Equal(Path.GetFullPath(dataHome), startInfo.Environment["XDG_DATA_HOME"]);
+    }
+
+    [Fact]
+    public void MissingConfiguredDataHomePreservesTheExistingResolution()
+    {
+        var inherited = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        var expected = string.IsNullOrWhiteSpace(inherited)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".local", "share", "opencode", "opencode.db")
+            : Path.Combine(inherited, "opencode", "opencode.db");
+
+        Assert.Equal(expected, OpenCodeNativeSessionReader.ResolveDbPath());
+    }
+
+    [Fact]
+    public void ConfiguredDataHomeMustBeAbsolute()
+    {
+        Assert.Throws<ArgumentException>(() => OpenCodeNativeSessionReader.ResolveDbPath("relative-data"));
+        Assert.Throws<ArgumentException>(() =>
+            OpenCodeSessionService.ApplyConfiguredDataHome(new ProcessStartInfo(), "relative-data"));
+    }
+
+    [Fact]
+    public async Task ConfiguredHostDataHomeRejectsDockerBeforeLaunchingAProcess()
+    {
+        var service = new OpenCodeSessionService(
+            new OpenCodeConfig { OpenCodeDataHome = Path.GetTempPath() },
+            null!, new EmptyStore(), (_, _) => { });
+
+        var result = await service.ExecuteAsync(
+            "unused", "container", null, null, 1, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("OpenCodeDataHome is not supported for Docker execution", result.Error);
+    }
+
     [Fact]
     public void ExecuteJobParserProjectsNativeOpenCodeThinkingToolsAndResults()
     {
@@ -174,5 +222,20 @@ public sealed class OpenCodeTranscriptProjectionTests
         command.Parameters.AddWithValue("$created", created);
         command.Parameters.AddWithValue("$data", data);
         command.ExecuteNonQuery();
+    }
+
+    private sealed class EmptyStore : IOpenCodeSessionStore
+    {
+        public void AddMessage(OpenCodeMessageRecord message) { }
+        public void AddMessages(List<OpenCodeMessageRecord> messages) { }
+        public OpenCodeSessionRecord? FindSession(string sessionId) => null;
+        public OpenCodeSessionRecord? FindSessionByJobId(Guid jobId) => null;
+        public List<OpenCodeSessionRecord> GetActiveSessions() => [];
+        public List<OpenCodeMessageRecord> GetMessages(string sessionId, int limit = 50_000) => [];
+        public List<OpenCodeSessionRecord> GetRecentSessions(
+            HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false) => [];
+        public Dictionary<Guid, string> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds) => [];
+        public void SaveSession(OpenCodeSessionRecord record) { }
+        public void DismissSession(string sessionId) { }
     }
 }
