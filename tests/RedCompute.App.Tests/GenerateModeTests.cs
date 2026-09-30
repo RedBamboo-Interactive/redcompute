@@ -19,4 +19,19 @@ public sealed class GenerateModeTests
 
         Assert.Equal(expected, UnifiedSessionEndpoints.IsStatelessGenerateMode(document.RootElement));
     }
+
+    [Theory]
+    [InlineData("{}", false)]
+    [InlineData("{\"confidential\":false}", false)]
+    [InlineData("{\"confidential\":true}", true)]
+    [InlineData("{\"confidential\":\"true\"}", false)]
+    [InlineData("{\"confidential\":null}", false)]
+    public void GenerateEndpoint_ConfidentialityIsExplicitAndTighteningOnly(
+        string json, bool expected)
+    {
+        using var document = JsonDocument.Parse(json);
+
+        Assert.Equal(expected,
+            UnifiedSessionEndpoints.IsConfidentialGenerate(document.RootElement));
+    }
 }

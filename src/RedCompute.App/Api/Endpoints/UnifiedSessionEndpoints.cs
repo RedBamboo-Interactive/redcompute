@@ -1737,7 +1737,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("maxTokens", "integer", description: "Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
-            .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body);
+            .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body)
+            .WithParam("confidential", "boolean", description: "Restrict the generated job to the verified owning Agent and beneficiary user.", defaultValue: false, location: ParamLocation.Body);
     }
 
     internal static IReadOnlyList<ProviderEntityConfig> FilterInferenceProviders(
@@ -1783,6 +1784,10 @@ public static class UnifiedSessionEndpoints
             && string.Equals(value.GetString(), "oneshot", StringComparison.OrdinalIgnoreCase);
     }
 
+    internal static bool IsConfidentialGenerate(JsonElement body)
+        => body.TryGetProperty("confidential", out var value)
+            && value.ValueKind == JsonValueKind.True;
+
     private static async Task<IResult> HandleGenerateOneshot(
         HttpContext ctx, JsonElement body, ISessionProvider provider, IJobTracker jobTracker, QualityResolution q)
     {
@@ -1821,7 +1826,7 @@ public static class UnifiedSessionEndpoints
         try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/generate"); }
         catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
         var job = jobTracker.CreateJob(new JobSubmission("ai-session", provider.ProviderDisplayName,
-            inputJson, provenance, Name: jobName));
+            inputJson, provenance, Name: jobName, Confidential: IsConfidentialGenerate(body)));
         jobTracker.StartInvocation(job.Id, provenance);
 
         try
