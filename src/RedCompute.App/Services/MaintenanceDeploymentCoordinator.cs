@@ -180,6 +180,13 @@ public sealed class MaintenanceDeploymentCoordinator
         }
     }
 
+    public DeploymentVerificationState ReadVerificationTarget(DeploymentVerificationTarget target)
+    {
+        var computeRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var leafRoot = Path.GetFullPath(Path.Combine(computeRoot, "..", "redleaf"));
+        return DeploymentVerification.Read(target, computeRoot, leafRoot);
+    }
+
     private static ValidatedRequest ValidateRequest(string requestPath)
     {
         if (string.IsNullOrWhiteSpace(requestPath))

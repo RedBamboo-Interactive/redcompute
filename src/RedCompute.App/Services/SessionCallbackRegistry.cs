@@ -14,6 +14,14 @@ public class SessionCallbackRegistry
     private readonly ConcurrentDictionary<string, CallbackEntry> _callbacks = new();
     private readonly HttpClient _http;
     private readonly Action<string, Guid?> _log;
+    private SessionPromptCallbacks? _durable;
+
+    internal void AttachDurableStore(string databasePath, SessionInputQueueStore queue,
+        Func<string, UnifiedSessionInfo?> currentSession)
+        => _durable = new(databasePath, queue, currentSession, _http, _log);
+
+    internal Task ReconcileAsync(CancellationToken ct)
+        => _durable?.SweepAsync(ct) ?? Task.CompletedTask;
 
     public SessionCallbackRegistry(Action<string, Guid?> log, AuthenticatedHttpClientFactory? authFactory = null)
     {
@@ -30,27 +38,47 @@ public class SessionCallbackRegistry
 
     // One delivery identity per registration, shared by every HTTP retry. Callers
     // with an existing invocation identity (e.g. a delegated prompt UID) reuse it.
-    public void Register(string sessionId, string callbackUrl, string? userId = null, string? callbackId = null)
+    public void Register(string sessionId, string callbackUrl, string? userId = null, string? callbackId = null, string? promptMessageUid = null)
     {
+        if (_durable is not null && callbackId is not null && promptMessageUid is not null)
+        {
+            _durable.RegisterAsync(sessionId, callbackId, callbackUrl, userId, promptMessageUid).GetAwaiter().GetResult();
+            return;
+        }
         _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, callbackId ?? Guid.NewGuid().ToString("N"));
         _log($"[Callbacks] Registered callback for session {sessionId}", null);
     }
 
     public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus,
-        string? userId = null, string? stopReason = null, bool force = false, string? callbackId = null)
+        string? userId = null, string? stopReason = null, bool force = false, string? callbackId = null, string? promptMessageUid = null)
     {
+        if (_durable is not null && callbackId is not null && promptMessageUid is not null)
+        {
+            Register(sessionId, callbackUrl, userId, callbackId, promptMessageUid);
+            return true;
+        }
         if (!force && currentStatus is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
         {
             _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), callbackId ?? Guid.NewGuid().ToString("N"), userId: userId, stopReason: stopReason);
             return false;
         }
 
-        Register(sessionId, callbackUrl, userId, callbackId);
+        Register(sessionId, callbackUrl, userId, callbackId, promptMessageUid);
         return true;
     }
 
     public void OnSessionEvent(string eventType, object data)
     {
+        if (_durable is not null && eventType == "session.updated" && data is UnifiedSessionInfo current)
+            _ = ObserveSafelyAsync(current.Id, current.Status == SessionStatus.Active);
+        if (_durable is not null && eventType == "session.ended")
+        {
+            var ended = JsonSerializer.SerializeToElement(data);
+            if (ended.TryGetProperty("id", out var endedId) && endedId.ValueKind == JsonValueKind.String)
+                _ = ObserveSafelyAsync(endedId.GetString()!, endedReason:
+                    ended.TryGetProperty("reason", out var endedReason) && endedReason.ValueKind == JsonValueKind.String
+                        ? endedReason.GetString() : "unknown");
+        }
         if (eventType == "session.updated" && data is UnifiedSessionInfo session)
         {
             if (session.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error))
@@ -77,6 +105,15 @@ public class SessionCallbackRegistry
             }
             catch { }
         }
+    }
+
+    internal Task<bool> RemoveUnacceptedAsync(string sessionId, string callbackId, string promptMessageUid, string owner, CancellationToken ct)
+        => _durable?.RemoveUnacceptedAsync(sessionId, callbackId, promptMessageUid, owner, ct) ?? Task.FromResult(false);
+    internal Task DrainAsync() => _durable?.DrainAsync() ?? Task.CompletedTask;
+    private async Task ObserveSafelyAsync(string id, bool observedActive = false, string? endedReason = null)
+    {
+        try { await _durable!.ObserveAsync(id, observedActive: observedActive, endedReason: endedReason); }
+        catch (Exception) { _log("[Callbacks] Observation failed; subscription retained for owning sweep", null); }
     }
 
     private async Task FireAsync(string url, string sessionId, string status, string callbackId,

@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using RedBamboo.AppHost.Auth;
@@ -40,12 +41,15 @@ public sealed class RedLeafSessionReader
     private const int RedLeafMaxPageSize = 1000;
 
     private readonly HttpClient _http;
+    private readonly HttpClient _recoveryHttp;
+    private readonly JwtService? _recoveryJwt;
     private readonly QualityModeService _qualityModes;
     internal TranscriptCheckpointCoordinator? Checkpoints { get; init; }
 
     public RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService, QualityModeService qualityModes)
     {
         _qualityModes = qualityModes;
+        _recoveryJwt = jwtService;
         // RedLeaf deliberately permits its signed RedCompute projection owner to enumerate
         // confidential session entities. Keep the reader's existing admin permission while
         // emitting that service identity instead of the unrelated "system" user subject.
@@ -57,15 +61,54 @@ public sealed class RedLeafSessionReader
             Timeout = TimeSpan.FromSeconds(15),
         };
         _http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+        _recoveryHttp = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) {
+            BaseAddress = _http.BaseAddress, Timeout = _http.Timeout };
     }
 
-    internal RedLeafSessionReader(HttpClient http, QualityModeService qualityModes)
+    internal RedLeafSessionReader(HttpClient http, QualityModeService qualityModes, JwtService? recoveryJwt = null)
     {
         _http = http;
+        _recoveryHttp = http;
         _qualityModes = qualityModes;
+        _recoveryJwt = recoveryJwt;
     }
 
-    public async Task<List<UnifiedSessionInfo>> GetSessionsAsync(string? provider, int limit, bool includeDismissed)
+    public async Task<SessionRecoveryAuthority> RecoverAuthorityAsync(
+        UnifiedSessionInfo session, SessionInputQueueItem item, CancellationToken ct)
+    {
+        if (_recoveryHttp.BaseAddress is not { IsLoopback: true })
+            return new(null, "recovery_host_untrusted", false);
+        if (_recoveryJwt is null) return new(null, "recovery_service_unavailable", false);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/auth/session-recovery-token") {
+            Content = JsonContent.Create(new { sessionId = session.Id, provider = session.Provider,
+                queueItemId = item.Id, messageUid = item.MessageUid, ownerUserId = item.OwnerUserId, provenance = item.Provenance }) };
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer",
+            _recoveryJwt.GenerateServiceAccessToken("redcompute", roles: ["service", "admin"]));
+        using var response = await _recoveryHttp.SendAsync(request, ct);
+        if ((int)response.StatusCode is >= 300 and < 400
+            || response.RequestMessage?.RequestUri is { IsLoopback: false })
+            return new(null, "recovery_host_redirect", false);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        if (!response.IsSuccessStatusCode)
+            return new(null, Str(document.RootElement, "error") ?? "recovery_host_unavailable",
+                (int)response.StatusCode >= 500);
+        var token = Str(document.RootElement, "accessToken");
+        var principal = token is null ? null : _recoveryJwt?.ValidateToken(token);
+        if (principal is null || !ExecutionIdentityClaims.TryRead(principal, out var identity, out _)
+            || identity is null || identity.Beneficiary.Kind != "user" || identity.Beneficiary.Id != item.OwnerUserId
+            || identity.Actor.Kind != "agent" || identity.Actor.EntityId != item.Provenance.Actor.EntityId
+            || identity.App.Id != item.Provenance.Origin.App.Id
+            || !identity.Context.Any(c => c.Kind == "accepted-input-recovery" && c.Id == item.Id && c.Route == item.MessageUid)
+            || !identity.Context.Any(c => c.Kind == "ai-session" && c.Id == session.Id))
+            return new(null, "recovery_identity_invalid", false);
+        var parentId = item.Provenance.Context.FirstOrDefault(c => c.Kind == "execution")?.Id;
+        if (!Guid.TryParse(parentId, out _)) parentId = null;
+        if (identity.ParentExecutionId != parentId || identity.ExecutionId == parentId)
+            return new(null, "recovery_identity_invalid", false);
+        return new(token, null, false);
+    }
+    public async Task<List<UnifiedSessionInfo>> GetSessionsAsync(string? provider, int limit, bool includeDismissed,
+        Func<UnifiedSessionInfo, bool>? include = null)
     {
         // Entities can't be server-sorted by a data key; recently-started is a
         // subset of recently-updated (upserts bump UpdatedAt), so fetch the
@@ -84,8 +127,11 @@ public sealed class RedLeafSessionReader
             if (info != null) sessions.Add(info);
         }
 
-        sessions.Sort((a, b) => b.StartedAt.CompareTo(a.StartedAt));
-        return sessions.Count > limit ? sessions.Take(limit).ToList() : sessions;
+        // An old session can carry new work. Preserve its audit timestamp, and keep ongoing
+        // sessions discoverable ahead of dormant history. LINQ preserves input order on ties.
+        return sessions.OrderByDescending(s => s.Status is SessionStatus.Active or SessionStatus.Starting)
+            .ThenByDescending(s => s.StartedAt)
+            .Where(s => include?.Invoke(s) ?? true).Take(limit).ToList();
     }
 
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionAsync(

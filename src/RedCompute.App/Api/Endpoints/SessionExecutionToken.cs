@@ -60,7 +60,23 @@ internal static class SessionExecutionToken
         return childEnvironment;
     }
 
-    private static string? Issue(
+    internal static string? IssueAuthenticatedDirect(HttpContext context, string sessionId, string messageUid, string providerId, string providerName)
+    {
+        var subject = context.User.FindFirst("sub")?.Value;
+        if (context.User.Identity?.IsAuthenticated != true || context.User.Identity.AuthenticationType == "LocalDefault"
+            || string.IsNullOrWhiteSpace(subject) || subject is "local-user" or "system" || subject.StartsWith("service:")) return null;
+        const string client = "Direct RedCompute client";
+        var child = new ExecutionIdentity(ExecutionIdentity.CurrentSchemaVersion, Guid.NewGuid().ToString(),
+            new ExecutionAppIdentity("direct-redcompute-api", client), new ExecutionActorIdentity("app", "direct-redcompute-api", client),
+            new ExecutionBeneficiaryIdentity("user", subject, context.User.FindFirst("name")?.Value),
+            [new ExecutionContextReference("ai-session", sessionId), new ExecutionContextReference("accepted-message", messageUid),
+                new ExecutionContextReference("ai-session-provider", providerId, Name: providerName)],
+            Trace: new ExecutionTrace(context.TraceIdentifier));
+        return context.RequestServices.GetRequiredService<IExecutionTokenIssuer>().Issue(child, context.User,
+            context.RequestServices.GetRequiredService<JwtOptions>().SessionExecutionTokenLifetime).AccessToken;
+    }
+
+    internal static string? Issue(
         HttpContext context,
         string providerId,
         string providerName,

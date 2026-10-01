@@ -329,11 +329,14 @@ public class RelayServer
         var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
+        _callbacks.AttachDurableStore(_inputAttachments.DatabasePath, inputQueueStore,
+            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSession(sessionId).Info).FirstOrDefault(i => i is not null));
         var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
             _jobTracker, broadcaster, _log,
             sessionId => _confidentialSessions.Any(pair =>
                 pair.Value && pair.Key.EndsWith($":{sessionId}", StringComparison.OrdinalIgnoreCase)),
-            () => maintenance.IsDraining);
+            () => maintenance.IsDraining, redLeafReader.RecoverAuthorityAsync, maintenance.ReadVerificationTarget,
+            _callbacks.ReconcileAsync);
         maintenance.AttachInputQueue(inputQueue);
         UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks,
             _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue,

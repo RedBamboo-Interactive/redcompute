@@ -17,6 +17,28 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class UnifiedSessionEndpoints
 {
+    internal static Task<SessionInputAdmissionResult> AdmitWithCurrentCallerAsync(HttpContext ctx,
+        ISessionProvider provider, UnifiedSessionInfo info, SessionInputQueueSubmission submission,
+        SessionInputQueueService queue, CancellationToken ct)
+    {
+        var identity = ExecutionContextScope.Current;
+        var owner = ResolveUserId(ctx);
+        var authorized = ctx.User.Identity?.IsAuthenticated == true
+            && ctx.User.Identity.AuthenticationType != "LocalDefault"
+            && owner is not (null or "local-user" or "system") && owner == info.UserId && owner == submission.OwnerUserId
+            && identity?.Beneficiary.Kind == "user" && identity.Beneficiary.Id == owner
+            && submission.Provenance.OnBehalfOf.Kind == "user" && submission.Provenance.OnBehalfOf.Id == owner
+            && submission.Provenance.Actor.Kind == identity.Actor.Kind && submission.Provenance.Actor.Id == identity.Actor.Id
+            && submission.Provenance.Actor.EntityId == identity.Actor.EntityId && submission.Provenance.Origin.App.Id == identity.App.Id;
+        var token = authorized ? SessionExecutionToken.Issue(ctx, provider.ProviderId, provider.ProviderDisplayName, null) : null;
+        if (identity is null && owner == info.UserId && owner == submission.OwnerUserId
+            && !ctx.Request.Headers.ContainsKey(ProvenanceCapture.HeaderName)
+            && submission.Provenance.OnBehalfOf.Kind == "user" && submission.Provenance.OnBehalfOf.Id == owner
+            && submission.Provenance.Origin.App.Kind == "direct-client" && submission.Provenance.Origin.App.Id == "direct-redcompute-api"
+            && submission.Provenance.Actor.Kind == "app" && submission.Provenance.Actor.Id == "direct-redcompute-api")
+            token = SessionExecutionToken.IssueAuthenticatedDirect(ctx, info.Id, submission.MessageUid, provider.ProviderId, provider.ProviderDisplayName);
+        return token is null ? queue.AdmitAsync(submission, ct) : queue.AdmitWithCallerAsync(submission, token, ct);
+    }
     private static readonly HashSet<string> SupportedImageMediaTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "image/png", "image/jpeg", "image/gif", "image/webp",
@@ -173,7 +195,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("refresh", "boolean", description: "Bypass the short provider cache", defaultValue: false, location: ParamLocation.Query);
 
         endpoints.MapGet("/ai-session/sessions",
-            "List sessions across all providers, newest first", async (HttpContext ctx) =>
+            "List sessions across providers: Active and Starting first, then dormant history; newest StartedAt first within each group. Authorization and source filtering precede the requested limit.", async (HttpContext ctx) =>
         {
             var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
             var limitStr = ctx.Request.Query["limit"].FirstOrDefault();
@@ -186,7 +208,8 @@ public static class UnifiedSessionEndpoints
             List<UnifiedSessionInfo> allSessions;
             try
             {
-                allSessions = await _redLeafReader!.GetSessionsAsync(providerFilter, limit, all);
+                allSessions = await _redLeafReader!.GetSessionsAsync(providerFilter, limit, all,
+                    session => CanReadSession(ctx, session) && (excludeSource is null || session.Source != excludeSource));
             }
             catch (Exception ex)
             {
@@ -819,6 +842,14 @@ public static class UnifiedSessionEndpoints
                         : string.Join("\n", inputSpec.Where(part => part.Type == "text").Select(part => part.Value));
                 var metadataJson = body.TryGetProperty("metadata", out var metadata)
                     && metadata.ValueKind == JsonValueKind.Object ? metadata.GetRawText() : null;
+                if (metadataJson is not null && DeploymentVerificationTarget.FromMetadata(metadataJson) is not null)
+                    return Error(400, "invalid_metadata", "Use the typed deploymentVerificationTarget admission field");
+                if (body.TryGetProperty("deploymentVerificationTarget", out var targetElement))
+                {
+                    var target = targetElement.Deserialize<DeploymentVerificationTarget>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                    if (target is null) return Error(400, "invalid_deployment_target", "A target object is required");
+                    metadataJson = DeploymentVerificationTarget.WithMetadata(metadataJson, target);
+                }
                 var submission = new SessionInputQueueSubmission(
                     id,
                     userId ?? "local-user",
@@ -830,29 +861,11 @@ public static class UnifiedSessionEndpoints
                     messageUid,
                     attachmentIds,
                     idempotencyKey);
-                var admitted = await _inputQueue!.AdmitAsync(submission, ctx.RequestAborted);
-                var resumeAttempted = false;
-                var resumed = false;
-                if (IsRestartRecoverable(provider, info))
-                {
-                    resumeAttempted = true;
-                    try
-                    {
-                        UnifiedSessionInfo? resumedSession;
-                        using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
-                            resumedSession = await provider.ResumeSessionAsync(id, invocationProvenance);
-                        resumed = resumedSession is not null;
-                        if (resumedSession?.Status == SessionStatus.Idle)
-                            _inputQueue.Signal(id);
-                    }
-                    catch (Exception ex)
-                    {
-                        log($"Automatic restart recovery failed for session {id}: {ex.Message}", info.JobId);
-                    }
-                }
-                var queueSummary = resumeAttempted
-                    ? await _inputQueue.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted)
-                    : admitted.Queue;
+                var resumeAttempted = IsRestartRecoverable(provider, info);
+                var admitted = await AdmitWithCurrentCallerAsync(ctx, provider, info, submission, _inputQueue!, ctx.RequestAborted);
+                var (_, currentInfo, _) = FindSessionAcrossProviders(registry, id);
+                var resumed = resumeAttempted && currentInfo?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
+                var queueSummary = admitted.Queue;
                 return Results.Json(new
                 {
                     accepted = true,
@@ -873,6 +886,7 @@ public static class UnifiedSessionEndpoints
                 return AttachmentError(ex);
             }
             catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
+            catch (JsonException) { return Error(400, "invalid_deployment_target", "A valid typed deployment verification target is required"); }
         })
             .WithRequestBody(new
             {
@@ -909,6 +923,7 @@ public static class UnifiedSessionEndpoints
                         },
                     },
                     metadata = new { type = "object", description = "Arbitrary key-value metadata (display-only, not sent to model)" },
+                    deploymentVerificationTarget = DeploymentVerificationTargetSchema,
                     displayContent = new { type = "string", description = "Human-readable draft shown in queue views when provider input contains an enriched context envelope" },
                     delivery = new { type = "string", @enum = new[] { "after-current", "interrupt-current" }, @default = "after-current", description = "Durable delivery policy" },
                     messageUid = new { type = "string", description = "Stable message identity to persist with the message. Supply it when the same logical message is also stored elsewhere (cross-stream dedup); minted server-side when omitted. Returned in the response." },
@@ -1225,9 +1240,12 @@ public static class UnifiedSessionEndpoints
             JobProvenance provenance;
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions/{id}/resume"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
-            UnifiedSessionInfo? session;
-            using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
-                session = await provider.ResumeSessionAsync(id, provenance);
+            UnifiedSessionInfo? session = null;
+            await _inputQueue!.ExplicitResumeAsync(id, async () => {
+                using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
+                    session = await provider.ResumeSessionAsync(id, provenance);
+                return session?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
+            }, ctx.RequestAborted);
             if (session == null)
                 return Error(500, "resume_failed", provider.LastStartError ?? "Failed to resume session");
 
@@ -1244,7 +1262,7 @@ public static class UnifiedSessionEndpoints
             if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
-            await provider!.StopSessionAsync(id);
+            await _inputQueue!.StopSessionAsync(id, () => provider!.StopSessionAsync(id), ctx.RequestAborted);
             return Results.Json(new { stopped = true });
         });
 
@@ -1261,6 +1279,28 @@ public static class UnifiedSessionEndpoints
             provider!.DismissSession(id);
             var cancelledQueueItems = await _inputQueue!.CancelSessionAsync(id, ctx.RequestAborted);
             return Results.Json(new { dismissed = true, cancelledQueueItems });
+        });
+
+        endpoints.MapPost("/ai-session/sessions/{id}/input-queue/{itemId}/supersede-verification",
+            "Explicitly supersede only an exact never-delivered pending deployment verification target with a declared admitted replacement. Preserves terminal audit; ordinary inputs cannot be superseded.",
+            async (HttpContext ctx, string id, string itemId) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", "Session not found");
+            if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
+            var userId = ResolveUserId(ctx);
+            if (string.IsNullOrWhiteSpace(userId) || userId == "local-user"
+                || ctx.User.Identity?.IsAuthenticated != true || ctx.User.Identity.AuthenticationType == "LocalDefault")
+                return Error(403, "authenticated_owner_required", "An authenticated queue owner is required");
+            try
+            {
+                var body = await ctx.Request.ReadFromJsonAsync<VerificationSupersession>(ctx.RequestAborted);
+                if (body?.Target is null || body.Replacement is null) return Error(400, "invalid_deployment_target", "target and replacement are required");
+                var item = await _inputQueue!.SupersedeVerificationAsync(id, itemId, userId, body.Target, body.Replacement, ctx.RequestAborted);
+                return item is null ? Error(404, "not_found", "Queue item not found") : Results.Json(await PublicQueueItemAsync(item, userId, ctx.RequestAborted));
+            }
+            catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
+            catch (JsonException) { return Error(400, "invalid_body", "Valid typed target and replacement required"); }
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/callback",
@@ -1293,12 +1333,40 @@ public static class UnifiedSessionEndpoints
                     return Error(422, "validation_failed", "callbackId must be a nonempty string of at most 200 characters");
                 callbackId = callback.GetString();
             }
-            var deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId);
+            string? promptMessageUid = null;
+            if (body.TryGetProperty("promptMessageUid", out var prompt))
+            {
+                if (prompt.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(prompt.GetString()) || prompt.GetString()!.Length > 200 || callbackId is null)
+                    return Error(422, "validation_failed", "promptMessageUid requires an exact nonempty prompt reference and callbackId");
+                promptMessageUid = prompt.GetString();
+            }
+            bool deferred;
+            try { deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId, promptMessageUid); }
+            catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         })
             .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body)
             .WithParam("force", "boolean", description: "Register even if session is already idle (for pre-registering before sending a message)", location: ParamLocation.Body)
-            .WithParam("callbackId", "string", description: "Optional logical completion identity, echoed unchanged across callback retries; use a distinct value for each invocation", location: ParamLocation.Body);
+            .WithParam("callbackId", "string", description: "Optional logical completion operation identity, echoed unchanged across retries", location: ParamLocation.Body)
+            .WithParam("promptMessageUid", "string", description: "Opt in to durable exact-prompt completion; separate from callbackId. May pre-register before admission.", location: ParamLocation.Body);
+
+        endpoints.MapDelete("/ai-session/sessions/{id}/callback/unaccepted",
+            "Remove only an exact owner-authorized prompt preregistration after definitive admission rejection; accepted input is never removed.", async (HttpContext ctx, string id) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", "Session not found");
+            if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
+            var owner = ResolveUserId(ctx);
+            if (ctx.User.Identity?.IsAuthenticated != true || ctx.User.Identity.AuthenticationType == "LocalDefault"
+                || owner is null or "local-user" || owner != info.UserId)
+                return Error(403, "authenticated_owner_required", "Current authenticated owner required");
+            var callbackId = ctx.Request.Query["callbackId"].ToString();
+            var promptMessageUid = ctx.Request.Query["promptMessageUid"].ToString();
+            if (string.IsNullOrWhiteSpace(callbackId) || string.IsNullOrWhiteSpace(promptMessageUid)
+                || ctx.Request.Query["definitiveAdmissionFailure"] != "true")
+                return Error(422, "validation_failed", "Exact callbackId, promptMessageUid and definitiveAdmissionFailure are required");
+            return Results.Json(new { removed = _callbacks is not null && await _callbacks.RemoveUnacceptedAsync(id, callbackId, promptMessageUid, owner, ctx.RequestAborted) });
+        });
 
         endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
             "Set the session's permission mode", async (HttpContext ctx, string id) =>
@@ -1337,7 +1405,7 @@ public static class UnifiedSessionEndpoints
             if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
-            await provider!.ForceKillAsync(id);
+            await _inputQueue!.StopSessionAsync(id, () => provider!.ForceKillAsync(id), ctx.RequestAborted);
             return Results.Json(new { killed = true });
         });
 
@@ -2064,6 +2132,7 @@ public static class UnifiedSessionEndpoints
             : new { type = "attachment", attachmentId = part.Value }),
         displayContent = item.DisplayContent,
         metadata = item.MetadataJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(item.MetadataJson),
+        deploymentVerification = ObserveDeploymentVerification(item),
         messageUid = item.MessageUid,
         attachmentIds = item.AttachmentIds,
         attachments = (attachments ?? []).Select(PublicAttachment).ToArray(),
@@ -2079,6 +2148,23 @@ public static class UnifiedSessionEndpoints
         },
         deliveredMessageUid = item.DeliveredMessageUid,
         completedAt = item.CompletedAt?.ToString("O"),
+    };
+
+    private static object? ObserveDeploymentVerification(SessionInputQueueItem item)
+    {
+        var target = DeploymentVerificationTarget.FromMetadata(item.MetadataJson);
+        if (target is null) return null;
+        var observation = item.ErrorCode == "deployment_target_superseded"
+            ? new DeploymentVerificationState("superseded", item.ErrorCode)
+            : _maintenance?.ReadVerificationTarget(target) ?? new("unknown", "deployment_target_unknown");
+        return new { target, observation.State, observation.ErrorCode };
+    }
+
+    private static readonly object DeploymentVerificationTargetSchema = new {
+        type = "object", required = new[] { "service", "runId" },
+        properties = new {
+            service = new { type = "string", @enum = new[] { "redleaf", "redcompute" } },
+            runId = new { type = "string", maxLength = 100, pattern = "^[A-Za-z0-9-]+$" } },
     };
 
     private static IResult QueueError(SessionInputQueueStoreException ex) => ex.Code switch

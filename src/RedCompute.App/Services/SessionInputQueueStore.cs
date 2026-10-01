@@ -91,6 +91,78 @@ public sealed class SessionInputQueueStore
         Initialize();
     }
 
+    internal async Task<SessionInputQueueItem?> FindPromptAsync(string sessionId, string messageUid, CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$session AND MessageUid=$uid ORDER BY Sequence DESC LIMIT 1";
+        Add(command, "$session", sessionId); Add(command, "$uid", messageUid);
+        return (await ReadItemsAsync(command, ct)).FirstOrDefault();
+    }
+
+    internal async Task<SessionInputQueueItem?> GetHeadAsync(string sessionId, CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId = $id AND State IN ('Pending','Delivering','Failed') ORDER BY Sequence LIMIT 1";
+        Add(command, "$id", sessionId);
+        return (await ReadItemsAsync(command, ct)).FirstOrDefault();
+    }
+
+    internal async Task<string?> CurrentDeliveryUidAsync(string sessionId, CancellationToken ct = default)
+    {
+        await using var connection = Open(); var command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(DeliveredMessageUid,MessageUid) FROM SessionQueuedInputs WHERE SessionId=$id AND State IN ('Delivering','Delivered') ORDER BY Sequence DESC LIMIT 1";
+        Add(command, "$id", sessionId);
+        return await command.ExecuteScalarAsync(ct) as string;
+    }
+
+    internal async Task RequireRecoveryAsync(SessionInputQueueItem item, CancellationToken ct)
+    {
+        await using var connection = Open(); var command = connection.CreateCommand();
+        command.CommandText = "INSERT OR IGNORE INTO SessionInputRecovery(ItemId) SELECT Id FROM SessionQueuedInputs WHERE Id=$id AND State IN ('Pending','Delivering')";
+        Add(command, "$id", item.Id); await command.ExecuteNonQueryAsync(ct);
+    }
+
+    internal async Task<bool> RequiresRecoveryAsync(string itemId, CancellationToken ct)
+    {
+        await using var connection = Open(); var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM SessionInputRecovery WHERE ItemId=$id";
+        Add(command, "$id", itemId); return await command.ExecuteScalarAsync(ct) is not null;
+    }
+
+    internal async Task RequireSessionRecoveryAsync(string sessionId, CancellationToken ct)
+    {
+        await using var connection = Open(); var command = connection.CreateCommand();
+        command.CommandText = "INSERT OR IGNORE INTO SessionInputRecovery(ItemId) SELECT Id FROM SessionQueuedInputs WHERE SessionId=$id AND State='Pending'";
+        Add(command, "$id", sessionId); await command.ExecuteNonQueryAsync(ct);
+    }
+
+    internal async Task AuthorizePendingScopeAsync(SessionInputQueueItem item, CancellationToken ct)
+    {
+        await using var connection = Open(); using var transaction = connection.BeginTransaction();
+        var command = connection.CreateCommand(); command.Transaction = transaction;
+        command.CommandText = "DELETE FROM SessionInputRecovery WHERE ItemId IN (SELECT Id FROM SessionQueuedInputs WHERE SessionId=$session AND OwnerUserId=$owner AND ProvenanceScope=$scope AND State='Pending'); UPDATE SessionQueuedInputs SET NextAttemptAt=NULL, ErrorCode=NULL, ErrorMessage=NULL WHERE SessionId=$session AND OwnerUserId=$owner AND ProvenanceScope=$scope AND State='Pending' AND ErrorCode LIKE 'recovery_%'";
+        Add(command, "$session", item.SessionId); Add(command, "$owner", item.OwnerUserId); Add(command, "$scope", item.ProvenanceScope);
+        await command.ExecuteNonQueryAsync(ct); await transaction.CommitAsync(ct);
+    }
+
+    // Authorization/deployment waits never claim a delivery lease or count as a provider attempt.
+    internal async Task BlockPendingAsync(SessionInputQueueItem item, string code, bool retryable,
+        CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE SessionQueuedInputs SET ErrorCode = $code, ErrorMessage = $code,
+                ErrorRetryable = $retryable, NextAttemptAt = $next, UpdatedAt = $now
+            WHERE Id = $id AND State = 'Pending'
+            """;
+        Add(command, "$id", item.Id); Add(command, "$code", code); Add(command, "$retryable", retryable ? 1 : 0);
+        Add(command, "$next", DateTimeOffset.UtcNow.Add(retryable ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(5)).ToString("O"));
+        Add(command, "$now", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(ct);
+    }
     public async Task<SessionInputQueueAdmission> EnqueueAsync(SessionInputQueueSubmission submission, CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
@@ -254,6 +326,30 @@ public sealed class SessionInputQueueStore
         return item with { State = SessionInputQueueState.Cancelled, UpdatedAt = now, CompletedAt = now };
     }
 
+    internal async Task<SessionInputQueueItem?> SupersedeVerificationAsync(string sessionId, string itemId,
+        string ownerUserId, DeploymentVerificationTarget target, DeploymentVerificationTarget replacement,
+        CancellationToken ct)
+    {
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var item = await GetCoreAsync(connection, transaction, sessionId, itemId, ownerUserId, ct);
+        if (item is null) return null;
+        if (item.State != SessionInputQueueState.Pending || item.AttemptCount != 0
+            || item.DeliveredMessageUid is not null || DeploymentVerificationTarget.FromMetadata(item.MetadataJson) != target
+            || target == replacement)
+            throw new SessionInputQueueStoreException("verification_not_supersedable", "Only the exact never-delivered pending verification can be explicitly superseded");
+        var now = DateTimeOffset.UtcNow;
+        var reason = JsonSerializer.Serialize(new { target, replacement, reason = "explicit_supersession" }, JsonOptions);
+        var update = connection.CreateCommand(); update.Transaction = transaction;
+        update.CommandText = "UPDATE SessionQueuedInputs SET State='Cancelled', ErrorCode='deployment_target_superseded', ErrorMessage=$reason, CompletedAt=$now, UpdatedAt=$now WHERE Id=$id AND State='Pending' AND AttemptCount=0";
+        Add(update, "$id", item.Id); Add(update, "$reason", reason); Add(update, "$now", now.ToString("O"));
+        if (await update.ExecuteNonQueryAsync(ct) != 1) throw new SessionInputQueueStoreException("queue_race", "Verification changed during supersession");
+        await ReleaseAttachmentsAsync(connection, transaction, sessionId, item.MessageUid, now, ct);
+        await transaction.CommitAsync(ct);
+        return item with { State = SessionInputQueueState.Cancelled, ErrorCode = "deployment_target_superseded",
+            ErrorMessage = reason, CompletedAt = now, UpdatedAt = now };
+    }
+
     public async Task<IReadOnlyList<SessionInputQueueItem>> CancelSessionAsync(
         string sessionId, CancellationToken ct = default)
     {
@@ -362,6 +458,7 @@ public sealed class SessionInputQueueStore
         foreach (var item in pending)
         {
             if (!string.Equals(item.ProvenanceScope, head.ProvenanceScope, StringComparison.Ordinal)) break;
+            if (DeploymentVerificationTarget.FromMetadata(item.MetadataJson) != DeploymentVerificationTarget.FromMetadata(head.MetadataJson)) break;
             if (item.NextAttemptAt is { } retryAt && retryAt > now) break;
             batch.Add(item);
         }
@@ -442,9 +539,17 @@ public sealed class SessionInputQueueStore
     {
         await using var connection = Open();
         var cmd = connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM SessionQueuedInputs WHERE State IN ('Delivered','Cancelled') AND CompletedAt <= $cutoff";
+        cmd.CommandText = """
+            DELETE FROM SessionQueuedInputs WHERE State IN ('Delivered','Cancelled') AND CompletedAt <= $cutoff
+                AND COALESCE(ErrorCode,'') != 'deployment_target_superseded'
+                AND NOT EXISTS (SELECT 1 FROM SessionPromptCallbacks callback
+                    WHERE callback.SessionId=SessionQueuedInputs.SessionId AND json_extract(callback.EntryJson,'$.PromptMessageUid')=SessionQueuedInputs.MessageUid)
+            """;
         Add(cmd, "$cutoff", DateTimeOffset.UtcNow.Subtract(retention).ToString("O"));
-        return await cmd.ExecuteNonQueryAsync(ct);
+        var removed = await cmd.ExecuteNonQueryAsync(ct);
+        cmd.CommandText = "DELETE FROM SessionInputRecovery WHERE NOT EXISTS (SELECT 1 FROM SessionQueuedInputs input WHERE input.Id=SessionInputRecovery.ItemId)";
+        await cmd.ExecuteNonQueryAsync(ct);
+        return removed;
     }
 
     private async Task CompleteBatchAsync(
@@ -674,6 +779,13 @@ public sealed class SessionInputQueueStore
                 ON SessionQueuedInputs(SessionId, State, Sequence);
             CREATE INDEX IF NOT EXISTS IX_SessionQueuedInputs_Due
                 ON SessionQueuedInputs(State, NextAttemptAt);
+            CREATE INDEX IF NOT EXISTS IX_SessionQueuedInputs_Prompt
+                ON SessionQueuedInputs(SessionId, MessageUid);
+            CREATE TABLE IF NOT EXISTS SessionPromptCallbacks (
+                SessionId TEXT NOT NULL, CallbackId TEXT NOT NULL, EntryJson TEXT NOT NULL,
+                PRIMARY KEY(SessionId, CallbackId)
+            );
+            CREATE TABLE IF NOT EXISTS SessionInputRecovery (ItemId TEXT PRIMARY KEY NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS UX_SessionQueuedInputs_Idempotency
                 ON SessionQueuedInputs(SessionId, OwnerUserId, ProvenanceScope, IdempotencyKey)
                 WHERE IdempotencyKey IS NOT NULL;
