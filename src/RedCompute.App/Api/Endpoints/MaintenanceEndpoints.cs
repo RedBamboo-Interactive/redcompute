@@ -10,6 +10,12 @@ public static class MaintenanceEndpoints
 {
     public static void Map(EndpointRegistry endpoints, MaintenanceDeploymentCoordinator coordinator)
     {
+        endpoints.MapGet("/maintenance/status",
+            "Authenticated deployment pause and aggregate active-turn progress. No private session details or paths.",
+            (HttpContext context) => context.User.Identity?.IsAuthenticated == true
+                ? Results.Json(coordinator.Status)
+                : Results.Unauthorized());
+
         endpoints.MapPost("/maintenance/deploy-staged",
             "Drain interactive turns and hand one validated staged deployment to the desktop",
             async (HttpContext context) =>

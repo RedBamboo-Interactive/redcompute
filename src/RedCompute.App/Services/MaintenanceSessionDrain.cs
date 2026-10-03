@@ -12,19 +12,21 @@ internal sealed class MaintenanceSessionDrain
     private readonly TimeSpan _gracefulTimeout;
     private readonly TimeSpan _forcedTimeout;
     private readonly TimeSpan _pollInterval;
+    private readonly Action<int>? _reportBlockers;
 
     public MaintenanceSessionDrain(
         CapabilityRegistry registry,
         Action<string, Guid?> log,
         TimeSpan gracefulTimeout,
         TimeSpan forcedTimeout,
-        TimeSpan pollInterval)
+        TimeSpan pollInterval, Action<int>? reportBlockers = null)
     {
         _registry = registry;
         _log = log;
         _gracefulTimeout = gracefulTimeout;
         _forcedTimeout = forcedTimeout;
         _pollInterval = pollInterval;
+        _reportBlockers = reportBlockers;
     }
 
     public async Task<IReadOnlyList<PlannedRestartSession>> DrainAsync(
@@ -89,6 +91,7 @@ internal sealed class MaintenanceSessionDrain
         {
             var sessions = CurrentSessions(restartSessions);
             var blockers = sessions.Where(IsBlocking).ToArray();
+            _reportBlockers?.Invoke(blockers.Length);
             if (blockers.Length == 0)
             {
                 await Task.Delay(_pollInterval, ct);

@@ -26,8 +26,7 @@ public sealed class MaintenanceDeploymentCoordinator
     private readonly Action<string, Guid?> _log;
     private readonly object _gate = new();
     private SessionInputQueueService? _inputQueue;
-    private string _state = "idle";
-    private string? _runId;
+    private readonly MaintenanceStatus _status;
 
     public MaintenanceDeploymentCoordinator(CapabilityRegistry registry, Action<string, Guid?> log)
         : this(registry, log, GracefulDrainTimeout, ForcedDrainTimeout, DrainPollInterval)
@@ -42,13 +41,29 @@ public sealed class MaintenanceDeploymentCoordinator
         TimeSpan drainPollInterval)
     {
         _log = log;
+        _status = new(ex => _log($"[Maintenance] Status observer failed: {ex.Message}", null));
         _sessionDrain = new MaintenanceSessionDrain(
-            registry, log, gracefulDrainTimeout, forcedDrainTimeout, drainPollInterval);
+            registry, log, gracefulDrainTimeout, forcedDrainTimeout, drainPollInterval, count =>
+            {
+                lock (_gate)
+                {
+                    var status = _status.Current;
+                    if (status.State == "draining") _status.Set(status.State, status.RunId, count);
+                }
+            });
     }
 
     public bool IsDraining
     {
-        get { lock (_gate) return _state is "draining" or "launching"; }
+        get { return _status.Current.Paused; }
+    }
+
+    public MaintenanceStatusSnapshot Status => _status.Current;
+
+    public event Action<MaintenanceStatusSnapshot>? StatusChanged
+    {
+        add => _status.Changed += value;
+        remove => _status.Changed -= value;
     }
 
     public void AttachInputQueue(SessionInputQueueService inputQueue)
@@ -59,11 +74,11 @@ public sealed class MaintenanceDeploymentCoordinator
         var validated = ValidateRequest(requestPath);
         lock (_gate)
         {
-            if (_state is "draining" or "launching")
-                return new(false, _state, _runId ?? validated.RunId,
-                    $"Deployment {_runId} is already {_state}");
-            _state = "draining";
-            _runId = validated.RunId;
+            var status = _status.Current;
+            if (status.Paused)
+                return new(false, status.State, status.RunId ?? validated.RunId,
+                    $"Deployment {status.RunId} is already {status.State}");
+            _status.Set("draining", validated.RunId);
         }
 
         _ = DrainAndLaunchAsync(validated);
@@ -80,7 +95,7 @@ public sealed class MaintenanceDeploymentCoordinator
             var sessions = await _sessionDrain.DrainAsync(_inputQueue.WaitForDeliveryQuiescenceAsync);
             var checkpoint = new PlannedRestartData(request.RunId, DateTimeOffset.UtcNow, sessions);
             PlannedRestartCheckpoint.Write(checkpoint);
-            lock (_gate) _state = "launching";
+            lock (_gate) _status.Set("launching", request.RunId, 0);
             await LaunchDesktopHandoffAsync(request);
             _log($"[Maintenance] Deployment {request.RunId} handed to the Windows desktop", null);
             using var handoffTimeout = new CancellationTokenSource(HandoffTimeout);
@@ -99,7 +114,7 @@ public sealed class MaintenanceDeploymentCoordinator
         catch (Exception ex)
         {
             PlannedRestartCheckpoint.Consume();
-            lock (_gate) _state = "failed";
+            lock (_gate) _status.Set("failed", request.RunId);
             WriteFailureReceipt(request, ex);
             _log($"[Maintenance] Deployment {request.RunId} cancelled without stopping RedCompute: {ex.Message}", null);
         }

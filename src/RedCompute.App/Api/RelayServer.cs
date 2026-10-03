@@ -338,6 +338,10 @@ public class RelayServer
             () => maintenance.IsDraining, redLeafReader.RecoverAuthorityAsync, maintenance.ReadVerificationTarget,
             _callbacks.ReconcileAsync);
         maintenance.AttachInputQueue(inputQueue);
+        broadcaster.RegisterEvent(new WsEventSchema("maintenance.updated",
+            "Deployment pause or active-turn count changed; aggregate operational progress only",
+            Fields: ["state", "paused", "runId", "startedAt", "changedAt", "activeTurnCount"]));
+        maintenance.StatusChanged += status => broadcaster.Broadcast("maintenance.updated", status);
         UnifiedSessionEndpoints.Map(registry, _registry, _jobTracker, _log, _config, _docker, _callbacks,
             _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue,
             repositoryValidator, maintenance,

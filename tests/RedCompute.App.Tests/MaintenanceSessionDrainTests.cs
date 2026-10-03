@@ -82,6 +82,20 @@ public sealed class MaintenanceSessionDrainTests
         Assert.Contains(provider.Session.Id, error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Progress_reports_active_count_then_zero_without_stopping_a_completed_turn()
+    {
+        var (registry, provider) = RegistryWithSession(SessionStatus.Active);
+        provider.IdleAfterReads = 2;
+        var counts = new List<int>();
+        var drain = new MaintenanceSessionDrain(registry, (_, _) => { },
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(5), counts.Add);
+        await drain.DrainAsync(_ => Task.CompletedTask);
+        Assert.Contains(1, counts);
+        Assert.Equal(0, counts.Last());
+        Assert.Equal(0, provider.ForceKillCalls);
+    }
+
     private static MaintenanceSessionDrain CreateDrain(
         CapabilityRegistry registry,
         List<string> logs,
