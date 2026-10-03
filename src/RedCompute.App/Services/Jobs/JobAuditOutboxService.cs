@@ -36,7 +36,9 @@ public sealed class JobAuditOutboxService
             var processed = await ProcessBatchAsync(ct);
             if (DateTimeOffset.UtcNow >= _nextReconcile)
             {
-                await ReconcileBatchAsync(ct);
+                try { await ReconcileBatchAsync(ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex) { _log($"[job-audit] Reconciliation deferred: {ex.Message}", null); }
                 _nextReconcile = DateTimeOffset.UtcNow + ReconcileInterval;
             }
             if (processed == 0)
@@ -97,7 +99,6 @@ public sealed class JobAuditOutboxService
                 _reconcileOffset = 0;
                 return;
             }
-            _reconcileOffset += jobs.Count;
         }
 
         foreach (var job in jobs)
@@ -105,14 +106,26 @@ public sealed class JobAuditOutboxService
             ct.ThrowIfCancellationRequested();
             if (!await _client.EntityExistsAsync(JobSlug(job.Id), ct))
                 await EnsureProjectionOutboxAsync(job, ct);
-
-            IReadOnlyList<JobLifecycleEvent> events;
-            using (var db = _dbFactory())
-                events = await db.JobEvents.AsNoTracking().Where(e => e.JobId == job.Id).ToListAsync(ct);
-            foreach (var evt in events)
-                if (!await _client.RecordExistsAsync("compute-job-events", EventExternalId(evt.Id), ct))
-                    await EnsureEventOutboxAsync(evt, ct);
         }
+
+        var jobIds = jobs.Select(j => j.Id).ToArray();
+        List<Guid> eventIds;
+        using (var db = _dbFactory())
+            eventIds = await db.JobEvents.AsNoTracking().Where(e => jobIds.Contains(e.JobId))
+                .Select(e => e.Id).ToListAsync(ct);
+        foreach (var batch in eventIds.Chunk(1000))
+        {
+            var present = await _client.ExistingRecordIdsAsync("compute-job-events",
+                batch.Select(EventExternalId).ToArray(), ct);
+            var missing = batch.Where(id => !present.Contains(EventExternalId(id))).ToArray();
+            if (missing.Length == 0) continue;
+            List<JobLifecycleEvent> events;
+            using (var db = _dbFactory())
+                events = await db.JobEvents.AsNoTracking().Where(e => missing.Contains(e.Id)).ToListAsync(ct);
+            foreach (var evt in events) await EnsureEventOutboxAsync(evt, ct);
+        }
+        // Retry the same jobs if a presence check failed; do not silently skip them.
+        _reconcileOffset += jobs.Count;
     }
 
     private async Task EnsureProjectionOutboxAsync(JobRecord job, CancellationToken ct)
