@@ -856,7 +856,12 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             var broadcast = true;
             if (evt.MessageId is { Length: > 0 } itemId && evt.Type is "text" or "thinking" or "tool_result")
             {
-                if (evt.IsPartial) session.StreamedItems.Add(itemId);
+                // Empty starts and summary separators are activity, not delivered summary text.
+                if (evt.IsPartial)
+                {
+                    if (evt.Type != "thinking" || !string.IsNullOrWhiteSpace(evt.Content))
+                        session.StreamedItems.Add(itemId);
+                }
                 // Still persisted — the live client already has this content from the deltas, but
                 // partials are never written, so the store would otherwise lose the message.
                 else if (session.StreamedItems.Contains(itemId) && evt.Type != "tool_result") broadcast = false;
@@ -1038,6 +1043,16 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             evt.MessageUid = session.CurrentTurnUid ??= Guid.NewGuid().ToString("N");
 
         if (broadcast) StreamEvent?.Invoke(session.Info.Id, evt);
+        else if (evt.Type == "thinking" && !evt.IsPartial)
+        {
+            // Settle the existing live square without echoing its streamed summary.
+            // Persist the authoritative full item below exactly once.
+            StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
+            {
+                Type = "thinking", Content = "", MessageId = evt.MessageId,
+                MessageUid = evt.MessageUid, IsPartial = false,
+            });
+        }
 
         if (evt.IsPartial) return; // partials are deltas of a part we persist once, on completion
 

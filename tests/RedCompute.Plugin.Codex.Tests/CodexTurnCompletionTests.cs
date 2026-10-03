@@ -135,6 +135,72 @@ public sealed class CodexTurnCompletionTests
         Assert.DoesNotContain(harness.Events, e => e.Type == "error");
     }
 
+    [Fact]
+    public void EmptyReasoningStartIsVisibleImmediatelyWithoutPersistingAPartial()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        harness.Notify("item/started", new { item = new { type = "reasoning", id = "r1", summary = Array.Empty<string>(), content = Array.Empty<string>() } });
+        var started = Assert.Single(harness.Events);
+        Assert.Equal("thinking", started.Type);
+        Assert.Equal("r1", started.MessageId);
+        Assert.True(started.IsPartial);
+        Assert.Equal("", started.Content);
+        Assert.False(string.IsNullOrEmpty(started.MessageUid));
+        Assert.Empty(harness.Store.Messages);
+
+        harness.Notify("item/completed", new { item = new { type = "reasoning", id = "r1", summary = new[] { "Completed summary" }, content = Array.Empty<string>() } });
+        Assert.Equal("Completed summary", harness.Events.Last().Content);
+        Assert.False(harness.Events.Last().IsPartial);
+        Assert.Equal(started.MessageUid, harness.Events.Last().MessageUid);
+        Assert.Equal("Completed summary", Assert.Single(harness.Store.Messages).Content);
+    }
+
+    [Fact]
+    public void StreamedReasoningSettlesWithoutEchoAndPersistsTheFullSummaryOnce()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        harness.Notify("item/started", new { item = new { type = "reasoning", id = "r1", summary = Array.Empty<string>() } });
+        harness.Notify("item/reasoning/summaryTextDelta", new { itemId = "r1", delta = "First" });
+        harness.Notify("item/reasoning/summaryPartAdded", new { itemId = "r1", summaryIndex = 1 });
+        harness.Notify("item/reasoning/summaryTextDelta", new { itemId = "r1", delta = "Second" });
+        harness.Notify("item/completed", new { item = new { type = "reasoning", id = "r1", summary = new[] { "First", "Second" } } });
+        Assert.Equal(5, harness.Events.Count);
+        Assert.Equal("First\n\nSecond", string.Concat(harness.Events.Select(e => e.Content)));
+        Assert.False(harness.Events.Last().IsPartial);
+        Assert.Equal("", harness.Events.Last().Content);
+        Assert.Equal("First\n\nSecond", Assert.Single(harness.Store.Messages).Content);
+        Assert.All(harness.Events, e => Assert.Equal(harness.Events[0].MessageUid, e.MessageUid));
+    }
+
+    [Fact]
+    public void SummarySeparatorAloneDoesNotSuppressCompletedFallback()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        harness.Notify("item/started", new { item = new { type = "reasoning", id = "r1", summary = Array.Empty<string>() } });
+        harness.Notify("item/reasoning/summaryPartAdded", new { itemId = "r1", summaryIndex = 1 });
+        harness.Notify("item/completed", new { item = new { type = "reasoning", id = "r1", summary = new[] { "Fallback" } } });
+        Assert.Equal("Fallback", harness.Events.Last().Content);
+        Assert.Equal("Fallback", Assert.Single(harness.Store.Messages).Content);
+    }
+
+    [Fact]
+    public void ReasoningWithoutPublicSummaryStillSettlesAndDoesNotBecomeFinalOutput()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        foreach (var method in new[] { "item/started", "item/completed" })
+            harness.Notify(method, new { item = new { type = "reasoning", id = "r1", summary = Array.Empty<string>() } });
+        Assert.Equal(2, harness.Events.Count);
+        Assert.True(harness.Events[0].IsPartial);
+        Assert.False(harness.Events[1].IsPartial);
+        Assert.Equal("", Assert.Single(harness.Store.Messages).Content);
+        harness.Complete();
+        Assert.Equal("Codex turn completed without final output", harness.Events.Last().Content);
+    }
+
     // Exercise the production notification handler and its actual per-session state without an app-server process.
     private sealed class NotificationHarness
     {

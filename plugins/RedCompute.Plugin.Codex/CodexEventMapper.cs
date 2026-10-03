@@ -118,7 +118,11 @@ public static class CodexEventMapper
             "agentMessage" => Single(
                 "text", Str(item, "text"), partial: started, messageId: id, phase: MessagePhase(item)),
             "plan" => started ? [] : Single("text", Str(item, "text"), partial: false, messageId: id),
-            "reasoning" => Single("thinking", Reasoning(item), partial: started, messageId: id),
+            // Reasoning lifecycle exists before any public summary is available.
+            "reasoning" => [new CodexStreamEvent
+            {
+                Type = "thinking", Content = Reasoning(item) ?? "", IsPartial = started, MessageId = id,
+            }],
 
             "commandExecution" => Command(item, started, id),
             "fileChange" => FileChange(item, started, id),
