@@ -201,6 +201,35 @@ public sealed class CodexTurnCompletionTests
         Assert.Equal("Codex turn completed without final output", harness.Events.Last().Content);
     }
 
+    [Fact]
+    public void ContextCompactionPersistsOnePairedActivityInsideTheRunningTurn()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        var item = new { item = new { type = "contextCompaction", id = "compact-1" } };
+
+        harness.Notify("item/started", item);
+        harness.Notify("item/completed", item);
+
+        Assert.Collection(harness.Events,
+            started =>
+            {
+                Assert.Equal("tool_use", started.Type);
+                Assert.Equal("ContextCompaction", started.ToolName);
+            },
+            completed =>
+            {
+                Assert.Equal("tool_result", completed.Type);
+                Assert.Equal("Context compacted", completed.ToolResult);
+            });
+        Assert.False(string.IsNullOrWhiteSpace(harness.Events[0].MessageUid));
+        Assert.Equal(harness.Events[0].MessageUid, harness.Events[1].MessageUid);
+        Assert.Equal(2, harness.Store.Messages.Count);
+        Assert.All(harness.Store.Messages, message =>
+            Assert.Equal(harness.Events[0].MessageUid, message.MessageUid));
+        Assert.DoesNotContain(harness.Events, e => e.Type == "status");
+    }
+
     // Exercise the production notification handler and its actual per-session state without an app-server process.
     private sealed class NotificationHarness
     {

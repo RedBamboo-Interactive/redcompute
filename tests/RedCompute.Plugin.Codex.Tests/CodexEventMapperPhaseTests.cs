@@ -59,4 +59,22 @@ public sealed class CodexEventMapperPhaseTests
 
         Assert.Null(mapped.Phase);
     }
+
+    [Fact]
+    public void ContextCompactionMapsToOneActivityPairInsteadOfTerminalStatus()
+    {
+        using var payload = JsonDocument.Parse("""
+            {"item":{"type":"contextCompaction","id":"compact-1"}}
+            """);
+
+        var started = Assert.Single(CodexEventMapper.Map("item/started", payload.RootElement));
+        Assert.Equal("tool_use", started.Type);
+        Assert.Equal("ContextCompaction", started.ToolName);
+        Assert.Equal("compact-1", started.MessageId);
+
+        var completed = Assert.Single(CodexEventMapper.Map("item/completed", payload.RootElement));
+        Assert.Equal("tool_result", completed.Type);
+        Assert.Equal("Context compacted", completed.ToolResult);
+        Assert.Equal("compact-1", completed.MessageId);
+    }
 }

@@ -134,7 +134,12 @@ public static class CodexEventMapper
             "imageView" => started
                 ? Tool("Read", new { file_path = Str(item, "path") }, id)
                 : [],
-            "contextCompaction" => started ? [] : Single("status", "context compacted", partial: false, id),
+            // Compaction is part of a running turn, not a terminal session status. Model it as a
+            // normal activity pair so clients can show the long provider-side pause immediately,
+            // settle the same square on completion, and keep the composer in its active-turn state.
+            "contextCompaction" => started
+                ? Tool("ContextCompaction", null, id)
+                : Result("Context compacted", id),
 
             // userMessage is echoed back by the server; we already recorded it when it was sent.
             "userMessage" or "hookPrompt" => [],
@@ -360,6 +365,14 @@ public static class CodexEventMapper
     private static List<CodexStreamEvent> Tool(string name, object? input, string? id) =>
     [
         new CodexStreamEvent { Type = "tool_use", ToolName = name, ToolInput = input, MessageId = id },
+    ];
+
+    private static List<CodexStreamEvent> Result(string content, string? id) =>
+    [
+        new CodexStreamEvent
+        {
+            Type = "tool_result", Content = content, ToolResult = content, MessageId = id,
+        },
     ];
 
     private static List<CodexStreamEvent> Single(
