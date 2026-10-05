@@ -139,7 +139,8 @@ public sealed class SpeechDiarizationCapabilityTests
         Assert.Equal("wsl.exe", start.FileName);
         Assert.Contains("if [ -f ~/diarization-env/bin/activate ]", command);
         Assert.Contains("--revision f667ed73aee57d40cc39428eb768b4fd87a0a29e", command);
-        Assert.Contains("REDCOMPUTE_LOCALWSL_PROCESS=", wrapper);
+        Assert.Contains("base64 -d | bash", wrapper);
+        Assert.DoesNotContain("$", wrapper);
         Assert.DoesNotContain("pkill", wrapper, StringComparison.OrdinalIgnoreCase);
     }
 

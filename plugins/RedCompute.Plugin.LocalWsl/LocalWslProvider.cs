@@ -176,16 +176,22 @@ public class LocalWslProvider : IPluginProvider
             var command = BuildWslBackendCommand();
             var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(command));
             var dollar = ((char)36).ToString();
-            var wrapper =
+            var lifecycleScript =
                 "set -euo pipefail; " +
                 $"command={dollar}(printf '%s' '{encoded}' | base64 -d); " +
-                $"setsid bash -lc \"exec {dollar}command\" & child={dollar}!; " +
+                $"setsid bash -lc \"{dollar}command\" & child={dollar}!; " +
                 $"start={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}child/stat\"); " +
                 $"printf '{ProcessMarker}%s:%s\\n' \"{dollar}child\" \"{dollar}start\"; " +
                 "cleanup() { " +
                 $"current={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}child/stat\" 2>/dev/null || true); " +
                 $"[ \"{dollar}current\" = \"{dollar}start\" ] && kill -TERM -- \"-{dollar}child\" 2>/dev/null || true; }}; " +
                 $"trap cleanup TERM INT EXIT; wait \"{dollar}child\"";
+            // wsl.exe reparses the command tail through the distribution shell. Passing a
+            // lifecycle script containing '$' directly therefore expands its variables before
+            // bash -lc receives it. Base64-wrap the whole script so that the reparse-safe outer
+            // command contains no shell variables; the inner bash owns every expansion.
+            var lifecycleEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(lifecycleScript));
+            var wrapper = $"printf '%s' '{lifecycleEncoded}' | base64 -d | bash";
 
             var startInfo = new ProcessStartInfo
             {
