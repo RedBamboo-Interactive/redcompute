@@ -1,0 +1,8 @@
+{
+  "slug": "diarization",
+  "displayName": "Speaker Diarization",
+  "description": "Determine which anonymous speaker spoke when",
+  "icon": "ph-fill ph-waveform",
+  "color": "#7C3AED",
+  "category": "audio"
+}

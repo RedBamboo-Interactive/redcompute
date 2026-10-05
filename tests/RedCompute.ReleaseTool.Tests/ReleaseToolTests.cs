@@ -419,6 +419,11 @@ public sealed class ReleaseToolTests
         };
         start.ArgumentList.Add("-NoLogo");
         start.ArgumentList.Add("-NoProfile");
+        if (OperatingSystem.IsWindows())
+        {
+            start.ArgumentList.Add("-ExecutionPolicy");
+            start.ArgumentList.Add("Bypass");
+        }
         start.ArgumentList.Add("-File");
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start pwsh.");

@@ -60,6 +60,9 @@
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.SttLocal\RedCompute.Plugin.SttLocal.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.DiarizationLocal\RedCompute.Plugin.DiarizationLocal.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Kev\RedCompute.Plugin.Kev.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
@@ -96,6 +99,16 @@
     <Copy SourceFiles="@(CapabilityFiles)" DestinationFolder="$(OutputPath)capabilities" SkipUnchangedFiles="true" />
   </Target>
 
+  <Target Name="CopyLocalBackends" AfterTargets="Build">
+    <ItemGroup>
+      <LocalBackendFiles Include="..\..\backends\**\*"
+                         Exclude="..\..\backends\**\__pycache__\**;..\..\backends\**\*.pyc" />
+    </ItemGroup>
+    <Copy SourceFiles="@(LocalBackendFiles)"
+          DestinationFiles="@(LocalBackendFiles->'$(OutputPath)backends\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
   <!-- Publish has a separate output root. Keep the installed runtime graph identical
        to the normal build by copying the same provider binaries and capability files. -->
   <Target Name="CopyRuntimeContentToPublish" AfterTargets="Publish">
@@ -105,10 +118,15 @@
       <PublishedPluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\$(RuntimeIdentifier)\RedCompute.Plugin.*.dll"
                             Condition="'$(RuntimeIdentifier)' != ''" />
       <PublishedCapabilityFiles Include="..\..\capabilities\*.json" />
+      <PublishedBackendFiles Include="..\..\backends\**\*"
+                             Exclude="..\..\backends\**\__pycache__\**;..\..\backends\**\*.pyc" />
     </ItemGroup>
-    <MakeDir Directories="$(PublishDir)plugins;$(PublishDir)capabilities" />
+    <MakeDir Directories="$(PublishDir)plugins;$(PublishDir)capabilities;$(PublishDir)backends" />
     <Copy SourceFiles="@(PublishedPluginFiles)" DestinationFolder="$(PublishDir)plugins" SkipUnchangedFiles="false" />
     <Copy SourceFiles="@(PublishedCapabilityFiles)" DestinationFolder="$(PublishDir)capabilities" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="@(PublishedBackendFiles)"
+          DestinationFiles="@(PublishedBackendFiles->'$(PublishDir)backends\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="false" />
   </Target>
 
 </Project>

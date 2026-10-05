@@ -5,9 +5,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\RedCompute.PluginSdk\RedCompute.PluginSdk.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <InternalsVisibleTo Include="RedCompute.App.Tests" />
+    <ProjectReference Include="..\RedCompute.Plugin.LocalWsl\RedCompute.Plugin.LocalWsl.csproj" />
   </ItemGroup>
 </Project>

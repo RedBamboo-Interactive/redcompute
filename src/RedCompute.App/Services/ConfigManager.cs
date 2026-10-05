@@ -23,6 +23,9 @@ public class ConfigManager
 
     private readonly HashSet<string> _vaultedApiKeys = new(StringComparer.OrdinalIgnoreCase);
 
+    private static string BundledBackendPath(string slug)
+        => Path.Combine(AppContext.BaseDirectory, "backends", slug);
+
     public RedComputeConfig Config { get; private set; } = new();
 
     public void Load()
@@ -229,6 +232,20 @@ public class ConfigManager
             if (Config.Capabilities.Remove(slug))
                 dirty = true;
         }
+
+        if (Config.Capabilities.TryGetValue("stt", out var stt))
+        {
+            var bundledStt = BundledBackendPath("stt-local");
+            foreach (var provider in stt.Providers.Values)
+            {
+                if (string.Equals(provider.ServerPath, @"T:\Projects\faster-whisper-server",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    provider.ServerPath = bundledStt;
+                    dirty = true;
+                }
+            }
+        }
         if (dirty) Save();
     }
 
@@ -274,7 +291,7 @@ public class ConfigManager
                             Type = "SttLocal",
                             WslDistro = "Ubuntu-24.04",
                             VenvPath = "~/stt-env",
-                            ServerPath = @"T:\Projects\faster-whisper-server",
+                            ServerPath = BundledBackendPath("stt-local"),
                             BackendPort = 8766,
                             HealthEndpoint = "/health",
                             Model = "large-v3",
@@ -285,11 +302,30 @@ public class ConfigManager
                             Type = "SttLocal",
                             WslDistro = "Ubuntu-24.04",
                             VenvPath = "~/stt-env",
-                            ServerPath = @"T:\Projects\faster-whisper-server",
+                            ServerPath = BundledBackendPath("stt-local"),
                             BackendPort = 8767,
                             HealthEndpoint = "/health",
                             Model = "large-v3-turbo",
                             StartupTimeoutSeconds = 300
+                        }
+                    }
+                },
+                ["diarization"] = new()
+                {
+                    ActiveProvider = "local-wsl",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["local-wsl"] = new()
+                        {
+                            Type = "DiarizationLocal",
+                            WslDistro = "Ubuntu-24.04",
+                            VenvPath = "~/diarization-env",
+                            ServerPath = BundledBackendPath("diarization-local"),
+                            BackendPort = 8768,
+                            HealthEndpoint = "/health",
+                            Model = "nvidia/Nemotron-3-Diarization",
+                            ModelRevision = "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
+                            StartupTimeoutSeconds = 900,
                         }
                     }
                 },

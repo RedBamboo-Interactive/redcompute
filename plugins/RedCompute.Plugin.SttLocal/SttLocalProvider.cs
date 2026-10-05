@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedCompute.Core.Configuration;
@@ -106,8 +107,81 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
             Required = false,
             Default = true,
             Description = "Enable voice activity detection filter"
+        },
+        ["diarize"] = new ParameterSchema
+        {
+            Type = "boolean",
+            Required = false,
+            Default = false,
+            Description = "Enrich the transcription with anonymous speaker turns"
+        },
+        ["diarization_mode"] = new ParameterSchema
+        {
+            Type = "string",
+            Required = false,
+            Default = "offline",
+            Description = "Offline whole-file or stateful streaming diarization",
+            Enum = ["offline", "streaming"]
+        },
+        ["diarization_session_id"] = new ParameterSchema
+        {
+            Type = "string",
+            Required = false,
+            Description = "Stable diarization session identifier for streaming audio"
+        },
+        ["diarization_chunk_id"] = new ParameterSchema
+        {
+            Type = "string",
+            Required = false,
+            Description = "Idempotency identifier for a streaming audio chunk"
+        },
+        ["diarization_is_first_chunk"] = new ParameterSchema
+        {
+            Type = "boolean",
+            Required = false,
+            Default = false,
+            Description = "Begin or reset the streaming diarization session"
+        },
+        ["diarization_is_last_chunk"] = new ParameterSchema
+        {
+            Type = "boolean",
+            Required = false,
+            Default = false,
+            Description = "Flush and close the streaming diarization session"
+        },
+        ["diarization_max_speakers"] = new ParameterSchema
+        {
+            Type = "number",
+            Required = false,
+            Default = 8,
+            Min = 1,
+            Max = 8,
+            Description = "Maximum anonymous speaker channels retained in the result"
         }
     };
+
+    public Dictionary<string, string> ValidateParameters(Dictionary<string, object?> parameters)
+    {
+        var errors = new Dictionary<string, string>();
+        if (!BoolValue(parameters.GetValueOrDefault("diarize"))) return errors;
+
+        var mode = StringValue(parameters.GetValueOrDefault("diarization_mode")) ?? "offline";
+        if (mode is not ("offline" or "streaming"))
+            errors["diarization_mode"] = "must be offline or streaming";
+        if (mode == "streaming")
+        {
+            if (string.IsNullOrWhiteSpace(StringValue(parameters.GetValueOrDefault("diarization_session_id"))))
+                errors["diarization_session_id"] = "required when streaming diarization is enabled";
+            if (string.IsNullOrWhiteSpace(StringValue(parameters.GetValueOrDefault("diarization_chunk_id"))))
+                errors["diarization_chunk_id"] = "required when streaming diarization is enabled";
+        }
+
+        if (NumberValue(parameters.GetValueOrDefault("diarization_max_speakers")) is { } count &&
+            (count < 1 || count > 8 || count != Math.Truncate(count)))
+            errors["diarization_max_speakers"] = "must be an integer from 1 through 8";
+
+        return errors;
+    }
 
     public ReturnSchema OutputSchema => new()
     {
@@ -171,4 +245,30 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
             Description = "List supported languages for transcription"
         }
     ];
+
+    private static string? StringValue(object? value) => value switch
+    {
+        null => null,
+        JsonElement { ValueKind: JsonValueKind.String } json => json.GetString(),
+        _ => value.ToString(),
+    };
+
+    private static bool BoolValue(object? value) => value switch
+    {
+        bool boolean => boolean,
+        JsonElement { ValueKind: JsonValueKind.True } => true,
+        JsonElement { ValueKind: JsonValueKind.False } => false,
+        JsonElement { ValueKind: JsonValueKind.String } json
+            when bool.TryParse(json.GetString(), out var parsed) => parsed,
+        _ when bool.TryParse(value?.ToString(), out var parsed) => parsed,
+        _ => false,
+    };
+
+    private static double? NumberValue(object? value) => value switch
+    {
+        null => null,
+        JsonElement { ValueKind: JsonValueKind.Number } json when json.TryGetDouble(out var number) => number,
+        _ when double.TryParse(value.ToString(), out var number) => number,
+        _ => null,
+    };
 }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Text;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
@@ -10,11 +11,14 @@ namespace RedCompute.Plugin.LocalWsl;
 
 public class LocalWslProvider : IPluginProvider
 {
+    private const string ProcessMarker = "REDCOMPUTE_LOCALWSL_PROCESS=";
     private readonly ProviderConfig _config;
     private readonly string _capabilitySlug;
     private readonly string _providerType;
     private readonly Action<string> _log;
     private Process? _process;
+    private int? _wslProcessGroupId;
+    private string? _wslStartTime;
     private BackendStatus _status = BackendStatus.Stopped;
 
     public int? ProcessId => _process is { HasExited: false } ? _process.Id : null;
@@ -67,10 +71,23 @@ public class LocalWslProvider : IPluginProvider
                 return false;
             }
 
+            var ownedWsl = new TaskCompletionSource<(int Pid, string StartTime)>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data == null) return;
+                if (TryParseProcessMarker(e.Data, out var pid, out var startTime))
+                {
+                    _wslProcessGroupId = pid;
+                    _wslStartTime = startTime;
+                    ownedWsl.TrySetResult((pid, startTime));
+                    return;
+                }
+                _log($"[Backend] {e.Data}");
+            };
+            _process.ErrorDataReceived += (_, e) => { if (e.Data != null) _log($"[Backend:err] {e.Data}"); };
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
-            _process.OutputDataReceived += (_, e) => { if (e.Data != null) _log($"[Backend] {e.Data}"); };
-            _process.ErrorDataReceived += (_, e) => { if (e.Data != null) _log($"[Backend:err] {e.Data}"); };
 
             var timeout = TimeSpan.FromSeconds(_config.StartupTimeoutSeconds);
             var deadline = DateTime.UtcNow + timeout;
@@ -81,10 +98,25 @@ public class LocalWslProvider : IPluginProvider
                 {
                     _status = BackendStatus.Error;
                     _log($"[LocalWsl] Backend process exited with code {_process.ExitCode}");
+                    await StopOwnedProcessAsync(CancellationToken.None);
                     return false;
                 }
                 if (await CheckHealthAsync())
                 {
+                    if (_config.WslDistro != null)
+                    {
+                        try
+                        {
+                            await ownedWsl.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+                        }
+                        catch
+                        {
+                            _status = BackendStatus.Error;
+                            _log("[LocalWsl] Backend became healthy but its owned WSL process identity was not captured");
+                            await StopOwnedProcessAsync(CancellationToken.None);
+                            return false;
+                        }
+                    }
                     _status = BackendStatus.Running;
                     _log($"[LocalWsl] Backend healthy on port {_config.BackendPort}");
                     return true;
@@ -94,50 +126,30 @@ public class LocalWslProvider : IPluginProvider
 
             _status = BackendStatus.Error;
             _log("[LocalWsl] Backend failed to become healthy within timeout");
+            await StopOwnedProcessAsync(CancellationToken.None);
             return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _status = BackendStatus.Error;
+            await StopOwnedProcessAsync(CancellationToken.None);
+            throw;
         }
         catch (Exception ex)
         {
             _status = BackendStatus.Error;
             _log($"[LocalWsl] Start failed: {ex.Message}");
+            await StopOwnedProcessAsync(CancellationToken.None);
             return false;
         }
     }
 
-    public Task StopAsync(CancellationToken ct = default)
+    public async Task StopAsync(CancellationToken ct = default)
     {
         _status = BackendStatus.Draining;
-
-        if (_process != null && !_process.HasExited)
-        {
-            try
-            {
-                if (_config.WslDistro != null)
-                {
-                    // Kill via WSL
-                    var kill = Process.Start(new ProcessStartInfo
-                    {
-                        FileName = "wsl.exe",
-                        Arguments = $"-d {_config.WslDistro} pkill -f \"uvicorn|python\"",
-                        CreateNoWindow = true,
-                        UseShellExecute = false
-                    });
-                    kill?.WaitForExit(5000);
-                }
-                else
-                {
-                    _process.Kill(entireProcessTree: true);
-                }
-            }
-            catch { }
-
-            _process.Dispose();
-            _process = null;
-        }
-
+        await StopOwnedProcessAsync(ct);
         _status = BackendStatus.Stopped;
         _log("[LocalWsl] Backend stopped");
-        return Task.CompletedTask;
     }
 
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(_status);
@@ -155,29 +167,41 @@ public class LocalWslProvider : IPluginProvider
         await StopAsync();
     }
 
-    private ProcessStartInfo BuildStartInfo()
+    internal ProcessStartInfo BuildStartInfo()
     {
-        var extraArgs = "";
-        if (!string.IsNullOrEmpty(_config.Model))
-            extraArgs += $" --model {_config.Model}";
-        if (_config.BackendPort > 0)
-            extraArgs += $" --port {_config.BackendPort}";
+        var extraArgs = BuildBackendArguments();
 
         if (_config.WslDistro != null)
         {
-            var venvActivate = _config.VenvPath != null ? $"source {_config.VenvPath}/bin/activate && " : "";
-            var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
-            var command = $"{venvActivate}cd {serverPath} && python3 server.py{extraArgs}";
+            var command = BuildWslBackendCommand();
+            var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(command));
+            var dollar = ((char)36).ToString();
+            var wrapper =
+                "set -euo pipefail; " +
+                $"command={dollar}(printf '%s' '{encoded}' | base64 -d); " +
+                $"setsid bash -lc \"exec {dollar}command\" & child={dollar}!; " +
+                $"start={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}child/stat\"); " +
+                $"printf '{ProcessMarker}%s:%s\\n' \"{dollar}child\" \"{dollar}start\"; " +
+                "cleanup() { " +
+                $"current={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}child/stat\" 2>/dev/null || true); " +
+                $"[ \"{dollar}current\" = \"{dollar}start\" ] && kill -TERM -- \"-{dollar}child\" 2>/dev/null || true; }}; " +
+                $"trap cleanup TERM INT EXIT; wait \"{dollar}child\"";
 
-            return new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = "wsl.exe",
-                Arguments = $"-d {_config.WslDistro} bash -c \"{command}\"",
                 CreateNoWindow = true,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            startInfo.ArgumentList.Add("-d");
+            startInfo.ArgumentList.Add(_config.WslDistro);
+            startInfo.ArgumentList.Add("--");
+            startInfo.ArgumentList.Add("bash");
+            startInfo.ArgumentList.Add("-lc");
+            startInfo.ArgumentList.Add(wrapper);
+            return startInfo;
         }
 
         return new ProcessStartInfo
@@ -190,6 +214,116 @@ public class LocalWslProvider : IPluginProvider
             RedirectStandardError = true
         };
     }
+
+    internal string BuildWslBackendCommand()
+    {
+        var venvActivate = _config.VenvPath != null
+            ? $"if [ -f {_config.VenvPath}/bin/activate ]; then source {_config.VenvPath}/bin/activate; fi; "
+            : "";
+        var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
+        return $"{venvActivate}cd '{ShellLiteral(serverPath)}' && exec python3 server.py{BuildBackendArguments()}";
+    }
+
+    private string BuildBackendArguments()
+    {
+        var extraArgs = "";
+        if (!string.IsNullOrEmpty(_config.Model))
+            extraArgs += $" --model {_config.Model}";
+        if (!string.IsNullOrEmpty(_config.ModelRevision))
+            extraArgs += $" --revision {_config.ModelRevision}";
+        if (_config.BackendPort > 0)
+            extraArgs += $" --port {_config.BackendPort}";
+        return extraArgs;
+    }
+
+    private async Task StopOwnedProcessAsync(CancellationToken ct)
+    {
+        var process = _process;
+        _process = null;
+        if (process is null)
+        {
+            _wslProcessGroupId = null;
+            _wslStartTime = null;
+            return;
+        }
+
+        try
+        {
+            if (_config.WslDistro != null &&
+                _wslProcessGroupId is { } pid &&
+                _wslStartTime is { } startTime)
+            {
+                var stopInfo = new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                stopInfo.ArgumentList.Add("-d");
+                stopInfo.ArgumentList.Add(_config.WslDistro);
+                stopInfo.ArgumentList.Add("--");
+                stopInfo.ArgumentList.Add("bash");
+                stopInfo.ArgumentList.Add("-lc");
+                stopInfo.ArgumentList.Add(BuildWslStopScript(pid, startTime));
+                using var stop = Process.Start(stopInfo);
+                if (stop is not null) await stop.WaitForExitAsync(ct);
+            }
+            else if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            if (!process.HasExited)
+            {
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                wait.CancelAfter(TimeSpan.FromSeconds(5));
+                try { await process.WaitForExitAsync(wait.Token); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+        }
+        finally
+        {
+            process.Dispose();
+            _wslProcessGroupId = null;
+            _wslStartTime = null;
+        }
+    }
+
+    internal static string BuildWslStopScript(int pid, string startTime)
+    {
+        if (pid <= 1 || !startTime.All(char.IsDigit))
+            throw new ArgumentException("Invalid owned WSL process identity");
+        var dollar = ((char)36).ToString();
+        return
+            $"pid={pid}; expected={startTime}; " +
+            $"current={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}pid/stat\" 2>/dev/null || true); " +
+            $"if [ \"{dollar}current\" = \"{dollar}expected\" ]; then " +
+            $"kill -TERM -- \"-{dollar}pid\" 2>/dev/null || true; " +
+            "for i in 1 2 3 4 5 6 7 8 9 10; do " +
+            $"kill -0 -- \"-{dollar}pid\" 2>/dev/null || exit 0; sleep 0.25; done; " +
+            $"current={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}pid/stat\" 2>/dev/null || true); " +
+            $"[ \"{dollar}current\" = \"{dollar}expected\" ] && kill -KILL -- \"-{dollar}pid\" 2>/dev/null || true; fi";
+    }
+
+    private static bool TryParseProcessMarker(string line, out int pid, out string startTime)
+    {
+        pid = 0;
+        startTime = "";
+        if (!line.StartsWith(ProcessMarker, StringComparison.Ordinal)) return false;
+        var parts = line[ProcessMarker.Length..].Split(':', 2);
+        if (parts.Length != 2 || !int.TryParse(parts[0], out pid) ||
+            pid <= 1 || !parts[1].All(char.IsDigit)) return false;
+        startTime = parts[1];
+        return true;
+    }
+
+    private static string ShellLiteral(string value)
+        => value.Replace("'", "'\"'\"'", StringComparison.Ordinal);
 
     private async Task<bool> CheckHealthAsync()
     {

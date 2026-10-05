@@ -1,0 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.9.1
+numpy==2.5.3
+librosa==0.11.0
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+transformers @ git+https://github.com/huggingface/transformers.git@f5ab85619d989359ef47b5efed8a91a15045627b
