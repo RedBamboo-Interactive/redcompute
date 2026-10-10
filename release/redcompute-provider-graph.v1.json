@@ -96,6 +96,26 @@
       ]
     },
     {
+      "id": "diarizationlocal",
+      "identitySource": "providerType",
+      "runtimeIdentity": "DiarizationLocal",
+      "assembly": "RedCompute.Plugin.DiarizationLocal.dll",
+      "project": "plugins/RedCompute.Plugin.DiarizationLocal/RedCompute.Plugin.DiarizationLocal.csproj",
+      "dependencies": [
+        "localwsl"
+      ],
+      "runtimeDependencies": [
+        {
+          "id": "diarization-local-service",
+          "management": "managedByRedCompute",
+          "requirement": "required",
+          "versionConstraint": "diarization.v1; inherited localwsl service contract",
+          "interface": "local HTTP speaker-diarization service including /diarize and /model/info",
+          "sourceMarkers": ["new LocalWslProvider", "/diarize", "diarization.v1"]
+        }
+      ]
+    },
+    {
       "id": "kev-local-quality",
       "identitySource": "providerId",
       "runtimeIdentity": "kev-local-quality",
