@@ -480,7 +480,20 @@
           "RedCompute.PluginSdk": "[1.0.0, )"
         }
       },
+      "redcompute.plugin.diarizationlocal": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.Plugin.LocalWsl": "[1.0.0, )",
+          "RedCompute.PluginSdk": "[1.0.0, )"
+        }
+      },
       "redcompute.plugin.kev": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.PluginSdk": "[1.0.0, )"
+        }
+      },
+      "redcompute.plugin.localwsl": {
         "type": "Project",
         "dependencies": {
           "RedCompute.PluginSdk": "[1.0.0, )"
@@ -492,6 +505,13 @@
           "Microsoft.EntityFrameworkCore.Sqlite": "[9.0.18, )",
           "RedCompute.PluginSdk": "[1.0.0, )",
           "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )"
+        }
+      },
+      "redcompute.plugin.sttlocal": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.Plugin.LocalWsl": "[1.0.0, )",
+          "RedCompute.PluginSdk": "[1.0.0, )"
         }
       },
       "redcompute.plugin.suno": {
