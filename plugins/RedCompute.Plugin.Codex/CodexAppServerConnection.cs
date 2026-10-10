@@ -61,7 +61,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
     {
         var exe = CodexCliLocator.Resolve(configuredCliPath)
             ?? throw new InvalidOperationException(
-                "Could not find the 'codex' CLI. Install @openai/codex globally or set CodexPath in provider config.");
+                "Could not find the Codex CLI. Install the official standalone package or set CodexPath in provider config.");
 
         var startInfo = new ProcessStartInfo
         {

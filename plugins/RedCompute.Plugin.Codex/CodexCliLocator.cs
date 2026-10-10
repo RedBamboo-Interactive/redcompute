@@ -44,6 +44,9 @@ public static class CodexCliLocator
         if (!string.IsNullOrWhiteSpace(configuredPath))
             return File.Exists(configuredPath) ? configuredPath : null;
 
+        var standalone = OfficialStandalonePath();
+        if (standalone is not null) return standalone;
+
         foreach (var root in NpmGlobalRoots())
         {
             var native = NativeUnder(root);
@@ -60,6 +63,18 @@ public static class CodexCliLocator
         }
 
         return PathCandidates().FirstOrDefault();
+    }
+
+    /// <summary>Official Codex standalone installer location on Windows.</summary>
+    private static string? OfficialStandalonePath()
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return null;
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localAppData)) return null;
+
+        var candidate = Path.Combine(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
+        return File.Exists(candidate) ? candidate : null;
     }
 
     /// <summary>Locates vendor/&lt;triple&gt;/bin/codex[.exe] beneath an @openai/codex package root.</summary>

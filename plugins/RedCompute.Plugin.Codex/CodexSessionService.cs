@@ -106,7 +106,7 @@ public class CodexSessionService
             var codexPath = ResolveCodexPath();
             if (codexPath == null)
                 return new ExecuteResult(false, null, null, null, 0, 0, null,
-                    "Could not find 'codex' CLI. Install @openai/codex or set CodexPath in config.");
+                    "Could not find the Codex CLI. Install the official standalone package or set CodexPath in config.");
         }
 
         var startInfo = new ProcessStartInfo

@@ -359,13 +359,11 @@ jobs:
               Copy-Item -LiteralPath $_.FullName -Destination (Join-Path artifacts/dependency-locks $name)
             }
 
-      - name: Upload unsigned component and generic candidate bytes for audit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Cache exact candidate inputs for the write-isolated bridge
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          name: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: redcompute/artifacts/**
-          if-no-files-found: error
-          retention-days: 1
+          key: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
 
   bridge:
     name: Append unsigned RedCompute bytes to rolling prerelease
@@ -381,18 +379,19 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
     steps:
-      - name: Download exact unsigned candidate inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - name: Restore exact unsigned candidate inputs
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          name: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: bridge-input
+          path: redcompute/artifacts
+          key: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
 
       - name: Prepare immutable bridge asset names
         shell: pwsh
         env:
           REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}
         run: |
-          $descriptor = @(Get-ChildItem bridge-input -Recurse -File -Filter redcompute-release-candidate.unsigned.json)
+          $descriptor = @(Get-ChildItem redcompute/artifacts -Recurse -File -Filter redcompute-release-candidate.unsigned.json)
           if ($descriptor.Count -ne 1) { throw 'Expected exactly one unsigned RedCompute descriptor.' }
           $candidate = Get-Content -LiteralPath $descriptor[0].FullName -Raw | ConvertFrom-Json
           if ($candidate.status -ne 'unsigned' -or $null -ne $candidate.artifact.signature) {
@@ -412,7 +411,7 @@ jobs:
           if ($candidate.artifact.url -cne $expectedUrl) {
             throw 'Candidate artifact URL is not the exact declared RedCompute producer asset.'
           }
-          $matchingArtifacts = @(Get-ChildItem bridge-input -Recurse -File -Filter *.zip | Where-Object {
+          $matchingArtifacts = @(Get-ChildItem redcompute/artifacts -Recurse -File -Filter *.zip | Where-Object {
             $_.Length -eq [long]$candidate.artifact.sizeBytes -and
             (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -eq $artifactSha
           })
