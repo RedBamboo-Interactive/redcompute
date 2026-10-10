@@ -382,7 +382,7 @@ jobs:
       - name: Restore exact unsigned candidate inputs
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: redcompute/artifacts
+          path: redcompute/artifacts/**
           key: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           fail-on-cache-miss: true
 
