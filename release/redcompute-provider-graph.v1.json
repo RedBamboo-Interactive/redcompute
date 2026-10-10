@@ -41,7 +41,7 @@
           "requirement": "required",
           "versionConstraint": "unresolved",
           "interface": "@openai/codex app-server stdio JSON-RPC",
-          "sourceMarkers": ["Could not find the 'codex' CLI", "@openai/codex globally"]
+          "sourceMarkers": ["Could not find the Codex CLI", "official standalone package"]
         },
         {
           "id": "docker-cli",

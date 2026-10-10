@@ -119,7 +119,7 @@ public sealed class ReleaseToolTests
         var workflow = File.ReadAllLines(Path.Combine(root, ".github", "workflows", "release-redcompute-component.yml"));
         var uses = workflow.Select(x => x.Trim()).Where(x => x.StartsWith("uses: ", StringComparison.Ordinal)).ToArray();
         Assert.NotEmpty(uses);
-        Assert.All(uses, value => Assert.Matches("^uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[a-f0-9]{40}(?: # .+)?$", value));
+        Assert.All(uses, value => Assert.Matches("^uses: [A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[a-f0-9]{40}(?: # .+)?$", value));
 
         var inRun = false;
         var runIndent = 0;
@@ -137,7 +137,7 @@ public sealed class ReleaseToolTests
         Assert.Contains("source_commit:", yaml, StringComparison.Ordinal);
         Assert.Contains("ref: ${{ inputs.source_commit || github.workflow_sha }}", yaml, StringComparison.Ordinal);
         Assert.Contains("REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}", yaml, StringComparison.Ordinal);
-        Assert.Contains("name: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}", yaml, StringComparison.Ordinal);
+        Assert.Contains("key: redcompute-${{ inputs.source_commit || github.workflow_sha }}-${{ inputs.version }}-win-x64-candidate-${{ github.run_id }}-${{ github.run_attempt }}", yaml, StringComparison.Ordinal);
         Assert.Contains("dotnet restore RedCompute.sln --locked-mode", yaml, StringComparison.Ordinal);
         Assert.DoesNotContain("CycloneDX", yaml, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("--sbom", yaml, StringComparison.Ordinal);
