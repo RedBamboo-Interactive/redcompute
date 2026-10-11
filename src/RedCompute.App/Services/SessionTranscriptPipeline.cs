@@ -71,14 +71,13 @@ public sealed class SessionTranscriptPipeline
 
         try
         {
-            var payloadRef = PersistToolOutputAsync(
+            var payloadRef = PersistSynchronously(() => PersistToolOutputAsync(
                     provider, sessionId, "assistant", evt.ToolName,
                     evt.ToolInput?.ToString(), evt.MessageId, evt.MessageUid,
                     DateTimeOffset.UtcNow,
                     evt.Attachments is { Count: > 0 } ? JsonSerializer.Serialize(evt.Attachments) : null,
                     output,
-                    stamp)
-                .GetAwaiter().GetResult();
+                    stamp));
 
             _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, output)] = DateTimeOffset.UtcNow;
             Broadcast(provider, sessionId, WithPayload(evt, payloadRef));
@@ -96,13 +95,13 @@ public sealed class SessionTranscriptPipeline
     {
         var output = message.EventType == "tool_result" ? message.ToolResult ?? message.Content : null;
         if (!string.IsNullOrEmpty(output))
-            return PersistToolOutputAsync(message.Provider, message.SessionId, message.Role,
+            return PersistSynchronously(() => PersistToolOutputAsync(message.Provider, message.SessionId, message.Role,
                 message.ToolName, message.ToolInput, message.MessageId, message.MessageUid,
-                message.Timestamp, message.AttachmentsJson, output, stamp).GetAwaiter().GetResult();
+                message.Timestamp, message.AttachmentsJson, output, stamp));
 
-        _streams.AppendForEntityAsync("session-messages", SessionEntitySlug(message.Provider, message.SessionId),
+        PersistSynchronously(() => _streams.AppendForEntityAsync("session-messages", SessionEntitySlug(message.Provider, message.SessionId),
             InlineData(message, stamp), $"transcript:{stamp.Epoch}:{stamp.Sequence}",
-            createdAt: message.Timestamp).GetAwaiter().GetResult();
+            createdAt: message.Timestamp));
         return null;
     }
 
@@ -124,12 +123,11 @@ public sealed class SessionTranscriptPipeline
 
                 try
                 {
-                    PersistToolOutputAsync(
+                    PersistSynchronously(() => PersistToolOutputAsync(
                             message.Provider, message.SessionId, message.Role,
                             message.ToolName, message.ToolInput, message.MessageId,
                             message.MessageUid, message.Timestamp, message.AttachmentsJson, output,
-                            _sequences.Next(message.Provider, message.SessionId))
-                        .GetAwaiter().GetResult();
+                            _sequences.Next(message.Provider, message.SessionId)));
                     continue;
                 }
                 catch (Exception ex)
@@ -141,6 +139,15 @@ public sealed class SessionTranscriptPipeline
             EnqueueInline(message, _sequences.Next(message.Provider, message.SessionId));
         }
     }
+
+    // Provider events may arrive on the WPF dispatcher. Start asynchronous I/O on
+    // the pool before waiting, so its continuations never need the blocked caller.
+    // The wait still preserves the durable checkpoint-before-publication contract.
+    internal static void PersistSynchronously(Func<Task> persist) =>
+        Task.Run(persist).GetAwaiter().GetResult();
+
+    internal static T PersistSynchronously<T>(Func<Task<T>> persist) =>
+        Task.Run(persist).GetAwaiter().GetResult();
 
     private async Task<TranscriptPayloadRef> PersistToolOutputAsync(
         string provider,
