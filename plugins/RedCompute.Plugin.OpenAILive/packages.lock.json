@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net9.0": {
+      "redcompute.core": {
+        "type": "Project"
+      },
+      "redcompute.pluginsdk": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.Core": "[1.0.0, )"
+        }
+      }
+    },
+    "net9.0/win-x64": {}
+  }
+}

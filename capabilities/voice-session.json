@@ -1,0 +1,7 @@
+{
+  "displayName": "Voice Session",
+  "description": "Low-latency bidirectional conversational voice sessions with server-owned delegation and transcript continuity.",
+  "icon": "ph-fill ph-waveform",
+  "color": "#10A37F",
+  "category": "Audio"
+}

@@ -42,6 +42,7 @@ public class RelayServer
     private readonly ProviderConfigService _providerConfig;
     private readonly InputAttachmentStore _inputAttachments;
     private SessionCallbackRegistry _callbacks;
+    private VoiceSessionCoordinator? _voiceSessions;
     private readonly Action<string, Guid?> _log;
     private RedLeafStreamClient? _streamClient;
     private Action<RedBamboo.AppHost.Logging.LogEntry>? _logForwarder;
@@ -138,6 +139,9 @@ public class RelayServer
 
         var authFactory = _app.Services.GetRequiredService<AuthenticatedHttpClientFactory>();
         _callbacks = new SessionCallbackRegistry(_log, authFactory);
+        _voiceSessions = new VoiceSessionCoordinator(
+            authFactory.CreateClient("http://localhost", TimeSpan.FromSeconds(15)),
+            _log, _config.RedLeafUrl);
 
         _app.UseUserDetection();
 
@@ -355,6 +359,7 @@ public class RelayServer
                     confidential = true,
                 }, token));
         MaintenanceEndpoints.Map(registry, maintenance);
+        VoiceSessionEndpoints.Map(registry, _registry, _voiceSessions);
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
@@ -574,6 +579,12 @@ public class RelayServer
 
     public async Task StopAsync()
     {
+        if (_voiceSessions is not null)
+        {
+            try { await _voiceSessions.StopAllAsync(CancellationToken.None); }
+            catch { }
+            _voiceSessions = null;
+        }
         await _docker.StopAllAsync();
 
         SuiteMirror.SessionUpserted = null;

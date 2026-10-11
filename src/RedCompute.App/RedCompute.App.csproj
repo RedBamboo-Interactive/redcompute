@@ -76,6 +76,9 @@
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.TtsElevenLabs\RedCompute.Plugin.TtsElevenLabs.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenAILive\RedCompute.Plugin.OpenAILive.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
   </ItemGroup>
 
   <!-- CopyFrontend target removed: the dashboard is the compute-dashboard Leaf plugin now. -->

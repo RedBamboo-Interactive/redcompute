@@ -256,6 +256,24 @@ public class ConfigManager
             ApiPort = 18800,
             Capabilities = new Dictionary<string, CapabilityConfig>
             {
+                ["voice-session"] = new()
+                {
+                    ActiveProvider = "openai-live",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["openai-live"] = new()
+                        {
+                            Type = "OpenAILive",
+                            DisplayName = "OpenAI GPT-Live",
+                            Model = "gpt-live-1",
+                            ApiKey = "",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["Voice"] = "marin",
+                            },
+                        },
+                    },
+                },
                 ["tts"] = new()
                 {
                     ActiveProvider = "local-wsl",

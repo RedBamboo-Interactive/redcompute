@@ -1,0 +1,344 @@
+using System.Collections.Concurrent;
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Text.Json;
+using RedCompute.Core.Jobs;
+using RedCompute.PluginSdk;
+
+namespace RedCompute.App.Services;
+
+public sealed record VoiceSessionSnapshot(
+    string Id,
+    string Provider,
+    string Model,
+    string Voice,
+    string State,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? ConnectedAt,
+    DateTimeOffset? ClosedAt,
+    string DiscussionId,
+    string AiSessionId,
+    int DelegationCount,
+    string? ErrorCode = null,
+    string? ErrorMessage = null);
+
+public sealed record VoiceSessionAdmission(
+    VoiceSessionSnapshot Session,
+    string AnswerSdp);
+
+public sealed record VoiceSessionStart(
+    string OfferSdp,
+    string Model,
+    string Voice,
+    string Instructions,
+    string DiscussionId,
+    string AiSessionId,
+    JobProvenance Provenance,
+    IReadOnlyList<VoiceHistoryMessage>? InitialHistory = null);
+
+public sealed class VoiceSessionCoordinator
+{
+    private sealed class SessionState
+    {
+        public required string Id { get; init; }
+        public required IVoiceSessionProvider Provider { get; init; }
+        public required string ProviderName { get; init; }
+        public required string Model { get; init; }
+        public required string Voice { get; init; }
+        public required string DiscussionId { get; init; }
+        public required string AiSessionId { get; init; }
+        public required JobProvenance Provenance { get; init; }
+        public required DateTimeOffset CreatedAt { get; init; }
+        public string ProviderSessionId { get; set; } = "";
+        public string Status { get; set; } = "connecting";
+        public DateTimeOffset? ConnectedAt { get; set; }
+        public DateTimeOffset? ClosedAt { get; set; }
+        public string? ErrorCode { get; set; }
+        public string? ErrorMessage { get; set; }
+        public int DelegationCount { get; set; }
+        public long UtteranceOrdinal { get; set; }
+        public string? OpenRole { get; set; }
+        public string? OpenDelegationId { get; set; }
+        public Queue<string> PendingSpokenDelegations { get; } = new();
+        public string OpenText { get; set; } = "";
+        public long? OpenStartMs { get; set; }
+        public long? OpenEndMs { get; set; }
+        public HashSet<string> SeenProviderEvents { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> SeenUpdates { get; } = new(StringComparer.Ordinal);
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+    }
+
+    private readonly ConcurrentDictionary<string, SessionState> _sessions = new(StringComparer.Ordinal);
+    private readonly HttpClient _callbacks;
+    private readonly Action<string, Guid?> _log;
+    private readonly Uri _callbackUri;
+
+    public VoiceSessionCoordinator(HttpClient callbacks, Action<string, Guid?> log,
+        string redLeafUrl)
+    {
+        _callbacks = callbacks;
+        _log = log;
+        _callbackUri = new Uri(new Uri(redLeafUrl.TrimEnd('/') + "/"),
+            "api/apps/nova/callbacks/voice-session");
+    }
+
+    public async Task<VoiceSessionAdmission> CreateAsync(
+        IVoiceSessionProvider provider,
+        VoiceSessionStart request,
+        CancellationToken ct)
+    {
+        PurgeClosedSessions();
+        request.Provenance.ValidateForNewJob();
+        var id = $"vs_{Guid.NewGuid():N}";
+        var state = new SessionState
+        {
+            Id = id,
+            Provider = provider,
+            ProviderName = provider.VoiceProviderId,
+            Model = request.Model,
+            Voice = request.Voice,
+            DiscussionId = request.DiscussionId,
+            AiSessionId = request.AiSessionId,
+            Provenance = request.Provenance,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        if (!_sessions.TryAdd(id, state)) throw new InvalidOperationException("Voice session identity collision");
+
+        try
+        {
+            var created = await provider.CreateVoiceSessionAsync(new(
+                id, request.OfferSdp, request.Model, request.Voice,
+                request.Instructions, request.Provenance, request.InitialHistory),
+                evt => HandleProviderEventAsync(state, evt), ct);
+            state.ProviderSessionId = created.ProviderSessionId;
+            return new(Snapshot(state), created.AnswerSdp);
+        }
+        catch
+        {
+            state.Status = "error";
+            state.ClosedAt = DateTimeOffset.UtcNow;
+            throw;
+        }
+    }
+
+    public VoiceSessionSnapshot? Get(string id, string? userId, bool trustedInfrastructure = false)
+        => _sessions.TryGetValue(id, out var state) && CanAccess(state, userId, trustedInfrastructure)
+            ? Snapshot(state) : null;
+
+    public async Task<bool> UpdateDelegationAsync(string id, string delegationId,
+        VoiceDelegationUpdate update, string? userId, bool trustedInfrastructure,
+        CancellationToken ct)
+    {
+        if (!_sessions.TryGetValue(id, out var state) || !CanAccess(state, userId, trustedInfrastructure))
+            return false;
+        await state.Gate.WaitAsync(ct);
+        try
+        {
+            if (!state.SeenUpdates.Add(update.EventId)) return true;
+            var marksSpokenDelivery = update.Kind is "commentary" or "failed";
+            try
+            {
+                await state.Provider.SendDelegationUpdateAsync(
+                    state.ProviderSessionId, delegationId, update, ct);
+                if (marksSpokenDelivery) state.PendingSpokenDelegations.Enqueue(delegationId);
+            }
+            catch
+            {
+                state.SeenUpdates.Remove(update.EventId);
+                throw;
+            }
+            return true;
+        }
+        finally { state.Gate.Release(); }
+    }
+
+    public async Task<bool> CloseAsync(string id, string? userId, bool trustedInfrastructure,
+        CancellationToken ct)
+    {
+        if (!_sessions.TryGetValue(id, out var state) || !CanAccess(state, userId, trustedInfrastructure))
+            return false;
+        string providerSessionId;
+        await state.Gate.WaitAsync(ct);
+        try
+        {
+            if (state.Status == "closed") return true;
+            state.Status = "closing";
+            await FlushUtteranceAsync(state, reason: "close", delegationId: null, ct);
+            providerSessionId = state.ProviderSessionId;
+        }
+        finally { state.Gate.Release(); }
+
+        if (!string.IsNullOrWhiteSpace(providerSessionId))
+            await state.Provider.CloseVoiceSessionAsync(providerSessionId, ct);
+
+        await state.Gate.WaitAsync(ct);
+        try
+        {
+            state.Status = "closed";
+            state.ClosedAt ??= DateTimeOffset.UtcNow;
+            return true;
+        }
+        finally { state.Gate.Release(); }
+    }
+
+    public async Task StopAllAsync(CancellationToken ct)
+    {
+        foreach (var state in _sessions.Values)
+        {
+            try { await CloseAsync(state.Id, null, trustedInfrastructure: true, ct); }
+            catch { }
+        }
+    }
+
+    private async Task HandleProviderEventAsync(SessionState state, VoiceProviderEvent evt)
+    {
+        await state.Gate.WaitAsync();
+        try
+        {
+            if (evt.EventId is { Length: > 0 } && !state.SeenProviderEvents.Add(evt.EventId)) return;
+            switch (evt.Type)
+            {
+                case "session.started":
+                    state.Status = "connected";
+                    state.ConnectedAt ??= DateTimeOffset.UtcNow;
+                    await NotifyAsync(state, "voice.session.started", evt.EventId ?? $"started:{state.Id}",
+                        new { }, CancellationToken.None);
+                    break;
+                case "session.input_transcript.delta":
+                    await AppendTranscriptAsync(state, "user", evt, CancellationToken.None);
+                    break;
+                case "session.output_transcript.delta":
+                    await AppendTranscriptAsync(state, "assistant", evt, CancellationToken.None);
+                    break;
+                case "session.delegation.created":
+                    if (string.IsNullOrWhiteSpace(evt.DelegationId)) break;
+                    state.DelegationCount++;
+                    await FlushUtteranceAsync(state, "delegation", evt.DelegationId, CancellationToken.None);
+                    await NotifyAsync(state, "voice.delegation.created",
+                        evt.EventId ?? $"delegation:{evt.DelegationId}", new
+                        {
+                            delegationId = evt.DelegationId,
+                            offsetMs = evt.OffsetMs,
+                        }, CancellationToken.None);
+                    break;
+                case "session.closed":
+                    await FlushUtteranceAsync(state, "provider_close", null, CancellationToken.None);
+                    state.Status = "closed";
+                    state.ClosedAt ??= DateTimeOffset.UtcNow;
+                    await NotifyAsync(state, "voice.session.closed", evt.EventId ?? $"closed:{state.Id}",
+                        new { }, CancellationToken.None);
+                    break;
+                case "error":
+                    state.Status = "degraded";
+                    state.ErrorCode = evt.ErrorCode ?? "provider_error";
+                    state.ErrorMessage = evt.ErrorMessage ?? "Voice provider error";
+                    await NotifyAsync(state, "voice.session.error", evt.EventId ?? $"error:{Guid.NewGuid():N}",
+                        new { errorCode = state.ErrorCode, errorMessage = state.ErrorMessage }, CancellationToken.None);
+                    break;
+            }
+        }
+        finally { state.Gate.Release(); }
+    }
+
+    private async Task AppendTranscriptAsync(SessionState state, string role,
+        VoiceProviderEvent evt, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(evt.Delta)) return;
+        if (state.OpenRole is not null && !string.Equals(state.OpenRole, role, StringComparison.Ordinal))
+            await FlushUtteranceAsync(state, "speaker_change", null, ct);
+        if (state.OpenRole is null)
+        {
+            state.OpenDelegationId = role == "assistant" && state.PendingSpokenDelegations.Count > 0
+                ? state.PendingSpokenDelegations.Dequeue() : null;
+        }
+        state.OpenRole = role;
+        state.OpenText += evt.Delta;
+        state.OpenStartMs = state.OpenStartMs is null ? evt.StartMs
+            : evt.StartMs is null ? state.OpenStartMs : Math.Min(state.OpenStartMs.Value, evt.StartMs.Value);
+        state.OpenEndMs = state.OpenEndMs is null ? evt.EndMs
+            : evt.EndMs is null ? state.OpenEndMs : Math.Max(state.OpenEndMs.Value, evt.EndMs.Value);
+    }
+
+    private async Task FlushUtteranceAsync(SessionState state, string reason,
+        string? delegationId, CancellationToken ct)
+    {
+        var content = state.OpenText;
+        var role = state.OpenRole;
+        var startMs = state.OpenStartMs;
+        var endMs = state.OpenEndMs;
+        var spokenDelegationId = state.OpenDelegationId;
+        state.OpenRole = null;
+        state.OpenDelegationId = null;
+        state.OpenText = "";
+        state.OpenStartMs = null;
+        state.OpenEndMs = null;
+        if (string.IsNullOrWhiteSpace(content) || role is null) return;
+
+        var ordinal = ++state.UtteranceOrdinal;
+        var correlatedDelegationId = role == "assistant" ? spokenDelegationId : delegationId;
+        var messageUid = correlatedDelegationId is not null && role == "user"
+            ? $"voice:{state.Id}:{correlatedDelegationId}:user"
+            : $"voice:{state.Id}:{ordinal}:{role}";
+        await NotifyAsync(state, "voice.utterance.finalized",
+            $"utterance:{state.Id}:{ordinal}", new
+            {
+                role,
+                content,
+                messageUid,
+                startMs,
+                endMs,
+                reason,
+                delegationId = correlatedDelegationId,
+            }, ct);
+    }
+
+    private async Task NotifyAsync(SessionState state, string type, string eventId,
+        object data, CancellationToken ct)
+    {
+        var body = new
+        {
+            type,
+            eventId,
+            voiceSessionId = state.Id,
+            providerSessionId = state.ProviderSessionId,
+            discussionId = state.DiscussionId,
+            aiSessionId = state.AiSessionId,
+            provider = state.ProviderName,
+            data,
+        };
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                using var response = await _callbacks.PostAsJsonAsync(_callbackUri, body, ct);
+                if (response.IsSuccessStatusCode) return;
+                _log($"[Voice] Nova callback {type} failed with HTTP {(int)response.StatusCode} (attempt {attempt})", null);
+            }
+            catch (Exception ex) when (attempt < 3)
+            {
+                _log($"[Voice] Nova callback {type} failed (attempt {attempt}): {ex.Message}", null);
+            }
+            if (attempt < 3) await Task.Delay(250 * attempt, ct);
+        }
+        _log($"[Voice] Nova callback {type} exhausted retries for {state.Id}", null);
+    }
+
+    private static bool CanAccess(SessionState state, string? userId, bool trustedInfrastructure)
+        => trustedInfrastructure
+            || (!string.IsNullOrWhiteSpace(state.Provenance.OnBehalfOf.Id)
+                && string.Equals(state.Provenance.OnBehalfOf.Id, userId, StringComparison.Ordinal));
+
+    private void PurgeClosedSessions()
+    {
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromHours(6);
+        foreach (var entry in _sessions)
+            if (entry.Value.ClosedAt is { } closedAt && closedAt < cutoff)
+                _sessions.TryRemove(entry.Key, out _);
+    }
+
+    private static VoiceSessionSnapshot Snapshot(SessionState state) => new(
+        state.Id, state.ProviderName, state.Model, state.Voice, state.Status,
+        state.CreatedAt, state.ConnectedAt, state.ClosedAt,
+        state.DiscussionId, state.AiSessionId, state.DelegationCount,
+        state.ErrorCode, state.ErrorMessage);
+}

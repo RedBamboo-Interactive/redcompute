@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.LocalWsl\RedCompute.Plugin.LocalWsl.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.SttLocal\RedCompute.Plugin.SttLocal.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.DiarizationLocal\RedCompute.Plugin.DiarizationLocal.csproj" />
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenAILive\RedCompute.Plugin.OpenAILive.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\rebuild.ps1" Link="rebuild.ps1">
