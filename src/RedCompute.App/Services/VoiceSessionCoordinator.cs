@@ -49,6 +49,7 @@ public sealed class VoiceSessionCoordinator
         public required string AiSessionId { get; init; }
         public required JobProvenance Provenance { get; init; }
         public required DateTimeOffset CreatedAt { get; init; }
+        public required DateTimeOffset LastActivityAt { get; set; }
         public string ProviderSessionId { get; set; } = "";
         public string Status { get; set; } = "connecting";
         public DateTimeOffset? ConnectedAt { get; set; }
@@ -72,14 +73,26 @@ public sealed class VoiceSessionCoordinator
     private readonly HttpClient _callbacks;
     private readonly Action<string, Guid?> _log;
     private readonly Uri _callbackUri;
+    private readonly TimeSpan _idleTimeout;
+    private readonly TimeSpan _maxLifetime;
+    private readonly TimeSpan _watchdogInterval;
+    private readonly Func<DateTimeOffset> _utcNow;
 
     public VoiceSessionCoordinator(HttpClient callbacks, Action<string, Guid?> log,
-        string redLeafUrl)
+        string redLeafUrl, TimeSpan? idleTimeout = null, TimeSpan? maxLifetime = null,
+        TimeSpan? watchdogInterval = null, Func<DateTimeOffset>? utcNow = null)
     {
         _callbacks = callbacks;
         _log = log;
         _callbackUri = new Uri(new Uri(redLeafUrl.TrimEnd('/') + "/"),
             "api/apps/nova/callbacks/voice-session");
+        _idleTimeout = idleTimeout ?? TimeSpan.FromMinutes(1);
+        _maxLifetime = maxLifetime ?? TimeSpan.FromMinutes(15);
+        _watchdogInterval = watchdogInterval ?? TimeSpan.FromSeconds(5);
+        _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        if (_idleTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(idleTimeout));
+        if (_maxLifetime <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(maxLifetime));
+        if (_watchdogInterval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(watchdogInterval));
     }
 
     public async Task<VoiceSessionAdmission> CreateAsync(
@@ -90,6 +103,7 @@ public sealed class VoiceSessionCoordinator
         PurgeClosedSessions();
         request.Provenance.ValidateForNewJob();
         var id = $"vs_{Guid.NewGuid():N}";
+        var now = _utcNow();
         var state = new SessionState
         {
             Id = id,
@@ -100,7 +114,8 @@ public sealed class VoiceSessionCoordinator
             DiscussionId = request.DiscussionId,
             AiSessionId = request.AiSessionId,
             Provenance = request.Provenance,
-            CreatedAt = DateTimeOffset.UtcNow,
+            CreatedAt = now,
+            LastActivityAt = now,
         };
         if (!_sessions.TryAdd(id, state)) throw new InvalidOperationException("Voice session identity collision");
 
@@ -111,6 +126,7 @@ public sealed class VoiceSessionCoordinator
                 request.Instructions, request.Provenance, request.InitialHistory),
                 evt => HandleProviderEventAsync(state, evt), ct);
             state.ProviderSessionId = created.ProviderSessionId;
+            _ = WatchSessionLifetimeAsync(state);
             return new(Snapshot(state), created.AnswerSdp);
         }
         catch
@@ -141,6 +157,7 @@ public sealed class VoiceSessionCoordinator
                 await state.Provider.SendDelegationUpdateAsync(
                     state.ProviderSessionId, delegationId, update, ct);
                 if (marksSpokenDelivery) state.PendingSpokenDelegations.Enqueue(delegationId);
+                state.LastActivityAt = _utcNow();
             }
             catch
             {
@@ -196,6 +213,9 @@ public sealed class VoiceSessionCoordinator
         try
         {
             if (evt.EventId is { Length: > 0 } && !state.SeenProviderEvents.Add(evt.EventId)) return;
+            if (evt.Type is "session.started" or "session.input_transcript.delta"
+                or "session.output_transcript.delta" or "session.delegation.created")
+                state.LastActivityAt = _utcNow();
             switch (evt.Type)
             {
                 case "session.started":
@@ -334,6 +354,56 @@ public sealed class VoiceSessionCoordinator
         foreach (var entry in _sessions)
             if (entry.Value.ClosedAt is { } closedAt && closedAt < cutoff)
                 _sessions.TryRemove(entry.Key, out _);
+    }
+
+    private async Task WatchSessionLifetimeAsync(SessionState state)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(_watchdogInterval);
+                if (await ExpireIfInactiveAsync(state, _utcNow())) return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[Voice] Session watchdog failed for {state.Id}: {ex.Message}", null);
+            try { await CloseAsync(state.Id, null, trustedInfrastructure: true, CancellationToken.None); }
+            catch { }
+        }
+    }
+
+    internal async Task<bool> ExpireIfInactiveAsync(string id, DateTimeOffset now)
+        => _sessions.TryGetValue(id, out var state) && await ExpireIfInactiveAsync(state, now);
+
+    private async Task<bool> ExpireIfInactiveAsync(SessionState state, DateTimeOffset now)
+    {
+        string? reason = null;
+        await state.Gate.WaitAsync();
+        try
+        {
+            if (state.Status is "closed" or "closing" or "error") return true;
+            if (now - state.CreatedAt >= _maxLifetime) reason = "max_lifetime";
+            else if (now - state.LastActivityAt >= _idleTimeout) reason = "idle_timeout";
+            if (reason is null) return false;
+            state.ErrorCode = reason;
+            state.ErrorMessage = reason == "idle_timeout"
+                ? "Voice session closed after one minute without activity"
+                : "Voice session reached its fifteen-minute safety limit";
+        }
+        finally { state.Gate.Release(); }
+
+        _log($"[Voice] Closing {state.Id} due to {reason}", null);
+        try
+        {
+            await CloseAsync(state.Id, null, trustedInfrastructure: true, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _log($"[Voice] Safety close failed for {state.Id}: {ex.Message}", null);
+        }
+        return true;
     }
 
     private static VoiceSessionSnapshot Snapshot(SessionState state) => new(

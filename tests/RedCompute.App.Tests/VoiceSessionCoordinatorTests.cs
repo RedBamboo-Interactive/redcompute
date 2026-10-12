@@ -93,6 +93,47 @@ public sealed class VoiceSessionCoordinatorTests
         Assert.Equal("item_1", delivery.GetProperty("data").GetProperty("delegationId").GetString());
     }
 
+    [Fact]
+    public async Task Idle_watchdog_closes_the_exact_provider_session_once()
+    {
+        var now = new DateTimeOffset(2026, 10, 12, 16, 0, 0, TimeSpan.Zero);
+        var provider = new FakeVoiceProvider();
+        var coordinator = new VoiceSessionCoordinator(
+            new HttpClient(new RecordingHandler()), (_, _) => { }, "http://127.0.0.1:18804",
+            idleTimeout: TimeSpan.FromMinutes(1), maxLifetime: TimeSpan.FromMinutes(15),
+            watchdogInterval: TimeSpan.FromHours(1), utcNow: () => now);
+        var created = await coordinator.CreateAsync(provider, Start("offer"), CancellationToken.None);
+
+        Assert.False(await coordinator.ExpireIfInactiveAsync(created.Session.Id, now.AddSeconds(59)));
+        Assert.True(await coordinator.ExpireIfInactiveAsync(created.Session.Id, now.AddSeconds(61)));
+        Assert.True(await coordinator.ExpireIfInactiveAsync(created.Session.Id, now.AddSeconds(62)));
+
+        Assert.Equal(1, provider.CloseCount);
+        var snapshot = coordinator.Get(created.Session.Id, "user-1");
+        Assert.Equal("closed", snapshot!.State);
+        Assert.Equal("idle_timeout", snapshot.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Activity_extends_idle_window_but_not_absolute_lifetime()
+    {
+        var now = new DateTimeOffset(2026, 10, 12, 16, 0, 0, TimeSpan.Zero);
+        var provider = new FakeVoiceProvider();
+        var coordinator = new VoiceSessionCoordinator(
+            new HttpClient(new RecordingHandler()), (_, _) => { }, "http://127.0.0.1:18804",
+            idleTimeout: TimeSpan.FromMinutes(1), maxLifetime: TimeSpan.FromMinutes(15),
+            watchdogInterval: TimeSpan.FromHours(1), utcNow: () => now);
+        var created = await coordinator.CreateAsync(provider, Start("offer"), CancellationToken.None);
+
+        now = now.AddMinutes(14).AddSeconds(30);
+        await provider.Emit(new("session.input_transcript.delta", "active-1", "Still here", 1, 2));
+        Assert.False(await coordinator.ExpireIfInactiveAsync(created.Session.Id, now.AddSeconds(20)));
+        Assert.True(await coordinator.ExpireIfInactiveAsync(created.Session.Id, now.AddSeconds(30)));
+
+        Assert.Equal(1, provider.CloseCount);
+        Assert.Equal("max_lifetime", coordinator.Get(created.Session.Id, "user-1")!.ErrorCode);
+    }
+
     private static VoiceSessionCoordinator NewCoordinator(RecordingHandler handler)
         => new(new HttpClient(handler), (_, _) => { }, "http://127.0.0.1:18804");
 
