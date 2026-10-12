@@ -14,7 +14,10 @@ The first product surface is Nova web on mobile and desktop. The browser carries
 2. The OpenAI API key never reaches the browser, SDP, logs, transcript, query string, or Nova frontend bundle.
 3. RedCompute owns provider-neutral voice lifecycle and ordered voice events. RedLeaf/Nova owns the authorized durable discussion projection. The existing AI session remains the authority for Nova memory, tools, actions, and full delegated answers.
 4. Every canonical conversational turn has one stable `messageUid`. Provider event IDs and delegation IDs are correlation identities, not message identities.
-5. Casual spoken turns are mirrored into the existing AI session without triggering a second model turn. Delegated user requests enter through Nova's ordinary message pipeline so current context, memory, tools, queueing, and provenance remain intact.
+5. Every completed semantic user utterance is delegated into Nova's ordinary message pipeline so current context,
+   memory, tools, queueing, provenance, and Agent identity remain authoritative. GPT-Live may render returned
+   commentary but does not independently answer, decide, invent, or refuse. Unexpected non-delegated transcript
+   events are durably mirrored with signed provenance as a recovery trail, never as the intended conversation path.
 6. A delegated backend answer is the canonical assistant answer. GPT-Live's spoken rendition is delivery metadata and must not become a duplicate assistant message.
 7. Backend completion and audible delivery are separate facts. An action may complete after the caller interrupts or closes audio. The UI and records must never claim the user heard an answer merely because the backend completed.
 8. Transcript fragments are not turns. They are accumulated by session timeline and finalized only at a proven speaker transition, delegation boundary, or graceful close. Gaps in packet arrival are not used as a completion signal.
@@ -45,10 +48,11 @@ Nova is the authorized product adapter:
 - validates access to the discussion and its Agent;
 - resolves the Agent's current provider-neutral Live Voice profile and validates its provider capability;
 - ensures the discussion has its ordinary AI session before voice begins;
-- builds a bounded voice prompt identifying the Agent and explaining the client-delegation policy;
+- builds a bounded voice prompt identifying the Agent and requiring client delegation for every semantic user turn;
 - creates the voice session through the signed Compute gateway with the discussion, Agent, beneficiary, and AI-session provenance;
 - receives signed loopback voice events from RedCompute;
-- persists finalized casual turns into the existing discussion and AI-session transcript with stable identities;
+- persists any unexpected finalized non-delegated turn into the existing discussion and AI-session transcript with
+  stable identities and signed provenance so a transport deviation cannot disappear on reconnect;
 - sends delegated requests through `MessagePipeline`, preserving current Nova context, memory, tools, queueing, and signed provenance;
 - observes the resulting AI-session turn, extracts the verified final answer, and returns it to the matching voice delegation;
 - publishes only the ordinary canonical discussion invalidations already understood by shared Chat.
@@ -80,7 +84,8 @@ The provider plugin owns only OpenAI protocol details:
 - attaches a server-side sideband WebSocket to `/v1/live/sessions/{id}/attach`;
 - normalizes input/output transcript deltas, delegation-created, error, usage, and closed events;
 - accepts provider-neutral thinking/commentary/instruction updates and maps them to GPT-Live commands;
-- closes gracefully and waits for `session.closed` within a bounded drain.
+- closes gracefully and waits for `session.closed` within a bounded drain, with idempotent cleanup when the sideband
+  reader and explicit close race to own disposal.
 
 It never receives Leaf tools or RedLeaf credentials. Marin is a fixed compatibility fallback only when an Agent has
 not selected a Live Voice; provider settings do not own Agent voice identity.
@@ -142,12 +147,13 @@ Transcript deltas are ordered by `(startMs, endMs, arrivalOrdinal)`. The accumul
 - Network arrival gaps alone do not finalize text.
 - Repeated provider event IDs are ignored. Distinct events with identical text are retained.
 
-For a casual exchange:
+For an unexpected non-delegated exchange (recovery only, not the configured policy):
 
 1. user utterance finalizes when assistant output begins;
 2. RedCompute posts a stable `voice.utterance.finalized` callback;
 3. Nova injects the user turn into the current AI-session transcript and persists the discussion bridge;
-4. assistant utterance finalizes on the next user input or close and is persisted the same way.
+4. assistant utterance finalizes on the next user input or close and is persisted the same way;
+5. telemetry marks this as a provider-policy deviation for investigation because normal semantic turns delegate.
 
 For delegated work:
 
@@ -160,6 +166,11 @@ For delegated work:
 7. the backend final remains the one canonical assistant message. Output transcript caused by that commentary is marked as spoken delivery and is not persisted as another assistant turn.
 
 If voice closes during step 4, the backend work continues under normal Nova semantics. Its canonical result remains visible in chat. Delivery to the closed voice session becomes `not_delivered`, never `failed_action`.
+
+Starting a replacement transport for the same discussion is serialized with close. Nova first asks RedCompute to
+flush the old session, waits through provider drain and the `voice.session.closed` callback (or a bounded terminal
+fallback), then reads canonical history and admits the replacement. A reconnect may therefore take a few seconds,
+but it cannot snapshot history while the prior transport is still publishing final turns.
 
 ## Security and privacy
 

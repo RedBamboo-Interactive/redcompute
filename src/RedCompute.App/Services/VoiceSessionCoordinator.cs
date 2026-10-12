@@ -67,6 +67,7 @@ public sealed class VoiceSessionCoordinator
         public HashSet<string> SeenProviderEvents { get; } = new(StringComparer.Ordinal);
         public HashSet<string> SeenUpdates { get; } = new(StringComparer.Ordinal);
         public SemaphoreSlim Gate { get; } = new(1, 1);
+        public TaskCompletionSource<bool>? CloseCompletion { get; set; }
     }
 
     private readonly ConcurrentDictionary<string, SessionState> _sessions = new(StringComparer.Ordinal);
@@ -174,28 +175,51 @@ public sealed class VoiceSessionCoordinator
     {
         if (!_sessions.TryGetValue(id, out var state) || !CanAccess(state, userId, trustedInfrastructure))
             return false;
-        string providerSessionId;
+        string? providerSessionId = null;
+        Task<bool>? existingClose = null;
+        TaskCompletionSource<bool>? ownedClose = null;
         await state.Gate.WaitAsync(ct);
         try
         {
             if (state.Status == "closed") return true;
-            state.Status = "closing";
-            await FlushUtteranceAsync(state, reason: "close", delegationId: null, ct);
-            providerSessionId = state.ProviderSessionId;
+            if (state.Status == "closing")
+            {
+                existingClose = state.CloseCompletion?.Task;
+            }
+            else
+            {
+                state.Status = "closing";
+                ownedClose = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                state.CloseCompletion = ownedClose;
+                await FlushUtteranceAsync(state, reason: "close", delegationId: null, ct);
+                providerSessionId = state.ProviderSessionId;
+            }
         }
         finally { state.Gate.Release(); }
 
-        if (!string.IsNullOrWhiteSpace(providerSessionId))
-            await state.Provider.CloseVoiceSessionAsync(providerSessionId, ct);
+        if (existingClose is not null)
+            return await existingClose.WaitAsync(ct);
 
-        await state.Gate.WaitAsync(ct);
         try
         {
-            state.Status = "closed";
-            state.ClosedAt ??= DateTimeOffset.UtcNow;
+            if (!string.IsNullOrWhiteSpace(providerSessionId))
+                await state.Provider.CloseVoiceSessionAsync(providerSessionId, ct);
+
+            await state.Gate.WaitAsync(ct);
+            try
+            {
+                state.Status = "closed";
+                state.ClosedAt ??= DateTimeOffset.UtcNow;
+            }
+            finally { state.Gate.Release(); }
+            ownedClose!.TrySetResult(true);
             return true;
         }
-        finally { state.Gate.Release(); }
+        catch (Exception ex)
+        {
+            ownedClose!.TrySetException(ex);
+            throw;
+        }
     }
 
     public async Task StopAllAsync(CancellationToken ct)
@@ -247,6 +271,7 @@ public sealed class VoiceSessionCoordinator
                     state.ClosedAt ??= DateTimeOffset.UtcNow;
                     await NotifyAsync(state, "voice.session.closed", evt.EventId ?? $"closed:{state.Id}",
                         new { }, CancellationToken.None);
+                    state.CloseCompletion?.TrySetResult(true);
                     break;
                 case "error":
                     state.Status = "degraded";

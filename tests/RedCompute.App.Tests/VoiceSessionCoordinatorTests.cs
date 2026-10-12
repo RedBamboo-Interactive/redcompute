@@ -76,6 +76,27 @@ public sealed class VoiceSessionCoordinatorTests
     }
 
     [Fact]
+    public async Task Concurrent_close_calls_share_one_provider_drain()
+    {
+        var provider = new FakeVoiceProvider { HoldClose = true };
+        var coordinator = NewCoordinator(new RecordingHandler());
+        var created = await coordinator.CreateAsync(provider, Start("offer"), CancellationToken.None);
+
+        var first = coordinator.CloseAsync(created.Session.Id, "user-1", false, CancellationToken.None);
+        await provider.CloseStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var second = coordinator.CloseAsync(created.Session.Id, "user-1", false, CancellationToken.None);
+
+        Assert.Equal(1, provider.CloseCount);
+        Assert.False(second.IsCompleted);
+        provider.ReleaseClose.TrySetResult();
+
+        Assert.True(await first);
+        Assert.True(await second);
+        Assert.Equal(1, provider.CloseCount);
+        Assert.Equal("closed", coordinator.Get(created.Session.Id, "user-1")!.State);
+    }
+
+    [Fact]
     public async Task Spoken_delegation_result_is_correlated_as_delivery_not_a_second_answer()
     {
         var callbacks = new RecordingHandler();
@@ -156,6 +177,9 @@ public sealed class VoiceSessionCoordinatorTests
         public string DefaultVoice => "fake-voice";
         public List<VoiceDelegationUpdate> Updates { get; } = [];
         public int CloseCount { get; private set; }
+        public bool HoldClose { get; init; }
+        public TaskCompletionSource CloseStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseClose { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task<VoiceSessionCreateResult> CreateVoiceSessionAsync(VoiceSessionCreateRequest request,
             Func<VoiceProviderEvent, Task> onEvent, CancellationToken ct)
@@ -171,10 +195,11 @@ public sealed class VoiceSessionCoordinatorTests
             return Task.CompletedTask;
         }
 
-        public Task CloseVoiceSessionAsync(string providerSessionId, CancellationToken ct)
+        public async Task CloseVoiceSessionAsync(string providerSessionId, CancellationToken ct)
         {
             CloseCount++;
-            return Task.CompletedTask;
+            CloseStarted.TrySetResult();
+            if (HoldClose) await ReleaseClose.Task.WaitAsync(ct);
         }
 
         public Task Emit(VoiceProviderEvent evt) => _events!(evt);

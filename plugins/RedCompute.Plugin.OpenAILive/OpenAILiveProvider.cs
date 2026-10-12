@@ -212,14 +212,22 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
         }
         finally
         {
-            connection.Lifetime.Cancel();
-            try
+            // The reader continuation may already have removed and disposed this exact
+            // connection after receiving session.closed. Only the winner of TryRemove
+            // owns cancellation and disposal; touching the captured CTS afterwards was
+            // the source of spurious close failures on an already-closed paid session.
+            if (_connections.TryRemove(providerSessionId, out var owned))
             {
-                if (connection.Socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                    await connection.Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Leaf voice session ended", CancellationToken.None);
+                CancelSafely(owned.Lifetime);
+                try
+                {
+                    if (owned.Socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                        await owned.Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Leaf voice session ended", CancellationToken.None);
+                }
+                catch { }
+                owned.Socket.Dispose();
+                owned.Lifetime.Dispose();
             }
-            catch { }
-            RemoveConnection(providerSessionId);
         }
     }
 
@@ -284,9 +292,15 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
     private void RemoveConnection(string providerSessionId)
     {
         if (!_connections.TryRemove(providerSessionId, out var connection)) return;
-        connection.Lifetime.Cancel();
+        CancelSafely(connection.Lifetime);
         connection.Socket.Dispose();
         connection.Lifetime.Dispose();
+    }
+
+    internal static void CancelSafely(CancellationTokenSource lifetime)
+    {
+        try { lifetime.Cancel(); }
+        catch (ObjectDisposedException) { }
     }
 
     public async ValueTask DisposeAsync() => await StopAsync();

@@ -77,4 +77,13 @@ public sealed class OpenAILiveProviderContractTests
     [Fact]
     public void Ignores_unowned_provider_events()
         => Assert.Null(OpenAILiveProvider.NormalizeEvent("{\"type\":\"session.output_audio.delta\"}"));
+
+    [Fact]
+    public void Cancellation_cleanup_is_idempotent_after_reader_disposal()
+    {
+        var lifetime = new CancellationTokenSource();
+        lifetime.Dispose();
+
+        OpenAILiveProvider.CancelSafely(lifetime);
+    }
 }
