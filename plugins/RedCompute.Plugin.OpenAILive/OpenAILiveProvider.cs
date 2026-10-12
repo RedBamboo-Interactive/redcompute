@@ -13,7 +13,7 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.OpenAILive;
 
-public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
+public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider, IVoicePreviewProvider
 {
     public static string ProviderTypeName => "OpenAILive";
 
@@ -197,6 +197,22 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
             content = update.Content,
         }, ct);
     }
+
+    public async Task SpeakPreviewAsync(string providerSessionId,
+        VoicePreviewRequest request, CancellationToken ct)
+    {
+        if (!_connections.TryGetValue(providerSessionId, out var connection))
+            throw new KeyNotFoundException("Voice session is not connected");
+        await SendJsonAsync(connection.Socket, BuildPreviewCommand(request), ct);
+    }
+
+    internal static object BuildPreviewCommand(VoicePreviewRequest request) => new
+    {
+        type = "session.commentary.append",
+        event_id = request.EventId,
+        delegation_id = (string?)null,
+        content = request.Content,
+    };
 
     public async Task CloseVoiceSessionAsync(string providerSessionId, CancellationToken ct)
     {

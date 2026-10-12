@@ -93,8 +93,43 @@ public sealed class VoiceSessionCoordinatorTests
         Assert.Equal("item_1", delivery.GetProperty("data").GetProperty("delegationId").GetString());
     }
 
-    private static VoiceSessionCoordinator NewCoordinator(RecordingHandler handler)
-        => new(new HttpClient(handler), (_, _) => { }, "http://127.0.0.1:18804");
+    [Fact]
+    public async Task Preview_speaks_once_after_start_and_never_projects_a_callback()
+    {
+        var callbacks = new RecordingHandler();
+        var provider = new FakeVoiceProvider();
+        var coordinator = NewCoordinator(callbacks);
+        var created = await coordinator.CreatePreviewAsync(provider, Preview("offer"), CancellationToken.None);
+
+        await provider.Emit(new("session.started", "started-1"));
+        await provider.Emit(new("session.started", "started-1"));
+        await provider.Emit(new("session.output_transcript.delta", "out-1", "Hello", 10, 50));
+
+        var preview = Assert.Single(provider.Previews);
+        Assert.Equal("This is the preview.", preview.Content);
+        Assert.Empty(callbacks.Bodies);
+        Assert.Equal("connected", coordinator.Get(created.Session.Id, "user-1")!.State);
+
+        Assert.True(await coordinator.CloseAsync(created.Session.Id, "user-1", false, CancellationToken.None));
+        Assert.Equal(1, provider.CloseCount);
+    }
+
+    [Fact]
+    public async Task Preview_has_a_server_owned_spend_timeout()
+    {
+        var provider = new FakeVoiceProvider();
+        var coordinator = NewCoordinator(new RecordingHandler(), TimeSpan.FromMilliseconds(20));
+        var created = await coordinator.CreatePreviewAsync(provider, Preview("offer"), CancellationToken.None);
+
+        await Task.Delay(200);
+
+        Assert.Equal(1, provider.CloseCount);
+        Assert.Equal("closed", coordinator.Get(created.Session.Id, "user-1")!.State);
+    }
+
+    private static VoiceSessionCoordinator NewCoordinator(RecordingHandler handler,
+        TimeSpan? previewLifetime = null)
+        => new(new HttpClient(handler), (_, _) => { }, "http://127.0.0.1:18804", previewLifetime);
 
     private static VoiceSessionStart Start(string offer) => new(
         offer, "gpt-live-1", "marin", "Be Nova.", "discussion-1", "ai-session-1",
@@ -107,13 +142,23 @@ public sealed class VoiceSessionCoordinatorTests
             [new JobContextReference("discussion", "discussion-1")],
             new JobTrace(), JobProvenanceAssurance.Verified, DateTimeOffset.UtcNow));
 
-    private sealed class FakeVoiceProvider : IVoiceSessionProvider
+    private static VoicePreviewStart Preview(string offer) => new(
+        offer, "gpt-live-1", "marin", "Speak once.", "This is the preview.",
+        new JobProvenance(
+            JobProvenance.CurrentSchemaVersion,
+            new JobOrigin("redleaf", new JobAppReference("core", "redleaf", null, "RedLeaf"),
+                new JobEntrypoint("http", "/compute/voice-session/previews", "POST")),
+            new JobActor("app", "redleaf", "RedLeaf"), new JobBeneficiary("user", "user-1", "Laurent"),
+            [], new JobTrace(), JobProvenanceAssurance.Verified, DateTimeOffset.UtcNow));
+
+    private sealed class FakeVoiceProvider : IVoiceSessionProvider, IVoicePreviewProvider
     {
         private Func<VoiceProviderEvent, Task>? _events;
         public string VoiceProviderId => "fake-live";
         public string DefaultModel => "fake-model";
         public string DefaultVoice => "fake-voice";
         public List<VoiceDelegationUpdate> Updates { get; } = [];
+        public List<VoicePreviewRequest> Previews { get; } = [];
         public int CloseCount { get; private set; }
 
         public Task<VoiceSessionCreateResult> CreateVoiceSessionAsync(VoiceSessionCreateRequest request,
@@ -133,6 +178,13 @@ public sealed class VoiceSessionCoordinatorTests
         public Task CloseVoiceSessionAsync(string providerSessionId, CancellationToken ct)
         {
             CloseCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task SpeakPreviewAsync(string providerSessionId, VoicePreviewRequest request,
+            CancellationToken ct)
+        {
+            Previews.Add(request);
             return Task.CompletedTask;
         }
 

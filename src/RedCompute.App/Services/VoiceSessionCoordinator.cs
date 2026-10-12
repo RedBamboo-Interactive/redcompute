@@ -36,6 +36,14 @@ public sealed record VoiceSessionStart(
     JobProvenance Provenance,
     IReadOnlyList<VoiceHistoryMessage>? InitialHistory = null);
 
+public sealed record VoicePreviewStart(
+    string OfferSdp,
+    string Model,
+    string Voice,
+    string Instructions,
+    string PreviewText,
+    JobProvenance Provenance);
+
 public sealed class VoiceSessionCoordinator
 {
     private sealed class SessionState
@@ -49,7 +57,12 @@ public sealed class VoiceSessionCoordinator
         public required string AiSessionId { get; init; }
         public required JobProvenance Provenance { get; init; }
         public required DateTimeOffset CreatedAt { get; init; }
+        public bool IsPreview { get; init; }
+        public string? PreviewText { get; init; }
+        public bool PreviewSent { get; set; }
         public string ProviderSessionId { get; set; } = "";
+        public TaskCompletionSource<string> ProviderSessionReady { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         public string Status { get; set; } = "connecting";
         public DateTimeOffset? ConnectedAt { get; set; }
         public DateTimeOffset? ClosedAt { get; set; }
@@ -72,49 +85,86 @@ public sealed class VoiceSessionCoordinator
     private readonly HttpClient _callbacks;
     private readonly Action<string, Guid?> _log;
     private readonly Uri _callbackUri;
+    private readonly TimeSpan _previewLifetime;
 
     public VoiceSessionCoordinator(HttpClient callbacks, Action<string, Guid?> log,
-        string redLeafUrl)
+        string redLeafUrl, TimeSpan? previewLifetime = null)
     {
         _callbacks = callbacks;
         _log = log;
         _callbackUri = new Uri(new Uri(redLeafUrl.TrimEnd('/') + "/"),
             "api/apps/nova/callbacks/voice-session");
+        _previewLifetime = previewLifetime ?? TimeSpan.FromSeconds(12);
     }
 
     public async Task<VoiceSessionAdmission> CreateAsync(
         IVoiceSessionProvider provider,
         VoiceSessionStart request,
         CancellationToken ct)
+        => await CreateCoreAsync(provider, request.OfferSdp, request.Model, request.Voice,
+            request.Instructions, request.DiscussionId, request.AiSessionId,
+            request.Provenance, request.InitialHistory, isPreview: false, previewText: null, ct: ct);
+
+    public async Task<VoiceSessionAdmission> CreatePreviewAsync(
+        IVoiceSessionProvider provider,
+        VoicePreviewStart request,
+        CancellationToken ct)
+    {
+        if (provider is not IVoicePreviewProvider)
+            throw new NotSupportedException("The selected voice provider does not support previews");
+        if (string.IsNullOrWhiteSpace(request.PreviewText) || request.PreviewText.Length > 500)
+            throw new ArgumentException("Preview text must contain at most 500 characters", nameof(request));
+        return await CreateCoreAsync(provider, request.OfferSdp, request.Model, request.Voice,
+            request.Instructions, "", "", request.Provenance, null,
+            isPreview: true, previewText: request.PreviewText, ct: ct);
+    }
+
+    private async Task<VoiceSessionAdmission> CreateCoreAsync(
+        IVoiceSessionProvider provider,
+        string offerSdp,
+        string model,
+        string voice,
+        string instructions,
+        string discussionId,
+        string aiSessionId,
+        JobProvenance provenance,
+        IReadOnlyList<VoiceHistoryMessage>? initialHistory,
+        bool isPreview,
+        string? previewText,
+        CancellationToken ct)
     {
         PurgeClosedSessions();
-        request.Provenance.ValidateForNewJob();
+        provenance.ValidateForNewJob();
         var id = $"vs_{Guid.NewGuid():N}";
         var state = new SessionState
         {
             Id = id,
             Provider = provider,
             ProviderName = provider.VoiceProviderId,
-            Model = request.Model,
-            Voice = request.Voice,
-            DiscussionId = request.DiscussionId,
-            AiSessionId = request.AiSessionId,
-            Provenance = request.Provenance,
+            Model = model,
+            Voice = voice,
+            DiscussionId = discussionId,
+            AiSessionId = aiSessionId,
+            Provenance = provenance,
             CreatedAt = DateTimeOffset.UtcNow,
+            IsPreview = isPreview,
+            PreviewText = previewText,
         };
         if (!_sessions.TryAdd(id, state)) throw new InvalidOperationException("Voice session identity collision");
 
         try
         {
             var created = await provider.CreateVoiceSessionAsync(new(
-                id, request.OfferSdp, request.Model, request.Voice,
-                request.Instructions, request.Provenance, request.InitialHistory),
+                id, offerSdp, model, voice, instructions, provenance, initialHistory),
                 evt => HandleProviderEventAsync(state, evt), ct);
             state.ProviderSessionId = created.ProviderSessionId;
+            state.ProviderSessionReady.TrySetResult(created.ProviderSessionId);
+            if (isPreview) _ = ClosePreviewAfterLifetimeAsync(id);
             return new(Snapshot(state), created.AnswerSdp);
         }
-        catch
+        catch (Exception ex)
         {
+            state.ProviderSessionReady.TrySetException(ex);
             state.Status = "error";
             state.ClosedAt = DateTimeOffset.UtcNow;
             throw;
@@ -163,7 +213,8 @@ public sealed class VoiceSessionCoordinator
         {
             if (state.Status == "closed") return true;
             state.Status = "closing";
-            await FlushUtteranceAsync(state, reason: "close", delegationId: null, ct);
+            if (!state.IsPreview)
+                await FlushUtteranceAsync(state, reason: "close", delegationId: null, ct);
             providerSessionId = state.ProviderSessionId;
         }
         finally { state.Gate.Release(); }
@@ -196,6 +247,11 @@ public sealed class VoiceSessionCoordinator
         try
         {
             if (evt.EventId is { Length: > 0 } && !state.SeenProviderEvents.Add(evt.EventId)) return;
+            if (state.IsPreview)
+            {
+                await HandlePreviewProviderEventAsync(state, evt);
+                return;
+            }
             switch (evt.Type)
             {
                 case "session.started":
@@ -238,6 +294,56 @@ public sealed class VoiceSessionCoordinator
             }
         }
         finally { state.Gate.Release(); }
+    }
+
+    private async Task HandlePreviewProviderEventAsync(SessionState state, VoiceProviderEvent evt)
+    {
+        switch (evt.Type)
+        {
+            case "session.started":
+                state.Status = "connected";
+                state.ConnectedAt ??= DateTimeOffset.UtcNow;
+                if (state.PreviewSent) break;
+                state.PreviewSent = true;
+                try
+                {
+                    var providerSessionId = await state.ProviderSessionReady.Task;
+                    await ((IVoicePreviewProvider)state.Provider).SpeakPreviewAsync(
+                        providerSessionId,
+                        new($"preview_{state.Id}", state.PreviewText!),
+                        CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    state.Status = "degraded";
+                    state.ErrorCode = "preview_failed";
+                    state.ErrorMessage = "The voice provider could not speak the preview";
+                    _log($"[Voice] Preview failed for {state.Id}: {ex.Message}", null);
+                }
+                break;
+            case "session.closed":
+                state.Status = "closed";
+                state.ClosedAt ??= DateTimeOffset.UtcNow;
+                break;
+            case "error":
+                state.Status = "degraded";
+                state.ErrorCode = evt.ErrorCode ?? "provider_error";
+                state.ErrorMessage = evt.ErrorMessage ?? "Voice provider error";
+                break;
+        }
+    }
+
+    private async Task ClosePreviewAfterLifetimeAsync(string id)
+    {
+        try
+        {
+            await Task.Delay(_previewLifetime);
+            await CloseAsync(id, null, trustedInfrastructure: true, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _log($"[Voice] Preview cleanup failed for {id}: {ex.Message}", null);
+        }
     }
 
     private async Task AppendTranscriptAsync(SessionState state, string role,

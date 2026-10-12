@@ -64,4 +64,18 @@ public sealed class OpenAILiveProviderContractTests
     [Fact]
     public void Ignores_unowned_provider_events()
         => Assert.Null(OpenAILiveProvider.NormalizeEvent("{\"type\":\"session.output_audio.delta\"}"));
+
+    [Fact]
+    public void Preview_command_is_server_side_commentary_without_a_delegation()
+    {
+        var json = JsonSerializer.Serialize(OpenAILiveProvider.BuildPreviewCommand(
+            new VoicePreviewRequest("preview_1", "This is the preview.")));
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        Assert.Equal("session.commentary.append", root.GetProperty("type").GetString());
+        Assert.Equal("preview_1", root.GetProperty("event_id").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("delegation_id").ValueKind);
+        Assert.Equal("This is the preview.", root.GetProperty("content").GetString());
+    }
 }
