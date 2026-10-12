@@ -59,59 +59,6 @@ public static class VoiceSessionEndpoints
             }
         });
 
-        endpoints.MapPost("/voice-session/previews", "Create a short transcript-free WebRTC voice audition", async (HttpContext ctx) =>
-        {
-            NoStore(ctx);
-            JsonElement body;
-            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
-            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
-            var offerSdp = String(body, "offerSdp");
-            if (string.IsNullOrWhiteSpace(offerSdp))
-                return Error(400, "missing_fields", "offerSdp is required");
-
-            var capability = registry.Get("voice-session");
-            var requestedProvider = String(body, "provider");
-            var backend = capability?.ResolveProvider(requestedProvider);
-            if (backend is not IVoiceSessionProvider provider)
-                return Error(503, "provider_not_configured", "No voice-session provider is configured");
-            if (provider is not IVoicePreviewProvider)
-                return Error(400, "preview_not_supported", "The selected voice provider does not support previews");
-
-            var voice = String(body, "voice") ?? provider.DefaultVoice;
-            if (!ValidVoiceName(voice))
-                return Error(400, "invalid_voice", "Voice must be a provider voice name");
-            var provenance = JobProvenanceHttp.Resolve(ctx, "/voice-session/previews");
-            var previewText = $"Hello. This is the {voice} voice. Calm, clear, and ready when you are.";
-            const string instructions =
-                "This is a voice audition. Do not converse, delegate, or use tools. " +
-                "Speak preview commentary once, naturally and warmly, then remain silent.";
-            try
-            {
-                var admission = await coordinator.CreatePreviewAsync(provider, new(
-                    offerSdp!, String(body, "model") ?? provider.DefaultModel,
-                    voice, instructions, previewText, provenance), ctx.RequestAborted);
-                return Results.Json(new
-                {
-                    id = admission.Session.Id,
-                    provider = admission.Session.Provider,
-                    model = admission.Session.Model,
-                    voice = admission.Session.Voice,
-                    state = admission.Session.State,
-                    answerSdp = admission.AnswerSdp,
-                    expiresInMs = 12_000,
-                }, statusCode: StatusCodes.Status201Created);
-            }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("API key", StringComparison.OrdinalIgnoreCase))
-            {
-                return Error(503, "provider_not_configured", "OpenAI Live needs a vaulted project API key");
-            }
-            catch (ArgumentException ex) { return Error(400, "invalid_request", ex.Message); }
-            catch (Exception)
-            {
-                return Error(502, "voice_provider_failed", "The voice provider could not create the preview");
-            }
-        });
-
         endpoints.MapGet("/voice-session/sessions/{id}", "Get safe voice-session lifecycle state", (HttpContext ctx, string id) =>
         {
             NoStore(ctx);
@@ -175,10 +122,6 @@ public static class VoiceSessionEndpoints
         }
         return result;
     }
-
-    private static bool ValidVoiceName(string voice)
-        => voice.Length is > 0 and <= 64
-            && voice.All(character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_');
 
     private static bool IsTrustedInfrastructure(HttpContext ctx)
         => string.Equals(ctx.User.FindFirst("client_id")?.Value, "redleaf", StringComparison.OrdinalIgnoreCase)

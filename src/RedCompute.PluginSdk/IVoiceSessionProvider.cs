@@ -33,10 +33,6 @@ public sealed record VoiceDelegationUpdate(
     string Kind,
     string Content);
 
-public sealed record VoicePreviewRequest(
-    string EventId,
-    string Content);
-
 /// <summary>
 /// Provider-neutral low-latency voice transport. Implementations own only their
 /// external protocol and credentials. Leaf lifecycle, transcript projection and
@@ -57,17 +53,4 @@ public interface IVoiceSessionProvider
         VoiceDelegationUpdate update,
         CancellationToken ct);
     Task CloseVoiceSessionAsync(string providerSessionId, CancellationToken ct);
-}
-
-/// <summary>
-/// Optional short-form audition support for a voice-session provider. Preview
-/// speech is injected over the provider's trusted control channel and never
-/// enters a consumer discussion, transcript, delegation or tool pipeline.
-/// </summary>
-public interface IVoicePreviewProvider
-{
-    Task SpeakPreviewAsync(
-        string providerSessionId,
-        VoicePreviewRequest request,
-        CancellationToken ct);
 }

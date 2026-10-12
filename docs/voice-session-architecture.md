@@ -127,12 +127,6 @@ Response:
 
 `POST /voice-session/sessions/{id}/close` is idempotent and performs a bounded graceful shutdown.
 
-`POST /voice-session/previews` creates a receive-only, transcript-free audition from an SDP offer, provider and
-voice. The sample text and maximum lifetime are server-owned. After `session.started`, RedCompute asks an optional
-`IVoicePreviewProvider` to speak the fixed sample over its trusted control channel. Preview transcript and delegation
-events are discarded, Nova is never called, and the ordinary close route remains available for prompt browser
-teardown. A hard server timeout closes abandoned previews independently of the browser.
-
 The Nova-to-RedCompute contract never exposes the provider API key or the sideband socket.
 
 ## Transcript and delegation state machine
@@ -173,8 +167,6 @@ If voice closes during step 4, the backend work continues under normal Nova sema
 - SDP is treated as sensitive transient data: no structured logging of request/response bodies and `private, no-store` on every route.
 - Confidential discussions retain owner and owning-Agent checks. Safe status events omit transcript text.
 - Provider errors are normalized before reaching the browser. Raw headers, keys, and upstream bodies are never returned.
-- Settings previews are receive-only and never request microphone access. Their fixed sample cannot be used as a
-  general speech-generation endpoint, and they retain no transcript or discussion association.
 
 ## Prompt and context policy
 
