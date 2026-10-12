@@ -267,10 +267,6 @@ public class ConfigManager
                             DisplayName = "OpenAI GPT-Live",
                             Model = "gpt-live-1",
                             ApiKey = "",
-                            Extra = new Dictionary<string, object?>
-                            {
-                                ["Voice"] = "marin",
-                            },
                         },
                     },
                 },

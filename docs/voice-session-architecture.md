@@ -35,13 +35,15 @@ The Nova client owns only the user gesture and media plane:
 - exposes mute and end controls;
 - reports coarse playback state without claiming per-utterance audibility.
 
-The browser does not receive the OpenAI key, register tools, call Leaf tools, choose an arbitrary callback, or write canonical transcript records.
+The browser does not receive the OpenAI key, register tools, call Leaf tools, choose an arbitrary callback or voice,
+or write canonical transcript records.
 
 ### Nova plugin
 
 Nova is the authorized product adapter:
 
 - validates access to the discussion and its Agent;
+- resolves the Agent's current provider-neutral Live Voice profile and validates its provider capability;
 - ensures the discussion has its ordinary AI session before voice begins;
 - builds a bounded voice prompt identifying the Agent and explaining the client-delegation policy;
 - creates the voice session through the signed Compute gateway with the discussion, Agent, beneficiary, and AI-session provenance;
@@ -73,14 +75,15 @@ Voice transports are ephemeral. The core keeps active state in memory and emits 
 The provider plugin owns only OpenAI protocol details:
 
 - creates `POST /v1/live/sessions` with `{ session, transport: { type: "webrtc", sdp } }`;
-- uses `gpt-live-1`, a configured voice, input transcription, and client delegation;
+- uses `gpt-live-1`, the voice resolved from the current Agent profile, input transcription, and client delegation;
 - returns only the opaque OpenAI session ID and SDP answer to the core;
 - attaches a server-side sideband WebSocket to `/v1/live/sessions/{id}/attach`;
 - normalizes input/output transcript deltas, delegation-created, error, usage, and closed events;
 - accepts provider-neutral thinking/commentary/instruction updates and maps them to GPT-Live commands;
 - closes gracefully and waits for `session.closed` within a bounded drain.
 
-It never receives Leaf tools or RedLeaf credentials.
+It never receives Leaf tools or RedLeaf credentials. Marin is a fixed compatibility fallback only when an Agent has
+not selected a Live Voice; provider settings do not own Agent voice identity.
 
 ## API contract
 

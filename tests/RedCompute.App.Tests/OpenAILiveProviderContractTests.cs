@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
 using RedCompute.Plugin.OpenAILive;
 using RedCompute.PluginSdk;
@@ -8,6 +9,18 @@ namespace RedCompute.App.Tests;
 
 public sealed class OpenAILiveProviderContractTests
 {
+    [Fact]
+    public void Provider_default_is_a_compatibility_fallback_not_global_voice_configuration()
+    {
+        var provider = new OpenAILiveProvider(new ProviderConfig
+        {
+            Type = "OpenAILive",
+            Extra = new Dictionary<string, object?> { ["Voice"] = "legacy-global-voice" },
+        }, "voice-session", _ => { });
+
+        Assert.Equal("marin", provider.DefaultVoice);
+    }
+
     [Fact]
     public void Creation_payload_uses_provider_history_roles_and_never_contains_provenance()
     {

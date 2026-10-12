@@ -47,7 +47,7 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
     public string ProviderType => ProviderTypeName;
     public string VoiceProviderId => _config.EntitySlug ?? "openai-live";
     public string DefaultModel => string.IsNullOrWhiteSpace(_config.Model) ? "gpt-live-1" : _config.Model;
-    public string DefaultVoice => ExtraString("Voice") ?? "marin";
+    public string DefaultVoice => "marin";
     public string CapabilitySlug { get; private set; } = "voice-session";
     public Dictionary<string, ParameterSchema> InputParameters => new();
     public ReturnSchema OutputSchema => new() { ContentType = "application/json" };
@@ -274,17 +274,6 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
         => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static long? Long(JsonElement element, string name)
         => element.TryGetProperty(name, out var value) && value.TryGetInt64(out var number) ? number : null;
-
-    private string? ExtraString(string name)
-    {
-        if (_config.Extra is null || !_config.Extra.TryGetValue(name, out var value)) return null;
-        return value switch
-        {
-            string text when !string.IsNullOrWhiteSpace(text) => text,
-            JsonElement { ValueKind: JsonValueKind.String } json => json.GetString(),
-            _ => null,
-        };
-    }
 
     private static async Task SendJsonAsync(ClientWebSocket socket, object value, CancellationToken ct)
     {
