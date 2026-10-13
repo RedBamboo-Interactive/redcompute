@@ -155,6 +155,29 @@ public sealed class VoiceSessionCoordinatorTests
         Assert.Equal("max_lifetime", coordinator.Get(created.Session.Id, "user-1")!.ErrorCode);
     }
 
+    [Fact]
+    public async Task Callback_retries_keep_the_voice_sessions_admission_identity()
+    {
+        var callbacks = new RecordingHandler();
+        var client = new HttpClient(callbacks);
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer unrelated-before");
+        var provider = new FakeVoiceProvider();
+        var coordinator = new VoiceSessionCoordinator(
+            client, (_, _) => { }, "http://127.0.0.1:18804");
+        await coordinator.CreateAsync(provider, Start("offer") with
+        {
+            CallbackAccessToken = "voice-session-token",
+        }, CancellationToken.None);
+
+        client.DefaultRequestHeaders.Remove("Authorization");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer unrelated-after");
+        await provider.Emit(new("session.input_transcript.delta", "in-1", "Hello", 10, 20));
+        await provider.Emit(new("session.output_transcript.delta", "out-1", "Hi", 30, 40));
+
+        Assert.NotEmpty(callbacks.Authorization);
+        Assert.All(callbacks.Authorization, value => Assert.Equal("Bearer voice-session-token", value));
+    }
+
     private static VoiceSessionCoordinator NewCoordinator(RecordingHandler handler)
         => new(new HttpClient(handler), (_, _) => { }, "http://127.0.0.1:18804");
 
@@ -208,12 +231,17 @@ public sealed class VoiceSessionCoordinatorTests
     private sealed class RecordingHandler : HttpMessageHandler
     {
         public List<JsonElement> Bodies { get; } = [];
+        public List<string?> Authorization { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             var json = await request.Content!.ReadAsStringAsync(cancellationToken);
-            lock (Bodies) Bodies.Add(JsonDocument.Parse(json).RootElement.Clone());
+            lock (Bodies)
+            {
+                Bodies.Add(JsonDocument.Parse(json).RootElement.Clone());
+                Authorization.Add(request.Headers.Authorization?.ToString());
+            }
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
     }

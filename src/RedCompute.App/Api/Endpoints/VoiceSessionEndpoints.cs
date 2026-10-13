@@ -8,6 +8,8 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class VoiceSessionEndpoints
 {
+    private static readonly TimeSpan CallbackTokenLifetime = TimeSpan.FromMinutes(20);
+
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         VoiceSessionCoordinator coordinator)
     {
@@ -31,12 +33,17 @@ public static class VoiceSessionEndpoints
             if (backend is not IVoiceSessionProvider provider)
                 return Error(503, "provider_not_configured", "No voice-session provider is configured");
             var provenance = JobProvenanceHttp.Resolve(ctx, "/voice-session/sessions");
+            var callbackAccessToken = SessionExecutionToken.Issue(
+                ctx, provider.VoiceProviderId, provider.VoiceProviderId, CallbackTokenLifetime);
+            if (string.IsNullOrWhiteSpace(callbackAccessToken))
+                return Error(401, "execution_identity_required",
+                    "Voice sessions require a signed execution identity for durable callbacks");
             try
             {
                 var admission = await coordinator.CreateAsync(provider, new(
                     offerSdp!, String(body, "model") ?? provider.DefaultModel,
                     String(body, "voice") ?? provider.DefaultVoice, instructions!, discussionId!, aiSessionId!, provenance,
-                    History(body)),
+                    History(body), callbackAccessToken),
                     ctx.RequestAborted);
                 return Results.Json(new
                 {

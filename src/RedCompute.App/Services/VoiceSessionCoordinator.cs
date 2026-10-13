@@ -34,7 +34,8 @@ public sealed record VoiceSessionStart(
     string DiscussionId,
     string AiSessionId,
     JobProvenance Provenance,
-    IReadOnlyList<VoiceHistoryMessage>? InitialHistory = null);
+    IReadOnlyList<VoiceHistoryMessage>? InitialHistory = null,
+    string? CallbackAccessToken = null);
 
 public sealed class VoiceSessionCoordinator
 {
@@ -48,6 +49,7 @@ public sealed class VoiceSessionCoordinator
         public required string DiscussionId { get; init; }
         public required string AiSessionId { get; init; }
         public required JobProvenance Provenance { get; init; }
+        public string? CallbackAccessToken { get; init; }
         public required DateTimeOffset CreatedAt { get; init; }
         public required DateTimeOffset LastActivityAt { get; set; }
         public string ProviderSessionId { get; set; } = "";
@@ -115,6 +117,7 @@ public sealed class VoiceSessionCoordinator
             DiscussionId = request.DiscussionId,
             AiSessionId = request.AiSessionId,
             Provenance = request.Provenance,
+            CallbackAccessToken = request.CallbackAccessToken,
             CreatedAt = now,
             LastActivityAt = now,
         };
@@ -270,7 +273,7 @@ public sealed class VoiceSessionCoordinator
                     state.Status = "closed";
                     state.ClosedAt ??= DateTimeOffset.UtcNow;
                     await NotifyAsync(state, "voice.session.closed", evt.EventId ?? $"closed:{state.Id}",
-                        new { }, CancellationToken.None);
+                        new { reason = state.ErrorCode ?? "provider_closed" }, CancellationToken.None);
                     state.CloseCompletion?.TrySetResult(true);
                     break;
                 case "error":
@@ -355,7 +358,14 @@ public sealed class VoiceSessionCoordinator
         {
             try
             {
-                using var response = await _callbacks.PostAsJsonAsync(_callbackUri, body, ct);
+                using var request = new HttpRequestMessage(HttpMethod.Post, _callbackUri)
+                {
+                    Content = JsonContent.Create(body),
+                };
+                if (!string.IsNullOrWhiteSpace(state.CallbackAccessToken))
+                    request.Headers.TryAddWithoutValidation(
+                        "Authorization", $"Bearer {state.CallbackAccessToken}");
+                using var response = await _callbacks.SendAsync(request, ct);
                 if (response.IsSuccessStatusCode) return;
                 _log($"[Voice] Nova callback {type} failed with HTTP {(int)response.StatusCode} (attempt {attempt})", null);
             }
