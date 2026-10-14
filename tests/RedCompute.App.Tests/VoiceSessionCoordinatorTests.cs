@@ -115,6 +115,68 @@ public sealed class VoiceSessionCoordinatorTests
     }
 
     [Fact]
+    public async Task Delegation_result_marks_an_assistant_utterance_that_was_already_open()
+    {
+        var callbacks = new RecordingHandler();
+        var provider = new FakeVoiceProvider();
+        var coordinator = NewCoordinator(callbacks);
+        var created = await coordinator.CreateAsync(provider, Start("offer"), CancellationToken.None);
+
+        await provider.Emit(new("session.output_transcript.delta", "out-1", "Let me check. ", 100, 180));
+        Assert.True(await coordinator.UpdateDelegationAsync(created.Session.Id, "item_1",
+            new("result-1", "commentary", "Verified result"), "user-1", false, CancellationToken.None));
+        await provider.Emit(new("session.output_transcript.delta", "out-2", "It's Wednesday.", 180, 260));
+        await provider.Emit(new("session.input_transcript.delta", "in-1", "Thanks", 280, 340));
+
+        var delivery = callbacks.Bodies.Single(body =>
+            body.GetProperty("type").GetString() == "voice.utterance.finalized"
+            && body.GetProperty("data").GetProperty("role").GetString() == "assistant");
+        Assert.Equal("Let me check. It's Wednesday.", delivery.GetProperty("data").GetProperty("content").GetString());
+        Assert.Equal("item_1", delivery.GetProperty("data").GetProperty("delegationId").GetString());
+    }
+
+    [Fact]
+    public async Task Failed_delegation_update_rolls_back_spoken_delivery_correlation()
+    {
+        var callbacks = new RecordingHandler();
+        var provider = new FakeVoiceProvider { FailUpdates = true };
+        var coordinator = NewCoordinator(callbacks);
+        var created = await coordinator.CreateAsync(provider, Start("offer"), CancellationToken.None);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.UpdateDelegationAsync(
+            created.Session.Id, "item_1", new("result-1", "commentary", "Verified result"),
+            "user-1", false, CancellationToken.None));
+        await provider.Emit(new("session.output_transcript.delta", "out-1", "A casual answer.", 100, 200));
+        await provider.Emit(new("session.input_transcript.delta", "in-1", "Thanks", 220, 300));
+
+        var assistant = callbacks.Bodies.Single(body =>
+            body.GetProperty("type").GetString() == "voice.utterance.finalized"
+            && body.GetProperty("data").GetProperty("role").GetString() == "assistant");
+        Assert.Equal(JsonValueKind.Null, assistant.GetProperty("data").GetProperty("delegationId").ValueKind);
+    }
+
+    [Fact]
+    public async Task Rejected_delegation_update_rolls_back_spoken_delivery_correlation()
+    {
+        var callbacks = new RecordingHandler();
+        var provider = new FakeVoiceProvider();
+        var coordinator = NewCoordinator(callbacks);
+        var created = await coordinator.CreateAsync(provider, Start("offer"), CancellationToken.None);
+
+        Assert.True(await coordinator.UpdateDelegationAsync(created.Session.Id, "item_1",
+            new("result-1", "commentary", "Verified result"), "user-1", false, CancellationToken.None));
+        await provider.Emit(new("error", "provider-error", ErrorCode: "invalid_request_error",
+            ErrorMessage: "Rejected", ClientEventId: "result-1"));
+        await provider.Emit(new("session.output_transcript.delta", "out-1", "A casual answer.", 100, 200));
+        await provider.Emit(new("session.input_transcript.delta", "in-1", "Thanks", 220, 300));
+
+        var assistant = callbacks.Bodies.Single(body =>
+            body.GetProperty("type").GetString() == "voice.utterance.finalized"
+            && body.GetProperty("data").GetProperty("role").GetString() == "assistant");
+        Assert.Equal(JsonValueKind.Null, assistant.GetProperty("data").GetProperty("delegationId").ValueKind);
+    }
+
+    [Fact]
     public async Task Idle_watchdog_closes_the_exact_provider_session_once()
     {
         var now = new DateTimeOffset(2026, 10, 12, 16, 0, 0, TimeSpan.Zero);
@@ -201,6 +263,7 @@ public sealed class VoiceSessionCoordinatorTests
         public List<VoiceDelegationUpdate> Updates { get; } = [];
         public int CloseCount { get; private set; }
         public bool HoldClose { get; init; }
+        public bool FailUpdates { get; init; }
         public TaskCompletionSource CloseStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseClose { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -214,6 +277,7 @@ public sealed class VoiceSessionCoordinatorTests
         public Task SendDelegationUpdateAsync(string providerSessionId, string delegationId,
             VoiceDelegationUpdate update, CancellationToken ct)
         {
+            if (FailUpdates) throw new InvalidOperationException("simulated provider update failure");
             Updates.Add(update);
             return Task.CompletedTask;
         }

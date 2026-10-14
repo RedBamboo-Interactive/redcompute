@@ -75,6 +75,34 @@ public sealed class OpenAILiveProviderContractTests
     }
 
     [Fact]
+    public void Normalizes_append_acknowledgement_with_the_outgoing_command_identity()
+    {
+        var evt = OpenAILiveProvider.NormalizeEvent("""
+            {"type":"session.commentary.appended","event_id":"evt_server",
+             "client_event_id":"result_123","start_ms":100,"end_ms":220}
+            """);
+
+        Assert.NotNull(evt);
+        Assert.Equal("session.delegation.update.accepted", evt!.Type);
+        Assert.Equal("result_123", evt.ClientEventId);
+        Assert.Equal(100, evt.StartMs);
+        Assert.Equal(220, evt.EndMs);
+    }
+
+    [Fact]
+    public void Normalizes_rejected_command_with_the_outgoing_command_identity()
+    {
+        var evt = OpenAILiveProvider.NormalizeEvent("""
+            {"type":"error","event_id":"evt_error",
+             "error":{"code":"invalid_request_error","client_event_id":"result_123"}}
+            """);
+
+        Assert.NotNull(evt);
+        Assert.Equal("result_123", evt!.ClientEventId);
+        Assert.Equal("invalid_request_error", evt.ErrorCode);
+    }
+
+    [Fact]
     public void Ignores_unowned_provider_events()
         => Assert.Null(OpenAILiveProvider.NormalizeEvent("{\"type\":\"session.output_audio.delta\"}"));
 

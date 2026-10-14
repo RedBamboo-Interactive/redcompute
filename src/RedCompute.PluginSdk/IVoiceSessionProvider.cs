@@ -26,7 +26,8 @@ public sealed record VoiceProviderEvent(
     string? DelegationId = null,
     long? OffsetMs = null,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    string? ClientEventId = null);
 
 public sealed record VoiceDelegationUpdate(
     string EventId,

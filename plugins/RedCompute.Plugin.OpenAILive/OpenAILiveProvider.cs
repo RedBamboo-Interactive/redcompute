@@ -271,9 +271,14 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
             "session.output_transcript.delta" => new(type, eventId, String(root, "delta"), Long(root, "start_ms"), Long(root, "end_ms")),
             "session.delegation.created" => root.TryGetProperty("delegation", out var delegation)
                 ? new(type, eventId, DelegationId: String(delegation, "id"), OffsetMs: Long(root, "offset_ms")) : null,
+            "session.commentary.appended" or "session.thinking.appended" or "session.instructions.appended"
+                => new("session.delegation.update.accepted", eventId,
+                    StartMs: Long(root, "start_ms"), EndMs: Long(root, "end_ms"),
+                    ClientEventId: String(root, "client_event_id")),
             "session.started" or "session.closed" => new(type, eventId),
             "error" => new(type, eventId, ErrorCode: root.TryGetProperty("error", out var error) ? String(error, "code") : null,
-                ErrorMessage: "OpenAI Live reported a session error"),
+                ErrorMessage: "OpenAI Live reported a session error",
+                ClientEventId: root.TryGetProperty("error", out error) ? String(error, "client_event_id") : null),
             _ => null,
         };
     }

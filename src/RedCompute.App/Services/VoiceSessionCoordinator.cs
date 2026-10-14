@@ -39,6 +39,12 @@ public sealed record VoiceSessionStart(
 
 public sealed class VoiceSessionCoordinator
 {
+    private sealed record PendingDelegationUpdate(
+        string DelegationId,
+        bool MarksSpokenDelivery,
+        string? PreviousActiveDelegationId,
+        string? PreviousOpenDelegationId);
+
     private sealed class SessionState
     {
         public required string Id { get; init; }
@@ -62,12 +68,14 @@ public sealed class VoiceSessionCoordinator
         public long UtteranceOrdinal { get; set; }
         public string? OpenRole { get; set; }
         public string? OpenDelegationId { get; set; }
-        public Queue<string> PendingSpokenDelegations { get; } = new();
+        public string? ActiveSpokenDelegationId { get; set; }
         public string OpenText { get; set; } = "";
         public long? OpenStartMs { get; set; }
         public long? OpenEndMs { get; set; }
         public HashSet<string> SeenProviderEvents { get; } = new(StringComparer.Ordinal);
         public HashSet<string> SeenUpdates { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, PendingDelegationUpdate> PendingDelegationUpdates { get; } =
+            new(StringComparer.Ordinal);
         public SemaphoreSlim Gate { get; } = new(1, 1);
         public TaskCompletionSource<bool>? CloseCompletion { get; set; }
     }
@@ -156,15 +164,38 @@ public sealed class VoiceSessionCoordinator
         {
             if (!state.SeenUpdates.Add(update.EventId)) return true;
             var marksSpokenDelivery = update.Kind is "commentary" or "failed";
+            var previousActiveDelegationId = state.ActiveSpokenDelegationId;
+            var previousOpenDelegationId = state.OpenDelegationId;
             try
             {
+                if (marksSpokenDelivery)
+                {
+                    // Commentary can arrive while GPT-Live already has an assistant
+                    // transcript open (for example, "let me check..."). Mark that
+                    // whole delivery window before sending the verified result. A
+                    // one-shot queue loses the correlation as soon as speech spans
+                    // more than one provider segment.
+                    state.ActiveSpokenDelegationId = delegationId;
+                    if (state.OpenRole == "assistant" && state.OpenDelegationId is null)
+                        state.OpenDelegationId = delegationId;
+                }
+                state.PendingDelegationUpdates[update.EventId] = new(
+                    delegationId, marksSpokenDelivery,
+                    previousActiveDelegationId, previousOpenDelegationId);
                 await state.Provider.SendDelegationUpdateAsync(
                     state.ProviderSessionId, delegationId, update, ct);
-                if (marksSpokenDelivery) state.PendingSpokenDelegations.Enqueue(delegationId);
                 state.LastActivityAt = _utcNow();
             }
             catch
             {
+                state.PendingDelegationUpdates.Remove(update.EventId);
+                if (marksSpokenDelivery)
+                {
+                    if (string.Equals(state.ActiveSpokenDelegationId, delegationId, StringComparison.Ordinal))
+                        state.ActiveSpokenDelegationId = previousActiveDelegationId;
+                    if (string.Equals(state.OpenDelegationId, delegationId, StringComparison.Ordinal))
+                        state.OpenDelegationId = previousOpenDelegationId;
+                }
                 state.SeenUpdates.Remove(update.EventId);
                 throw;
             }
@@ -241,7 +272,8 @@ public sealed class VoiceSessionCoordinator
         {
             if (evt.EventId is { Length: > 0 } && !state.SeenProviderEvents.Add(evt.EventId)) return;
             if (evt.Type is "session.started" or "session.input_transcript.delta"
-                or "session.output_transcript.delta" or "session.delegation.created")
+                or "session.output_transcript.delta" or "session.delegation.created"
+                or "session.delegation.update.accepted")
                 state.LastActivityAt = _utcNow();
             switch (evt.Type)
             {
@@ -268,6 +300,10 @@ public sealed class VoiceSessionCoordinator
                             offsetMs = evt.OffsetMs,
                         }, CancellationToken.None);
                     break;
+                case "session.delegation.update.accepted":
+                    if (!string.IsNullOrWhiteSpace(evt.ClientEventId))
+                        state.PendingDelegationUpdates.Remove(evt.ClientEventId);
+                    break;
                 case "session.closed":
                     await FlushUtteranceAsync(state, "provider_close", null, CancellationToken.None);
                     state.Status = "closed";
@@ -277,6 +313,20 @@ public sealed class VoiceSessionCoordinator
                     state.CloseCompletion?.TrySetResult(true);
                     break;
                 case "error":
+                    if (!string.IsNullOrWhiteSpace(evt.ClientEventId)
+                        && state.PendingDelegationUpdates.Remove(evt.ClientEventId, out var rejected))
+                    {
+                        state.SeenUpdates.Remove(evt.ClientEventId);
+                        if (rejected.MarksSpokenDelivery)
+                        {
+                            if (string.Equals(state.ActiveSpokenDelegationId,
+                                    rejected.DelegationId, StringComparison.Ordinal))
+                                state.ActiveSpokenDelegationId = rejected.PreviousActiveDelegationId;
+                            if (string.Equals(state.OpenDelegationId,
+                                    rejected.DelegationId, StringComparison.Ordinal))
+                                state.OpenDelegationId = rejected.PreviousOpenDelegationId;
+                        }
+                    }
                     state.Status = "degraded";
                     state.ErrorCode = evt.ErrorCode ?? "provider_error";
                     state.ErrorMessage = evt.ErrorMessage ?? "Voice provider error";
@@ -293,11 +343,14 @@ public sealed class VoiceSessionCoordinator
     {
         if (string.IsNullOrEmpty(evt.Delta)) return;
         if (state.OpenRole is not null && !string.Equals(state.OpenRole, role, StringComparison.Ordinal))
+        {
             await FlushUtteranceAsync(state, "speaker_change", null, ct);
+            if (role == "user") state.ActiveSpokenDelegationId = null;
+        }
         if (state.OpenRole is null)
         {
-            state.OpenDelegationId = role == "assistant" && state.PendingSpokenDelegations.Count > 0
-                ? state.PendingSpokenDelegations.Dequeue() : null;
+            state.OpenDelegationId = role == "assistant"
+                ? state.ActiveSpokenDelegationId : null;
         }
         state.OpenRole = role;
         state.OpenText += evt.Delta;
