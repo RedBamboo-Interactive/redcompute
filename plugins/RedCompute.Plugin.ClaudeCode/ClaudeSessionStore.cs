@@ -89,6 +89,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         {
             existing.ProjectName = record.ProjectName;
             existing.ProjectPath = record.ProjectPath;
+            existing.ScratchDirectory = record.ScratchDirectory;
             existing.RepositoryId = record.RepositoryId;
             existing.Status = record.Status;
             existing.StopReason = record.StopReason;

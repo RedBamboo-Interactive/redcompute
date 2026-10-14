@@ -1,5 +1,6 @@
 using RedCompute.Core.Sessions;
 using RedCompute.Plugin.Codex;
+using RedCompute.PluginSdk;
 using System.Text.Json;
 using Xunit;
 
@@ -83,6 +84,29 @@ public sealed class CodexSessionRecoveryTests
         Assert.Equal(
             "thread-2",
             CodexInteractiveService.ThreadIdFromStartResult(document.RootElement));
+    }
+
+    [Fact]
+    public void Resume_reuses_the_persisted_scratch_directory()
+    {
+        var record = Session("scratch-session");
+        record.ScratchDirectory = @"S:\Nova\discussion";
+
+        Assert.Equal(
+            @"S:\Nova\discussion",
+            CodexInteractiveService.ScratchDirectoryForResume(record));
+    }
+
+    [Fact]
+    public void Conversation_only_resume_keeps_the_project_as_its_read_only_scratch()
+    {
+        var record = Session("conversation-session");
+        record.ScratchDirectory = @"S:\Nova\discussion";
+        record.ExecutionProfile = SessionExecutionProfile.ConversationOnly;
+
+        Assert.Equal(
+            record.ProjectPath,
+            CodexInteractiveService.ScratchDirectoryForResume(record));
     }
 
     private static string CheckpointPath()

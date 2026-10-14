@@ -184,6 +184,7 @@ public class OpenCodeSessionService
             Id = id,
             ProjectName = Path.GetFileName(projectPath),
             ProjectPath = projectPath,
+            ScratchDirectory = scratchDirectory,
             RepositoryId = repositoryId,
             Status = "Starting",
             StopReason = null,
@@ -273,6 +274,7 @@ public class OpenCodeSessionService
             Id = record.Id,
             ProjectName = record.ProjectName,
             ProjectPath = record.ProjectPath,
+            ScratchDirectory = record.ScratchDirectory,
             RepositoryId = record.RepositoryId,
             Status = "Starting",
             StopReason = null,
@@ -297,6 +299,7 @@ public class OpenCodeSessionService
 
         var (session, error) = await SpawnAcpSession(
             info, opencodePath, record.ProjectPath, record.OpenCodeSessionId,
+            scratchDirectory: record.ScratchDirectory,
             developerInstructions: record.DeveloperInstructions);
         if (session == null)
         {
@@ -1513,6 +1516,7 @@ public class OpenCodeSessionService
             Id = info.Id,
             ProjectName = info.ProjectName,
             ProjectPath = info.ProjectPath,
+            ScratchDirectory = info.ScratchDirectory,
             RepositoryId = info.RepositoryId,
             Status = info.Status,
             StopReason = info.StopReason,
@@ -2053,6 +2057,7 @@ public class OpenCodeSessionService
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        ScratchDirectory = r.ScratchDirectory,
         Status = r.Status,
         StartedAt = r.StartedAt,
         Model = r.Model,

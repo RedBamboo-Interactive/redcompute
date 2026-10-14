@@ -87,6 +87,13 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("ScratchDirectory"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN ScratchDirectory TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl" })
         {
             if (columns.Contains(column)) continue;

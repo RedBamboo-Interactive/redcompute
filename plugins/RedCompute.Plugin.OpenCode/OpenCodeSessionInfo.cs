@@ -5,6 +5,7 @@ public class OpenCodeSessionInfo
     public required string Id { get; init; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }
+    public string? ScratchDirectory { get; set; }
     public Guid? RepositoryId { get; set; }
     public string Status { get; set; } = "Starting";
     public string? StopReason { get; set; }

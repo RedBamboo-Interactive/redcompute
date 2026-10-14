@@ -45,7 +45,7 @@ public class CodexDbContext : DbContext
                          "ProcessId INTEGER", "LastActivity TEXT", "ContextTokens INTEGER",
                          "ContextWindow INTEGER",
                          "UserId TEXT", "UserName TEXT", "UserAvatarUrl TEXT",
-                         "DeveloperInstructions TEXT",
+                         "DeveloperInstructions TEXT", "ScratchDirectory TEXT",
                          "ExecutionProfile TEXT NOT NULL DEFAULT 'default'",
                          "StopReason TEXT",
                      })

@@ -786,6 +786,7 @@ public class ClaudeSessionService
             Id = id,
             ProjectName = Path.GetFileName(projectPath),
             ProjectPath = projectPath,
+            ScratchDirectory = scratchDirectory,
             RepositoryId = repositoryId,
             Status = SessionStatus.Starting,
             StartedAt = DateTimeOffset.UtcNow,
@@ -919,6 +920,7 @@ public class ClaudeSessionService
             Id = sessionRecord.Id,
             ProjectName = sessionRecord.ProjectName,
             ProjectPath = sessionRecord.ProjectPath,
+            ScratchDirectory = sessionRecord.ScratchDirectory,
             RepositoryId = sessionRecord.RepositoryId,
             Status = SessionStatus.Starting,
             StartedAt = sessionRecord.StartedAt,
@@ -956,6 +958,9 @@ public class ClaudeSessionService
             StandardErrorEncoding = Encoding.UTF8
         };
         PopulateSessionArgs(startInfo, sessionRecord.ClaudeSessionId, sessionRecord.Model, sessionRecord.Effort);
+        if (SessionScratch.Environment(sessionRecord.ScratchDirectory) is { } scratchEnvironment)
+            foreach (var (key, value) in scratchEnvironment)
+                startInfo.Environment[key] = value;
 
         Process process;
         try
@@ -1412,6 +1417,7 @@ public class ClaudeSessionService
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        ScratchDirectory = r.ScratchDirectory,
         Status = Enum.TryParse<SessionStatus>(r.Status, out var s) ? s : SessionStatus.Stopped,
         StopReason = r.StopReason,
         StartedAt = r.StartedAt,
@@ -2389,6 +2395,7 @@ public class ClaudeSessionService
                 Id = info.Id,
                 ProjectName = info.ProjectName,
                 ProjectPath = info.ProjectPath,
+                ScratchDirectory = info.ScratchDirectory,
                 RepositoryId = info.RepositoryId,
                 Status = info.Status.ToString(),
                 StopReason = info.StopReason,

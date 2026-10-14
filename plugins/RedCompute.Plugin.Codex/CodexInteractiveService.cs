@@ -196,6 +196,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             Id = id,
             ProjectName = Path.GetFileName(projectPath.TrimEnd('/', '\\')) ?? projectPath,
             ProjectPath = projectPath,
+            ScratchDirectory = scratchDirectory,
             RepositoryId = repositoryId,
             StartedAt = DateTimeOffset.UtcNow,
             Status = "Starting",
@@ -276,7 +277,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             conn = await ConnectAsync(
                 sessionId,
                 record.ProjectPath,
-                conversationOnly ? record.ProjectPath : null,
+                ScratchDirectoryForResume(record),
                 suiteAccess: !conversationOnly);
             try
             {
@@ -356,6 +357,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
            && threadId.ValueKind == JsonValueKind.String
             ? threadId.GetString()
             : null;
+
+    internal static string? ScratchDirectoryForResume(CodexSessionRecord record)
+        => SessionExecutionProfile.IsConversationOnly(record.ExecutionProfile)
+            ? record.ProjectPath
+            : record.ScratchDirectory;
 
     private async Task<CodexAppServerConnection> ConnectAsync(string sessionId, string projectPath,
         string? scratchDirectory = null, bool suiteAccess = true)
@@ -1487,6 +1493,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Id = info.Id,
         ProjectName = info.ProjectName,
         ProjectPath = info.ProjectPath,
+        ScratchDirectory = info.ScratchDirectory,
         RepositoryId = info.RepositoryId,
         Status = info.Status,
         StartedAt = info.StartedAt,
@@ -1520,6 +1527,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        ScratchDirectory = r.ScratchDirectory,
         RepositoryId = r.RepositoryId,
         Status = r.Status,
         StartedAt = r.StartedAt,
