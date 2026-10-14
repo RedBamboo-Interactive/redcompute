@@ -43,7 +43,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public string? LastStartError => _claude.LastStartError;
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
-        IJobTracker jobTracker, Action<string, Guid?> log)
+        IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
+        Action<string, Guid?> log)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -52,7 +53,9 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         using (var db = new ClaudeDbContext()) { db.Initialize(); }
         _store = new ClaudeSessionStore();
         var claudeConfig = BuildConfig(config);
-        _claude = new ClaudeSessionService(claudeConfig, jobTracker, _store, log);
+        _claude = new ClaudeSessionService(
+            claudeConfig, jobTracker, _store, qualityModes,
+            () => GetTitleQualityTier(config), log);
 
         _claude.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _claude.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
@@ -328,6 +331,15 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             MaxSessions = int.TryParse(ProviderHelpers.GetExtra(config, "MaxSessions", "99"), out var ms) ? ms : 99,
             Model = config.Model,
         };
+    }
+
+    internal static string? GetTitleQualityTier(ProviderConfig config)
+    {
+        var value = ProviderHelpers.GetExtra(config, "TitleQualityTier", "fast").Trim();
+        return string.IsNullOrWhiteSpace(value)
+            || value.Equals("off", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : value;
     }
 
     public Dictionary<string, ParameterSchema> InputParameters => new()

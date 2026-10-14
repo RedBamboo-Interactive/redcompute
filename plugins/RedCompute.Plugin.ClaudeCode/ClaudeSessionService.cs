@@ -16,6 +16,9 @@ public class ClaudeSessionService
     private readonly ClaudeConfig _config;
     private readonly IJobTracker _jobTracker;
     private readonly IClaudeSessionStore _sessionStore;
+    private readonly IProviderQualityModeResolver _qualityModes;
+    private readonly Func<string?> _titleQualityTier;
+    private readonly ConcurrentDictionary<string, Lazy<Task>> _titleTasks = new();
     private readonly Action<string, Guid?> _log;
 
     public event Action<ClaudeSessionInfo>? SessionCreated;
@@ -25,11 +28,19 @@ public class ClaudeSessionService
 
     public void EmitStreamEvent(string key, ClaudeStreamEvent evt) => StreamEvent?.Invoke(key, evt);
 
-    public ClaudeSessionService(ClaudeConfig config, IJobTracker jobTracker, IClaudeSessionStore sessionStore, Action<string, Guid?> log)
+    public ClaudeSessionService(
+        ClaudeConfig config,
+        IJobTracker jobTracker,
+        IClaudeSessionStore sessionStore,
+        IProviderQualityModeResolver qualityModes,
+        Func<string?> titleQualityTier,
+        Action<string, Guid?> log)
     {
         _config = config;
         _jobTracker = jobTracker;
         _sessionStore = sessionStore;
+        _qualityModes = qualityModes;
+        _titleQualityTier = titleQualityTier;
         _log = log;
     }
 
@@ -1050,6 +1061,7 @@ public class ClaudeSessionService
             session.CurrentAssistantUid = null;
             PersistMessage(sessionId, "user", "text", content, null, null, null, null, attachmentsJson,
                 messageUid ?? Guid.NewGuid().ToString("N"));
+            EnsureTitle(session, content);
 
             return true;
         }
@@ -1058,6 +1070,153 @@ public class ClaudeSessionService
             _log($"[Claude] Failed to send message to {sessionId}: {ex.Message}", null);
             return false;
         }
+    }
+
+    private void EnsureTitle(ManagedSession session, string firstUserMessage)
+    {
+        if (!string.IsNullOrWhiteSpace(session.Info.Title)) return;
+
+        var fallback = SessionTitleFormatter.DeriveFallback(firstUserMessage);
+        if (fallback is not null)
+            ApplyTitle(session, fallback);
+
+        if (_titleQualityTier() is not { } qualityTier) return;
+
+        var candidate = new Lazy<Task>(
+            () => GenerateTitleAsync(session, firstUserMessage, qualityTier),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        var tracked = _titleTasks.GetOrAdd(session.Info.Id, candidate);
+        if (ReferenceEquals(tracked, candidate))
+            _ = tracked.Value.ContinueWith(
+                completed => _titleTasks.TryRemove(session.Info.Id, out _),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+    }
+
+    private async Task GenerateTitleAsync(
+        ManagedSession session,
+        string firstUserMessage,
+        string qualityTier)
+    {
+        var opening = SessionTitleFormatter.StripContext(firstUserMessage);
+        if (string.IsNullOrWhiteSpace(opening)) return;
+
+        var provider = session.Info.ProviderEntity ?? "claude-code";
+        if (!_qualityModes.TryResolveRequested(qualityTier, provider, out var quality)
+            || quality is null)
+        {
+            _log($"[Claude] Title generation skipped for {session.Info.Id}: " +
+                 $"quality tier '{qualityTier}' has no model for provider '{provider}'", null);
+            return;
+        }
+
+        var titleJob = StartTitleGeneration(session.Info, quality);
+        if (titleJob is null)
+        {
+            _log($"[Claude] Title generation skipped for {session.Info.Id}: " +
+                 "the parent session has no verified job provenance", null);
+            return;
+        }
+
+        try
+        {
+            var messages = JsonSerializer.SerializeToElement(new[]
+            {
+                new { role = "user", content = SessionTitleFormatter.BuildPrompt(opening) },
+            });
+            var result = await ExecuteOneshotAsync(
+                quality.Model,
+                system: null,
+                messages,
+                maxTokens: 80,
+                session.Cts.Token,
+                quality.Effort,
+                Math.Clamp(quality.TimeoutSeconds ?? 60, 10, 600));
+
+            if (!result.Success)
+            {
+                var error = result.Error ?? "Title inference returned no result";
+                FailTitleGeneration(titleJob, error);
+                _log($"[Claude] Title generation failed for {session.Info.Id}: {error}", null);
+                return;
+            }
+
+            var title = SessionTitleFormatter.CleanGenerated(result.Text ?? "");
+            if (title is null)
+            {
+                const string error = "Title inference returned an invalid title";
+                FailTitleGeneration(titleJob, error);
+                _log($"[Claude] {error} for {session.Info.Id}", null);
+                return;
+            }
+
+            ApplyTitle(session, title);
+            _jobTracker.MarkCompleted(titleJob.Id, resultJson: JsonSerializer.Serialize(new
+            {
+                title,
+                model = result.Model ?? quality.Model,
+                qualityTier = quality.QualityTier,
+                inputTokens = result.InputTokens,
+                outputTokens = result.OutputTokens,
+            }), costUsd: result.CostUsd);
+        }
+        catch (OperationCanceledException) when (session.Cts.IsCancellationRequested)
+        {
+            _jobTracker.MarkCancelled(titleJob.Id);
+        }
+        catch (Exception ex)
+        {
+            FailTitleGeneration(titleJob, ex.Message);
+            _log($"[Claude] Title generation failed for {session.Info.Id}: {ex.Message}", null);
+        }
+    }
+
+    private JobRecord? StartTitleGeneration(ClaudeSessionInfo info, ProviderQualityMode quality)
+    {
+        var parent = info.JobId is { } parentId ? _jobTracker.GetJob(parentId) : null;
+        if (parent?.CreationProvenance is not { } provenance) return null;
+        var childProvenance = provenance with
+        {
+            Trace = provenance.Trace with { ParentJobId = parent.Id.ToString() },
+        };
+
+        var job = _jobTracker.CreateJob(new JobSubmission(
+            "ai-session",
+            "Claude Code",
+            JsonSerializer.Serialize(new
+            {
+                operation = "session-title",
+                sessionId = info.Id,
+                qualityTier = quality.QualityTier,
+                model = quality.Model,
+            }),
+            childProvenance,
+            $"ai-session:claude-code:{info.Id}:title",
+            "Generate discussion title",
+            "Asynchronous semantic title for an interactive session",
+            Confidential: parent.Confidential));
+
+        if (!job.IsIdempotencyReuse)
+            _jobTracker.StartInvocation(job.Id, childProvenance);
+        return job;
+    }
+
+    private void FailTitleGeneration(JobRecord job, string error)
+        => _jobTracker.MarkFailed(job.Id, error, resultJson: JsonSerializer.Serialize(new
+        {
+            operation = "session-title",
+            fallback = "opening-message",
+        }));
+
+    private void ApplyTitle(ManagedSession session, string title)
+    {
+        if (session.Info.Title == title) return;
+        session.Info.Title = title;
+        if (session.Info.JobId is { } jobId)
+            _jobTracker.UpdateName(jobId, title);
+        PersistSessionRecord(session.Info);
+        SessionUpdated?.Invoke(session.Info);
     }
 
     internal static object BuildContentPayload(IReadOnlyList<SessionInputPart> input)

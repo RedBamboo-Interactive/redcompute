@@ -1341,25 +1341,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     }
 
     internal static string BuildTitlePrompt(string opening)
-    {
-        var excerpt = opening.Length > 800 ? opening[..800] : opening;
-        return "Write a specific title of at most six words for a conversation that opens with " +
-               "the message below. Capture the subject rather than merely repeating a greeting. " +
-               "Reply with the title only: no quotes, no trailing punctuation, no preamble.\n\n" +
-               excerpt;
-    }
+        => SessionTitleFormatter.BuildPrompt(opening);
 
     /// <summary>Models editorialise. Strip wrappers and reject prose instead of replacing a safe fallback.</summary>
     public static string? CleanGeneratedTitle(string raw)
-    {
-        var line = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(value => value.Trim())
-            .LastOrDefault(value => value.Length > 0);
-        if (line is null) return null;
-
-        line = line.Trim('"', '\'', '`', '*', ' ').TrimEnd('.', '!', ':', ';', ',').Trim();
-        return line.Length is 0 or > 70 ? null : line;
-    }
+        => SessionTitleFormatter.CleanGenerated(raw);
 
     private void ApplyTitle(ManagedSession session, string title)
     {
@@ -1386,51 +1372,14 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     /// "&lt;nova-context timestamp=...".
     /// </summary>
     public static string StripContext(string? message)
-    {
-        if (string.IsNullOrWhiteSpace(message)) return "";
-
-        var text = System.Text.RegularExpressions.Regex.Replace(
-            message, @"<nova-context\b[^>]*>.*?</nova-context>", " ",
-            System.Text.RegularExpressions.RegexOptions.Singleline);
-
-        // An unterminated opening tag still means everything up to it is machine preamble.
-        var lastTag = text.LastIndexOf("<nova-context", StringComparison.OrdinalIgnoreCase);
-        if (lastTag >= 0)
-        {
-            var close = text.IndexOf('>', lastTag);
-            text = close >= 0 ? text[(close + 1)..] : text[..lastTag];
-        }
-
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"<[^>]+>", " ");
-        return System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
-    }
+        => SessionTitleFormatter.StripContext(message);
 
     /// <summary>
     /// Turns an opening message into a short label, used as the immediate title and as the fallback
     /// when model-generated naming is off or fails.
     /// </summary>
     public static string? DeriveTitle(string? message)
-    {
-        var text = StripContext(message);
-        if (string.IsNullOrEmpty(text)) return null;
-
-        // Prefer the first sentence, but only break on punctuation that actually ends one —
-        // requiring a following space keeps "calc.py" and "v1.2" from truncating the title.
-        var stop = -1;
-        for (var i = 12; i < text.Length && i <= 60; i++)
-        {
-            if (text[i] is not ('.' or '!' or '?')) continue;
-            if (i + 1 < text.Length && !char.IsWhiteSpace(text[i + 1])) continue;
-            stop = i;
-            break;
-        }
-        if (stop > 0) return text[..stop].Trim();
-
-        if (text.Length <= 60) return text;
-
-        var cut = text.LastIndexOf(' ', 60);
-        return (cut > 20 ? text[..cut] : text[..60]).Trim() + "...";
-    }
+        => SessionTitleFormatter.DeriveFallback(message);
 
     private static List<string> QuestionIds(JsonElement questions)
     {
