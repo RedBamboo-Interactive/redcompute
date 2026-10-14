@@ -13,6 +13,7 @@ namespace RedCompute.App.Services.Jobs;
 public class JobTrackingService : IJobTracker
 {
     private static readonly JsonSerializerOptions JsonOptions = JobProvenance.JsonOptions;
+    private static readonly TimeSpan FutureTimestampTolerance = TimeSpan.FromMinutes(5);
     private readonly object _lock = new();
     private readonly Func<RedComputeDbContext> _dbFactory;
     private readonly Func<DateTimeOffset> _clock;
@@ -711,7 +712,7 @@ public class JobTrackingService : IJobTracker
         Func<JobRecord, bool>? canRead = null)
     {
         using var db = _dbFactory();
-        IQueryable<JobRecord> query = db.Jobs.OrderByDescending(j => j.QueuedAt);
+        IQueryable<JobRecord> query = db.Jobs;
 
         if (capabilitySlug != null) query = query.Where(j => j.CapabilitySlug == capabilitySlug);
         if (status != null) query = query.Where(j => j.Status == status);
@@ -751,7 +752,15 @@ public class JobTrackingService : IJobTracker
                 Eq(c.Kind, "execution") && Eq(c.Id, executionId)) == true);
         if (canRead != null) filtered = filtered.Where(canRead);
 
-        var materialized = filtered.ToList();
+        // A temporary host-clock jump must not pin completed work above genuinely
+        // recent jobs until the wall clock catches up. Preserve the recorded audit
+        // timestamp, but demote implausibly future records in list projections.
+        var latestPlausibleTimestamp = _clock() + FutureTimestampTolerance;
+        var materialized = filtered
+            .OrderBy(j => j.QueuedAt > latestPlausibleTimestamp)
+            .ThenByDescending(j => j.QueuedAt)
+            .ThenByDescending(j => j.Id)
+            .ToList();
         return (materialized.Skip(offset).Take(limit).ToList(), materialized.Count);
     }
 

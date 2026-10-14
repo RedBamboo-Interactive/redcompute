@@ -325,6 +325,27 @@ public sealed class JobAuditTests : IDisposable
     }
 
     [Fact]
+    public void Future_dated_jobs_remain_queryable_without_hiding_recent_history()
+    {
+        var now = new DateTimeOffset(2026, 10, 14, 18, 0, 0, TimeSpan.Zero);
+        var provenance = Provenance("nova", "agent-nova", "user-1", "/nova/message");
+        var farFuture = new JobTrackingService(Db, () => now.AddDays(71)).CreateJob(
+            new JobSubmission("workflow", "RedLeaf Workflow Engine", "{}", provenance,
+                Name: "clock-jump"));
+        var recent = new JobTrackingService(Db, () => now).CreateJob(
+            new JobSubmission("ai-session", "Codex", "{}", provenance, Name: "recent"));
+        var toleratedSkew = new JobTrackingService(Db, () => now.AddMinutes(2)).CreateJob(
+            new JobSubmission("tts", "Local", "{}", provenance, Name: "near-future"));
+
+        var listing = new JobTrackingService(Db, () => now).GetJobs();
+
+        Assert.Equal(3, listing.TotalCount);
+        Assert.Equal([toleratedSkew.Id, recent.Id, farFuture.Id], listing.Items.Select(j => j.Id));
+        Assert.Equal(farFuture.Id,
+            Assert.Single(new JobTrackingService(Db, () => now).GetJobs(search: "clock-jump").Items).Id);
+    }
+
+    [Fact]
     public void ConfidentialJobsPersistAndAreFilteredBeforePagination()
     {
         var confidential = _jobs.CreateJob(new JobSubmission(
