@@ -17,6 +17,7 @@ public class ClaudeSessionService
     private readonly IJobTracker _jobTracker;
     private readonly IClaudeSessionStore _sessionStore;
     private readonly IProviderQualityModeResolver _qualityModes;
+    private readonly ClaudeAccountUsageService _accountUsage = new();
     private readonly Func<string?> _titleQualityTier;
     private readonly ConcurrentDictionary<string, Lazy<Task>> _titleTasks = new();
     private readonly Action<string, Guid?> _log;
@@ -46,6 +47,9 @@ public class ClaudeSessionService
 
     private static readonly TimeSpan IdleTtl = TimeSpan.FromHours(48);
     private Timer? _reaperTimer;
+
+    internal Task<ProviderUsageSnapshot?> GetProviderUsageAsync(bool forceRefresh, CancellationToken ct)
+        => _accountUsage.GetAsync(forceRefresh, ct);
 
     // Last-resort safety net for InterruptSession. The CLI's control_response ack for
     // subtype:"interrupt" is sent immediately on receipt of the request -- before the
@@ -1822,6 +1826,7 @@ public class ClaudeSessionService
                 return ParseStreamEvent(root);
 
             case "rate_limit_event":
+                _accountUsage.ApplyEvent(root);
                 return null;
 
             default:

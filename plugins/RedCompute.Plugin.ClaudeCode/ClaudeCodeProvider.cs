@@ -9,7 +9,8 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
-public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
+public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
+    IProviderUsageSource
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
@@ -104,6 +105,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     }
     public Task StopAsync(CancellationToken ct = default) => _claude.StopAllAsync();
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
+    public Task<ProviderUsageSnapshot?> GetProviderUsageAsync(bool forceRefresh = false, CancellationToken ct = default)
+        => _claude.GetProviderUsageAsync(forceRefresh, ct);
     public string? GetProxyTargetUrl() => null;
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
