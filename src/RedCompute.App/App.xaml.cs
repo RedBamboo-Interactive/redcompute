@@ -115,9 +115,9 @@ public partial class App : Application
     {
         HardwareMonitor.Dispose();
         _relayCts?.Cancel();
+        await Registry.StopAll(SessionStopReasons.OrphanedOnRestart);
         if (_relayServer != null)
             await _relayServer.StopAsync();
-        await Registry.StopAll();
         Logger.Dispose();
         LogPersistence.Dispose();
         await FileLogger.DisposeAsync();

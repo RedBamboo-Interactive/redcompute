@@ -1478,7 +1478,7 @@ public class ClaudeSessionService
             session.Info.ProcessId = null;
             PersistSessionRecord(session.Info);
 
-            if (reason != "maintenance_restart" && session.Info.JobId.HasValue)
+            if (!SessionStopReasons.IsRestartRecoverable(reason) && session.Info.JobId.HasValue)
                 _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
 
             SessionEnded?.Invoke(sessionId, "killed", session.Info.StopReason);
@@ -1487,7 +1487,7 @@ public class ClaudeSessionService
 
         var record = _sessionStore.FindSession(sessionId);
         if (record == null) return;
-        if (record.Status is "Stopped" or "Error") return;
+        if ((record.Status is "Stopped" or "Error") && !SessionStopReasons.IsRestartRecoverable(reason)) return;
 
         TryKillByPid(record.ProcessId);
 
@@ -1496,7 +1496,7 @@ public class ClaudeSessionService
         record.ProcessId = null;
         _sessionStore.SaveSession(record);
 
-        if (reason != "maintenance_restart" && record.JobId.HasValue)
+        if (!SessionStopReasons.IsRestartRecoverable(reason) && record.JobId.HasValue)
             _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "killed", record.StopReason);

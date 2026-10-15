@@ -386,7 +386,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             session.Info.StopReason = stopReason;
             session.Info.ProcessId = null;
             session.Info.LastActivity = DateTimeOffset.UtcNow;
-            if (stopReason != "maintenance_restart")
+            if (!SessionStopReasons.IsRestartRecoverable(stopReason))
                 _jobLifecycle.Complete(session.Info);
             Persist(session.Info);
             SessionEnded?.Invoke(sessionId, "stopped");
@@ -394,7 +394,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
 
         var stored = _store.FindSession(sessionId);
-        if (stored == null || stored.Status is "Stopped" or "Error") return;
+        if (stored == null
+            || (stored.Status is "Stopped" or "Error") && !SessionStopReasons.IsRestartRecoverable(stopReason)) return;
 
         if (stored.ProcessId is { } pid) TryKillByPid(pid);
         stored.Status = "Stopped";
@@ -405,7 +406,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (stored.JobId != null)
         {
             var info = ToInfo(stored);
-            if (stopReason != "maintenance_restart")
+            if (!SessionStopReasons.IsRestartRecoverable(stopReason))
                 _jobLifecycle.Complete(info);
         }
         else

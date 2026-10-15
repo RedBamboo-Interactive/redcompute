@@ -1,6 +1,8 @@
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
+using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services;
 
@@ -65,8 +67,21 @@ public class CapabilityRegistry
                     yield return t;
     }
 
-    public async Task StopAll()
+    public async Task StopAll(string? sessionStopReason = null)
     {
+        if (!string.IsNullOrWhiteSpace(sessionStopReason))
+        {
+            foreach (var provider in FindProviders<ISessionProvider>()
+                         .Distinct<ISessionProvider>(ReferenceEqualityComparer.Instance))
+            {
+                var sessions = provider.GetSessions(100_000, includeDismissed: false)
+                    .Where(session => session.Status is SessionStatus.Starting or SessionStatus.Active or SessionStatus.Idle)
+                    .ToArray();
+                foreach (var session in sessions)
+                    await provider.ForceKillAsync(session.Id, sessionStopReason);
+            }
+        }
+
         foreach (var entry in _capabilities.Values)
         {
             foreach (var provider in entry.Providers.Values)

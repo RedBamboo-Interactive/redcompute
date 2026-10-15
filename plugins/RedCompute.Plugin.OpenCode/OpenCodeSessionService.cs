@@ -799,7 +799,7 @@ public class OpenCodeSessionService
 
             CleanupSessionResources(session);
 
-            if (reason != "maintenance_restart")
+            if (!SessionStopReasons.IsRestartRecoverable(reason))
                 CompleteSessionJob(session);
             PersistSessionRecord(session.Info);
 
@@ -811,7 +811,7 @@ public class OpenCodeSessionService
 
         var record = _store.FindSession(sessionId);
         if (record == null) return;
-        if (record.Status is "Stopped" or "Error") return;
+        if ((record.Status is "Stopped" or "Error") && !SessionStopReasons.IsRestartRecoverable(reason)) return;
 
         TryKillByPid(record.ProcessId);
 
@@ -820,7 +820,7 @@ public class OpenCodeSessionService
         record.ProcessId = null;
         _store.SaveSession(record);
 
-        if (reason != "maintenance_restart" && record.JobId.HasValue)
+        if (!SessionStopReasons.IsRestartRecoverable(reason) && record.JobId.HasValue)
             _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "force_killed");
