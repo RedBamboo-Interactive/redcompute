@@ -43,6 +43,9 @@ public class ClaudeSessionService
         _qualityModes = qualityModes;
         _titleQualityTier = titleQualityTier;
         _log = log;
+        // Recover at construction, like Codex and OpenCode. StartAsync only runs for a
+        // capability's default provider, so a non-default Claude provider never recovered.
+        RecoverSessions();
     }
 
     private static readonly TimeSpan IdleTtl = TimeSpan.FromHours(48);
@@ -68,13 +71,14 @@ public class ClaudeSessionService
             var active = _sessionStore.GetActiveSessions();
             foreach (var s in active)
             {
-                TryKillByPid(s.ProcessId);
+                var pid = s.ProcessId;
+                TryKillByPid(pid);
                 s.Status = "Stopped";
                 s.StopReason = PlannedRestartCheckpoint.ContainsSession("claude-code", s.Id)
                     ? "maintenance_restart"
                     : "orphaned_on_restart";
                 s.ProcessId = null;
-                _log($"[Claude] Killed orphaned session {s.Id} ({s.ProjectName}, PID {s.ProcessId})", null);
+                _log($"[Claude] Recovered session {s.Id} ({s.ProjectName}, PID {pid}) as stopped ({s.StopReason})", null);
                 BackfillFromJsonl(s);
                 _sessionStore.SaveSession(s);
             }
