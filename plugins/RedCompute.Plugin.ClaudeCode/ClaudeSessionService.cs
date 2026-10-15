@@ -2280,7 +2280,8 @@ public class ClaudeSessionService
     {
         var subtype = root.TryGetProperty("subtype", out var sub) ? sub.GetString() : null;
 
-        if (subtype == "success")
+        var terminalError = ReadTerminalResultError(root, subtype);
+        if (terminalError == null && subtype == "success")
         {
             // Turn finished normally, possibly racing a just-sent interrupt that
             // never got the chance to abort anything -- still a clean, safe-to-write
@@ -2302,11 +2303,9 @@ public class ClaudeSessionService
             return new ClaudeStreamEvent { Type = "status", Content = "idle" };
         }
 
-        if (subtype == "error")
+        if (terminalError != null)
         {
-            var error = root.TryGetProperty("error", out var e)
-                ? (e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString()) ?? "unknown error"
-                : "unknown error";
+            var error = terminalError;
             _log($"[Claude] Session {session.Info.Id} result error: {error}", null);
 
             var isUsageLimit = IsUsageLimitError(error);
@@ -2314,6 +2313,10 @@ public class ClaudeSessionService
             {
                 session.Info.StopReason = "usage_limit";
                 _log($"[Claude] Session {session.Info.Id} hit usage limit", null);
+            }
+            else if (IsAuthenticationError(root, error))
+            {
+                session.Info.StopReason = "authentication_failed";
             }
 
             if (session.InterruptPending)
@@ -2356,6 +2359,44 @@ public class ClaudeSessionService
             MessageId = toolUseId
         };
     }
+
+    internal static string? ReadTerminalResultError(JsonElement root, string? subtype = null)
+    {
+        subtype ??= root.TryGetProperty("subtype", out var sub) ? sub.GetString() : null;
+        var isError = subtype == "error"
+            || (root.TryGetProperty("is_error", out var flag)
+                && flag.ValueKind is JsonValueKind.True or JsonValueKind.False
+                && flag.GetBoolean())
+            || (root.TryGetProperty("terminal_reason", out var reason)
+                && reason.ValueKind == JsonValueKind.String
+                && reason.GetString() == "api_error");
+
+        if (!isError)
+            return null;
+
+        foreach (var propertyName in new[] { "error", "result" })
+        {
+            if (!root.TryGetProperty(propertyName, out var value))
+                continue;
+
+            var message = value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+            if (!string.IsNullOrWhiteSpace(message))
+                return message;
+        }
+
+        if (root.TryGetProperty("api_error_status", out var status) && status.TryGetInt32(out var code))
+            return $"Claude API request failed with HTTP {code}";
+
+        return "Claude request failed";
+    }
+
+    private static bool IsAuthenticationError(JsonElement root, string error)
+        => (root.TryGetProperty("api_error_status", out var status)
+                && status.TryGetInt32(out var code)
+                && code is 401 or 403)
+            || error.Contains("authentication", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("authenticate", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("oauth", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsUsageLimitError(string error)
     {
