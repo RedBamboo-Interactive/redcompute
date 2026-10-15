@@ -1611,25 +1611,54 @@ public class ClaudeSessionService
     }
 
     private string? ResolveClaudePath()
+        => ResolveClaudePath(
+            _config.ClaudePath,
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetEnvironmentVariable("PATH"));
+
+    internal static string? ResolveClaudePath(
+        string? configuredPath,
+        string applicationData,
+        string? pathEnvironment)
     {
-        if (_config.ClaudePath != null)
-            return File.Exists(_config.ClaudePath) ? _config.ClaudePath : null;
+        if (configuredPath != null)
+            return File.Exists(configuredPath) ? configuredPath : null;
 
         // Prefer the native claude.exe from the Agent SDK (supports stream-json IPC)
-        var npmGlobal = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var sdkExe = Path.Combine(npmGlobal, "npm", "node_modules", "@anthropic-ai",
+        var sdkExe = Path.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
             "claude-agent-sdk", "node_modules", "@anthropic-ai",
             "claude-agent-sdk-win32-x64", "claude.exe");
         if (File.Exists(sdkExe))
             return sdkExe;
 
+        // Claude Desktop bundles versioned native CLIs outside PATH.
+        var desktopRoot = Path.Combine(applicationData, "Claude", "claude-code");
+        if (Directory.Exists(desktopRoot))
+        {
+            var desktopExe = Directory.GetDirectories(desktopRoot)
+                .Select(directory => new
+                {
+                    Path = Path.Combine(directory, "claude.exe"),
+                    Version = Version.TryParse(Path.GetFileName(directory), out var version)
+                        ? version
+                        : new Version(0, 0),
+                })
+                .Where(candidate => File.Exists(candidate.Path))
+                .OrderByDescending(candidate => candidate.Version)
+                .Select(candidate => candidate.Path)
+                .FirstOrDefault();
+            if (desktopExe != null)
+                return desktopExe;
+        }
+
         // Fallback: search PATH for claude.cmd / claude.exe
-        var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
+        var pathDirs = pathEnvironment?.Split(Path.PathSeparator) ?? [];
         foreach (var dir in pathDirs)
         {
+            if (string.IsNullOrWhiteSpace(dir)) continue;
             foreach (var ext in new[] { ".exe", ".cmd", "" })
             {
-                var candidate = Path.Combine(dir, $"claude{ext}");
+                var candidate = Path.Combine(dir.Trim().Trim('"'), $"claude{ext}");
                 if (File.Exists(candidate))
                     return candidate;
             }

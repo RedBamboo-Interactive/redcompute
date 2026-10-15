@@ -6,6 +6,22 @@ namespace RedCompute.App.Tests;
 public sealed class ClaudeToolAvailabilityTests
 {
     [Fact]
+    public void ResolveClaudePath_finds_newest_Claude_Desktop_bundle()
+    {
+        using var scratch = new ScratchDirectory();
+        var older = Path.Combine(scratch.Path, "Claude", "claude-code", "2.1.99", "claude.exe");
+        var newer = Path.Combine(scratch.Path, "Claude", "claude-code", "2.1.156", "claude.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(older)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(newer)!);
+        File.WriteAllText(older, "fixture");
+        File.WriteAllText(newer, "fixture");
+
+        var resolved = ClaudeSessionService.ResolveClaudePath(null, scratch.Path, null);
+
+        Assert.Equal(newer, resolved);
+    }
+
+    [Fact]
     public void Explicit_empty_tools_disables_builtins_and_ambient_mcp()
     {
         var args = new List<string>();
@@ -39,6 +55,17 @@ public sealed class ClaudeToolAvailabilityTests
         var index = values.IndexOf(key);
         Assert.InRange(index, 0, values.Count - 2);
         return values[index + 1];
+    }
+
+    private sealed class ScratchDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"redcompute-claude-path-{Guid.NewGuid():N}");
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true);
+        }
     }
 }
 
