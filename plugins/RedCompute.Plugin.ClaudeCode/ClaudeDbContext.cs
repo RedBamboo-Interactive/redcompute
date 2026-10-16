@@ -134,6 +134,14 @@ public class ClaudeDbContext : DbContext
             alter.CommandText = "ALTER TABLE Messages ADD COLUMN MessageUid TEXT";
             alter.ExecuteNonQuery();
         }
+
+        // Nullable: history written before Claude recorded commentary/final phase keeps null.
+        if (!msgColumns.Contains("Phase"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Messages ADD COLUMN Phase TEXT";
+            alter.ExecuteNonQuery();
+        }
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)

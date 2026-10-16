@@ -45,6 +45,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        Phase = m.Phase,
         MessageUid = m.MessageUid,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,

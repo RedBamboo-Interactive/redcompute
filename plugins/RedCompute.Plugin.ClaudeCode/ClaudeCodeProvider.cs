@@ -337,6 +337,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ToolResult = e.ToolResult,
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
+        Phase = e.Phase,
         MessageUid = e.MessageUid,
         RequestId = e.RequestId,
     };
@@ -352,6 +353,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ToolInput = m.ToolInput,
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
+        Phase = m.Phase,
         MessageUid = m.MessageUid,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,

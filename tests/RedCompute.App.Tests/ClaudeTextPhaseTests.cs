@@ -1,0 +1,567 @@
+using System.Diagnostics;
+using System.Text.Json;
+using RedCompute.Core.Jobs;
+using RedCompute.Core.Sessions;
+using RedCompute.Plugin.ClaudeCode;
+using RedCompute.PluginSdk;
+using Xunit;
+
+namespace RedCompute.App.Tests;
+
+// Leaf Discord delivers every durable assistant `text` record as its own public message and
+// routes `phase == "commentary"` into one edited progress message. Codex declares that phase and
+// persists one record per agent message; Claude's stream declares neither, so the adapter must
+// decide each text block's phase deterministically and persist the whole block exactly once.
+// The stream shapes below follow the Agent SDK 2.1.300 contract: one `assistant` message per
+// completed block with a null stop_reason, the real stop reason only on `message_delta`.
+public sealed class ClaudeTextPhaseTests : IDisposable
+{
+    private readonly string _root = Path.Combine(
+        Environment.GetEnvironmentVariable("REDLEAF_SCRATCH_DIR") ?? Path.GetTempPath(),
+        "redcompute-claude-phase", Guid.NewGuid().ToString("N"));
+    private readonly List<Process> _processes = [];
+
+    public ClaudeTextPhaseTests() => Directory.CreateDirectory(_root);
+
+    [Fact]
+    public void Text_before_a_tool_call_is_commentary_and_the_turn_ending_text_is_final()
+    {
+        var (service, store, live, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Let me "),
+            TextDelta(0, "check the binding."),
+            BlockStop(0),
+            AssistantText("msg_1", "Let me check the binding."),
+            BlockStart(1, "tool_use"),
+            AssistantToolUse("msg_1", "toolu_1", "Bash", """{"command":"git status"}"""),
+            BlockStop(1),
+            MessageDelta("tool_use"),
+            MessageStop(),
+            ToolResult("toolu_1", "clean"),
+            MessageStart("msg_2"),
+            BlockStart(0, "text"),
+            TextDelta(0, "The binding "),
+            TextDelta(0, "is healthy."),
+            BlockStop(0),
+            AssistantText("msg_2", "The binding is healthy."),
+            MessageDelta("end_turn"),
+            MessageStop(),
+            Result());
+
+        Assert.Equal(
+            [
+                ("text", "Let me check the binding.", "commentary"),
+                ("tool_use", null, null),
+                ("tool_result", "clean", null),
+                ("text", "The binding is healthy.", "final_answer"),
+                ("status", "idle", null),
+            ],
+            store.Assistant(id).Select(m => (m.EventType, m.Content, m.Phase)).ToArray());
+
+        // One logical turn: every record shares the turn uid the live events carried.
+        var uid = Assert.Single(store.Assistant(id).Where(m => m.EventType != "status")
+            .Select(m => m.MessageUid).Distinct());
+        Assert.NotNull(uid);
+        Assert.All(live.Where(e => e.Type == "text"), e => Assert.Equal(uid, e.MessageUid));
+    }
+
+    [Fact]
+    public void Live_deltas_stream_unphased_and_share_their_block_identity_with_the_durable_record()
+    {
+        var (service, store, live, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Checking."),
+            BlockStart(1, "tool_use"),
+            AssistantToolUse("msg_1", "toolu_1", "Read", """{"file_path":"a"}"""),
+            MessageDelta("tool_use"),
+            ToolResult("toolu_1", "ok"),
+            MessageStart("msg_2"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Done."),
+            MessageDelta("end_turn"),
+            Result());
+
+        var liveText = live.Where(e => e.Type == "text").ToList();
+        Assert.Equal(["Checking.", "Done."], liveText.Select(e => e.Content));
+        // Deltas are live-only: they never claim a phase they cannot know yet, and the settled
+        // record is never re-broadcast (the client would append it onto the streamed copy).
+        Assert.All(liveText, e => Assert.True(e.IsPartial));
+        Assert.All(liveText, e => Assert.Null(e.Phase));
+
+        var durable = store.Assistant(id).Where(m => m.EventType == "text").ToList();
+        Assert.Equal(liveText.Select(e => e.MessageId), durable.Select(m => m.MessageId));
+        Assert.Equal(["msg_1:0", "msg_2:0"], durable.Select(m => m.MessageId));
+        Assert.Equal(["commentary", "final_answer"], durable.Select(m => m.Phase));
+    }
+
+    [Fact]
+    public void Text_only_turn_is_one_final_record_persisted_before_idle_is_published()
+    {
+        var (service, store, _, id) = StartSession();
+        ClaudeMessageRecord[]? atIdle = null;
+        service.SessionUpdated += info =>
+        {
+            if (info.Id == id && info.Status == RedCompute.Plugin.ClaudeCode.SessionStatus.Idle)
+                atIdle = store.Assistant(id).ToArray();
+        };
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "<discord-"),
+            TextDelta(0, "no-reply/>"),
+            BlockStop(0),
+            AssistantText("msg_1", "<discord-no-reply/>"),
+            MessageDelta("end_turn"),
+            MessageStop(),
+            Result());
+
+        var text = Assert.Single(store.Assistant(id), m => m.EventType == "text");
+        // Exactly one record, so the bridge's exact-match no-reply suppression can see it whole.
+        Assert.Equal("<discord-no-reply/>", text.Content);
+        Assert.Equal("final_answer", text.Phase);
+        // The settlement callback fires on Idle and immediately reads the transcript.
+        Assert.NotNull(atIdle);
+        Assert.Contains(atIdle!, m => m.EventType == "text" && m.Phase == "final_answer");
+    }
+
+    [Fact]
+    public void Multiple_tool_rounds_yield_commentary_per_round_and_one_final()
+    {
+        var (service, store, _, id) = StartSession();
+
+        var lines = new List<string>();
+        for (var round = 1; round <= 3; round++)
+        {
+            lines.AddRange([
+                MessageStart($"msg_{round}"),
+                BlockStart(0, "thinking"),
+                ThinkingDelta(0, $"plan {round}"),
+                BlockStart(1, "text"),
+                TextDelta(1, $"Step {round}."),
+                BlockStart(2, "tool_use"),
+                AssistantToolUse($"msg_{round}", $"toolu_{round}", "Grep", "{}"),
+                MessageDelta("tool_use"),
+                ToolResult($"toolu_{round}", $"result {round}"),
+            ]);
+        }
+        lines.AddRange([
+            MessageStart("msg_4"),
+            BlockStart(0, "text"),
+            TextDelta(0, "All three checks passed."),
+            MessageDelta("end_turn"),
+            Result(),
+        ]);
+        Feed(service, id, [.. lines]);
+
+        var text = store.Assistant(id).Where(m => m.EventType == "text").ToList();
+        Assert.Equal(["Step 1.", "Step 2.", "Step 3.", "All three checks passed."], text.Select(m => m.Content));
+        Assert.Equal(["commentary", "commentary", "commentary", "final_answer"], text.Select(m => m.Phase));
+        Assert.Equal(["msg_1:1", "msg_2:1", "msg_3:1", "msg_4:0"], text.Select(m => m.MessageId));
+
+        // Commentary lands before the tool it introduces, as it streamed.
+        var order = store.Assistant(id).Where(m => m.EventType is "text" or "tool_use")
+            .Select(m => m.EventType).ToArray();
+        Assert.Equal(["text", "tool_use", "text", "tool_use", "text", "tool_use", "text"], order);
+    }
+
+    [Fact]
+    public void Stop_reason_tool_use_settles_commentary_without_a_tool_block_start()
+    {
+        var tracker = new ClaudeTextBlockTracker();
+        Apply(tracker, MessageStart("msg_1"));
+        tracker.Append(null, 0, "Looking.", "uid-1");
+
+        var settled = Apply(tracker, MessageDelta("tool_use"));
+
+        var only = Assert.Single(settled);
+        Assert.Equal(("Looking.", "commentary", "msg_1:0", "uid-1"),
+            (only.Content, only.Phase, only.MessageId, only.MessageUid));
+        Assert.Empty(tracker.SettleTurn());
+    }
+
+    [Theory]
+    [InlineData("end_turn")]
+    [InlineData("max_tokens")]
+    [InlineData("stop_sequence")]
+    public void A_non_tool_stop_leaves_text_for_the_turn_end_to_settle_as_final(string stopReason)
+    {
+        var tracker = new ClaudeTextBlockTracker();
+        Apply(tracker, MessageStart("msg_1"));
+        tracker.Append(null, 0, "Answer.", "uid-1");
+
+        Assert.Empty(Apply(tracker, MessageDelta(stopReason)));
+        Assert.Equal("final_answer", Assert.Single(tracker.SettleTurn()).Phase);
+    }
+
+    [Fact]
+    public void A_settled_final_is_never_relabelled_by_later_tool_activity()
+    {
+        var (service, store, _, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Final answer."),
+            MessageDelta("end_turn"),
+            Result(),
+            // A late or next-turn tool start must not reach back into the settled block.
+            MessageStart("msg_2"),
+            BlockStart(0, "tool_use"),
+            MessageDelta("tool_use"));
+
+        var text = Assert.Single(store.Assistant(id), m => m.EventType == "text");
+        Assert.Equal("final_answer", text.Phase);
+    }
+
+    [Fact]
+    public void Subagent_text_is_commentary_even_when_unsettled_at_the_turn_end()
+    {
+        var tracker = new ClaudeTextBlockTracker();
+        Apply(tracker, MessageStart("msg_main"));
+        tracker.Append("toolu_task", 0, "Subagent thinking aloud.", "uid-1");
+        tracker.Append(null, 0, "Main answer.", "uid-1");
+
+        var settled = tracker.SettleTurn();
+
+        Assert.Equal(
+            [("Subagent thinking aloud.", "commentary"), ("Main answer.", "final_answer")],
+            settled.Select(s => (s.Content, s.Phase)));
+    }
+
+    [Fact]
+    public void Interrupted_turn_keeps_its_partial_text_as_the_final_record()
+    {
+        var (service, store, _, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "I was halfway thr"),
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Request was aborted."}""");
+
+        var records = store.Assistant(id).Select(m => (m.EventType, m.Content, m.Phase)).ToArray();
+        Assert.Equal(("text", "I was halfway thr", "final_answer"), records[0]);
+        Assert.Equal("error", records[1].EventType);
+    }
+
+    [Fact]
+    public async Task Stopping_mid_block_persists_the_streamed_text_instead_of_losing_it()
+    {
+        var (service, store, _, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Partial reply"));
+        await service.ForceKill(id, "maintenance_restart");
+
+        var text = Assert.Single(store.Assistant(id), m => m.EventType == "text");
+        Assert.Equal(("Partial reply", "final_answer"), (text.Content, text.Phase));
+    }
+
+    [Fact]
+    public void Empty_and_whitespace_blocks_produce_no_record()
+    {
+        var (service, store, _, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "\n\n"),
+            BlockStart(1, "tool_use"),
+            MessageDelta("tool_use"),
+            Result());
+
+        Assert.DoesNotContain(store.Assistant(id), m => m.EventType == "text");
+    }
+
+    [Fact]
+    public async Task Real_stdout_reader_produces_the_same_records_as_the_replay()
+    {
+        var fixture = Path.Combine(_root, "turn.jsonl");
+        await File.WriteAllLinesAsync(fixture, [
+            MessageStart("msg_1"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Let me look."),
+            BlockStart(1, "tool_use"),
+            AssistantToolUse("msg_1", "toolu_1", "Bash", """{"command":"dir"}"""),
+            MessageDelta("tool_use"),
+            ToolResult("toolu_1", "files"),
+            MessageStart("msg_2"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Here it is."),
+            MessageDelta("end_turn"),
+            Result(),
+        ]);
+        // A stand-in CLI: prints one recorded turn on stdout, then waits on stdin like the real one.
+        var (service, store, live, id) = StartSession(_ => Track(Process.Start(new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            // Arguments verbatim: cmd.exe does not understand ArgumentList's \" escaping.
+            Arguments = $"/d /c type \"{fixture}\" & more",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!));
+
+        await WaitUntil(() => store.Assistant(id).Any(m => m.EventType == "status"));
+
+        Assert.Equal(
+            [
+                ("text", "Let me look.", "commentary"),
+                ("tool_use", null, null),
+                ("tool_result", "files", null),
+                ("text", "Here it is.", "final_answer"),
+                ("status", "idle", null),
+            ],
+            store.Assistant(id).Select(m => (m.EventType, m.Content, m.Phase)).ToArray());
+        Assert.Equal(["Let me look.", "Here it is."],
+            live.Where(e => e.Type == "text").Select(e => e.Content));
+    }
+
+    [Fact]
+    public async Task Display_content_is_the_transcript_text_while_the_model_receives_the_full_envelope()
+    {
+        var captured = Path.Combine(_root, "stdin.jsonl");
+        Process? cli = null;
+        var (service, store, _, id) = StartSession(_ => cli = Track(Process.Start(new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            Arguments = $"/d /c more > \"{captured}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!));
+        const string envelope = "Discord envelope JSON (untrusted data):\n<discord-input-json>{\"message\":\"hello\"}</discord-input-json>";
+
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart(envelope)],
+            messageUid: "discord-uid-1", displayContent: "hello"));
+
+        var user = Assert.Single(store.Messages, m => m.SessionId == id && m.Role == "user");
+        Assert.Equal(("hello", "discord-uid-1"), (user.Content, user.MessageUid));
+        // End the stand-in's input so it flushes exactly what the model would have received.
+        cli!.StandardInput.Close();
+        await cli.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        using var written = JsonDocument.Parse(ReadShared(captured).Trim().Split('\n')[0]);
+        Assert.Equal(envelope, written.RootElement.GetProperty("message").GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task Provider_exposes_phase_on_history_and_live_events()
+    {
+        var store = new RecordingStore();
+        store.AddMessage(new ClaudeMessageRecord
+        {
+            SessionId = "s1", Role = "assistant", EventType = "text", Content = "Interim.",
+            Phase = "commentary", MessageUid = "u1", Timestamp = DateTimeOffset.UtcNow,
+        });
+        store.AddMessage(new ClaudeMessageRecord
+        {
+            // History written before Claude recorded phase.
+            SessionId = "s1", Role = "assistant", EventType = "text", Content = "Legacy.",
+            MessageUid = "u0", Timestamp = DateTimeOffset.UtcNow,
+        });
+        store.SaveSession(new ClaudeSessionRecord
+        {
+            Id = "s1", ProjectName = "p", ProjectPath = _root, Status = "Stopped", StartedAt = DateTimeOffset.UtcNow,
+        });
+        var service = CreateService(store);
+        ISessionProvider provider = new ClaudeCodeProvider("ai-session", service, store, new MemoryJobTracker(), (_, _) => { });
+        var events = new List<UnifiedStreamEvent>();
+        provider.SessionStreamEvent += (_, e) => events.Add(e);
+
+        var (_, history) = provider.GetSession("s1");
+        service.EmitStreamEvent("s1", new ClaudeStreamEvent { Type = "text", Content = "x", Phase = "final_answer" });
+
+        Assert.Equal(["commentary", null], history.Select(m => m.Phase));
+        Assert.Equal("final_answer", Assert.Single(events).Phase);
+    }
+
+    // --- harness ---
+
+    private (ClaudeSessionService Service, RecordingStore Store, List<ClaudeStreamEvent> Live, string Id) StartSession(
+        Func<ProcessStartInfo, Process?>? launch = null)
+    {
+        var store = new RecordingStore();
+        var service = CreateService(store);
+        service.LaunchSessionProcess = launch ?? (_ => Track(Process.Start(new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "more.com"),
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!));
+        var live = new List<ClaudeStreamEvent>();
+        service.StreamEvent += (_, e) => { lock (live) live.Add(e); };
+        var info = service.StartSession(_root, "opus", "owner", null, null, "high", null, null, null,
+            JobProvenance.DirectRedCompute("POST", "/ai-session/sessions", new JobBeneficiary("user", "owner"), "request-1", null));
+        Assert.NotNull(info);
+        return (service, store, live, info!.Id);
+    }
+
+    private ClaudeSessionService CreateService(RecordingStore store)
+    {
+        var claudePath = Path.Combine(_root, "claude.exe");
+        if (!File.Exists(claudePath)) File.WriteAllText(claudePath, "");
+        return new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, new MemoryJobTracker(),
+            store, new NullQualityModes(), () => null, (_, _) => { });
+    }
+
+    private Process Track(Process process)
+    {
+        _processes.Add(process);
+        return process;
+    }
+
+    private static void Feed(ClaudeSessionService service, string id, params string[] lines)
+    {
+        foreach (var line in lines)
+            Assert.True(service.ProcessOutputLine(id, line));
+    }
+
+    private static IReadOnlyList<ClaudeTextBlockTracker.SettledText> Apply(ClaudeTextBlockTracker tracker, string line)
+    {
+        using var doc = JsonDocument.Parse(line);
+        return ClaudeSessionService.ApplyTextLifecycle(tracker, doc.RootElement);
+    }
+
+    private static async Task WaitUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("Condition was not reached");
+            await Task.Delay(25);
+        }
+    }
+
+    private static string ReadShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        return new StreamReader(stream).ReadToEnd();
+    }
+
+    private static string Json(object value) => JsonSerializer.Serialize(value);
+
+    private static string Stream(object evt, string? parent = null) =>
+        Json(new { type = "stream_event", @event = evt, parent_tool_use_id = parent, session_id = "c1" });
+
+    private static string MessageStart(string id) =>
+        Stream(new { type = "message_start", message = new { id, role = "assistant", content = Array.Empty<object>() } });
+
+    private static string BlockStart(int index, string type) =>
+        Stream(new { type = "content_block_start", index, content_block = new { type } });
+
+    private static string TextDelta(int index, string text) =>
+        Stream(new { type = "content_block_delta", index, delta = new { type = "text_delta", text } });
+
+    private static string ThinkingDelta(int index, string thinking) =>
+        Stream(new { type = "content_block_delta", index, delta = new { type = "thinking_delta", thinking } });
+
+    private static string BlockStop(int index) => Stream(new { type = "content_block_stop", index });
+
+    private static string MessageDelta(string stopReason) =>
+        Stream(new { type = "message_delta", delta = new { stop_reason = stopReason } });
+
+    private static string MessageStop() => Stream(new { type = "message_stop" });
+
+    private static string AssistantText(string id, string text) => Json(new
+    {
+        type = "assistant", parent_tool_use_id = (string?)null,
+        message = new { id, role = "assistant", stop_reason = (string?)null, content = new[] { new { type = "text", text } } },
+    });
+
+    private static string AssistantToolUse(string id, string toolId, string name, string inputJson) => Json(new
+    {
+        type = "assistant", parent_tool_use_id = (string?)null,
+        message = new
+        {
+            id, role = "assistant", stop_reason = (string?)null,
+            content = new object[] { new { type = "tool_use", id = toolId, name, input = JsonDocument.Parse(inputJson).RootElement } },
+        },
+    });
+
+    private static string ToolResult(string toolId, string content) => Json(new
+    {
+        type = "user", parent_tool_use_id = (string?)null,
+        message = new { role = "user", content = new[] { new { type = "tool_result", tool_use_id = toolId, content } } },
+    });
+
+    private static string Result() =>
+        """{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.01}""";
+
+    public void Dispose()
+    {
+        foreach (var process in _processes)
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            process.Dispose();
+        }
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { }
+    }
+
+    private sealed class RecordingStore : IClaudeSessionStore
+    {
+        private readonly Dictionary<string, ClaudeSessionRecord> _sessions = [];
+        private readonly List<ClaudeMessageRecord> _messages = [];
+
+        public List<ClaudeMessageRecord> Messages { get { lock (_messages) return [.. _messages]; } }
+        public IReadOnlyList<ClaudeMessageRecord> Assistant(string sessionId) =>
+            Messages.Where(m => m.SessionId == sessionId && m.Role == "assistant").ToList();
+
+        public ClaudeSessionRecord? FindSession(string sessionId) { lock (_sessions) return _sessions.GetValueOrDefault(sessionId); }
+        public ClaudeSessionRecord? FindSessionByJobId(Guid jobId) { lock (_sessions) return _sessions.Values.FirstOrDefault(s => s.JobId == jobId); }
+        public List<ClaudeSessionRecord> GetActiveSessions() { lock (_sessions) return _sessions.Values.Where(s => s.Status is "Active" or "Idle" or "Starting").ToList(); }
+        public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false)
+        { lock (_sessions) return _sessions.Values.Where(s => !excludeIds.Contains(s.Id)).Take(limit).ToList(); }
+        public void SaveSession(ClaudeSessionRecord record) { lock (_sessions) _sessions[record.Id] = record; }
+        public void DismissSession(string sessionId) { }
+        public void AddMessage(ClaudeMessageRecord message) { lock (_messages) _messages.Add(message); }
+        public void AddMessages(List<ClaudeMessageRecord> messages) { lock (_messages) _messages.AddRange(messages); }
+        public List<ClaudeMessageRecord> GetMessages(string sessionId, int limit = 50_000) =>
+            Messages.Where(m => m.SessionId == sessionId).ToList();
+        public DateTimeOffset GetLastMessageTimestamp(string sessionId) => default;
+        public Dictionary<Guid, string> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds) => [];
+    }
+
+    private sealed class MemoryJobTracker : IJobTracker
+    {
+        private readonly Dictionary<Guid, JobRecord> _jobs = [];
+
+        public JobRecord CreateJob(JobSubmission submission)
+        {
+            var job = new JobRecord { CapabilitySlug = submission.CapabilitySlug, ProviderName = submission.ProviderName };
+            lock (_jobs) _jobs[job.Id] = job;
+            return job;
+        }
+        public void MarkRunning(Guid jobId) { }
+        public void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null,
+            string? contentType = null, string? resultJson = null, double? costUsd = null) { }
+        public void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null, string? resultJson = null) { }
+        public void MarkCancelled(Guid jobId) { }
+        public void UpdateName(Guid jobId, string name) { }
+        public JobRecord? GetJob(Guid jobId) { lock (_jobs) return _jobs.GetValueOrDefault(jobId); }
+    }
+
+    private sealed class NullQualityModes : IProviderQualityModeResolver
+    {
+        public bool TryResolveRequested(string qualityTier, string? preferredProvider, out ProviderQualityMode? resolved)
+        {
+            resolved = null;
+            return false;
+        }
+    }
+}

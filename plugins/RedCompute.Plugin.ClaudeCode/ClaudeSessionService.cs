@@ -164,6 +164,8 @@ public class ClaudeSessionService
             var lastTimestamp = _sessionStore.GetLastMessageTimestamp(session.Id);
 
             var newMessages = new List<ClaudeMessageRecord>();
+            // API message ids that went on to call a tool: their text was commentary.
+            var toolUseMessageIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var line in File.ReadLines(jsonlPath))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
@@ -232,6 +234,7 @@ public class ClaudeSessionService
                                 var toolName = block.TryGetProperty("name", out var n) ? n.GetString() : null;
                                 var toolInput = block.TryGetProperty("input", out var inp) ? inp.ToString() : null;
                                 var toolId = block.TryGetProperty("id", out var tid) ? tid.GetString() : null;
+                                if (msgId is not null) toolUseMessageIds.Add(msgId);
                                 newMessages.Add(new ClaudeMessageRecord
                                 {
                                     SessionId = session.Id, Role = "assistant", EventType = "tool_use",
@@ -258,6 +261,13 @@ public class ClaudeSessionService
                 }
                 catch (JsonException) { }
             }
+
+            // The native transcript stores one entry per completed block, so the same rule the live
+            // stream uses applies: text whose API message also called a tool was commentary.
+            foreach (var text in newMessages.Where(m => m is { Role: "assistant", EventType: "text" }))
+                text.Phase = text.MessageId is { } id && toolUseMessageIds.Contains(id)
+                    ? ClaudeTextBlockTracker.Commentary
+                    : ClaudeTextBlockTracker.FinalAnswer;
 
             if (newMessages.Count > 0)
             {
@@ -1474,6 +1484,7 @@ public class ClaudeSessionService
 
             session.Cts.Cancel();
             DiscardPendingQuestions(session, "session_ended");
+            SettleTurnText(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
@@ -1513,6 +1524,7 @@ public class ClaudeSessionService
             try { session.Process.Kill(entireProcessTree: true); } catch { }
             session.Cts.Cancel();
             DiscardPendingQuestions(session, "session_ended");
+            SettleTurnText(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
@@ -1782,24 +1794,7 @@ public class ClaudeSessionService
 
                 try
                 {
-                    var evt = ParseStreamLine(line, session);
-                    if (evt != null)
-                    {
-                        // Stamp the turn uid before the event is broadcast or
-                        // persisted so the streamed copy and the stored record
-                        // carry the same identity. status/error close the turn.
-                        if (evt.Type is "status" or "error")
-                            session.CurrentAssistantUid = null;
-                        else
-                            evt.MessageUid = session.CurrentAssistantUid ??= Guid.NewGuid().ToString("N");
-
-                        StreamEvent?.Invoke(session.Info.Id, evt);
-                        session.MessageHistory.Add(evt);
-                        TrimHistory(session);
-                        PersistMessage(session.Info.Id, "assistant", evt.Type, evt.Content,
-                            evt.ToolName, evt.ToolInput?.ToString(), evt.ToolResult, evt.MessageId,
-                            messageUid: evt.MessageUid);
-                    }
+                    HandleOutputLine(session, line);
 
                     if (session.Info.Title == null && DateTimeOffset.UtcNow - lastTitleCheck > TimeSpan.FromSeconds(3))
                     {
@@ -1828,6 +1823,110 @@ public class ClaudeSessionService
             _log($"[Claude] Stdout reader error for {session.Info.Id}: {ex.Message}", null);
         }
     }
+
+    /// <summary>Test seam: feeds one CLI stdout line through the same path as the reader.</summary>
+    internal bool ProcessOutputLine(string sessionId, string line)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return false;
+        HandleOutputLine(session, line);
+        return true;
+    }
+
+    private void HandleOutputLine(ManagedSession session, string line)
+    {
+        var evt = ParseStreamLine(line, session);
+        if (evt == null) return;
+
+        // Stamp the turn uid before the event is broadcast or persisted so the
+        // streamed copy and the stored record carry the same identity.
+        // status/error close the turn.
+        if (evt.Type is "status" or "error")
+            session.CurrentAssistantUid = null;
+        else
+            evt.MessageUid = session.CurrentAssistantUid ??= Guid.NewGuid().ToString("N");
+
+        // Streamed text is live-only, as Codex's agent-message deltas are. The block is
+        // persisted once, whole, when its commentary/final phase is decided (see
+        // ClaudeTextBlockTracker). Persisting each delta made every token fragment a
+        // separate transcript record, and so a separate Discord message.
+        var deferred = evt is { Type: "text", IsPartial: true, BlockIndex: not null };
+        if (deferred)
+            evt.MessageId = session.TextBlocks.Append(
+                evt.ParentToolUseId, evt.BlockIndex!.Value, evt.Content, evt.MessageUid);
+
+        StreamEvent?.Invoke(session.Info.Id, evt);
+        session.MessageHistory.Add(evt);
+        TrimHistory(session);
+        if (!deferred)
+            PersistMessage(session.Info.Id, "assistant", evt.Type, evt.Content,
+                evt.ToolName, evt.ToolInput?.ToString(), evt.ToolResult, evt.MessageId,
+                messageUid: evt.MessageUid, phase: evt.Phase);
+    }
+
+    /// <summary>
+    /// Applies one <c>stream_event</c> to the text-phase lifecycle and returns the text blocks it
+    /// settled as commentary. The model continuing with a tool (a tool_use block starting, or the
+    /// API message stopping for tool use) is what proves earlier text was not the answer.
+    /// </summary>
+    internal static IReadOnlyList<ClaudeTextBlockTracker.SettledText> ApplyTextLifecycle(
+        ClaudeTextBlockTracker tracker, JsonElement root)
+    {
+        if (!root.TryGetProperty("event", out var evt) || evt.ValueKind != JsonValueKind.Object)
+            return [];
+        var parent = ParentToolUseId(root);
+        var evtType = evt.TryGetProperty("type", out var et) && et.ValueKind == JsonValueKind.String
+            ? et.GetString() : null;
+
+        switch (evtType)
+        {
+            case "message_start":
+                var apiMessageId = evt.TryGetProperty("message", out var message)
+                    && message.ValueKind == JsonValueKind.Object
+                    && message.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
+                        ? id.GetString() : null;
+                tracker.BeginMessage(parent, apiMessageId);
+                return [];
+
+            case "content_block_start":
+                var blockType = evt.TryGetProperty("content_block", out var block)
+                    && block.ValueKind == JsonValueKind.Object
+                    && block.TryGetProperty("type", out var bt) && bt.ValueKind == JsonValueKind.String
+                        ? bt.GetString() : null;
+                return blockType is "tool_use" or "server_tool_use" or "mcp_tool_use"
+                    ? tracker.SettleCommentary(parent)
+                    : [];
+
+            case "message_delta":
+                var stopReason = evt.TryGetProperty("delta", out var delta)
+                    && delta.ValueKind == JsonValueKind.Object
+                    && delta.TryGetProperty("stop_reason", out var sr) && sr.ValueKind == JsonValueKind.String
+                        ? sr.GetString() : null;
+                // A subagent's text is never the parent turn's answer, whatever ends it.
+                return parent is not null || stopReason is "tool_use" or "pause_turn"
+                    ? tracker.SettleCommentary(parent)
+                    : [];
+
+            default:
+                return [];
+        }
+    }
+
+    private static string? ParentToolUseId(JsonElement root)
+        => root.TryGetProperty("parent_tool_use_id", out var parent) && parent.ValueKind == JsonValueKind.String
+            ? parent.GetString()
+            : null;
+
+    private void PersistSettledText(ManagedSession session,
+        IReadOnlyList<ClaudeTextBlockTracker.SettledText> settled)
+    {
+        foreach (var text in settled)
+            PersistMessage(session.Info.Id, "assistant", "text", text.Content, null, null, null,
+                text.MessageId, messageUid: text.MessageUid ?? session.CurrentAssistantUid, phase: text.Phase);
+    }
+
+    /// <summary>The turn is over (result, exit, stop or kill): its unsettled text is final.</summary>
+    private void SettleTurnText(ManagedSession session)
+        => PersistSettledText(session, session.TextBlocks.SettleTurn());
 
     private async Task ReadStderr(ManagedSession session)
     {
@@ -1885,6 +1984,7 @@ public class ClaudeSessionService
 
             case "stream_event":
                 UpdateContextFromStreamEvent(root, session);
+                PersistSettledText(session, ApplyTextLifecycle(session.TextBlocks, root));
                 return ParseStreamEvent(root);
 
             case "rate_limit_event":
@@ -2331,7 +2431,9 @@ public class ClaudeSessionService
             {
                 Type = "text",
                 Content = delta.TryGetProperty("text", out var t) ? t.GetString() : null,
-                IsPartial = true
+                IsPartial = true,
+                BlockIndex = evt.TryGetProperty("index", out var index) && index.TryGetInt32(out var i) ? i : 0,
+                ParentToolUseId = ParentToolUseId(root),
             },
             "thinking_delta" => new ClaudeStreamEvent
             {
@@ -2350,6 +2452,10 @@ public class ClaudeSessionService
         var terminalError = ReadTerminalResultError(root, subtype);
         if (terminalError == null && subtype == "success")
         {
+            // Persist the answer before Idle is published: the settlement callback reads the
+            // transcript as soon as SessionUpdated reports Idle.
+            SettleTurnText(session);
+
             // Turn finished normally, possibly racing a just-sent interrupt that
             // never got the chance to abort anything -- still a clean, safe-to-write
             // outcome, so resolve the pending interrupt wait the same as below.
@@ -2372,6 +2478,7 @@ public class ClaudeSessionService
 
         if (terminalError != null)
         {
+            SettleTurnText(session);
             var error = terminalError;
             _log($"[Claude] Session {session.Info.Id} result error: {error}", null);
 
@@ -2539,6 +2646,7 @@ public class ClaudeSessionService
         var exitCode = session.Process.ExitCode;
         session.Cts.Cancel();
         DiscardPendingQuestions(session, "session_ended");
+        SettleTurnText(session);
 
         if (session.RestartPending)
         {
@@ -2728,7 +2836,7 @@ public class ClaudeSessionService
 
     private void PersistMessage(string sessionId, string role, string eventType, string? content,
         string? toolName, string? toolInput, string? toolResult, string? messageId,
-        string? attachmentsJson = null, string? messageUid = null)
+        string? attachmentsJson = null, string? messageUid = null, string? phase = null)
     {
         try
         {
@@ -2743,6 +2851,7 @@ public class ClaudeSessionService
                 ToolResult = toolResult,
                 MessageId = messageId,
                 MessageUid = messageUid,
+                Phase = phase,
                 Timestamp = DateTimeOffset.UtcNow,
                 AttachmentsJson = attachmentsJson,
             });
@@ -2789,6 +2898,8 @@ public class ClaudeSessionService
         // turn boundaries (status/error result, user message, answer) so the
         // next turn mints a fresh one.
         public string? CurrentAssistantUid { get; set; }
+        // Streamed text blocks awaiting their commentary/final decision.
+        public ClaudeTextBlockTracker TextBlocks { get; } = new();
         // Guards every StandardInput write so a queued-message drain can never
         // interleave with a concurrent interrupt/permission-mode control write
         // (mirrors OpenCodeSessionService.ManagedSession.WriteLock).
