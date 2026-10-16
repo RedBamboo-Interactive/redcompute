@@ -26,6 +26,7 @@ public class ClaudeSessionInfo
     public string? Effort { get; set; }
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }
+    public string? DeveloperInstructions { get; set; }
     public Guid? JobId { get; set; }
     public string PermissionMode { get; set; } = "bypassPermissions";
     public string? Source { get; set; }

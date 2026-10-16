@@ -14,7 +14,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
-    private readonly ClaudeSessionStore _store;
+    private readonly IClaudeSessionStore _store;
     private readonly object _injectionGate = new();
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
@@ -57,7 +57,23 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _claude = new ClaudeSessionService(
             claudeConfig, jobTracker, _store, qualityModes,
             () => GetTitleQualityTier(config), log);
+        WireSessionEvents();
+    }
 
+    /// <summary>Test seam: binds the provider to an existing service and store.</summary>
+    internal ClaudeCodeProvider(string capabilitySlug, ClaudeSessionService claude,
+        IClaudeSessionStore store, IJobTracker jobTracker, Action<string, Guid?> log)
+    {
+        _capabilitySlug = capabilitySlug;
+        _claude = claude;
+        _store = store;
+        _jobTracker = jobTracker;
+        _log = log;
+        WireSessionEvents();
+    }
+
+    private void WireSessionEvents()
+    {
         _claude.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _claude.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
         _claude.SessionEnded += (id, reason, stopReason) => PluginEvent?.Invoke("session.ended", new { id, reason, stopReason });
@@ -126,6 +142,24 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
             effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
             confidential);
+
+        return Task.FromResult(info != null ? ToUnified(info) : null);
+    }
+
+    /// <summary>
+    /// Delivers developer instructions as a real system-level instruction: the persistent CLI
+    /// is launched with <c>--append-system-prompt</c>, and the text is persisted with the session
+    /// so every later relaunch (resume, restart recovery, interrupt recovery) reapplies it.
+    /// </summary>
+    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
+        string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
+        string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
+        Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
+        bool confidential, string? developerInstructions)
+    {
+        var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
+            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
+            confidential, developerInstructions);
 
         return Task.FromResult(info != null ? ToUnified(info) : null);
     }

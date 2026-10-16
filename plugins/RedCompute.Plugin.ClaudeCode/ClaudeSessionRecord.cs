@@ -24,6 +24,11 @@ public class ClaudeSessionRecord
     public string? Effort { get; set; }
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }
+    /// <summary>
+    /// Provider-native developer instructions supplied when the session was created. Reapplied
+    /// as <c>--append-system-prompt</c> on every CLI launch for this session (start and resume).
+    /// </summary>
+    public string? DeveloperInstructions { get; set; }
     public Guid? JobId { get; set; }
     public bool Dismissed { get; set; }
     public string? Source { get; set; }

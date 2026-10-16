@@ -29,6 +29,12 @@ public class ClaudeSessionService
 
     public void EmitStreamEvent(string key, ClaudeStreamEvent evt) => StreamEvent?.Invoke(key, evt);
 
+    /// <summary>
+    /// Launches the persistent interactive CLI process (start and resume). Tests replace it to
+    /// observe the exact argv without spawning a real Claude Code session.
+    /// </summary>
+    internal Func<ProcessStartInfo, Process?> LaunchSessionProcess { get; set; } = Process.Start;
+
     public ClaudeSessionService(
         ClaudeConfig config,
         IJobTracker jobTracker,
@@ -785,7 +791,8 @@ public class ClaudeSessionService
     public ClaudeSessionInfo? StartSession(string projectPath, string? model, string? userId,
         string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory = null, bool confidential = false)
+        string? scratchDirectory = null, bool confidential = false,
+        string? developerInstructions = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -798,6 +805,9 @@ public class ClaudeSessionService
             LastStartError = $"Project path not found: {projectPath}";
             return null;
         }
+
+        if (string.IsNullOrWhiteSpace(developerInstructions))
+            developerInstructions = null;
 
         var id = Guid.NewGuid().ToString("N")[..12];
         var info = new ClaudeSessionInfo
@@ -815,6 +825,7 @@ public class ClaudeSessionService
             Effort = effort,
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
+            DeveloperInstructions = developerInstructions,
         };
 
         var claudePath = ResolveClaudePath();
@@ -822,6 +833,12 @@ public class ClaudeSessionService
         {
             LastStartError = "Could not find 'claude' CLI. Install it or set ClaudePath in config.";
             _log("[Claude] Could not find 'claude' CLI on PATH", null);
+            return null;
+        }
+        if (DeveloperInstructionLaunchError(claudePath, developerInstructions) is { } instructionError)
+        {
+            LastStartError = instructionError;
+            _log($"[Claude] {instructionError}", null);
             return null;
         }
 
@@ -838,7 +855,8 @@ public class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        PopulateSessionArgs(startInfo, model: model, effort: effort);
+        PopulateSessionArgs(startInfo, model: model, effort: effort,
+            developerInstructions: developerInstructions);
         if (SessionScratch.Environment(scratchDirectory) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
@@ -846,7 +864,8 @@ public class ClaudeSessionService
         Process process;
         try
         {
-            process = Process.Start(startInfo)!;
+            process = LaunchSessionProcess(startInfo)
+                ?? throw new InvalidOperationException("Process.Start returned no process");
         }
         catch (Exception ex)
         {
@@ -933,6 +952,14 @@ public class ClaudeSessionService
             LastStartError = "Could not find 'claude' CLI. Install it or set ClaudePath in config.";
             return null;
         }
+        // A session created with developer instructions must never be relaunched without them:
+        // resuming bare would silently drop the caller's security boundary.
+        if (DeveloperInstructionLaunchError(claudePath, sessionRecord.DeveloperInstructions) is { } instructionError)
+        {
+            LastStartError = instructionError;
+            _log($"[Claude] {instructionError}", null);
+            return null;
+        }
 
         var info = new ClaudeSessionInfo
         {
@@ -957,6 +984,7 @@ public class ClaudeSessionService
             Effort = sessionRecord.Effort,
             QualityTier = sessionRecord.QualityTier,
             ProviderEntity = sessionRecord.ProviderEntity,
+            DeveloperInstructions = sessionRecord.DeveloperInstructions,
             Source = sessionRecord.Source,
             UserId = sessionRecord.UserId,
             UserName = sessionRecord.UserName,
@@ -976,7 +1004,8 @@ public class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        PopulateSessionArgs(startInfo, sessionRecord.ClaudeSessionId, sessionRecord.Model, sessionRecord.Effort);
+        PopulateSessionArgs(startInfo, sessionRecord.ClaudeSessionId, sessionRecord.Model, sessionRecord.Effort,
+            sessionRecord.DeveloperInstructions);
         if (SessionScratch.Environment(sessionRecord.ScratchDirectory) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
@@ -984,7 +1013,8 @@ public class ClaudeSessionService
         Process process;
         try
         {
-            process = Process.Start(startInfo)!;
+            process = LaunchSessionProcess(startInfo)
+                ?? throw new InvalidOperationException("Process.Start returned no process");
         }
         catch (Exception ex)
         {
@@ -1604,6 +1634,7 @@ public class ClaudeSessionService
         Effort = r.Effort,
         QualityTier = r.QualityTier,
         ProviderEntity = r.ProviderEntity,
+        DeveloperInstructions = r.DeveloperInstructions,
         JobId = r.JobId,
         Source = r.Source
     };
@@ -1676,7 +1707,8 @@ public class ClaudeSessionService
         return null;
     }
 
-    private void PopulateSessionArgs(ProcessStartInfo startInfo, string? resumeClaudeSessionId = null, string? model = null, string? effort = null)
+    private void PopulateSessionArgs(ProcessStartInfo startInfo, string? resumeClaudeSessionId = null, string? model = null, string? effort = null,
+        string? developerInstructions = null)
     {
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
             "--input-format", "stream-json", "--include-partial-messages",
@@ -1705,11 +1737,35 @@ public class ClaudeSessionService
             startInfo.ArgumentList.Add("--effort");
             startInfo.ArgumentList.Add(effort);
         }
+        if (developerInstructions != null)
+        {
+            // Appended to Claude Code's own system prompt, never replacing it (--system-prompt)
+            // and never demoted to a user turn. One argv element: ArgumentList quotes it for
+            // CreateProcess, so quotes, newlines and markup like <discord-no-reply/> survive.
+            startInfo.ArgumentList.Add("--append-system-prompt");
+            startInfo.ArgumentList.Add(developerInstructions);
+        }
         if (resumeClaudeSessionId != null)
         {
             startInfo.ArgumentList.Add("--resume");
             startInfo.ArgumentList.Add(resumeClaudeSessionId);
         }
+    }
+
+    /// <summary>
+    /// Developer instructions are a security boundary, so a launch that cannot deliver them
+    /// verbatim must fail instead of starting without them. A batch shim (claude.cmd) runs
+    /// through cmd.exe, which ends the command at the first newline and expands %VAR% and ^,
+    /// so multi-line instruction text cannot reach the CLI intact.
+    /// </summary>
+    internal static string? DeveloperInstructionLaunchError(string claudePath, string? developerInstructions)
+    {
+        if (developerInstructions == null) return null;
+        var extension = Path.GetExtension(claudePath);
+        return extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)
+                ? $"Developer instructions require a native Claude Code executable; '{claudePath}' is a batch shim that cannot pass multi-line arguments intact"
+                : null;
     }
 
     private async Task ReadStdout(ManagedSession session)
@@ -2654,6 +2710,7 @@ public class ClaudeSessionService
                 Effort = info.Effort,
                 QualityTier = info.QualityTier,
                 ProviderEntity = info.ProviderEntity,
+                DeveloperInstructions = info.DeveloperInstructions,
                 JobId = info.JobId,
                 Source = info.Source,
                 UserId = info.UserId,

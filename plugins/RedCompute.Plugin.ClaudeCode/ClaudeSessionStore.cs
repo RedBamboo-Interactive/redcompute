@@ -108,6 +108,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.Effort = record.Effort;
             existing.QualityTier = record.QualityTier;
             existing.ProviderEntity = record.ProviderEntity;
+            existing.DeveloperInstructions = record.DeveloperInstructions;
             existing.JobId = record.JobId;
             existing.Dismissed = record.Dismissed;
             existing.Source = record.Source;

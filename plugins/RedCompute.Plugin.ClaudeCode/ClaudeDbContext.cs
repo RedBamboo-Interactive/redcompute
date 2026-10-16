@@ -87,6 +87,13 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("DeveloperInstructions"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN DeveloperInstructions TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         if (!columns.Contains("ScratchDirectory"))
         {
             using var alter = conn.CreateCommand();
