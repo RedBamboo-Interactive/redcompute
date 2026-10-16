@@ -433,30 +433,8 @@ public static class GenericCapabilityEndpoints
             var slug = capSlug;
             endpoints.Describe("ANY", $"/{slug}/{{**path}}",
                 $"Proxy passthrough to the active {slug} backend (when the provider exposes one). Known routes (generate, jobs/*) are served directly.");
-            app.Map($"/{slug}/{{**path}}", async (HttpContext ctx, string? path) =>
-            {
-                // Known endpoint patterns (generate, jobs) are handled by the routes above;
-                // reaching here means the path didn't match anything proxyable.
-                if (path != null && (path.StartsWith("jobs/") || path == "generate"))
-                {
-                    ctx.Response.StatusCode = 404;
-                    await ctx.Response.WriteAsJsonAsync(new ErrorResponse
-                    {
-                        Error = "not_found",
-                        Message = $"No endpoint at '/{slug}/{path}'"
-                    });
-                    return;
-                }
-
-                var entry = registry.Get(slug);
-                var proxyProvider = entry?.ActiveProvider;
-                if (proxyProvider == null) { ctx.Response.StatusCode = 503; return; }
-
-                var proxyUrl = proxyProvider.GetProxyTargetUrl();
-                if (proxyUrl == null) { ctx.Response.StatusCode = 503; return; }
-
-                await StreamingProxy.ForwardRawAsync(ctx, proxyUrl, path, log);
-            });
+            app.Map($"/{slug}/{{**path}}", (HttpContext ctx, string? path) =>
+                HandleUnmatchedCapabilityPathAsync(ctx, slug, path, registry.Get(slug), log));
         }
 
         // Let each IPluginProvider with ICustomEndpointProvider register its custom endpoints
@@ -469,6 +447,61 @@ public static class GenericCapabilityEndpoints
             }
         }
     }
+
+    /// <summary>
+    /// Serves every <c>/{slug}/...</c> path that no explicit capability route matched.
+    /// Only a proxy provider (<see cref="IPluginProvider.IsProxy"/>) gives such a path a
+    /// meaning, so the outcome is: forward to a live proxy backend; 503 when the proxy
+    /// backend is the route owner but is not available; otherwise 404, because the path
+    /// is simply not a route and must not masquerade as a provider outage.
+    /// </summary>
+    internal static async Task<IResult> HandleUnmatchedCapabilityPathAsync(
+        HttpContext ctx,
+        string slug,
+        string? path,
+        CapabilityEntry? entry,
+        Action<string, Guid?> log)
+    {
+        // Known endpoint patterns (generate, jobs) are served by explicit routes; reaching
+        // here means the method or the parameters did not match them.
+        if (path != null && (path.StartsWith("jobs/", StringComparison.Ordinal) || path == "generate"))
+            return RouteNotFound(ctx);
+
+        var provider = entry?.ActiveProvider;
+        var proxyUrl = provider?.GetProxyTargetUrl();
+        if (proxyUrl != null)
+        {
+            await StreamingProxy.ForwardRawAsync(ctx, proxyUrl, path, log);
+            return Results.Empty;
+        }
+
+        if (provider is null)
+        {
+            // A configured-but-inactive proxy provider would own this path once selected.
+            var hasProxyProvider = entry?.Providers.Values
+                .Any(candidate => candidate is IPluginProvider { IsProxy: true }) == true;
+            return hasProxyProvider
+                ? Error(503, "provider_not_configured",
+                    $"No active provider for '{slug}', so '/{slug}/{path}' cannot be proxied")
+                : RouteNotFound(ctx);
+        }
+
+        if (provider is not IPluginProvider { IsProxy: true })
+            return RouteNotFound(ctx);
+
+        if (entry!.IsSleeping)
+            return Error(503, "capability_sleeping",
+                $"'{slug}' is sleeping. Wake it via POST /control/wake/{slug}");
+
+        var status = await provider.GetStatusAsync(ctx.RequestAborted);
+        return Error(503, "provider_not_running",
+            $"Backend '{provider.Name}' for '{slug}' is {status} and cannot serve '/{slug}/{path}'. Start via POST /control/start/{slug}");
+    }
+
+    private static IResult RouteNotFound(HttpContext ctx) =>
+        Error(404, "not_found",
+            $"No route {ctx.Request.Method} {ctx.Request.Path}. See GET /discover.");
+
     internal static async Task<IResult> RunProviderValidationAsync(
         HttpContext ctx,
         string slug,
