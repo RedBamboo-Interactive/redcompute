@@ -264,6 +264,7 @@ public sealed class CodexTurnCompletionTests
     {
         public List<CodexMessageRecord> Messages { get; } = [];
         public List<CodexSessionRecord> GetActiveSessions() => [];
+        public List<CodexSessionRecord> GetSessionsWithStopReason(string status, string stopReason) => [];
         public void SaveSession(CodexSessionRecord record) { }
         public CodexSessionRecord? FindSession(string sessionId) => null;
         public CodexSessionRecord? FindSessionByJobId(Guid jobId) => null;

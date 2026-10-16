@@ -73,6 +73,14 @@ public class CodexSessionStore : ICodexSessionStore
             .ToList();
     }
 
+    public List<CodexSessionRecord> GetSessionsWithStopReason(string status, string stopReason)
+    {
+        using var db = new CodexDbContext();
+        return db.Sessions
+            .Where(s => s.Status == status && s.StopReason == stopReason)
+            .ToList();
+    }
+
     public List<CodexSessionRecord> GetSessionsWithoutJobs()
     {
         using var db = new CodexDbContext();

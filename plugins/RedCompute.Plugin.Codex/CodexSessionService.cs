@@ -32,6 +32,12 @@ public class CodexSessionService
         RecoverSessions(_store, _log);
     }
 
+    /// <summary>
+    /// 0x40010004: Windows terminates console children with this code at shutdown or logoff,
+    /// often before RedCompute is notified, so the exit races the infrastructure stop.
+    /// </summary>
+    internal const string WindowsTerminatedStopReason = "process_exited:1073807364";
+
     internal static void RecoverSessions(
         ICodexSessionStore store,
         Action<string, Guid?> log)
@@ -42,10 +48,18 @@ public class CodexSessionService
             foreach (var s in active)
             {
                 s.Status = "Stopped";
-                s.StopReason = PlannedRestartCheckpoint.ContainsSession("codex", s.Id)
-                    ? "maintenance_restart"
-                    : "orphaned_on_restart";
+                s.StopReason = RecoveredStopReason(s.Id);
                 log($"[Codex] Marked recovered session {s.Id} ({s.ProjectName}) as stopped ({s.StopReason})", null);
+                store.SaveSession(s);
+            }
+
+            foreach (var s in store.GetSessionsWithStopReason("Error", WindowsTerminatedStopReason))
+            {
+                if (s.Dismissed || string.IsNullOrWhiteSpace(s.ThreadId)) continue;
+                s.Status = "Stopped";
+                s.ProcessId = null;
+                s.StopReason = RecoveredStopReason(s.Id);
+                log($"[Codex] Marked Windows-terminated session {s.Id} ({s.ProjectName}) as stopped ({s.StopReason})", null);
                 store.SaveSession(s);
             }
         }
@@ -54,6 +68,11 @@ public class CodexSessionService
             log($"[Codex] Failed to recover sessions: {ex.Message}", null);
         }
     }
+
+    private static string RecoveredStopReason(string sessionId)
+        => PlannedRestartCheckpoint.ContainsSession("codex", sessionId)
+            ? SessionStopReasons.MaintenanceRestart
+            : SessionStopReasons.OrphanedOnRestart;
 
     public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error);
