@@ -1037,7 +1037,8 @@ public class ClaudeSessionService
         return info;
     }
 
-    public async Task<bool> SendInput(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
+    public async Task<bool> SendInput(string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson = null, string? messageUid = null, string? displayContent = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -1067,9 +1068,10 @@ public class ClaudeSessionService
 
             // A user message ends the previous assistant turn.
             session.CurrentAssistantUid = null;
-            PersistMessage(sessionId, "user", "text", content, null, null, null, null, attachmentsJson,
+            var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
+            PersistMessage(sessionId, "user", "text", transcriptContent, null, null, null, null, attachmentsJson,
                 messageUid ?? Guid.NewGuid().ToString("N"));
-            EnsureTitle(session, content);
+            EnsureTitle(session, transcriptContent);
 
             return true;
         }

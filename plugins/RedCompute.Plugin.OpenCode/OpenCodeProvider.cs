@@ -142,6 +142,10 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
         => _opencode.SendInput(sessionId, input, attachmentsJson, messageUid);
 
+    public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson, string? messageUid, string? displayContent)
+        => _opencode.SendInput(sessionId, input, attachmentsJson, messageUid, displayContent);
+
     public Task<bool> InjectMessageAsync(string sessionId, string role, string content,
         string? attachmentsJson = null, string? messageUid = null)
     {

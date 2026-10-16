@@ -16,6 +16,17 @@ public sealed class SessionInputQueueEventTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "input-queue-transcript-tests", Guid.NewGuid().ToString("N"));
 
+    [Fact]
+    public void Transcript_text_uses_the_human_display_without_changing_provider_input()
+    {
+        var input = new[] { SessionInputPart.TextPart("<private>model context</private>") };
+
+        Assert.Equal("<private>model context</private>", SessionInputFormatting.UserText(input));
+        Assert.Equal("What I said", SessionInputFormatting.TranscriptText(input, "What I said"));
+        Assert.Equal("", SessionInputFormatting.TranscriptText(input, ""));
+        Assert.Equal("<private>model context</private>", SessionInputFormatting.TranscriptText(input, null));
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
@@ -37,7 +48,8 @@ public sealed class SessionInputQueueEventTests : IDisposable
         var attachmentIds = new List<string>();
         if (richInput)
             attachmentIds.Add((await attachments.UploadBytesAsync("notes"u8.ToArray(), "notes.txt", "text/plain", "owner-a")).Id);
-        var first = Submission("one", "first", attachmentIds, richInput ? "{\"context\":\"captured\"}" : null);
+        var first = Submission("<private>one</private>", "first", attachmentIds,
+            richInput ? "{\"context\":\"captured\"}" : null, "one");
         var second = Submission("two", "second", [], null);
         var item1 = (await queue.EnqueueAsync(first)).Item;
         var item2 = (await queue.EnqueueAsync(second)).Item;
@@ -47,6 +59,8 @@ public sealed class SessionInputQueueEventTests : IDisposable
             var payload = await held.Received.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.False(admission.IsCompleted);
             Assert.Equal("first", payload.Uid);
+            Assert.Equal("<private>one</private>\ntwo", payload.ModelContent);
+            Assert.Equal("one\ntwo", payload.DisplayContent);
             using var envelope = JsonDocument.Parse(payload.Json!);
             Assert.Equal(["first", "second"], envelope.RootElement.GetProperty("inputMessageUids")
                 .EnumerateArray().Select(value => value.GetString()));
@@ -64,9 +78,10 @@ public sealed class SessionInputQueueEventTests : IDisposable
         Assert.Equal("first", (await queue.GetAsync("session-a", item2.Id, "owner-a"))!.DeliveredMessageUid);
     }
 
-    private static SessionInputQueueSubmission Submission(string text, string uid, IReadOnlyList<string> attachments, string? metadata)
+    private static SessionInputQueueSubmission Submission(string text, string uid, IReadOnlyList<string> attachments,
+        string? metadata, string? displayContent = null)
         => new("session-a", "owner-a", [new QueuedSessionInputPart("text", text),
-            .. attachments.Select(id => new QueuedSessionInputPart("attachment", id))], text, metadata,
+            .. attachments.Select(id => new QueuedSessionInputPart("attachment", id))], displayContent ?? text, metadata,
             new JobProvenance(JobProvenance.CurrentSchemaVersion,
                 new JobOrigin("redcompute", new JobAppReference("app", "test", null, "Test"), new JobEntrypoint("http", "/test", "POST")),
                 new JobActor("user", "Owner", Id: "owner-a"), new JobBeneficiary("user", "owner-a", "Owner"),
@@ -76,7 +91,7 @@ public sealed class SessionInputQueueEventTests : IDisposable
     public interface ITestProvider : ISessionProvider, IBackendProvider { }
     public class HeldProvider : DispatchProxy
     {
-        public readonly TaskCompletionSource<(string? Json, string? Uid)> Received = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource<(string? Json, string? Uid, string? DisplayContent, string? ModelContent)> Received = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly TaskCompletionSource<SessionInputDeliveryResult> Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly UnifiedSessionInfo _info = new() { Id = "session-a", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner-a", Status = SessionStatus.Idle };
         protected override object? Invoke(MethodInfo? method, object?[]? args)
@@ -85,7 +100,9 @@ public sealed class SessionInputQueueEventTests : IDisposable
             if (method.Name == nameof(ISessionProvider.TrySendInputAsync))
             {
                 _info.Status = SessionStatus.Active;
-                Received.TrySetResult(((string?)args![2], (string?)args[3]));
+                var input = (IReadOnlyList<SessionInputPart>)args![1]!;
+                Received.TrySetResult(((string?)args[2], (string?)args[3], (string?)args[4],
+                    SessionInputFormatting.UserText(input)));
                 return Release.Task;
             }
             throw new NotSupportedException(method.Name);

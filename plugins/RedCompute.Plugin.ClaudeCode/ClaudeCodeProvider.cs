@@ -152,6 +152,10 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
         => _claude.SendInput(sessionId, input, attachmentsJson, messageUid);
 
+    public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson, string? messageUid, string? displayContent)
+        => _claude.SendInput(sessionId, input, attachmentsJson, messageUid, displayContent);
+
     public bool SendAnswer(string sessionId, string answer) => _claude.SendAnswer(sessionId, answer);
 
     public QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)

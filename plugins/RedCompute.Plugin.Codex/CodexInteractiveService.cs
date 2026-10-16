@@ -452,7 +452,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
     public async Task<bool> SendInputAsync(
         string sessionId, IReadOnlyList<SessionInputPart> input,
-        string? attachmentsJson = null, string? messageUid = null)
+        string? attachmentsJson = null, string? messageUid = null, string? displayContent = null)
     {
         var session = await EnsureLiveAsync(sessionId);
         if (session == null) return false;
@@ -489,12 +489,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         session.HasCompletedFinalAnswer = false;
         session.InterruptRequested = false;
 
+        var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
         _store.AddMessage(new CodexMessageRecord
         {
             SessionId = sessionId,
             Role = "user",
             EventType = "text",
-            Content = content,
+            Content = transcriptContent,
             MessageUid = messageUid,
             AttachmentsJson = attachmentsJson,
             Timestamp = DateTimeOffset.UtcNow,
@@ -503,7 +504,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         info.MessageCount++;
         info.Status = "Active";
         info.LastActivity = DateTimeOffset.UtcNow;
-        EnsureTitle(session, content);
+        EnsureTitle(session, transcriptContent);
         Persist(info);
         SessionUpdated?.Invoke(info);
 

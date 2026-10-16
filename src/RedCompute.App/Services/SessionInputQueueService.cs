@@ -467,7 +467,12 @@ public sealed class SessionInputQueueService
 
                 var deliveredMessageUid = batch[0].MessageUid;
                 using var recoveryScope = authority?.AccessToken is { } token ? SessionScratch.PushExecutionToken(token) : null;
-                var result = await provider.TrySendInputAsync(sessionId, input, attachmentsJson, deliveredMessageUid);
+                var displayContent = batch.Count == 1
+                    ? batch[0].DisplayContent
+                    : string.Join("\n", batch.Select(item => item.DisplayContent)
+                        .Where(content => !string.IsNullOrWhiteSpace(content)));
+                var result = await provider.TrySendInputAsync(
+                    sessionId, input, attachmentsJson, deliveredMessageUid, displayContent);
                 switch (result.Status)
                 {
                     case SessionInputDeliveryStatus.Accepted:

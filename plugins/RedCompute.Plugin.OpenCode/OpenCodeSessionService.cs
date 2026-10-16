@@ -510,7 +510,8 @@ public class OpenCodeSessionService
         }
     }
 
-    public async Task<bool> SendInput(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
+    public async Task<bool> SendInput(string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson = null, string? messageUid = null, string? displayContent = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return false;
@@ -541,12 +542,13 @@ public class OpenCodeSessionService
                     session.DeferredLiveChunks.Clear();
                 }
 
+                var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
                 _store.AddMessage(new OpenCodeMessageRecord
                 {
                     SessionId = sessionId,
                     Role = "user",
                     EventType = "text",
-                    Content = content,
+                    Content = transcriptContent,
                     MessageUid = acceptedMessageUid,
                     ProviderPartId = $"accepted-user:{acceptedMessageUid}",
                     Timestamp = DateTimeOffset.UtcNow,

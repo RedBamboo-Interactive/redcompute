@@ -203,6 +203,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
         => _interactive.SendInputAsync(sessionId, input, attachmentsJson, messageUid);
 
+    public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson, string? messageUid, string? displayContent)
+        => _interactive.SendInputAsync(sessionId, input, attachmentsJson, messageUid, displayContent);
+
     public Task<bool> InjectMessageAsync(string sessionId, string role, string content,
         string? attachmentsJson = null, string? messageUid = null)
     {

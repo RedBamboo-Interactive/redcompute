@@ -32,6 +32,9 @@ public static class SessionInputFormatting
     public static string UserText(IReadOnlyList<SessionInputPart> input) =>
         string.Join("\n", input.Where(p => p.Type == "text" && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text));
 
+    public static string TranscriptText(IReadOnlyList<SessionInputPart> input, string? displayContent) =>
+        displayContent ?? UserText(input);
+
     public static string FileReference(InputAttachment attachment) =>
         $"Attached file \"{attachment.Name}\" ({attachment.MediaType}, {attachment.Size} bytes, SHA-256 {attachment.Sha256}) is available at this read-only local path: \"{attachment.StoredPath}\".";
 }

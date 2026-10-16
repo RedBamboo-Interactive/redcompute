@@ -54,6 +54,14 @@ public interface ISessionProvider
     Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null);
 
     /// <summary>
+    /// Sends provider-facing input while allowing the canonical transcript to retain a separate
+    /// human-readable user turn. Existing providers keep the legacy behavior unless they opt in.
+    /// </summary>
+    Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson, string? messageUid, string? displayContent)
+        => SendInputAsync(sessionId, input, attachmentsJson, messageUid);
+
+    /// <summary>
     /// Provider-neutral, non-destructive input admission. Implementations must return
     /// <see cref="SessionInputDeliveryStatus.Busy"/> while a turn is active and must
     /// never interrupt that turn as a side effect of this call.
@@ -79,6 +87,37 @@ public interface ISessionProvider
                   return SessionInputDeliveryResult.Busy();
               return SessionInputDeliveryResult.Rejected(
                   "provider_rejected", $"Provider '{ProviderId}' rejected the input");
+        }
+        catch (Exception ex)
+        {
+            return SessionInputDeliveryResult.Unavailable("provider_unavailable", ex.Message, retryable: true);
+        }
+    }
+
+    /// <summary>
+    /// Provider-neutral admission with distinct model-facing and transcript-facing text.
+    /// </summary>
+    async Task<SessionInputDeliveryResult> TrySendInputAsync(
+        string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson, string? messageUid, string? displayContent)
+    {
+        var (info, _) = GetSession(sessionId);
+        if (info is null)
+            return SessionInputDeliveryResult.Unavailable("session_not_found", $"Session '{sessionId}' was not found");
+        if (info.Status is SessionStatus.Active or SessionStatus.Starting)
+            return SessionInputDeliveryResult.Busy();
+        if (info.Status is SessionStatus.Stopped or SessionStatus.Error)
+            return SessionInputDeliveryResult.Unavailable("session_not_writable", $"Session '{sessionId}' is {info.Status.ToString().ToLowerInvariant()}");
+
+        try
+        {
+            if (await SendInputAsync(sessionId, input, attachmentsJson, messageUid, displayContent))
+                return SessionInputDeliveryResult.Accepted();
+            var (after, _) = GetSession(sessionId);
+            if (after?.Status is SessionStatus.Active or SessionStatus.Starting)
+                return SessionInputDeliveryResult.Busy();
+            return SessionInputDeliveryResult.Rejected(
+                "provider_rejected", $"Provider '{ProviderId}' rejected the input");
         }
         catch (Exception ex)
         {
