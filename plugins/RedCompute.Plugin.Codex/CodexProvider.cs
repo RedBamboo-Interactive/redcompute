@@ -46,7 +46,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.Interrupt
         | SessionCapabilities.SendMessage
         | SessionCapabilities.ImageAttachments
-        | SessionCapabilities.FileAttachments;
+        | SessionCapabilities.FileAttachments
+        | SessionCapabilities.ImageOutputs;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
     // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch).
 
@@ -456,6 +457,13 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Phase = e.Phase,
         MessageUid = e.MessageUid,
         RequestId = e.RequestId,
+        Attachments = e.Attachments?.Select(a => new UnifiedAttachment
+        {
+            Type = a.Type,
+            MimeType = a.MimeType,
+            Data = a.Data,
+            Url = a.Url,
+        }).ToList(),
     };
 
     private static UnifiedMessageRecord ToUnifiedMessage(CodexMessageRecord m) => new()

@@ -69,7 +69,8 @@ internal sealed class CompletedTranscriptPublisher(
                 receipt.Payload = persist(message, receipt.Stamp);
                 receipt.Written = true;
             }
-            if (message.EventType == "tool_result" && !receipt.Notified) notifications.Add((message, receipt));
+            if (message.EventType is "tool_result" or "image" && !receipt.Notified)
+                notifications.Add((message, receipt));
         }
         state.Pending = null;
         // These events have exactly their durable record's stamp. An overlapping
@@ -79,7 +80,7 @@ internal sealed class CompletedTranscriptPublisher(
             broadcast(message.Provider, message.SessionId, new UnifiedStreamEvent
             {
                 Type = message.EventType,
-                Content = receipt.Payload is null ? message.Content : null,
+                Content = message.EventType == "image" || receipt.Payload is null ? message.Content : null,
                 ToolResult = receipt.Payload is null ? message.ToolResult : null,
                 ToolName = message.ToolName,
                 MessageId = message.MessageId,
@@ -88,7 +89,7 @@ internal sealed class CompletedTranscriptPublisher(
                 Phase = message.Phase,
                 Epoch = receipt.Stamp.Epoch,
                 Sequence = receipt.Stamp.Sequence,
-                Attachments = message.AttachmentsJson is { } json
+                Attachments = receipt.Payload is null && message.AttachmentsJson is { } json
                     ? JsonSerializer.Deserialize<List<UnifiedAttachment>>(json) : null,
             });
             receipt.Notified = true;

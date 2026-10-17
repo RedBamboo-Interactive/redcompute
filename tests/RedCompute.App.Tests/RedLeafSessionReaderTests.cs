@@ -81,6 +81,32 @@ public sealed class RedLeafSessionReaderTests
         }
     }
 
+    [Fact]
+    public async Task GeneratedImageHistoryAndPayloadPreserveKindBytesAndContentType()
+    {
+        var handler = new ImagePayloadHandler();
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://redleaf/") };
+        var config = new RedComputeConfig { RedLeafUrl = "http://redleaf" };
+        var log = new Action<string, Guid?>((_, _) => { });
+        var providerConfig = new ProviderConfigService(config, log);
+        var quality = new QualityModeService(
+            config, log, providerConfig, new HttpClient(new SessionHandler()),
+            Path.Combine(Path.GetTempPath(), $"redcompute-image-payload-{Guid.NewGuid():N}.json"),
+            TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(2));
+        var reader = new RedLeafSessionReader(http, quality);
+
+        var (_, history) = await reader.GetSessionAsync("session-image");
+        var image = Assert.Single(history);
+        Assert.Equal("image", image.EventType);
+        Assert.Equal("assistant-image", image.PayloadRef?.Kind);
+        Assert.Equal("image/png", image.PayloadRef?.ContentType);
+        Assert.Equal("binary", image.PayloadRef?.Encoding);
+
+        using var payload = await reader.OpenPayloadAsync("entity-image", 43, null, CancellationToken.None);
+        Assert.Equal("image/png", payload.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(ImagePayloadHandler.Bytes, await payload.Content.ReadAsByteArrayAsync());
+    }
+
     private sealed class SessionHandler : HttpMessageHandler
     {
         public List<string> Requests { get; } = [];
@@ -169,6 +195,73 @@ public sealed class RedLeafSessionReaderTests
                     },
                 }
                 : new { items = Array.Empty<object>() };
+
+            return Task.FromResult(Json(body));
+        }
+    }
+
+    private sealed class ImagePayloadHandler : HttpMessageHandler
+    {
+        public static readonly byte[] Bytes = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            if (path.Contains("/records/43/payload", StringComparison.Ordinal))
+            {
+                var content = new ByteArrayContent(Bytes);
+                content.Headers.ContentType = new("image/png");
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+            }
+
+            object body = path.StartsWith("/api/entities", StringComparison.Ordinal)
+                ? new
+                {
+                    items = new[]
+                    {
+                        new
+                        {
+                            id = "entity-image",
+                            name = "Generated image",
+                            data = JsonSerializer.Serialize(new
+                            {
+                                session_id = "session-image",
+                                provider = "codex",
+                                status = "Idle",
+                                started_at = "2026-10-17T10:00:00Z",
+                            }),
+                        },
+                    },
+                }
+                : new
+                {
+                    items = new[]
+                    {
+                        new
+                        {
+                            id = 43,
+                            createdAt = "2026-10-17T10:01:00Z",
+                            data = JsonSerializer.Serialize(new
+                            {
+                                session_id = "session-image",
+                                role = "assistant",
+                                event_type = "image",
+                                content = "A smoke-lilac portrait",
+                                message_uid = "turn-image",
+                                payload_kind = "assistant-image",
+                                timestamp = "2026-10-17T10:01:00Z",
+                            }),
+                            payload = new
+                            {
+                                available = true,
+                                length = Bytes.Length,
+                                contentType = "image/png",
+                                encoding = "binary",
+                                sha256 = "png-hash",
+                            },
+                        },
+                    },
+                };
 
             return Task.FromResult(Json(body));
         }

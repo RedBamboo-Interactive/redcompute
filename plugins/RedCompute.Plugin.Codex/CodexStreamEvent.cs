@@ -23,4 +23,13 @@ public class CodexStreamEvent
     /// POST /ai-session/sessions/{id}/question. Set only on question / question_resolved.
     /// </summary>
     public string? RequestId { get; init; }
+    public List<CodexAttachment>? Attachments { get; init; }
+}
+
+public class CodexAttachment
+{
+    public required string Type { get; init; }
+    public string? MimeType { get; init; }
+    public string? Data { get; init; }
+    public string? Url { get; init; }
 }

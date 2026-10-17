@@ -444,7 +444,7 @@ public sealed class RedLeafSessionReader
                 ToolName = Str(d, "tool_name"),
                 ToolInput = Str(d, "tool_input"),
                 ToolResult = Str(d, "tool_result"),
-                PayloadRef = MapPayloadRef(rec, id),
+                PayloadRef = MapPayloadRef(rec, d, id),
                 MessageId = Str(d, "message_id"),
                 Phase = Str(d, "phase"),
                 MessageUid = Str(d, "message_uid"),
@@ -500,8 +500,8 @@ public sealed class RedLeafSessionReader
             throw new KeyNotFoundException("Transcript record has no payload");
         using (var data = JsonDocument.Parse(record.GetProperty("data").GetString()!))
         {
-            if (Str(data.RootElement, "event_type") != "tool_result")
-                throw new KeyNotFoundException("Transcript payload is not a tool result");
+            if (Str(data.RootElement, "event_type") is not ("tool_result" or "image"))
+                throw new KeyNotFoundException("Transcript payload is not downloadable output");
         }
 
         var request = new HttpRequestMessage(HttpMethod.Get,
@@ -599,14 +599,14 @@ public sealed class RedLeafSessionReader
     private static double? Dbl(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
 
-    private static TranscriptPayloadRef? MapPayloadRef(JsonElement record, long recordId)
+    private static TranscriptPayloadRef? MapPayloadRef(JsonElement record, JsonElement data, long recordId)
     {
         if (!record.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
             return null;
         return new TranscriptPayloadRef
         {
             RecordId = recordId,
-            Kind = "tool-output",
+            Kind = Str(data, "payload_kind") ?? "tool-output",
             Available = payload.TryGetProperty("available", out var available) && available.GetBoolean(),
             Length = payload.TryGetProperty("length", out var length) ? length.GetInt64() : 0,
             ContentType = Str(payload, "contentType") ?? "text/plain; charset=utf-8",

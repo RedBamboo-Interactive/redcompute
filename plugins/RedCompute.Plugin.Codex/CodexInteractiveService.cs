@@ -1076,6 +1076,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             MessageId = evt.MessageId,
             Phase = evt.Phase,
             MessageUid = evt.MessageUid,
+            AttachmentsJson = evt.Attachments is { Count: > 0 }
+                ? JsonSerializer.Serialize(evt.Attachments)
+                : null,
             Timestamp = DateTimeOffset.UtcNow,
         });
     }

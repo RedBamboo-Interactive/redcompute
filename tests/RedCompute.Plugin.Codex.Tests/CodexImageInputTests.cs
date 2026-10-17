@@ -12,6 +12,7 @@ public sealed class CodexImageInputTests
     {
         Assert.True(CodexProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.ImageAttachments));
         Assert.True(CodexProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.FileAttachments));
+        Assert.True(CodexProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.ImageOutputs));
     }
 
     [Fact]
@@ -80,6 +81,48 @@ public sealed class CodexImageInputTests
 
         Assert.False(support.Supported);
         Assert.Contains("gpt-text", support.Reason);
+    }
+
+    [Fact]
+    public void CompletedImageGenerationExtensionMapsToOneCanonicalImage()
+    {
+        using var payload = JsonDocument.Parse("""
+            {
+              "item": {
+                "type": "Extension",
+                "id": "exec-image-1",
+                "kind": "image_gen.generation",
+                "status": "completed",
+                "result": "iVBORw0KGgo=",
+                "savedPath": "C:\\Users\\laure\\.codex\\generated_images\\private.png",
+                "revisedPrompt": "A smoke-lilac portrait"
+              }
+            }
+            """);
+
+        var mapped = Assert.Single(CodexEventMapper.Map("item/completed", payload.RootElement));
+
+        Assert.Equal("image", mapped.Type);
+        Assert.Equal("exec-image-1", mapped.MessageId);
+        Assert.Equal("A smoke-lilac portrait", mapped.Content);
+        var image = Assert.Single(mapped.Attachments!);
+        Assert.Equal("image/png", image.MimeType);
+        Assert.Equal("iVBORw0KGgo=", image.Data);
+        Assert.DoesNotContain("savedPath", JsonSerializer.Serialize(mapped), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FailedImageGenerationExtensionMapsToAnErrorWithoutLocalPath()
+    {
+        using var payload = JsonDocument.Parse("""
+            {"item":{"type":"Extension","id":"exec-image-2","kind":"image_gen.generation","status":"failed","error":"generation failed","savedPath":"C:\\private.png"}}
+            """);
+
+        var mapped = Assert.Single(CodexEventMapper.Map("item/completed", payload.RootElement));
+
+        Assert.Equal("error", mapped.Type);
+        Assert.Equal("generation failed", mapped.Content);
+        Assert.DoesNotContain("private.png", JsonSerializer.Serialize(mapped));
     }
 
 }

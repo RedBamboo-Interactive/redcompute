@@ -131,6 +131,7 @@ public static class CodexEventMapper
             "dynamicToolCall" => DynamicToolCall(item, started, id),
             "subAgentActivity" => SubAgent(item, started, id),
             "collabAgentToolCall" => CollabAgent(item, started, id),
+            "Extension" or "extension" => Extension(item, started, id),
             "imageView" => started
                 ? Tool("Read", new { file_path = Str(item, "path") }, id)
                 : [],
@@ -283,6 +284,42 @@ public static class CodexEventMapper
                 effort = Str(item, "reasoningEffort"),
             }, id)
             : [];
+
+    private static List<CodexStreamEvent> Extension(JsonElement item, bool started, string? id)
+    {
+        if (!string.Equals(Str(item, "kind"), "image_gen.generation", StringComparison.Ordinal))
+            return [];
+        if (started) return [];
+
+        var result = Str(item, "result");
+        if (string.IsNullOrWhiteSpace(result))
+        {
+            var status = Str(item, "status");
+            var error = Str(item, "error");
+            if (status is "failed" or "declined" || !string.IsNullOrWhiteSpace(error))
+                return Single("error", error ?? $"Image generation {status}", partial: false, messageId: id);
+            return [];
+        }
+
+        return
+        [
+            new CodexStreamEvent
+            {
+                Type = "image",
+                Content = Str(item, "revisedPrompt"),
+                MessageId = id,
+                Attachments =
+                [
+                    new CodexAttachment
+                    {
+                        Type = "image",
+                        MimeType = "image/png",
+                        Data = result,
+                    },
+                ],
+            },
+        ];
+    }
 
     // ---- helpers ----------------------------------------------------------------------------
 

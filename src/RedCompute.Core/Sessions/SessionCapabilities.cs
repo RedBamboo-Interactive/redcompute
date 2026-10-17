@@ -13,4 +13,5 @@ public enum SessionCapabilities
     ImageAttachments = 1 << 7,
     Generate = 1 << 9,
     FileAttachments = 1 << 10,
+    ImageOutputs = 1 << 11,
 }
