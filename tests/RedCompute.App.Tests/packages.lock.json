@@ -499,6 +499,12 @@
           "RedCompute.PluginSdk": "[1.0.0, )"
         }
       },
+      "redcompute.plugin.openailive": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.PluginSdk": "[1.0.0, )"
+        }
+      },
       "redcompute.plugin.opencode": {
         "type": "Project",
         "dependencies": {
