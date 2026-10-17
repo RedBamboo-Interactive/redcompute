@@ -428,7 +428,7 @@ public sealed class SessionTranscriptPipeline
 
     internal static ImagePayload DecodeImage(IReadOnlyList<UnifiedAttachment>? attachments)
     {
-        var images = attachments?.Where(a => a.Type.Equals("image", StringComparison.OrdinalIgnoreCase)).ToList();
+        var images = attachments?.Where(a => string.Equals(a.Type, "image", StringComparison.OrdinalIgnoreCase)).ToList();
         if (images is not { Count: 1 })
             throw new InvalidDataException("An image event must contain exactly one image attachment");
 
@@ -460,7 +460,7 @@ public sealed class SessionTranscriptPipeline
     }
 
     internal static bool IsImageBase64LengthWithinLimit(long length) =>
-        length <= MaxImagePayloadBase64Chars;
+        length >= 0 && length <= MaxImagePayloadBase64Chars;
 
     private static string? DetectImageContentType(ReadOnlySpan<byte> bytes)
     {
