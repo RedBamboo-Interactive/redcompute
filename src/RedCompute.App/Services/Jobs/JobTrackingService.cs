@@ -693,9 +693,14 @@ public class JobTrackingService : IJobTracker
             if (current is null || IsTerminal(current.Status))
                 SignalTerminal(jobId);
 
-            var timeoutTask = Task.Delay(timeout, cancellationToken);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var timeoutTask = Task.Delay(timeout, timeoutCts.Token);
             var completed = await Task.WhenAny(waiter.Task, timeoutTask);
-            if (completed == waiter.Task) return true;
+            if (completed == waiter.Task)
+            {
+                timeoutCts.Cancel();
+                return true;
+            }
             cancellationToken.ThrowIfCancellationRequested();
             return GetJob(jobId) is { } latest && IsTerminal(latest.Status);
         }
