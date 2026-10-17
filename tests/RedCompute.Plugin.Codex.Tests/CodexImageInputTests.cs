@@ -112,6 +112,38 @@ public sealed class CodexImageInputTests
     }
 
     [Fact]
+    public void CompletedAppServerImageGenerationMapsToOneCanonicalImage()
+    {
+        // Codex app-server 0.159.2 v2 ThreadItem shape. Rollout JSONL uses the legacy
+        // Extension/image_gen.generation shell for the same logical item.
+        using var payload = JsonDocument.Parse("""
+            {
+              "item": {
+                "type": "imageGeneration",
+                "id": "exec-image-live-1",
+                "status": "completed",
+                "revisedPrompt": "A smoke-lilac validation card",
+                "result": "iVBORw0KGgo=",
+                "transparentBackground": false,
+                "failure": null,
+                "savedPath": "C:\\Users\\laure\\.codex\\generated_images\\private.png"
+              }
+            }
+            """);
+
+        var mapped = Assert.Single(CodexEventMapper.Map("item/completed", payload.RootElement));
+
+        Assert.Equal("image", mapped.Type);
+        Assert.Equal("exec-image-live-1", mapped.MessageId);
+        Assert.Equal("A smoke-lilac validation card", mapped.Content);
+        var image = Assert.Single(mapped.Attachments!);
+        Assert.Equal("image/png", image.MimeType);
+        Assert.Equal("iVBORw0KGgo=", image.Data);
+        Assert.DoesNotContain("savedPath", JsonSerializer.Serialize(mapped), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("private.png", JsonSerializer.Serialize(mapped));
+    }
+
+    [Fact]
     public void FailedImageGenerationExtensionMapsToAnErrorWithoutLocalPath()
     {
         using var payload = JsonDocument.Parse("""
@@ -122,6 +154,32 @@ public sealed class CodexImageInputTests
 
         Assert.Equal("error", mapped.Type);
         Assert.Equal("generation failed", mapped.Content);
+        Assert.DoesNotContain("private.png", JsonSerializer.Serialize(mapped));
+    }
+
+    [Fact]
+    public void FailedAppServerImageGenerationMapsToSanitizedError()
+    {
+        using var payload = JsonDocument.Parse("""
+            {
+              "item": {
+                "type": "imageGeneration",
+                "id": "exec-image-live-2",
+                "status": "failed",
+                "revisedPrompt": null,
+                "result": "",
+                "failure": {"type":"usageLimitExceeded","limitId":"private-limit","resetsAt":null},
+                "savedPath": "C:\\private.png"
+              }
+            }
+            """);
+
+        var mapped = Assert.Single(CodexEventMapper.Map("item/completed", payload.RootElement));
+
+        Assert.Equal("error", mapped.Type);
+        Assert.Equal("exec-image-live-2", mapped.MessageId);
+        Assert.Equal("Image generation failed: usageLimitExceeded", mapped.Content);
+        Assert.DoesNotContain("private-limit", JsonSerializer.Serialize(mapped));
         Assert.DoesNotContain("private.png", JsonSerializer.Serialize(mapped));
     }
 

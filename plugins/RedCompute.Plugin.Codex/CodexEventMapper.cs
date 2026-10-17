@@ -131,6 +131,9 @@ public static class CodexEventMapper
             "dynamicToolCall" => DynamicToolCall(item, started, id),
             "subAgentActivity" => SubAgent(item, started, id),
             "collabAgentToolCall" => CollabAgent(item, started, id),
+            // The v2 app-server protocol exposes this as imageGeneration, while rollout JSONL
+            // persists the same item under the legacy Extension/image_gen.generation shell.
+            "imageGeneration" => ImageGeneration(item, started, id),
             "Extension" or "extension" => Extension(item, started, id),
             "imageView" => started
                 ? Tool("Read", new { file_path = Str(item, "path") }, id)
@@ -289,6 +292,11 @@ public static class CodexEventMapper
     {
         if (!string.Equals(Str(item, "kind"), "image_gen.generation", StringComparison.Ordinal))
             return [];
+        return ImageGeneration(item, started, id);
+    }
+
+    private static List<CodexStreamEvent> ImageGeneration(JsonElement item, bool started, string? id)
+    {
         if (started) return [];
 
         var result = Str(item, "result");
@@ -296,8 +304,20 @@ public static class CodexEventMapper
         {
             var status = Str(item, "status");
             var error = Str(item, "error");
-            if (status is "failed" or "declined" || !string.IsNullOrWhiteSpace(error))
-                return Single("error", error ?? $"Image generation {status}", partial: false, messageId: id);
+            var failure = item.TryGetProperty("failure", out var failureElement)
+                && failureElement.ValueKind == JsonValueKind.Object
+                    ? Str(failureElement, "type")
+                    : null;
+            if (status is "failed" or "declined"
+                || !string.IsNullOrWhiteSpace(error)
+                || !string.IsNullOrWhiteSpace(failure))
+                return Single(
+                    "error",
+                    error ?? (failure is { Length: > 0 }
+                        ? $"Image generation failed: {failure}"
+                        : $"Image generation {status}"),
+                    partial: false,
+                    messageId: id);
             return [];
         }
 
