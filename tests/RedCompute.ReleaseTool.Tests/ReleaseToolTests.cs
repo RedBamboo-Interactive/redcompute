@@ -200,6 +200,12 @@ public sealed class ReleaseToolTests
         Assert.Equal(exactCommit, input.GetProperty("commit").GetString());
         Assert.Equal("redcompute-win-x64-{artifactSha256}.zip", input.GetProperty("centralArtifactFileNameTemplate").GetString());
 
+        using var dependenciesDocument = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            root, "release", "redcompute-source-dependencies.v1.json")));
+        var appHost = Assert.Single(dependenciesDocument.RootElement.GetProperty("dependencies").EnumerateArray());
+        Assert.Equal("redbamboo-apphost", appHost.GetProperty("id").GetString());
+        Assert.Equal("5c238b3dff413a5448285ba4aa65e66a4dce634a", appHost.GetProperty("commit").GetString());
+
         var schemaPath = Path.Combine(root, "schemas", "redleaf-release-tool-input.v1.schema.json");
         using var schemaDocument = JsonDocument.Parse(File.ReadAllText(schemaPath));
         var schema = schemaDocument.RootElement;
