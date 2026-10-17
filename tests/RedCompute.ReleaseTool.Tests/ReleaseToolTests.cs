@@ -96,8 +96,9 @@ public sealed class ReleaseToolTests
         var root = RepositoryRoot();
         var graph = ComponentJson.Deserialize<ProviderGraphFile>(File.ReadAllText(
             Path.Combine(root, "release", "redcompute-provider-graph.v1.json")));
-        Assert.Equal(11, graph.Providers.Count);
+        Assert.Equal(12, graph.Providers.Count);
         Assert.Contains(graph.Providers, x => x.Id == "opencode" && x.RuntimeIdentity == "opencode" && x.IdentitySource == "providerId");
+        Assert.Contains(graph.Providers, x => x.Id == "openailive" && x.RuntimeIdentity == "OpenAILive" && x.IdentitySource == "providerType");
         Assert.All(graph.Providers, x => Assert.NotEmpty(x.RuntimeDependencies));
         Assert.Equal(["managedByRedCompute", "systemPrerequisite", "userExternalService"], graph.Providers.SelectMany(x => x.RuntimeDependencies).Select(x => x.Management).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
         Assert.Contains(graph.Providers.SelectMany(x => x.RuntimeDependencies), x => x.VersionConstraint.StartsWith("unresolved", StringComparison.Ordinal));

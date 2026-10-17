@@ -226,6 +226,24 @@
       ]
     },
     {
+      "id": "openailive",
+      "identitySource": "providerType",
+      "runtimeIdentity": "OpenAILive",
+      "assembly": "RedCompute.Plugin.OpenAILive.dll",
+      "project": "plugins/RedCompute.Plugin.OpenAILive/RedCompute.Plugin.OpenAILive.csproj",
+      "dependencies": [],
+      "runtimeDependencies": [
+        {
+          "id": "openai-live-api",
+          "management": "userExternalService",
+          "requirement": "required",
+          "versionConstraint": "v1 live sessions API; service version otherwise unresolved",
+          "interface": "OpenAI HTTPS and WebSocket live sessions API",
+          "sourceMarkers": ["https://api.openai.com", "wss://api.openai.com/v1/live/sessions/"]
+        }
+      ]
+    },
+    {
       "id": "sttlocal",
       "identitySource": "providerType",
       "runtimeIdentity": "SttLocal",
