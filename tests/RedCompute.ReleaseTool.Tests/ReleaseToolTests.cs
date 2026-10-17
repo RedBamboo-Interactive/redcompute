@@ -260,6 +260,9 @@ public sealed class ReleaseToolTests
         Assert.DoesNotContain("release_tag", workflow, StringComparison.Ordinal);
 
         Assert.Contains("needs: build", workflow, StringComparison.Ordinal);
+        Assert.Equal(1, Regex.Matches(workflow, "runs-on: windows-2025").Count);
+        Assert.Equal(1, Regex.Matches(workflow, "runs-on: ubuntu-24\\.04").Count);
+        Assert.Equal(2, Regex.Matches(workflow, "enableCrossOsArchive: true").Count);
         Assert.Contains("group: redcompute-unsigned-candidate-bridge", workflow, StringComparison.Ordinal);
         Assert.Contains("actions: read", workflow, StringComparison.Ordinal);
         Assert.Contains("contents: write", workflow, StringComparison.Ordinal);
