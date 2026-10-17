@@ -12,4 +12,10 @@ public class JobRequest
     public JobProvenance? Provenance { get; init; }
     public DateTimeOffset? QueuedAt { get; init; }
     public DateTimeOffset? InvocationStartedAt { get; init; }
+
+    /// <summary>
+    /// Invocation-owned provider progress sink. Providers must use this callback instead
+    /// of storing mutable request state on their shared provider instance.
+    /// </summary>
+    public Action<double>? ProgressCallback { get; init; }
 }

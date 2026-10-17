@@ -46,7 +46,6 @@ public sealed class SunoProvider : IPluginProvider
     public string Name => "Suno";
     public string CapabilitySlug => _capabilitySlug;
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(30);
-    public Action<double>? ProgressCallback { get; set; }
     public List<SunoClipResult>? LastClipResults { get; private set; }
     public string DisplayName => "Suno API";
     public string ProviderType => "Suno";
@@ -114,8 +113,6 @@ public sealed class SunoProvider : IPluginProvider
         // Deliberately never put the API credential on the download client. Audio and
         // cover URLs are often served by a different CDN origin.
     }
-
-    public void SetProgressCallback(Action<double>? callback) => ProgressCallback = callback;
 
     public Task<bool> StartAsync(CancellationToken ct = default)
     {
@@ -223,14 +220,14 @@ public sealed class SunoProvider : IPluginProvider
                 taskId = await SubmitAsync(operation, request.Parameters, ct);
                 _log($"[Suno] Submitted {operation} task {taskId}");
             }
-            ProgressCallback?.Invoke(0.08);
-            taskData = await PollUntilDoneAsync(sourceOperation, taskId, ct);
+            request.ProgressCallback?.Invoke(0.08);
+            taskData = await PollUntilDoneAsync(sourceOperation, taskId, request.ProgressCallback, ct);
             reportedConsumed = FindNamedInt(taskData.Value,
                 "creditsConsumed", "creditConsumed", "consumedCredits", "credits_used");
             reportedRemaining = FindNamedInt(taskData.Value,
                 "creditsRemaining", "remainingCredits", "remaining_credits", "balance");
             creditsAfter = reportedRemaining ?? await TryGetCreditsAsync(ct);
-            ProgressCallback?.Invoke(0.75);
+            request.ProgressCallback?.Invoke(0.75);
             var prepared = await PrepareOutputsAsync(sourceOperation, taskId, taskData.Value, ct);
             var consumed = reportedConsumed ?? (!recovering && creditsBefore.HasValue && creditsAfter.HasValue
                 ? Math.Max(0, creditsBefore.Value - creditsAfter.Value)
@@ -239,7 +236,7 @@ public sealed class SunoProvider : IPluginProvider
                 ? "provider_task"
                 : consumed.HasValue ? "balance_delta" : "unavailable";
 
-            ProgressCallback?.Invoke(1);
+            request.ProgressCallback?.Invoke(1);
             return BuildJobResult(sourceOperation, taskId, prepared, creditsBefore, creditsAfter, consumed, measurement, recovering);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -322,7 +319,8 @@ public sealed class SunoProvider : IPluginProvider
             : throw new InvalidDataException("Suno submit response is missing taskId");
     }
 
-    private async Task<JsonElement> PollUntilDoneAsync(string operation, string taskId, CancellationToken ct)
+    private async Task<JsonElement> PollUntilDoneAsync(
+        string operation, string taskId, Action<double>? progressCallback, CancellationToken ct)
     {
         var path = operation switch
         {
@@ -357,7 +355,7 @@ public sealed class SunoProvider : IPluginProvider
                         if (!seenIntermediate && status is "TEXT_SUCCESS" or "FIRST_SUCCESS")
                         {
                             seenIntermediate = true;
-                            ProgressCallback?.Invoke(status == "TEXT_SUCCESS" ? 0.30 : 0.55);
+                            progressCallback?.Invoke(status == "TEXT_SUCCESS" ? 0.30 : 0.55);
                         }
                     }
                 }

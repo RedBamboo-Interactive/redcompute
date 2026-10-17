@@ -37,7 +37,7 @@ public class RedComputeDbContext : DbContext
         using var cmd = conn.CreateCommand();
         foreach (var col in new[]
         {
-            ("Progress", "REAL"), ("ResultJson", "TEXT"), ("Name", "TEXT"),
+            ("Progress", "REAL"), ("ProviderStartedAt", "TEXT"), ("ResultJson", "TEXT"), ("Name", "TEXT"),
             ("Rationale", "TEXT"), ("CostUsd", "REAL"), ("CallerInfo", "TEXT"),
             ("IdempotencyKey", "TEXT"), ("IdempotencyScope", "TEXT"),
             ("IdempotencyFingerprint", "TEXT"), ("CreationProvenanceJson", "TEXT"),
@@ -131,6 +131,9 @@ public class RedComputeDbContext : DbContext
                 v => v.HasValue ? v.Value.ToString("O") : null,
                 v => v != null ? DateTimeOffset.Parse(v) : null);
             entity.Property(j => j.CompletedAt).HasConversion(
+                v => v.HasValue ? v.Value.ToString("O") : null,
+                v => v != null ? DateTimeOffset.Parse(v) : null);
+            entity.Property(j => j.ProviderStartedAt).HasConversion(
                 v => v.HasValue ? v.Value.ToString("O") : null,
                 v => v != null ? DateTimeOffset.Parse(v) : null);
             entity.HasIndex(j => j.CapabilitySlug);

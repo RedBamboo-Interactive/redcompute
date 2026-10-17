@@ -44,7 +44,6 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     public bool SupportsProgress => true;
     public bool SupportsRerun => true;
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(10);
-    public Action<double>? ProgressCallback { get; set; }
 
     private string BaseUrl => $"http://{_host}:{_port}";
 
@@ -89,11 +88,6 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                 "comfyui",
                 $"comfyui:{BaseUrl}",
                 ReleaseCachedModelsAsync));
-    }
-
-    public void SetProgressCallback(Action<double>? callback)
-    {
-        ProgressCallback = callback;
     }
 
     public void MapCustomEndpoints(WebApplication app) { }
@@ -222,7 +216,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
     public async Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default)
     {
-        var progressCallback = ProgressCallback;
+        var progressCallback = request.ProgressCallback;
         var p = request.Parameters;
         var inlineJson = ProviderHelpers.GetParam<string>(p, "workflow_json");
         var prompt = ProviderHelpers.GetParam<string>(p, "prompt");

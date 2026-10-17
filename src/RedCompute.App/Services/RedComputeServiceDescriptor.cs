@@ -1,5 +1,6 @@
 using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Logging;
+using RedCompute.App.Api.Endpoints;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
@@ -124,7 +125,10 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
             {
                 endpoints.Add(new EndpointDescriptor(
                     "GET", $"/{slug}/jobs/{{id}}/progress",
-                    "Get real-time progress of a job"));
+                    "Get progress and terminal state. Response adds terminal, stage, parsed-object result, service-relative outputs, and links.",
+                    [new ParameterDescriptor("waitSeconds", "integer", false,
+                        "Server-side terminal long-poll, clamped to 0..60; non-numeric values return 400.", 0)],
+                    Response: JobApiResponse.ProgressSchema));
             }
 
             if (schemaPlugin?.ContractVersion is not null)

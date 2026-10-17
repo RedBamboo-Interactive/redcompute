@@ -116,6 +116,42 @@ internal static partial class JobArtifactStore
         return null;
     }
 
+    public static IReadOnlyList<JobArtifactLocation> ListAvailable(
+        Guid jobId,
+        string outputDirectory,
+        string? primaryPath,
+        string? primaryContentType)
+    {
+        var available = new List<JobArtifactLocation>();
+        var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var manifestPath = ManifestPath(outputDirectory, jobId);
+        if (File.Exists(manifestPath))
+        {
+            try
+            {
+                var manifest = JsonSerializer.Deserialize<ArtifactManifest>(File.ReadAllText(manifestPath));
+                foreach (var entry in manifest?.Artifacts ?? [])
+                {
+                    var path = ResolveStoredPath(outputDirectory, entry.StoredFile);
+                    if (!File.Exists(path) || !seenFiles.Add(entry.StoredFile)) continue;
+                    available.Add(new JobArtifactLocation(entry.Name, path, entry.ContentType,
+                        SafeFileName(entry.FileName)));
+                }
+                if (available.Count > 0) return available;
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException)
+            {
+                // A response projection must not expose or amplify a broken sidecar. The
+                // compatibility primary below remains available when the durable file exists.
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(primaryPath) && File.Exists(primaryPath))
+            available.Add(new JobArtifactLocation("primary", primaryPath,
+                primaryContentType ?? ContentTypeFor(primaryPath), Path.GetFileName(primaryPath)));
+        return available;
+    }
+
     private static ArtifactEntry Entry(string name, string path, string? contentType, string? fileName)
         => new(name, Path.GetFileName(path), contentType ?? ContentTypeFor(path), SafeFileName(fileName));
 

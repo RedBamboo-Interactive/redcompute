@@ -140,46 +140,26 @@ public static class GlobalEndpoints
             .WithParam("limit", "integer", description: "Max jobs to return", defaultValue: 50, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
-        endpoints.MapGet("/jobs/{id:guid}", "Get job details", (Guid id, HttpContext ctx) =>
+        var jobDetailEndpoint = endpoints.MapGet("/jobs/{id:guid}",
+            "Get job details with terminal, stage, parsed result, service-relative outputs, and navigational links. stage values: admitted, waiting, executing, completed, failed, cancelled, skipped, timed_out.",
+            async (Guid id, HttpContext ctx) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
             if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
+            if (!JobLongPoll.TryParse(ctx, out var waitSeconds, out var waitError)) return waitError!;
 
-            return Results.Ok(new
-            {
-                job.Id,
-                capability = job.CapabilitySlug,
-                job.ProviderName,
-                status = job.Status.ToString(),
-                job.QueuedAt,
-                job.StartedAt,
-                job.CompletedAt,
-                durationMs = job.DurationMs,
-                job.Progress,
-                input = job.InputJson,
-                job.OutputLocation,
-                job.OutputSizeBytes,
-                job.OutputContentType,
-                resultJson = job.ResultJson,
-                job.ErrorMessage,
-                job.ErrorDetails,
-                job.Name,
-                job.Rationale,
-                job.CostUsd,
-                job.UserId,
-                job.Confidential,
-                job.UserName,
-                job.UserAvatarUrl,
-                job.ExternalExecution,
-                job.ParentJobId,
-                job.AttemptCount,
-                job.LeaseOwner,
-                job.LeaseExpiresAt,
-                creationProvenance = job.CreationProvenance,
-                auditComplete = JobTrackingService.IsAuditComplete(job.CreationProvenance)
-            });
+            if (!JobTrackingService.IsTerminal(job.Status))
+                await JobLongPoll.WaitAsync(jobTracker, id, waitSeconds, ctx.RequestAborted);
+
+            job = jobTracker.GetJob(id);
+            if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+            if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
+            return Results.Ok(JobApiResponse.Details(job));
         });
+        jobDetailEndpoint
+            .WithParam("waitSeconds", "integer", description: "Server-side terminal long-poll duration. Returns immediately when terminal; otherwise waits until terminal or timeout. Clamped to 0..60; non-numeric values return 400.", defaultValue: 0, location: ParamLocation.Query)
+            .WithResponse(JobApiResponse.DetailSchema);
 
         endpoints.MapGet("/jobs/{id:guid}/lifecycle-events", "Get the immutable invocation and lifecycle audit timeline", (Guid id, HttpContext ctx) =>
         {

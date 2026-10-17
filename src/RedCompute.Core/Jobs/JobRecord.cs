@@ -20,6 +20,7 @@ public class JobRecord
     public string? OutputContentType { get; set; }
 
     public double? Progress { get; set; }
+    public DateTimeOffset? ProviderStartedAt { get; set; }
     public string? ResultJson { get; set; }
 
     public string? ErrorMessage { get; set; }

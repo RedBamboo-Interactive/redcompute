@@ -17,9 +17,7 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class GenericCapabilityEndpoints
 {
-    private static readonly string OutputDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RedCompute", "outputs");
+    private static readonly string OutputDir = JobApiResponse.OutputDirectory;
 
     private static HardwareMonitorService? _hardwareMonitor;
     private static RedComputeConfig? _config;
@@ -134,10 +132,6 @@ public static class GenericCapabilityEndpoints
                     ?? body.GetValueOrDefault("text")?.ToString() ?? "";
                 log($"[{slug}] Job {job.Id} started: \"{Truncate(firstParam, 60)}\"", job.Id);
 
-                // Set up progress tracking
-                if (provider is IPluginProvider pp && pp.SupportsProgress)
-                    pp.SetProgressCallback(frac => jobTracker.UpdateProgress(job.Id, frac));
-
                 var isAsync = IsAsyncRequested(ctx);
 
                 // Check if this is a proxy provider
@@ -193,16 +187,8 @@ public static class GenericCapabilityEndpoints
                     }
                 }
 
-                var request = new JobRequest
-                {
-                    JobId = job.Id,
-                    QueuedAt = job.QueuedAt,
-                    InvocationStartedAt = jobTracker.GetJob(job.Id)?.StartedAt,
-                    CapabilitySlug = slug,
-                    Parameters = body,
-                    IdempotencyKey = idempotencyKey,
-                    Provenance = provenance,
-                };
+                var request = CreateProviderRequest(
+                    job, slug, body, idempotencyKey, provenance, provider, jobTracker);
 
                 if (isAsync)
                 {
@@ -304,23 +290,28 @@ public static class GenericCapabilityEndpoints
                     .WithResponse(structured.ResponseSchema);
             }
             // GET /{slug}/jobs/{id}/progress
-            endpoints.MapGet($"/{slug}/jobs/{{id:guid}}/progress",
-                $"Real-time progress and status of a {slug} job", (Guid id) =>
+            var progressEndpoint = endpoints.MapGet($"/{slug}/jobs/{{id:guid}}/progress",
+                $"Progress for a {slug} job. Additive response fields: terminal; stage (admitted, waiting, executing, completed, failed, cancelled, skipped, timed_out); parsed-object result; service-relative outputs; and links.", async (Guid id, HttpContext ctx) =>
             {
                 var job = jobTracker.GetJob(id);
                 if (job == null)
                     return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+                if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
+                if (!JobLongPoll.TryParse(ctx, out var waitSeconds, out var waitError)) return waitError!;
 
-                return Results.Ok(new
-                {
-                    job.Id,
-                    status = job.Status.ToString(),
-                    job.Progress,
-                    job.ErrorMessage,
-                    durationMs = job.DurationMs,
-                    resultJson = job.ResultJson
-                });
+                if (!JobTrackingService.IsTerminal(job.Status))
+                    await JobLongPoll.WaitAsync(jobTracker, id, waitSeconds, ctx.RequestAborted);
+
+                job = jobTracker.GetJob(id);
+                if (job == null)
+                    return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
+                if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
+
+                return Results.Ok(JobApiResponse.Progress(job));
             });
+            progressEndpoint
+                .WithParam("waitSeconds", "integer", description: "Server-side terminal long-poll duration. Returns immediately when terminal; otherwise waits until terminal or timeout. Clamped to 0..60; non-numeric values return 400.", defaultValue: 0, location: ParamLocation.Query)
+                .WithResponse(JobApiResponse.ProgressSchema);
 
             // GET /{slug}/jobs/{id}/output
             endpoints.MapGet($"/{slug}/jobs/{{id:guid}}/output",
@@ -785,6 +776,27 @@ public static class GenericCapabilityEndpoints
         return string.Equals(ctx.Request.Headers["X-Async"].FirstOrDefault(),
             "true", StringComparison.OrdinalIgnoreCase);
     }
+
+    internal static JobRequest CreateProviderRequest(
+        JobRecord job,
+        string capabilitySlug,
+        Dictionary<string, object?> parameters,
+        string? idempotencyKey,
+        JobProvenance provenance,
+        IBackendProvider provider,
+        JobTrackingService jobTracker) => new()
+    {
+        JobId = job.Id,
+        QueuedAt = job.QueuedAt,
+        InvocationStartedAt = jobTracker.GetJob(job.Id)?.StartedAt,
+        CapabilitySlug = capabilitySlug,
+        Parameters = parameters,
+        IdempotencyKey = idempotencyKey,
+        Provenance = provenance,
+        ProgressCallback = provider is IPluginProvider { SupportsProgress: true }
+            ? frac => jobTracker.UpdateProgress(job.Id, frac)
+            : null,
+    };
     private static IResult Error(int statusCode, string error, string message) =>
         Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: statusCode);
 

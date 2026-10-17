@@ -15,6 +15,8 @@ public class JobTrackingService : IJobTracker
     private static readonly JsonSerializerOptions JsonOptions = JobProvenance.JsonOptions;
     private static readonly TimeSpan FutureTimestampTolerance = TimeSpan.FromMinutes(5);
     private readonly object _lock = new();
+    private readonly object _terminalWaitersLock = new();
+    private readonly Dictionary<Guid, HashSet<TaskCompletionSource<bool>>> _terminalWaiters = new();
     private readonly Func<RedComputeDbContext> _dbFactory;
     private readonly Func<DateTimeOffset> _clock;
 
@@ -334,6 +336,7 @@ public class JobTrackingService : IJobTracker
             job.StartedAt = DateTimeOffset.UtcNow;
             job.CompletedAt = null;
             job.Progress = 0;
+            job.ProviderStartedAt = null;
             job.ErrorMessage = null;
             job.ErrorDetails = null;
         }, kind, provenance);
@@ -458,6 +461,7 @@ public class JobTrackingService : IJobTracker
             job.StartedAt ??= now;
             job.CompletedAt = null;
             job.Progress ??= 0;
+            job.ProviderStartedAt = null;
             job.ErrorMessage = null;
             job.ErrorDetails = null;
             job.LeaseOwner = workerId.Trim();
@@ -655,10 +659,65 @@ public class JobTrackingService : IJobTracker
             var job = db.Jobs.Find(jobId);
             if (job == null) return;
             job.Progress = Math.Clamp(progress, 0.0, 1.0);
+            job.ProviderStartedAt ??= _clock();
             db.SaveChanges();
             updated = job;
         }
         JobUpdated?.Invoke(updated);
+    }
+
+    /// <summary>
+    /// Wait for a job to become terminal without polling the database. Each caller owns
+    /// one removable waiter, so timeouts and request cancellation cannot leak registrations.
+    /// </summary>
+    public async Task<bool> WaitForTerminalAsync(
+        Guid jobId, TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        var current = GetJob(jobId);
+        if (current is null || IsTerminal(current.Status)) return current is not null;
+        if (timeout <= TimeSpan.Zero) return false;
+
+        var waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_terminalWaitersLock)
+        {
+            if (!_terminalWaiters.TryGetValue(jobId, out var waiters))
+                _terminalWaiters[jobId] = waiters = [];
+            waiters.Add(waiter);
+        }
+
+        try
+        {
+            // Close the registration/read race: a transition between the first read and
+            // registration is observed here and releases every registered waiter.
+            current = GetJob(jobId);
+            if (current is null || IsTerminal(current.Status))
+                SignalTerminal(jobId);
+
+            var timeoutTask = Task.Delay(timeout, cancellationToken);
+            var completed = await Task.WhenAny(waiter.Task, timeoutTask);
+            if (completed == waiter.Task) return true;
+            cancellationToken.ThrowIfCancellationRequested();
+            return GetJob(jobId) is { } latest && IsTerminal(latest.Status);
+        }
+        finally
+        {
+            lock (_terminalWaitersLock)
+            {
+                if (_terminalWaiters.TryGetValue(jobId, out var waiters))
+                {
+                    waiters.Remove(waiter);
+                    if (waiters.Count == 0) _terminalWaiters.Remove(jobId);
+                }
+            }
+        }
+    }
+
+    internal int ActiveTerminalWaiterCount
+    {
+        get
+        {
+            lock (_terminalWaitersLock) return _terminalWaiters.Values.Sum(waiters => waiters.Count);
+        }
     }
 
     public void UpdateName(Guid jobId, string name)
@@ -698,6 +757,7 @@ public class JobTrackingService : IJobTracker
         {
             JobUpdated?.Invoke(job);
             JobEventAppended?.Invoke(evt);
+            SignalTerminal(job.Id);
         }
         return changed.Count;
     }
@@ -956,6 +1016,7 @@ public class JobTrackingService : IJobTracker
         }
         JobUpdated?.Invoke(updated);
         JobEventAppended?.Invoke(evt!);
+        SignalTerminal(jobId);
     }
 
     private JobRecord RequireExternalLease(
@@ -1024,7 +1085,19 @@ public class JobTrackingService : IJobTracker
         }
         JobUpdated?.Invoke(updated);
         JobEventAppended?.Invoke(evt!);
+        if (updated is not null && IsTerminal(updated.Status)) SignalTerminal(jobId);
         return true;
+    }
+
+    private void SignalTerminal(Guid jobId)
+    {
+        TaskCompletionSource<bool>[] waiters;
+        lock (_terminalWaitersLock)
+        {
+            if (!_terminalWaiters.Remove(jobId, out var registered)) return;
+            waiters = registered.ToArray();
+        }
+        foreach (var waiter in waiters) waiter.TrySetResult(true);
     }
 
     private void MutateProjection(Guid jobId, Action<JobRecord> apply)
