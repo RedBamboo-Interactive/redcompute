@@ -35,6 +35,11 @@ public class ClaudeSessionService
     /// </summary>
     internal Func<ProcessStartInfo, Process?> LaunchSessionProcess { get; set; } = Process.Start;
 
+    // Claude Code 2.1.300 rejects a bare `{}` ("mcpServers: expected record"). `--bare` is not used:
+    // it also skips OAuth/keychain credentials, which breaks subscription-authenticated providers.
+    // `--tools ""` alone removes built-ins; the init-event check below enforces it at runtime.
+    internal const string EmptyMcpConfig = "{\"mcpServers\":{}}";
+
     /// <summary>Test seam for the short-lived, tool-free completion process.</summary>
     internal Func<ProcessStartInfo, Process?> LaunchOneshotProcess { get; set; } = Process.Start;
 
@@ -454,12 +459,11 @@ public class ClaudeSessionService
             // `--allowedTools` controls permission prompts, not tool availability. An explicit
             // empty `tools` grant must remove every built-in and prevent ambient plugins/MCP from
             // repopulating the tool surface for narrow reviewer jobs.
-            args.Add("--bare");
             args.Add("--tools");
             args.Add(string.Join(',', tools));
             args.Add("--strict-mcp-config");
             args.Add("--mcp-config");
-            args.Add("{}");
+            args.Add(EmptyMcpConfig);
         }
         // Opus 4.7+ and Fable 5 default thinking.display to "omitted", so thinking blocks
         // stream with an empty body (signature only). Request "summarized" to restore the
@@ -694,12 +698,11 @@ public class ClaudeSessionService
         // Tool-free by construction. --allowedTools only changes permission prompts; it does not
         // remove built-ins. These flags also prevent user settings, plugins, and MCP servers from
         // repopulating the surface.
-        startInfo.ArgumentList.Add("--bare");
         startInfo.ArgumentList.Add("--tools");
         startInfo.ArgumentList.Add("");
         startInfo.ArgumentList.Add("--strict-mcp-config");
         startInfo.ArgumentList.Add("--mcp-config");
-        startInfo.ArgumentList.Add("{}");
+        startInfo.ArgumentList.Add(EmptyMcpConfig);
         // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
         startInfo.ArgumentList.Add("--thinking-display");
         startInfo.ArgumentList.Add("summarized");

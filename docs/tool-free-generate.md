@@ -16,7 +16,7 @@ Existing requests remain compatible when the field is absent or false.
 Claude Code asserts `ToolFreeGenerate`. Generate launches with:
 
 ```text
---bare --tools "" --strict-mcp-config --mcp-config {}
+--tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}'
 ```
 
 It runs in a unique empty temporary working directory, deletes that directory after completion, and
@@ -62,3 +62,11 @@ The script refuses non-loopback origins, never prints the bearer, creates a uniq
 shell-read, and URL-fetch probes for every configured `Generate` provider, and prints the reported
 init tools with a pass/fail table. A pass requires the capability claim, an empty init tool list, no
 tool event, and no canary disclosure.
+
+## 2026-10-17 correction after live acceptance
+
+The first deployed version passed `--bare` and `--mcp-config {}`. Against Claude Code 2.1.300, `{}` is rejected
+("mcpServers: expected record") and `--bare` skips OAuth/keychain login ("Not logged in"), so every tool-free call
+failed closed with HTTP 502. The current flags omit `--bare` and pass `{"mcpServers":{}}`. A direct CLI check
+reported an empty init `tools` array and no executed tool use for an absolute-path read request. The init-event
+assertion remains the runtime guarantee.

@@ -95,7 +95,7 @@ function Invoke-RedComputeJson {
 
 $results = [Collections.Generic.List[object]]::new()
 try {
-    New-Item -ItemType Directory -LiteralPath $probeRoot | Out-Null
+    New-Item -ItemType Directory -Path $probeRoot | Out-Null
     Set-Content -LiteralPath $canaryPath -Value $canary -NoNewline
 
     $configured = Invoke-RedComputeJson GET '/ai-session/providers/configured'

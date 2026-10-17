@@ -36,9 +36,9 @@ public sealed class ClaudeToolAvailabilityTests
             tools: [], allowedTools: [], addDirs: []);
 
         Assert.Equal("", ValueAfter(args, "--tools"));
-        Assert.Contains("--bare", args);
+        Assert.DoesNotContain("--bare", args);
         Assert.Contains("--strict-mcp-config", args);
-        Assert.Equal("{}", ValueAfter(args, "--mcp-config"));
+        Assert.Equal("{\"mcpServers\":{}}", ValueAfter(args, "--mcp-config"));
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class ClaudeToolAvailabilityTests
             "--output-format", "stream-json",
             "--model", "claude-test",
             "--no-session-persistence",
-            "--bare", "--tools", "", "--strict-mcp-config", "--mcp-config", "{}",
+            "--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
             "--thinking-display", "summarized",
             "--system-prompt", "system-test",
             "--effort", "low",
