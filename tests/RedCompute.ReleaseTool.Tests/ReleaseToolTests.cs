@@ -196,7 +196,7 @@ public sealed class ReleaseToolTests
         Assert.True(input.EnumerateObject().Count() == 4);
         Assert.Equal(1, input.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("https://github.com/RedBamboo-Interactive/redleaf", input.GetProperty("repositoryUrl").GetString());
-        const string exactCommit = "3d14703d3f98f7c2c99b4bc7ada319eb4fe058c7";
+        const string exactCommit = "4604a11ea2cb299a45fb0da8aa86dd0726164d50";
         Assert.Equal(exactCommit, input.GetProperty("commit").GetString());
         Assert.Equal("redcompute-win-x64-{artifactSha256}.zip", input.GetProperty("centralArtifactFileNameTemplate").GetString());
 
