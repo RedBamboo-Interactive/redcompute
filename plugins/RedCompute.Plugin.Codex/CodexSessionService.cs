@@ -23,6 +23,9 @@ public class CodexSessionService
 
     public void EmitStreamEvent(string key, CodexStreamEvent evt) => StreamEvent?.Invoke(key, evt);
 
+    /// <summary>Test seam for non-interactive exec invocations.</summary>
+    internal Func<ProcessStartInfo, Process?> LaunchExecProcess { get; set; } = Process.Start;
+
     public CodexSessionService(CodexConfig config, IJobTracker jobTracker, ICodexSessionStore store, Action<string, Guid?> log)
     {
         _config = config;
@@ -103,6 +106,19 @@ public class CodexSessionService
         return last!;
     }
 
+    /// <summary>
+    /// Runs the existing Codex generate behavior from a fresh empty directory. Codex exec does not
+    /// expose an assertable empty tool surface, so this is isolation hardening, not a claim of the
+    /// ToolFreeGenerate capability.
+    /// </summary>
+    public async Task<ExecuteResult> ExecuteGenerateAsync(
+        string prompt, string? model, int timeout, CancellationToken ct, string? effort = null)
+    {
+        using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
+        return await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
+            timeout, ct, effort: effort);
+    }
+
     private static bool IsTransientWorkspaceLock(ExecuteResult result)
     {
         var detail = string.Join('\n', result.Error, result.Text, result.StreamOutput);
@@ -157,7 +173,7 @@ public class CodexSessionService
         BuildExecArgs(startInfo, model, sandbox, networkAccess, effort);
 
         var sw = Stopwatch.StartNew();
-        using var process = Process.Start(startInfo);
+        using var process = LaunchExecProcess(startInfo);
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start codex process");
         if (streamKey != null)

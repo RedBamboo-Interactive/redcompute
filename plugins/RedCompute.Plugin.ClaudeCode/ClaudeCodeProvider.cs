@@ -34,12 +34,13 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     // ISessionProvider
     public string ProviderId => "claude-code";
     public string ProviderDisplayName => "Claude Code";
-    public SessionCapabilities Capabilities =>
+    internal const SessionCapabilities DeclaredCapabilities =
         SessionCapabilities.StatelessExecution | SessionCapabilities.PersistentSessions |
         SessionCapabilities.Resume | SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
         SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
-        SessionCapabilities.Generate;
+        SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate;
+    public SessionCapabilities Capabilities => DeclaredCapabilities;
 
     public string? LastStartError => _claude.LastStartError;
 

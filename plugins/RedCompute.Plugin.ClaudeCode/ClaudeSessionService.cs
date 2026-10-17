@@ -35,6 +35,9 @@ public class ClaudeSessionService
     /// </summary>
     internal Func<ProcessStartInfo, Process?> LaunchSessionProcess { get; set; } = Process.Start;
 
+    /// <summary>Test seam for the short-lived, tool-free completion process.</summary>
+    internal Func<ProcessStartInfo, Process?> LaunchOneshotProcess { get; set; } = Process.Start;
+
     public ClaudeSessionService(
         ClaudeConfig config,
         IJobTracker jobTracker,
@@ -662,9 +665,11 @@ public class ClaudeSessionService
 
         var useCliArg = Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
 
+        using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-claude-generate");
         var startInfo = new ProcessStartInfo
         {
             FileName = claudePath,
+            WorkingDirectory = workingDirectory.Path,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -686,8 +691,15 @@ public class ClaudeSessionService
             startInfo.ArgumentList.Add(model);
         }
         startInfo.ArgumentList.Add("--no-session-persistence");
-        startInfo.ArgumentList.Add("--allowedTools");
-        startInfo.ArgumentList.Add("Read,Glob,Grep");
+        // Tool-free by construction. --allowedTools only changes permission prompts; it does not
+        // remove built-ins. These flags also prevent user settings, plugins, and MCP servers from
+        // repopulating the surface.
+        startInfo.ArgumentList.Add("--bare");
+        startInfo.ArgumentList.Add("--tools");
+        startInfo.ArgumentList.Add("");
+        startInfo.ArgumentList.Add("--strict-mcp-config");
+        startInfo.ArgumentList.Add("--mcp-config");
+        startInfo.ArgumentList.Add("{}");
         // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
         startInfo.ArgumentList.Add("--thinking-display");
         startInfo.ArgumentList.Add("summarized");
@@ -704,7 +716,7 @@ public class ClaudeSessionService
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        using var process = Process.Start(startInfo);
+        using var process = LaunchOneshotProcess(startInfo);
         if (process == null)
             return new OneshotResult(false, null, null, null, 0, 0, null, "Failed to start claude process");
 
@@ -760,8 +772,11 @@ public class ClaudeSessionService
                 return new OneshotResult(false, null, null, null, 0, 0, null, $"claude exited with code {process.ExitCode}: {errMsg}");
             }
 
-            var result = ParseStreamJsonOutput(rawStdout, model);
             var streamOutput = tsSb.ToString();
+            var result = ParseStreamJsonOutput(rawStdout, model);
+            if (ToolFreeInitError(rawStdout) is { } toolError)
+                return new OneshotResult(false, null, streamOutput, result.Model,
+                    result.InputTokens, result.OutputTokens, result.CostUsd, toolError);
 
             _log($"[Claude] Oneshot {result.Model} done ({result.Text?.Length ?? 0} chars)", null);
             return new OneshotResult(result.Success, result.Text, streamOutput, result.Model,
@@ -774,12 +789,47 @@ public class ClaudeSessionService
             if (!string.IsNullOrWhiteSpace(rawStdout))
             {
                 var partial = ParseStreamJsonOutput(rawStdout, model);
+                if (ToolFreeInitError(rawStdout) is { } toolError)
+                    return new OneshotResult(false, null, tsSb.ToString(), partial.Model,
+                        partial.InputTokens, partial.OutputTokens, partial.CostUsd, toolError);
                 return new OneshotResult(false, partial.Text, tsSb.ToString(), partial.Model,
                     partial.InputTokens, partial.OutputTokens, partial.CostUsd,
                     $"Execution timed out after {clampedTimeout}s");
             }
             return new OneshotResult(false, null, null, null, 0, 0, null, $"Execution timed out after {clampedTimeout}s");
         }
+    }
+
+    internal static string? ToolFreeInitError(string stdout)
+    {
+        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                if (!root.TryGetProperty("type", out var type) || type.GetString() != "system"
+                    || !root.TryGetProperty("subtype", out var subtype) || subtype.GetString() != "init")
+                    continue;
+
+                if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+                    return "Claude Code tool-free generate could not be verified: init event did not report a tools array";
+                if (tools.GetArrayLength() == 0)
+                    return null;
+
+                var names = tools.EnumerateArray().Select(tool => tool.ValueKind == JsonValueKind.String
+                    ? tool.GetString()
+                    : tool.TryGetProperty("name", out var name) ? name.GetString() : tool.GetRawText());
+                return $"Claude Code tool-free generate refused a non-empty init tool list: {string.Join(", ", names)}";
+            }
+            catch (JsonException)
+            {
+                // Other stream lines are parsed by the ordinary result parser. Only a valid init
+                // event can establish the security invariant.
+            }
+        }
+
+        return "Claude Code tool-free generate could not be verified: init event was missing";
     }
 
     private static string BuildOneshotPrompt(JsonElement messages)

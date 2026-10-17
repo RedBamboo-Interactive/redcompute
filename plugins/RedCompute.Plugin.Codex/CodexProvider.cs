@@ -288,8 +288,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
                 $"Invalid completion messages: {ex.Message}");
         }
 
-        var result = await _codex.ExecuteExecAsync(prompt, null, null, model, "read-only",
-            timeout ?? 120, ct, effort: effort);
+        var result = await _codex.ExecuteGenerateAsync(prompt, model, timeout ?? 120, ct, effort);
         return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }

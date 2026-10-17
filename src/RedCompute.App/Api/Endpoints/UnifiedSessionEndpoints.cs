@@ -1535,6 +1535,7 @@ public static class UnifiedSessionEndpoints
                     runtimeAvailable = runtime != null,
                     runtimeProviderId = runtime?.ProviderId,
                     runtimeCapabilities = runtime?.Capabilities.ToString(),
+                    toolFreeGenerate = runtime?.Capabilities.HasFlag(SessionCapabilities.ToolFreeGenerate) == true,
                     runtimeError,
                     models = models.Select(model => new { model.Id, model.Name, model.Fast }),
                     p.Status,
@@ -1803,6 +1804,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("model", "string", description: "Model to use", location: ParamLocation.Body)
             .WithParam("system", "string", description: "System prompt", location: ParamLocation.Body)
             .WithParam("maxTokens", "integer", description: "Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
+            .WithParam("requireToolFree", "boolean", description: "Require a runtime that enforces and verifies an empty tool surface", defaultValue: false, location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body)
@@ -1861,6 +1863,16 @@ public static class UnifiedSessionEndpoints
     {
         if (!provider.Capabilities.HasFlag(SessionCapabilities.Generate))
             return NotSupported(provider.ProviderId, "LLM completion");
+
+        if (body.TryGetProperty("requireToolFree", out var requireToolFree))
+        {
+            if (requireToolFree.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return Error(422, "validation_failed", "requireToolFree must be a boolean");
+            if (requireToolFree.ValueKind == JsonValueKind.True
+                && !provider.Capabilities.HasFlag(SessionCapabilities.ToolFreeGenerate))
+                return Error(422, "tool_free_unavailable",
+                    $"Provider '{provider.ProviderId}' does not support verified tool-free generation");
+        }
 
         if (!body.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array || messages.GetArrayLength() == 0)
             return Error(422, "validation_failed", "messages is required and must be a non-empty array");

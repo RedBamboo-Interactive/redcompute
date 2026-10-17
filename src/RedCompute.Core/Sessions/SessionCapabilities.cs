@@ -14,4 +14,9 @@ public enum SessionCapabilities
     Generate = 1 << 9,
     FileAttachments = 1 << 10,
     ImageOutputs = 1 << 11,
+    /// <summary>
+    /// Stateless generation starts with an enforced empty tool surface and verifies that surface
+    /// from the provider runtime before returning model text.
+    /// </summary>
+    ToolFreeGenerate = 1 << 12,
 }

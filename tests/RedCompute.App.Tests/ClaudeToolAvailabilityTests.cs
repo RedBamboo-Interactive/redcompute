@@ -1,4 +1,9 @@
+using System.Diagnostics;
+using System.Text.Json;
+using RedCompute.Core.Jobs;
+using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
+using RedCompute.PluginSdk;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -50,11 +55,162 @@ public sealed class ClaudeToolAvailabilityTests
         Assert.Equal("Read", ValueAfter(args, "--allowed-tools"));
     }
 
+    [Fact]
+    public async Task Generate_uses_exact_no_tool_arguments_and_deletes_empty_working_directory()
+    {
+        using var fixture = new OneshotFixture(ToolFreeOutput([]));
+
+        var result = await fixture.ExecuteAsync();
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal("ok", result.Text);
+        Assert.Equal([
+            "-p", "[User]: hello",
+            "--output-format", "stream-json",
+            "--model", "claude-test",
+            "--no-session-persistence",
+            "--bare", "--tools", "", "--strict-mcp-config", "--mcp-config", "{}",
+            "--thinking-display", "summarized",
+            "--system-prompt", "system-test",
+            "--effort", "low",
+        ], fixture.Arguments);
+        Assert.DoesNotContain("--allowedTools", fixture.Arguments);
+        Assert.DoesNotContain("--allowed-tools", fixture.Arguments);
+        Assert.True(fixture.WorkingDirectoryWasEmpty);
+        Assert.False(Directory.Exists(fixture.WorkingDirectory));
+        Assert.True(ClaudeCodeProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.ToolFreeGenerate));
+    }
+
+    [Fact]
+    public async Task Generate_fails_closed_and_returns_no_text_when_init_reports_a_tool()
+    {
+        using var fixture = new OneshotFixture(ToolFreeOutput(["Read"]));
+
+        var result = await fixture.ExecuteAsync();
+
+        Assert.False(result.Success);
+        Assert.Null(result.Text);
+        Assert.Contains("non-empty init tool list", result.Error);
+        Assert.Contains("Read", result.Error);
+        Assert.False(Directory.Exists(fixture.WorkingDirectory));
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"result\",\"result\":\"text\"}", "init event was missing")]
+    [InlineData("{\"type\":\"system\",\"subtype\":\"init\"}", "did not report a tools array")]
+    public void Generate_fails_closed_when_init_cannot_prove_the_tool_surface(string stream, string error)
+        => Assert.Contains(error, ClaudeSessionService.ToolFreeInitError(stream));
+
     private static string ValueAfter(IReadOnlyList<string> values, string key)
     {
         var index = values.IndexOf(key);
         Assert.InRange(index, 0, values.Count - 2);
         return values[index + 1];
+    }
+
+    private static string ToolFreeOutput(string[] tools)
+        => JsonSerializer.Serialize(new { type = "system", subtype = "init", model = "claude-test", tools }) + "\n"
+           + JsonSerializer.Serialize(new
+           {
+               type = "result",
+               result = "ok",
+               usage = new { input_tokens = 1, output_tokens = 1 },
+           }) + "\n";
+
+    private sealed class OneshotFixture : IDisposable
+    {
+        private readonly string _root = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"redcompute-claude-generate-test-{Guid.NewGuid():N}");
+        private readonly string _output;
+        private readonly ClaudeSessionService _service;
+
+        public List<string> Arguments { get; private set; } = [];
+        public string WorkingDirectory { get; private set; } = "";
+        public bool WorkingDirectoryWasEmpty { get; private set; }
+
+        public OneshotFixture(string output)
+        {
+            _output = output;
+            Directory.CreateDirectory(_root);
+            var claudePath = System.IO.Path.Combine(_root, "claude.exe");
+            File.WriteAllText(claudePath, "fixture");
+            _service = new ClaudeSessionService(
+                new ClaudeConfig { ClaudePath = claudePath },
+                new MemoryJobTracker(), new EmptyStore(), new NullQualityModes(), () => null, (_, _) => { });
+            _service.LaunchOneshotProcess = Launch;
+        }
+
+        public async Task<ClaudeSessionService.OneshotResult> ExecuteAsync()
+        {
+            using var document = JsonDocument.Parse("[{\"role\":\"user\",\"content\":\"hello\"}]");
+            return await _service.ExecuteOneshotAsync(
+                "claude-test", "system-test", document.RootElement, 32,
+                CancellationToken.None, "low", 10);
+        }
+
+        private Process Launch(ProcessStartInfo requested)
+        {
+            Arguments = requested.ArgumentList.ToList();
+            WorkingDirectory = requested.WorkingDirectory;
+            WorkingDirectoryWasEmpty = Directory.Exists(WorkingDirectory)
+                && !Directory.EnumerateFileSystemEntries(WorkingDirectory).Any();
+
+            var fake = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            fake.ArgumentList.Add("-NoProfile");
+            fake.ArgumentList.Add("-Command");
+            fake.ArgumentList.Add("[Console]::Out.Write($env:RED_COMPUTE_TEST_OUTPUT)");
+            fake.Environment["RED_COMPUTE_TEST_OUTPUT"] = _output;
+            return Process.Start(fake)!;
+        }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    private sealed class EmptyStore : IClaudeSessionStore
+    {
+        public ClaudeSessionRecord? FindSession(string sessionId) => null;
+        public ClaudeSessionRecord? FindSessionByJobId(Guid jobId) => null;
+        public List<ClaudeSessionRecord> GetActiveSessions() => [];
+        public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false) => [];
+        public void SaveSession(ClaudeSessionRecord record) { }
+        public void DismissSession(string sessionId) { }
+        public void AddMessage(ClaudeMessageRecord message) { }
+        public void AddMessages(List<ClaudeMessageRecord> messages) { }
+        public List<ClaudeMessageRecord> GetMessages(string sessionId, int limit = 50_000) => [];
+        public DateTimeOffset GetLastMessageTimestamp(string sessionId) => default;
+        public Dictionary<Guid, string> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds) => [];
+    }
+
+    private sealed class MemoryJobTracker : IJobTracker
+    {
+        public JobRecord CreateJob(JobSubmission submission) => new()
+            { CapabilitySlug = submission.CapabilitySlug, ProviderName = submission.ProviderName };
+        public void MarkRunning(Guid jobId) { }
+        public void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null,
+            string? contentType = null, string? resultJson = null, double? costUsd = null) { }
+        public void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null, string? resultJson = null) { }
+        public void MarkCancelled(Guid jobId) { }
+        public void UpdateName(Guid jobId, string name) { }
+    }
+
+    private sealed class NullQualityModes : IProviderQualityModeResolver
+    {
+        public bool TryResolveRequested(string qualityTier, string? preferredProvider, out ProviderQualityMode? resolved)
+        {
+            resolved = null;
+            return false;
+        }
     }
 
     private sealed class ScratchDirectory : IDisposable
