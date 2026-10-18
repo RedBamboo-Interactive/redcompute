@@ -521,11 +521,14 @@ public static class UnifiedSessionEndpoints
                 return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
             }
 
-            var sequenced = page.Messages
-                .Where(message => message.Sequence.HasValue
-                    && string.Equals(message.Epoch, epoch, StringComparison.Ordinal))
-                .Select(message => message.Sequence!.Value)
+            // A normalized legacy thinking message exposes its first fragment's sequence, while
+            // the page cursor skips through its last raw record. Keep the page watermark equally
+            // complete so sequence-based catch-up neither replays nor overlooks that hidden span.
+            var sequenceSpans = page.SequenceSpans
+                .Where(span => string.Equals(span.Epoch, epoch, StringComparison.Ordinal))
                 .ToArray();
+            var fromSequence = sequenceSpans.FirstOrDefault(span => span.MinSequence.HasValue)?.MinSequence;
+            var throughSequence = sequenceSpans.LastOrDefault(span => span.MaxSequence.HasValue)?.MaxSequence;
             var response = new TranscriptPageResponse
             {
                 Session = info,
@@ -544,15 +547,15 @@ public static class UnifiedSessionEndpoints
                         : null,
                     HasEarlier = page.HasEarlier,
                     HasLater = page.HasLater,
-                    FromSequence = sequenced.Length == 0 ? null : sequenced.Min(),
-                    ThroughSequence = sequenced.Length == 0 ? null : sequenced.Max(),
+                    FromSequence = fromSequence,
+                    ThroughSequence = throughSequence,
                     BoundaryComplete = true,
                 },
             };
             return Results.Json(response);
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
-            .WithParam("limit", "integer", description: "Soft raw-record target, clamped to 1..500; a complete boundary UID may expand the response", defaultValue: 500, location: ParamLocation.Query)
+            .WithParam("limit", "integer", description: "Soft mapped-message target, clamped to 1..500; a complete boundary UID may expand the response", defaultValue: 500, location: ParamLocation.Query)
             .WithParam("before", "string", description: "Opaque oldest-edge cursor returned by a previous page", location: ParamLocation.Query)
             .WithParam("after", "string", description: "Opaque newest-edge cursor returned by a previous page", location: ParamLocation.Query)
             .WithResponse(TranscriptPageResponseSchema);

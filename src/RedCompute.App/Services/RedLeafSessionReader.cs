@@ -12,7 +12,13 @@ internal sealed record TranscriptPageReadResult(
     long? OldestRecordId,
     long? NewestRecordId,
     bool HasEarlier,
-    bool HasLater);
+    bool HasLater,
+    IReadOnlyList<TranscriptSequenceSpan> SequenceSpans);
+
+internal sealed record TranscriptSequenceSpan(
+    string? Epoch,
+    long? MinSequence,
+    long? MaxSequence);
 
 internal sealed class TranscriptPageTooLargeException : Exception
 {
@@ -179,10 +185,46 @@ public sealed class RedLeafSessionReader
         var boundaryRecordCount = 0;
         var boundaryBytes = 0;
         var extendingBoundary = false;
+        var coalescer = new LegacyThinkingCoalescer(ascending);
+
+        bool Select(MappedTranscriptRecord record)
+        {
+            if (selected.Count < limit)
+            {
+                selected.Add(record);
+                return false;
+            }
+
+            if (!extendingBoundary)
+            {
+                boundaryUid = selected[^1].Message.MessageUid;
+                if (string.IsNullOrWhiteSpace(boundaryUid))
+                {
+                    hasOutsideBoundary = true;
+                    return true;
+                }
+
+                (boundaryRecordCount, boundaryBytes) = BoundarySize(selected, boundaryUid);
+                EnsureBoundaryBudget(boundaryRecordCount, boundaryBytes);
+                extendingBoundary = true;
+            }
+
+            if (!string.Equals(record.Message.MessageUid, boundaryUid, StringComparison.Ordinal))
+            {
+                hasOutsideBoundary = true;
+                return true;
+            }
+
+            boundaryRecordCount++;
+            boundaryBytes = checked(boundaryBytes + record.InlineBytes);
+            EnsureBoundaryBudget(boundaryRecordCount, boundaryBytes);
+            selected.Add(record);
+            return false;
+        }
 
         while (true)
         {
-            var requestLimit = extendingBoundary
+            var requestLimit = extendingBoundary || coalescer.HasPending
                 ? RedLeafMaxPageSize
                 : Math.Min(RedLeafMaxPageSize, limit + 1);
             var batch = await GetRecordBatchAsync(
@@ -195,49 +237,37 @@ public sealed class RedLeafSessionReader
                 ct);
 
             if (batch.Count == 0)
+            {
+                if (coalescer.Flush() is { } finalRecord)
+                    Select(finalRecord);
                 break;
+            }
 
             var stop = false;
             foreach (var record in batch)
             {
-                if (selected.Count < limit)
+                foreach (var mapped in coalescer.Push(record))
                 {
-                    selected.Add(record);
-                    continue;
-                }
-
-                if (!extendingBoundary)
-                {
-                    boundaryUid = selected[^1].Message.MessageUid;
-                    if (string.IsNullOrWhiteSpace(boundaryUid))
+                    if (Select(mapped))
                     {
-                        hasOutsideBoundary = true;
                         stop = true;
                         break;
                     }
-
-                    (boundaryRecordCount, boundaryBytes) = BoundarySize(selected, boundaryUid);
-                    EnsureBoundaryBudget(boundaryRecordCount, boundaryBytes);
-                    extendingBoundary = true;
                 }
-
-                if (!string.Equals(record.Message.MessageUid, boundaryUid, StringComparison.Ordinal))
-                {
-                    hasOutsideBoundary = true;
-                    stop = true;
-                    break;
-                }
-
-                boundaryRecordCount++;
-                boundaryBytes += record.InlineBytes;
-                EnsureBoundaryBudget(boundaryRecordCount, boundaryBytes);
-                selected.Add(record);
+                if (stop) break;
             }
 
-            if (stop || batch.Count < requestLimit)
+            if (stop)
                 break;
 
-            batchAnchor = batch[^1].Id;
+            if (batch.Count < requestLimit)
+            {
+                if (coalescer.Flush() is { } finalRecord)
+                    Select(finalRecord);
+                break;
+            }
+
+            batchAnchor = ascending ? batch[^1].LastRecordId : batch[^1].FirstRecordId;
         }
 
         if (selected.Count > 0)
@@ -258,8 +288,8 @@ public sealed class RedLeafSessionReader
             selected.Reverse();
 
         var messages = selected.Select(record => record.Message).ToList();
-        long? oldestRecordId = messages.Count == 0 ? null : messages[0].Id;
-        long? newestRecordId = messages.Count == 0 ? null : messages[^1].Id;
+        long? oldestRecordId = selected.Count == 0 ? null : selected[0].FirstRecordId;
+        long? newestRecordId = selected.Count == 0 ? null : selected[^1].LastRecordId;
         bool hasEarlier;
         bool hasLater;
         if (messages.Count > 0)
@@ -291,7 +321,9 @@ public sealed class RedLeafSessionReader
             oldestRecordId,
             newestRecordId,
             hasEarlier,
-            hasLater);
+            hasLater,
+            selected.Select(record => new TranscriptSequenceSpan(
+                record.Message.Epoch, record.MinSequence, record.MaxSequence)).ToList());
     }
 
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionByJobIdAsync(Guid jobId)
@@ -407,7 +439,7 @@ public sealed class RedLeafSessionReader
         var records = await GetRecordBatchAsync(
             entityId, sessionId, ascending: true, limit: 1,
             beforeRecordId: null, afterRecordId: recordId - 1, ct);
-        return records.Count == 1 && records[0].Id == recordId;
+        return records.Count == 1 && records[0].FirstRecordId == recordId;
     }
 
     private async Task<bool> HasRecordAtOrBeforeAsync(
@@ -432,7 +464,9 @@ public sealed class RedLeafSessionReader
         var dataJson = rec.GetProperty("data").GetString()!;
         using var data = JsonDocument.Parse(dataJson);
         var d = data.RootElement;
+        var sequence = Long(d, "sequence");
         return new MappedTranscriptRecord(
+            id,
             id,
             new UnifiedMessageRecord
             {
@@ -449,7 +483,7 @@ public sealed class RedLeafSessionReader
                 Phase = Str(d, "phase"),
                 MessageUid = Str(d, "message_uid"),
                 Epoch = Str(d, "epoch"),
-                Sequence = Long(d, "sequence"),
+                Sequence = sequence,
                 Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
                     ? t : default,
                 RecordCreatedAt = rec.TryGetProperty("createdAt", out var createdAt)
@@ -459,7 +493,9 @@ public sealed class RedLeafSessionReader
                         : null,
                 AttachmentsJson = Str(d, "attachments_json"),
             },
-            Encoding.UTF8.GetByteCount(dataJson));
+            Encoding.UTF8.GetByteCount(dataJson),
+            sequence,
+            sequence);
     }
 
     private static (int Count, int Bytes) BoundarySize(
@@ -616,7 +652,111 @@ public sealed class RedLeafSessionReader
     }
 
     private sealed record MappedTranscriptRecord(
-        long Id,
+        long FirstRecordId,
+        long LastRecordId,
         UnifiedMessageRecord Message,
-        int InlineBytes);
+        int InlineBytes,
+        long? MinSequence,
+        long? MaxSequence);
+
+    /// <summary>
+    /// Collapses only the old Claude shape whose thinking deltas were persisted individually.
+    /// The pending run deliberately survives RedLeaf request boundaries. Descending reads prepend
+    /// content and replace metadata with the earlier fragment so the mapped unit is identical to
+    /// an ascending read.
+    /// </summary>
+    private sealed class LegacyThinkingCoalescer(bool ascending)
+    {
+        private MappedTranscriptRecord? _pending;
+
+        public bool HasPending => _pending is not null;
+
+        public IReadOnlyList<MappedTranscriptRecord> Push(MappedTranscriptRecord record)
+        {
+            if (_pending is null)
+            {
+                if (IsLegacyThinking(record))
+                {
+                    _pending = record;
+                    return [];
+                }
+                return [record];
+            }
+
+            if (CanMerge(_pending, record))
+            {
+                _pending = Merge(_pending, record, ascending);
+                return [];
+            }
+
+            var completed = _pending;
+            _pending = null;
+            if (IsLegacyThinking(record))
+            {
+                _pending = record;
+                return [completed];
+            }
+            return [completed, record];
+        }
+
+        public MappedTranscriptRecord? Flush()
+        {
+            var completed = _pending;
+            _pending = null;
+            return completed;
+        }
+
+        private static bool CanMerge(MappedTranscriptRecord left, MappedTranscriptRecord right) =>
+            IsLegacyThinking(left)
+            && IsLegacyThinking(right)
+            && string.Equals(left.Message.MessageUid, right.Message.MessageUid, StringComparison.Ordinal)
+            && string.Equals(left.Message.Epoch, right.Message.Epoch, StringComparison.Ordinal);
+
+        private static bool IsLegacyThinking(MappedTranscriptRecord record)
+        {
+            var message = record.Message;
+            return message.Role == "assistant"
+                && message.EventType == "thinking"
+                && string.IsNullOrEmpty(message.MessageId)
+                && !string.IsNullOrWhiteSpace(message.MessageUid)
+                && message.PayloadRef is null
+                && message.ToolName is null
+                && message.ToolInput is null
+                && message.ToolResult is null
+                && message.Phase is null;
+        }
+
+        private static MappedTranscriptRecord Merge(
+            MappedTranscriptRecord pending,
+            MappedTranscriptRecord record,
+            bool ascending)
+        {
+            var first = ascending ? pending : record;
+            var last = ascending ? record : pending;
+            first.Message.Content = string.Concat(first.Message.Content, last.Message.Content);
+            // The public message id remains the first raw record id. Payload records can never
+            // reach this branch, so output download routes retain their exact raw record identity.
+            return new MappedTranscriptRecord(
+                first.FirstRecordId,
+                last.LastRecordId,
+                first.Message,
+                checked(first.InlineBytes + last.InlineBytes),
+                Min(first.MinSequence, last.MinSequence),
+                Max(first.MaxSequence, last.MaxSequence));
+        }
+
+        private static long? Min(long? left, long? right)
+        {
+            if (!left.HasValue) return right;
+            if (!right.HasValue) return left;
+            return Math.Min(left.Value, right.Value);
+        }
+
+        private static long? Max(long? left, long? right)
+        {
+            if (!left.HasValue) return right;
+            if (!right.HasValue) return left;
+            return Math.Max(left.Value, right.Value);
+        }
+    }
 }
