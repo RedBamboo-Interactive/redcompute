@@ -12,6 +12,8 @@ namespace RedCompute.App.Tests;
 // routes `phase == "commentary"` into one edited progress message. Codex declares that phase and
 // persists one record per agent message; Claude's stream declares neither, so the adapter must
 // decide each text block's phase deterministically and persist the whole block exactly once.
+// Thinking uses the same block identity and whole-block persistence contract without a phase;
+// both text and thinking deltas remain live-only.
 // The stream shapes below follow the Agent SDK 2.1.300 contract: one `assistant` message per
 // completed block with a null stop_reason, the real stop reason only on `message_delta`.
 public sealed class ClaudeTextPhaseTests : IDisposable
@@ -388,6 +390,178 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         Assert.Equal("final_answer", Assert.Single(events).Phase);
     }
 
+    [Fact]
+    public void Thinking_deltas_are_live_only_and_one_whole_block_is_persisted_with_the_same_identity()
+    {
+        var (service, store, live, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_thinking"),
+            BlockStart(0, "thinking"),
+            ThinkingDelta(0, "Inspect"),
+            ThinkingDelta(0, " the "),
+            ThinkingDelta(0, "ordering."),
+            BlockStop(0));
+
+        var partials = live.Where(e => e.Type == "thinking").ToList();
+        Assert.Equal(["Inspect", " the ", "ordering."], partials.Select(e => e.Content));
+        Assert.All(partials, e => Assert.True(e.IsPartial));
+        Assert.All(partials, e => Assert.Equal("msg_thinking:0", e.MessageId));
+
+        var durable = Assert.Single(store.Assistant(id), m => m.EventType == "thinking");
+        Assert.Equal("Inspect the ordering.", durable.Content);
+        Assert.Equal("msg_thinking:0", durable.MessageId);
+        Assert.Equal(partials[0].MessageUid, durable.MessageUid);
+        Assert.Null(durable.Phase);
+        // content_block_stop persists silently; re-broadcasting the whole block would duplicate
+        // the live partials, exactly as it would for text.
+        Assert.Equal(3, partials.Count);
+    }
+
+    [Fact]
+    public void Thinking_tools_results_and_final_text_keep_live_order_and_one_turn_uid()
+    {
+        var (service, store, _, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "thinking"),
+            ThinkingDelta(0, "Plan one."),
+            BlockStop(0),
+            BlockStart(1, "tool_use"),
+            AssistantToolUse("msg_1", "toolu_1", "Read", "{}"),
+            BlockStop(1),
+            MessageDelta("tool_use"),
+            ToolResult("toolu_1", "result"),
+            MessageStart("msg_2"),
+            BlockStart(0, "thinking"),
+            ThinkingDelta(0, "Plan two."),
+            BlockStop(0),
+            BlockStart(1, "text"),
+            TextDelta(1, "Done."),
+            BlockStop(1),
+            MessageDelta("end_turn"),
+            Result());
+
+        var records = store.Assistant(id).Where(m => m.EventType != "status").ToList();
+        Assert.Equal(
+            ["thinking", "tool_use", "tool_result", "thinking", "text"],
+            records.Select(m => m.EventType));
+        Assert.Equal(
+            ["msg_1:0", "toolu_1", "toolu_1", "msg_2:0", "msg_2:1"],
+            records.Select(m => m.MessageId));
+        Assert.Single(records.Select(m => m.MessageUid).Distinct());
+        Assert.All(records.Where(m => m.EventType == "thinking"), m => Assert.Null(m.Phase));
+    }
+
+    [Theory]
+    [InlineData("force_kill")]
+    [InlineData("stop")]
+    [InlineData("interrupt")]
+    public async Task Terminal_turn_paths_persist_partial_thinking_once(string ending)
+    {
+        var (service, store, _, id) = StartSession(ending == "stop"
+            ? _ => Track(Process.Start(new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                Arguments = "/d /q /c set /p input=",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            })!)
+            : null);
+
+        Feed(service, id,
+            SystemInit(),
+            MessageStart("msg_1"),
+            BlockStart(0, "thinking"),
+            ThinkingDelta(0, "Still reasoning"));
+
+        if (ending == "force_kill")
+        {
+            await service.ForceKill(id, "maintenance_restart");
+        }
+        else if (ending == "stop")
+        {
+            await service.StopSession(id, "user_stopped");
+        }
+        else
+        {
+            Assert.Equal(ClaudeSessionService.InterruptResult.Interrupted, service.InterruptSession(id));
+            Feed(service, id,
+                """{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Request was aborted."}""");
+        }
+
+        var thinking = Assert.Single(store.Assistant(id), m => m.EventType == "thinking");
+        Assert.Equal(("Still reasoning", "msg_1:0"), (thinking.Content, thinking.MessageId));
+    }
+
+    [Fact]
+    public async Task Process_exit_mid_thinking_persists_the_partial_block_once()
+    {
+        Process? cli = null;
+        var (service, store, _, id) = StartSession(_ => cli = Track(Process.Start(new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "more.com"),
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!));
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "thinking"),
+            ThinkingDelta(0, "Interrupted by exit"));
+        cli!.Kill(entireProcessTree: true);
+        await cli.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        await WaitUntil(() => store.Assistant(id).Any(m => m.EventType == "thinking"));
+
+        var thinking = Assert.Single(store.Assistant(id), m => m.EventType == "thinking");
+        Assert.Equal(("Interrupted by exit", "msg_1:0"), (thinking.Content, thinking.MessageId));
+    }
+
+    [Fact]
+    public void Parent_and_subagent_thinking_with_the_same_index_never_interleave()
+    {
+        var (service, store, _, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_parent"),
+            MessageStart("msg_subagent", "toolu_task"),
+            BlockStart(0, "thinking"),
+            BlockStart(0, "thinking", "toolu_task"),
+            ThinkingDelta(0, "parent-a", null),
+            ThinkingDelta(0, "sub-a", "toolu_task"),
+            ThinkingDelta(0, "parent-b", null),
+            ThinkingDelta(0, "sub-b", "toolu_task"),
+            BlockStop(0),
+            BlockStop(0, "toolu_task"));
+
+        var thinking = store.Assistant(id).Where(m => m.EventType == "thinking").ToList();
+        Assert.Equal(["parent-aparent-b", "sub-asub-b"], thinking.Select(m => m.Content));
+        Assert.Equal(["msg_parent:0", "msg_subagent:0"], thinking.Select(m => m.MessageId));
+    }
+
+    [Fact]
+    public void Whitespace_only_thinking_is_not_persisted()
+    {
+        var (service, store, live, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "thinking"),
+            ThinkingDelta(0, " \n\t"),
+            BlockStop(0),
+            Result());
+
+        Assert.Single(live, e => e.Type == "thinking");
+        Assert.DoesNotContain(store.Assistant(id), m => m.EventType == "thinking");
+    }
+
     // --- harness ---
 
     private (ClaudeSessionService Service, RecordingStore Store, List<ClaudeStreamEvent> Live, string Id) StartSession(
@@ -459,19 +633,23 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     private static string Stream(object evt, string? parent = null) =>
         Json(new { type = "stream_event", @event = evt, parent_tool_use_id = parent, session_id = "c1" });
 
-    private static string MessageStart(string id) =>
-        Stream(new { type = "message_start", message = new { id, role = "assistant", content = Array.Empty<object>() } });
+    private static string SystemInit() =>
+        Json(new { type = "system", subtype = "init", session_id = "c1", model = "opus" });
 
-    private static string BlockStart(int index, string type) =>
-        Stream(new { type = "content_block_start", index, content_block = new { type } });
+    private static string MessageStart(string id, string? parent = null) =>
+        Stream(new { type = "message_start", message = new { id, role = "assistant", content = Array.Empty<object>() } }, parent);
+
+    private static string BlockStart(int index, string type, string? parent = null) =>
+        Stream(new { type = "content_block_start", index, content_block = new { type } }, parent);
 
     private static string TextDelta(int index, string text) =>
         Stream(new { type = "content_block_delta", index, delta = new { type = "text_delta", text } });
 
-    private static string ThinkingDelta(int index, string thinking) =>
-        Stream(new { type = "content_block_delta", index, delta = new { type = "thinking_delta", thinking } });
+    private static string ThinkingDelta(int index, string thinking, string? parent = null) =>
+        Stream(new { type = "content_block_delta", index, delta = new { type = "thinking_delta", thinking } }, parent);
 
-    private static string BlockStop(int index) => Stream(new { type = "content_block_stop", index });
+    private static string BlockStop(int index, string? parent = null) =>
+        Stream(new { type = "content_block_stop", index }, parent);
 
     private static string MessageDelta(string stopReason) =>
         Stream(new { type = "message_delta", delta = new { stop_reason = stopReason } });

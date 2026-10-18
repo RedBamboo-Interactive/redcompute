@@ -15,9 +15,11 @@ namespace RedCompute.Plugin.ClaudeCode;
 /// <item>text still unsettled when the turn's <c>result</c> arrives (or the process ends) is the
 /// turn's <c>final_answer</c>.</item>
 /// </list>
-/// Each block is accumulated here and persisted exactly once, after its phase is decided, so the
-/// durable phase can never change after a consumer (Discord) has delivered it. Live deltas carry no
-/// phase: undetermined, never contradicting the record.
+/// Each text block is accumulated here and persisted exactly once, after its phase is decided, so
+/// the durable phase can never change after a consumer (Discord) has delivered it. Thinking blocks
+/// use the same API-message/thread identity map and are persisted once at <c>content_block_stop</c>
+/// (or the turn's abnormal end). Live deltas carry no phase: undetermined, never contradicting the
+/// record.
 /// </summary>
 internal sealed class ClaudeTextBlockTracker
 {
@@ -26,10 +28,12 @@ internal sealed class ClaudeTextBlockTracker
 
     private readonly object _gate = new();
     private readonly List<Block> _pending = [];
+    private readonly List<Block> _pendingThinking = [];
     private readonly Dictionary<string, string> _apiMessageIds = new(StringComparer.Ordinal);
     private int _anonymousMessages;
 
     internal sealed record SettledText(string MessageId, string? MessageUid, string Content, string Phase);
+    internal sealed record SettledThinking(string MessageId, string? MessageUid, string Content);
 
     private sealed class Block(string thread, string messageId, int index, string? messageUid)
     {
@@ -58,20 +62,31 @@ internal sealed class ClaudeTextBlockTracker
     /// delta and the eventual durable record share.
     /// </summary>
     public string Append(string? parentToolUseId, int index, string? text, string? messageUid)
+        => Append(_pending, parentToolUseId, index, text, messageUid);
+
+    /// <summary>
+    /// Appends one streamed thinking delta and returns the stable identity shared by its live
+    /// deltas and eventual durable record.
+    /// </summary>
+    public string AppendThinking(string? parentToolUseId, int index, string? thinking, string? messageUid)
+        => Append(_pendingThinking, parentToolUseId, index, thinking, messageUid);
+
+    private string Append(List<Block> pending, string? parentToolUseId, int index, string? content,
+        string? messageUid)
     {
         lock (_gate)
         {
             var thread = Thread(parentToolUseId);
             if (!_apiMessageIds.TryGetValue(thread, out var apiMessageId))
                 _apiMessageIds[thread] = apiMessageId = $"claude-message-{++_anonymousMessages}";
-            var block = _pending.LastOrDefault(b =>
+            var block = pending.LastOrDefault(b =>
                 b.Thread == thread && b.MessageId == apiMessageId && b.Index == index);
             if (block is null)
             {
                 block = new Block(thread, apiMessageId, index, messageUid);
-                _pending.Add(block);
+                pending.Add(block);
             }
-            block.Content.Append(text);
+            block.Content.Append(content);
             return BlockId(block);
         }
     }
@@ -93,9 +108,17 @@ internal sealed class ClaudeTextBlockTracker
     public IReadOnlyList<SettledText> SettleTurn()
         => Take(_ => true, block => block.Thread.Length == 0 ? FinalAnswer : Commentary);
 
+    /// <summary><c>content_block_stop</c>: persist this complete thinking block once.</summary>
+    public IReadOnlyList<SettledThinking> SettleThinking(string? parentToolUseId, int index)
+        => TakeThinking(block => block.Thread == Thread(parentToolUseId) && block.Index == index);
+
+    /// <summary>Abnormal turn end: preserve every thinking block that was already shown live.</summary>
+    public IReadOnlyList<SettledThinking> SettleTurnThinking()
+        => TakeThinking(_ => true);
+
     public bool HasPending
     {
-        get { lock (_gate) return _pending.Count > 0; }
+        get { lock (_gate) return _pending.Count > 0 || _pendingThinking.Count > 0; }
     }
 
     private IReadOnlyList<SettledText> Take(Func<Block, bool> selector, Func<Block, string> phase)
@@ -110,6 +133,22 @@ internal sealed class ClaudeTextBlockTracker
                 // Empty text maps to no display record, exactly as Codex drops empty agent text.
                 .Where(item => !string.IsNullOrWhiteSpace(item.Content))
                 .Select(item => new SettledText(BlockId(item.Block), item.Block.MessageUid, item.Content, phase(item.Block)))
+                .ToList();
+        }
+    }
+
+    private IReadOnlyList<SettledThinking> TakeThinking(Func<Block, bool> selector)
+    {
+        lock (_gate)
+        {
+            var taken = _pendingThinking.Where(selector).ToList();
+            if (taken.Count == 0) return [];
+            _pendingThinking.RemoveAll(taken.Contains);
+            return taken
+                .Select(block => (Block: block, Content: block.Content.ToString()))
+                .Where(item => !string.IsNullOrWhiteSpace(item.Content))
+                .Select(item => new SettledThinking(
+                    BlockId(item.Block), item.Block.MessageUid, item.Content))
                 .ToList();
         }
     }

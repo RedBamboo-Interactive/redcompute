@@ -1537,7 +1537,7 @@ public class ClaudeSessionService
 
             session.Cts.Cancel();
             DiscardPendingQuestions(session, "session_ended");
-            SettleTurnText(session);
+            SettleTurnContent(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
@@ -1577,7 +1577,7 @@ public class ClaudeSessionService
             try { session.Process.Kill(entireProcessTree: true); } catch { }
             session.Cts.Cancel();
             DiscardPendingQuestions(session, "session_ended");
-            SettleTurnText(session);
+            SettleTurnContent(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.ProcessId = null;
@@ -1898,14 +1898,17 @@ public class ClaudeSessionService
         else
             evt.MessageUid = session.CurrentAssistantUid ??= Guid.NewGuid().ToString("N");
 
-        // Streamed text is live-only, as Codex's agent-message deltas are. The block is
-        // persisted once, whole, when its commentary/final phase is decided (see
-        // ClaudeTextBlockTracker). Persisting each delta made every token fragment a
-        // separate transcript record, and so a separate Discord message.
-        var deferred = evt is { Type: "text", IsPartial: true, BlockIndex: not null };
+        // Streamed text and thinking are live-only, as Codex's agent-message/reasoning deltas are.
+        // Each block is persisted once, whole: text when its commentary/final phase is decided,
+        // thinking at content_block_stop (or a terminal flush). Persisting each delta makes token
+        // cadence determine durable transcript cardinality.
+        var deferred = evt is { Type: "text" or "thinking", IsPartial: true, BlockIndex: not null };
         if (deferred)
-            evt.MessageId = session.TextBlocks.Append(
-                evt.ParentToolUseId, evt.BlockIndex!.Value, evt.Content, evt.MessageUid);
+            evt.MessageId = evt.Type == "thinking"
+                ? session.TextBlocks.AppendThinking(
+                    evt.ParentToolUseId, evt.BlockIndex!.Value, evt.Content, evt.MessageUid)
+                : session.TextBlocks.Append(
+                    evt.ParentToolUseId, evt.BlockIndex!.Value, evt.Content, evt.MessageUid);
 
         StreamEvent?.Invoke(session.Info.Id, evt);
         session.MessageHistory.Add(evt);
@@ -1964,6 +1967,23 @@ public class ClaudeSessionService
         }
     }
 
+    /// <summary>
+    /// Returns a whole thinking block only when its matching <c>content_block_stop</c> arrives.
+    /// Unlike text, thinking has no phase settlement.
+    /// </summary>
+    internal static IReadOnlyList<ClaudeTextBlockTracker.SettledThinking> ApplyThinkingLifecycle(
+        ClaudeTextBlockTracker tracker, JsonElement root)
+    {
+        if (!root.TryGetProperty("event", out var evt) || evt.ValueKind != JsonValueKind.Object)
+            return [];
+        if (!evt.TryGetProperty("type", out var et) || et.ValueKind != JsonValueKind.String
+            || et.GetString() != "content_block_stop")
+            return [];
+        if (!evt.TryGetProperty("index", out var index) || !index.TryGetInt32(out var blockIndex))
+            return [];
+        return tracker.SettleThinking(ParentToolUseId(root), blockIndex);
+    }
+
     private static string? ParentToolUseId(JsonElement root)
         => root.TryGetProperty("parent_tool_use_id", out var parent) && parent.ValueKind == JsonValueKind.String
             ? parent.GetString()
@@ -1977,9 +1997,23 @@ public class ClaudeSessionService
                 text.MessageId, messageUid: text.MessageUid ?? session.CurrentAssistantUid, phase: text.Phase);
     }
 
-    /// <summary>The turn is over (result, exit, stop or kill): its unsettled text is final.</summary>
-    private void SettleTurnText(ManagedSession session)
-        => PersistSettledText(session, session.TextBlocks.SettleTurn());
+    private void PersistSettledThinking(ManagedSession session,
+        IReadOnlyList<ClaudeTextBlockTracker.SettledThinking> settled)
+    {
+        foreach (var thinking in settled)
+            PersistMessage(session.Info.Id, "assistant", "thinking", thinking.Content, null, null, null,
+                thinking.MessageId, messageUid: thinking.MessageUid ?? session.CurrentAssistantUid);
+    }
+
+    /// <summary>
+    /// The turn is over (result, exit, stop or kill): preserve live thinking first, then settle
+    /// text, matching the normal thinking-before-text stream order.
+    /// </summary>
+    private void SettleTurnContent(ManagedSession session)
+    {
+        PersistSettledThinking(session, session.TextBlocks.SettleTurnThinking());
+        PersistSettledText(session, session.TextBlocks.SettleTurn());
+    }
 
     private async Task ReadStderr(ManagedSession session)
     {
@@ -2038,6 +2072,7 @@ public class ClaudeSessionService
             case "stream_event":
                 UpdateContextFromStreamEvent(root, session);
                 PersistSettledText(session, ApplyTextLifecycle(session.TextBlocks, root));
+                PersistSettledThinking(session, ApplyThinkingLifecycle(session.TextBlocks, root));
                 return ParseStreamEvent(root);
 
             case "rate_limit_event":
@@ -2492,7 +2527,9 @@ public class ClaudeSessionService
             {
                 Type = "thinking",
                 Content = delta.TryGetProperty("thinking", out var th) ? th.GetString() : null,
-                IsPartial = true
+                IsPartial = true,
+                BlockIndex = evt.TryGetProperty("index", out var index) && index.TryGetInt32(out var i) ? i : 0,
+                ParentToolUseId = ParentToolUseId(root),
             },
             _ => null
         };
@@ -2507,7 +2544,7 @@ public class ClaudeSessionService
         {
             // Persist the answer before Idle is published: the settlement callback reads the
             // transcript as soon as SessionUpdated reports Idle.
-            SettleTurnText(session);
+            SettleTurnContent(session);
 
             // Turn finished normally, possibly racing a just-sent interrupt that
             // never got the chance to abort anything -- still a clean, safe-to-write
@@ -2531,7 +2568,7 @@ public class ClaudeSessionService
 
         if (terminalError != null)
         {
-            SettleTurnText(session);
+            SettleTurnContent(session);
             var error = terminalError;
             _log($"[Claude] Session {session.Info.Id} result error: {error}", null);
 
@@ -2699,7 +2736,7 @@ public class ClaudeSessionService
         var exitCode = session.Process.ExitCode;
         session.Cts.Cancel();
         DiscardPendingQuestions(session, "session_ended");
-        SettleTurnText(session);
+        SettleTurnContent(session);
 
         if (session.RestartPending)
         {
@@ -2951,7 +2988,7 @@ public class ClaudeSessionService
         // turn boundaries (status/error result, user message, answer) so the
         // next turn mints a fresh one.
         public string? CurrentAssistantUid { get; set; }
-        // Streamed text blocks awaiting their commentary/final decision.
+        // Streamed text/thinking blocks awaiting phase or block-stop settlement.
         public ClaudeTextBlockTracker TextBlocks { get; } = new();
         // Guards every StandardInput write so a queued-message drain can never
         // interleave with a concurrent interrupt/permission-mode control write

@@ -8,7 +8,7 @@ public class ClaudeStreamEvent
     public object? ToolInput { get; init; }
     public string? ToolResult { get; init; }
     public bool IsPartial { get; init; }
-    // Settable: streamed text deltas receive their block identity after parsing.
+    // Settable: streamed text/thinking deltas receive their block identity after parsing.
     public string? MessageId { get; set; }
     /// <summary>
     /// Assistant-text phase, <c>commentary</c> or <c>final_answer</c>, using Codex's vocabulary.
@@ -24,7 +24,7 @@ public class ClaudeStreamEvent
     // "question_resolved"). Clients echo it back when submitting an answer. Null elsewhere.
     public string? RequestId { get; init; }
 
-    // Parse-time stream coordinates for text accumulation. Internal, so never serialized onto
+    // Parse-time stream coordinates for text/thinking accumulation. Internal, so never serialized onto
     // the plugin event or the unified stream.
     internal int? BlockIndex { get; init; }
     internal string? ParentToolUseId { get; init; }
