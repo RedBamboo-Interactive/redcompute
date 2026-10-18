@@ -521,14 +521,7 @@ public static class UnifiedSessionEndpoints
                 return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
             }
 
-            // A normalized legacy thinking message exposes its first fragment's sequence, while
-            // the page cursor skips through its last raw record. Keep the page watermark equally
-            // complete so sequence-based catch-up neither replays nor overlooks that hidden span.
-            var sequenceSpans = page.SequenceSpans
-                .Where(span => string.Equals(span.Epoch, epoch, StringComparison.Ordinal))
-                .ToArray();
-            var fromSequence = sequenceSpans.FirstOrDefault(span => span.MinSequence.HasValue)?.MinSequence;
-            var throughSequence = sequenceSpans.LastOrDefault(span => span.MaxSequence.HasValue)?.MaxSequence;
+            var (fromSequence, throughSequence) = TranscriptPageSequenceRange(page.Messages, epoch);
             var response = new TranscriptPageResponse
             {
                 Session = info,
@@ -2103,6 +2096,29 @@ public static class UnifiedSessionEndpoints
 
     private static string? ResolveUserId(HttpContext ctx)
         => UserInfoHelper.ResolveUserId(ctx);
+
+    /// <summary>
+    /// The sequence range a transcript page advertises is the exact min/max over the mapped
+    /// messages it returns. Clients validate that equality before accepting a page. Storage order
+    /// is not sequence order: providers persist a completed text or thinking block at block stop,
+    /// after later tool records, so page edges must never stand in for the extremes.
+    /// </summary>
+    internal static (long? From, long? Through) TranscriptPageSequenceRange(
+        IEnumerable<UnifiedMessageRecord> messages,
+        string? epoch)
+    {
+        long? from = null;
+        long? through = null;
+        foreach (var message in messages)
+        {
+            if (message.Sequence is not { } sequence
+                || !string.Equals(message.Epoch, epoch, StringComparison.Ordinal))
+                continue;
+            from = from is { } min ? Math.Min(min, sequence) : sequence;
+            through = through is { } max ? Math.Max(max, sequence) : sequence;
+        }
+        return (from, through);
+    }
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);

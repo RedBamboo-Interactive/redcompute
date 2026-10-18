@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Sessions;
@@ -212,8 +213,7 @@ public sealed class TranscriptPagingTests
         Assert.All(page.Messages, message => Assert.Equal(uid, message.MessageUid));
         Assert.False(page.HasEarlier);
         Assert.False(page.HasLater);
-        Assert.Equal(1, page.SequenceSpans.Min(span => span.MinSequence));
-        Assert.Equal(13_472, page.SequenceSpans.Max(span => span.MaxSequence));
+        Assert.Equal((1L, 13_472L), UnifiedSessionEndpoints.TranscriptPageSequenceRange(page.Messages, "epoch-1"));
     }
 
     [Fact]
@@ -241,8 +241,8 @@ public sealed class TranscriptPagingTests
             Assert.Equal((2L, 2L, "thinking", expected),
                 (thinking.Id, thinking.Sequence, thinking.EventType, thinking.Content));
             Assert.Equal((2L, 1_201L), (page.OldestRecordId, page.NewestRecordId));
-            var span = Assert.Single(page.SequenceSpans);
-            Assert.Equal((2L, 1_201L), (span.MinSequence, span.MaxSequence));
+            // The advertised range describes the mapped message clients validate, not hidden fragments.
+            Assert.Equal((2L, 2L), UnifiedSessionEndpoints.TranscriptPageSequenceRange(page.Messages, "epoch-1"));
             Assert.Equal(DateTimeOffset.UnixEpoch.AddSeconds(2), thinking.Timestamp);
             Assert.Equal(DateTimeOffset.UnixEpoch.AddDays(1).AddSeconds(2), thinking.RecordCreatedAt);
         }
@@ -336,10 +336,64 @@ public sealed class TranscriptPagingTests
         Assert.Equal("ab", page.Messages[0].Content);
         Assert.Equal(1, page.Messages[0].Id);
         Assert.Equal(1, page.Messages[0].Sequence);
-        Assert.Equal(2, page.SequenceSpans[0].MaxSequence);
+        Assert.Equal((1L, 16L), UnifiedSessionEndpoints.TranscriptPageSequenceRange(page.Messages, "epoch-1"));
         Assert.Equal(Enumerable.Range(3, 15).Select(id => (long)id),
             page.Messages.Skip(1).Select(message => message.Id));
         Assert.NotNull(page.Messages.Single(message => message.Id == 7).PayloadRef);
+    }
+
+    [Fact]
+    public async Task PageSequenceRange_UsesExtremesWhenStorageOrderIsInverted()
+    {
+        // Exact production after-page from session 1d600ab9e13b (2026-10-18): Claude persists a
+        // completed text block at block stop, so its earlier sequence lands after later records.
+        long[] sequences =
+        [
+            15692, 15671, 15689, 15691, 15711, 15713, 15714, 15746, 15748,
+            15749, 15758, 15761, 15760, 15763, 15764, 15794, 15802, 15804,
+        ];
+        var records = sequences.Select((sequence, index) =>
+            new TestRecord(index + 1, "5dfd96d9", $"record-{sequence}", Sequence: sequence));
+        var reader = CreateReader(new PagingHandler(records));
+
+        var page = await reader.GetTranscriptPageAsync(
+            EntityId, SessionId, 500, beforeRecordId: null, afterRecordId: null);
+
+        Assert.Equal(15692, page.Messages[0].Sequence);
+        Assert.Equal(sequences, page.Messages.Select(message => message.Sequence!.Value));
+        Assert.Equal((15671L, 15804L), UnifiedSessionEndpoints.TranscriptPageSequenceRange(page.Messages, "epoch-1"));
+    }
+
+    [Fact]
+    public async Task PageSequenceRange_MatchesMappedMessagesWhenALegacyThinkingRunEndsThePage()
+    {
+        var records = new[]
+        {
+            new TestRecord(1, "turn", "text"),
+            Thinking(2, "turn", "a"),
+            Thinking(3, "turn", "b"),
+            Thinking(4, "turn", "c"),
+        };
+        var reader = CreateReader(new PagingHandler(records));
+
+        var page = await reader.GetTranscriptPageAsync(
+            EntityId, SessionId, 500, beforeRecordId: null, afterRecordId: null);
+
+        Assert.Equal([1L, 2L], page.Messages.Select(message => message.Sequence!.Value));
+        Assert.Equal((1L, 2L), UnifiedSessionEndpoints.TranscriptPageSequenceRange(page.Messages, "epoch-1"));
+        Assert.Equal(4L, page.NewestRecordId);
+    }
+
+    [Fact]
+    public void PageSequenceRange_IgnoresOtherEpochsAndUnsequencedMessages()
+    {
+        UnifiedMessageRecord Message(long? sequence, string? epoch) =>
+            new() { SessionId = SessionId, Role = "assistant", EventType = "text", Sequence = sequence, Epoch = epoch };
+
+        Assert.Equal(((long?)null, (long?)null), UnifiedSessionEndpoints.TranscriptPageSequenceRange([], "epoch-1"));
+        Assert.Equal((5L, 9L), UnifiedSessionEndpoints.TranscriptPageSequenceRange(
+            [Message(9, "epoch-1"), Message(1, "epoch-0"), Message(null, "epoch-1"), Message(5, "epoch-1"), Message(99, null)],
+            "epoch-1"));
     }
 
     [Fact]

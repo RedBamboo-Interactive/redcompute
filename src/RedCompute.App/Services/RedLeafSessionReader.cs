@@ -12,13 +12,7 @@ internal sealed record TranscriptPageReadResult(
     long? OldestRecordId,
     long? NewestRecordId,
     bool HasEarlier,
-    bool HasLater,
-    IReadOnlyList<TranscriptSequenceSpan> SequenceSpans);
-
-internal sealed record TranscriptSequenceSpan(
-    string? Epoch,
-    long? MinSequence,
-    long? MaxSequence);
+    bool HasLater);
 
 internal sealed class TranscriptPageTooLargeException : Exception
 {
@@ -321,9 +315,7 @@ public sealed class RedLeafSessionReader
             oldestRecordId,
             newestRecordId,
             hasEarlier,
-            hasLater,
-            selected.Select(record => new TranscriptSequenceSpan(
-                record.Message.Epoch, record.MinSequence, record.MaxSequence)).ToList());
+            hasLater);
     }
 
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionByJobIdAsync(Guid jobId)
@@ -493,9 +485,7 @@ public sealed class RedLeafSessionReader
                         : null,
                 AttachmentsJson = Str(d, "attachments_json"),
             },
-            Encoding.UTF8.GetByteCount(dataJson),
-            sequence,
-            sequence);
+            Encoding.UTF8.GetByteCount(dataJson));
     }
 
     private static (int Count, int Bytes) BoundarySize(
@@ -655,9 +645,7 @@ public sealed class RedLeafSessionReader
         long FirstRecordId,
         long LastRecordId,
         UnifiedMessageRecord Message,
-        int InlineBytes,
-        long? MinSequence,
-        long? MaxSequence);
+        int InlineBytes);
 
     /// <summary>
     /// Collapses only the old Claude shape whose thinking deltas were persisted individually.
@@ -740,23 +728,7 @@ public sealed class RedLeafSessionReader
                 first.FirstRecordId,
                 last.LastRecordId,
                 first.Message,
-                checked(first.InlineBytes + last.InlineBytes),
-                Min(first.MinSequence, last.MinSequence),
-                Max(first.MaxSequence, last.MaxSequence));
-        }
-
-        private static long? Min(long? left, long? right)
-        {
-            if (!left.HasValue) return right;
-            if (!right.HasValue) return left;
-            return Math.Min(left.Value, right.Value);
-        }
-
-        private static long? Max(long? left, long? right)
-        {
-            if (!left.HasValue) return right;
-            if (!right.HasValue) return left;
-            return Math.Max(left.Value, right.Value);
+                checked(first.InlineBytes + last.InlineBytes));
         }
     }
 }
