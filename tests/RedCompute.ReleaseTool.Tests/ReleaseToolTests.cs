@@ -196,7 +196,7 @@ public sealed class ReleaseToolTests
         Assert.True(input.EnumerateObject().Count() == 4);
         Assert.Equal(1, input.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("https://github.com/RedBamboo-Interactive/redleaf", input.GetProperty("repositoryUrl").GetString());
-        const string exactCommit = "4604a11ea2cb299a45fb0da8aa86dd0726164d50";
+        const string exactCommit = "21e6fd393196fbe2179293ff3f05cb3501ebeaed";
         Assert.Equal(exactCommit, input.GetProperty("commit").GetString());
         Assert.Equal("redcompute-win-x64-{artifactSha256}.zip", input.GetProperty("centralArtifactFileNameTemplate").GetString());
 
@@ -204,7 +204,7 @@ public sealed class ReleaseToolTests
             root, "release", "redcompute-source-dependencies.v1.json")));
         var appHost = Assert.Single(dependenciesDocument.RootElement.GetProperty("dependencies").EnumerateArray());
         Assert.Equal("redbamboo-apphost", appHost.GetProperty("id").GetString());
-        Assert.Equal("5c238b3dff413a5448285ba4aa65e66a4dce634a", appHost.GetProperty("commit").GetString());
+        Assert.Equal("de5ec053440ebd6d4636e8287f493ce5e62a06f5", appHost.GetProperty("commit").GetString());
 
         var schemaPath = Path.Combine(root, "schemas", "redleaf-release-tool-input.v1.schema.json");
         using var schemaDocument = JsonDocument.Parse(File.ReadAllText(schemaPath));
