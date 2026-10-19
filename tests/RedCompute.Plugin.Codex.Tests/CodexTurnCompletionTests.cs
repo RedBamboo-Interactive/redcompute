@@ -7,6 +7,17 @@ namespace RedCompute.Plugin.Codex.Tests;
 
 public sealed class CodexTurnCompletionTests
 {
+    [Fact]
+    public void TurnStartRequestsAutoReasoningSummary()
+    {
+        var service = new CodexInteractiveService(new CodexConfig(), new RecordingStore(), null!, null!, null!, null!, null!, () => null, (_, _) => { });
+        var info = new CodexSessionInfo { Id = "session-1", ProjectName = "Test", ProjectPath = ".", ThreadId = "thread-1" };
+
+        var value = JsonSerializer.SerializeToElement(service.BuildTurnStartParams(info, []));
+
+        Assert.Equal("auto", value.GetProperty("summary").GetString());
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData(" \t\n")]

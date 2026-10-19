@@ -616,7 +616,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         input,
         model = info.Model,
         effort = info.Effort,
-        summary = "detailed",
+        // OpenAI recommends "auto": it selects the most detailed summarizer the model supports.
+        summary = "auto",
         approvalPolicy = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
             ? "never"
             : "on-request",
