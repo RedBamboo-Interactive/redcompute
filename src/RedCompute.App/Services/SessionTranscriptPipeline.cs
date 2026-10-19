@@ -200,7 +200,27 @@ public sealed class SessionTranscriptPipeline
                 }
             }
 
-            EnqueueInline(message, _sequences.Next(message.Provider, message.SessionId));
+            AppendInline(message, _sequences.Next(message.Provider, message.SessionId));
+        }
+    }
+
+    // Write a mirrored record before the provider's next event is stamped, as payload results
+    // already are, so storage order is sequence order. Batched, a tool_use could reach RedLeaf
+    // after its own synchronously written result; a history page holding that result then
+    // advertised a sequence beyond the missing tool_use, and clients dropped its live square
+    // until the next flush. A failed write falls back to the batched writer's retries.
+    private void AppendInline(AiMessageSnapshot message, TranscriptStamp stamp)
+    {
+        try
+        {
+            PersistSynchronously(() => _streams.AppendForEntityAsync("session-messages",
+                SessionEntitySlug(message.Provider, message.SessionId), InlineData(message, stamp),
+                $"transcript:{stamp.Epoch}:{stamp.Sequence}", createdAt: message.Timestamp));
+        }
+        catch (Exception ex)
+        {
+            _log($"[Transcript] Inline append failed for {message.Provider}/{message.SessionId}; queueing: {ex.Message}", null);
+            EnqueueInline(message, stamp);
         }
     }
 
