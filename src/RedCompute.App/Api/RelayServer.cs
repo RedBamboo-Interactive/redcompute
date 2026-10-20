@@ -358,6 +358,7 @@ public class RelayServer
                         ?? job.CreationProvenance?.Actor.Id,
                     confidential = true,
                 }, token));
+        CliVersionEndpoints.Map(registry, _registry);
         MaintenanceEndpoints.Map(registry, maintenance);
         VoiceSessionEndpoints.Map(registry, _registry, _voiceSessions);
         _ = RunAttachmentCleanupAsync(ct);

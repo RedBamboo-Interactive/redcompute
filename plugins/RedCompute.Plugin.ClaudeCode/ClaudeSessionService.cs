@@ -1738,7 +1738,16 @@ public class ClaudeSessionService
         if (configuredPath != null)
             return File.Exists(configuredPath) ? configuredPath : null;
 
-        // Prefer the native claude.exe from the Agent SDK (supports stream-json IPC)
+        // Prefer the native binary from the globally installed Claude Code package. This is the
+        // package RedCompute exposes for version management, so the version we report, install,
+        // and launch must all refer to the same bytes.
+        var globalCliExe = Path.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
+            "claude-code", "bin", "claude.exe");
+        if (File.Exists(globalCliExe))
+            return globalCliExe;
+
+        // The Agent SDK also bundles a native CLI that supports stream-json IPC. Keep it as a
+        // compatibility fallback for machines without a global Claude Code package.
         var sdkExe = Path.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
             "claude-agent-sdk", "node_modules", "@anthropic-ai",
             "claude-agent-sdk-win32-x64", "claude.exe");

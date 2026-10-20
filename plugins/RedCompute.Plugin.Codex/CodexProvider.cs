@@ -10,7 +10,7 @@ using RedCompute.PluginSdk;
 namespace RedCompute.Plugin.Codex;
 
 public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider,
-    ISessionProvider, IImageAttachmentSupportProvider, IProviderUsageSource
+    ISessionProvider, IImageAttachmentSupportProvider, IProviderUsageSource, ICliVersionManagedProvider
 {
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
@@ -19,6 +19,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     private readonly object _injectionGate = new();
     private readonly CodexModelCatalog _models;
     private readonly CodexAccountUsageService _accountUsage;
+    private readonly NpmCliVersionManager _cliVersionManager;
     private readonly IJobTracker _jobTracker;
     private readonly Action<string, Guid?> _log;
     private string? _lastStartError;
@@ -38,6 +39,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     // ISessionProvider
     public string ProviderId => "codex";
     public string ProviderDisplayName => "Codex";
+    public NpmCliVersionManager CliVersionManager => _cliVersionManager;
     internal const SessionCapabilities DeclaredCapabilities =
         SessionCapabilities.StatelessExecution
         | SessionCapabilities.Generate
@@ -67,6 +69,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _codex = new CodexSessionService(codexConfig, jobTracker, _store, log);
         _models = new CodexModelCatalog(codexConfig, log);
         _accountUsage = new CodexAccountUsageService(codexConfig, log);
+        _cliVersionManager = new NpmCliVersionManager(
+            "@openai/codex",
+            () => CodexCliLocator.Resolve(codexConfig.CodexPath),
+            GetBlockingCliSessionCount);
         _interactive = new CodexInteractiveService(
             codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
             () => GetTitleQualityTier(config), log);
@@ -535,4 +541,12 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         new() { Method = "POST", Path = "/codex/sessions/{id}/dismiss", Description = "Dismiss a session" },
         new() { Method = "DELETE", Path = "/codex/sessions/{id}", Description = "Force-kill an execution" }
     };
+
+    private int GetBlockingCliSessionCount()
+        => _codex.GetSessions(100_000, includeDismissed: false)
+            .Concat(_interactive.GetSessions(100_000, includeDismissed: false))
+            .Where(session => session.Status is "Starting" or "Active")
+            .Select(session => session.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
 }

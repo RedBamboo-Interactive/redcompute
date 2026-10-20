@@ -10,13 +10,14 @@ using RedCompute.PluginSdk;
 namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
-    IProviderUsageSource
+    IProviderUsageSource, ICliVersionManagedProvider
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
     private readonly IClaudeSessionStore _store;
     private readonly object _injectionGate = new();
     private readonly IJobTracker _jobTracker;
+    private readonly NpmCliVersionManager _cliVersionManager;
     private readonly Action<string, Guid?> _log;
 
     public event Action<string, object>? PluginEvent;
@@ -34,6 +35,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     // ISessionProvider
     public string ProviderId => "claude-code";
     public string ProviderDisplayName => "Claude Code";
+    public NpmCliVersionManager CliVersionManager => _cliVersionManager;
     internal const SessionCapabilities DeclaredCapabilities =
         SessionCapabilities.StatelessExecution | SessionCapabilities.PersistentSessions |
         SessionCapabilities.Resume | SessionCapabilities.Interrupt |
@@ -58,6 +60,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _claude = new ClaudeSessionService(
             claudeConfig, jobTracker, _store, qualityModes,
             () => GetTitleQualityTier(config), log);
+        _cliVersionManager = CreateCliVersionManager(claudeConfig);
         WireSessionEvents();
     }
 
@@ -70,6 +73,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _store = store;
         _jobTracker = jobTracker;
         _log = log;
+        _cliVersionManager = new NpmCliVersionManager(
+            "@anthropic-ai/claude-code", () => null, GetBlockingCliSessionCount);
         WireSessionEvents();
     }
 
@@ -394,4 +399,17 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public ReturnSchema OutputSchema => new() { ContentType = "application/json", Streaming = true };
 
     public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => [];
+
+    private NpmCliVersionManager CreateCliVersionManager(ClaudeConfig config)
+        => new(
+            "@anthropic-ai/claude-code",
+            () => ClaudeSessionService.ResolveClaudePath(
+                config.ClaudePath,
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                Environment.GetEnvironmentVariable("PATH")),
+            GetBlockingCliSessionCount);
+
+    private int GetBlockingCliSessionCount()
+        => _claude.GetSessions(100_000, includeDismissed: false)
+            .Count(session => session.Status is SessionStatus.Starting or SessionStatus.Active);
 }

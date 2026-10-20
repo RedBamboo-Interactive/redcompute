@@ -11,6 +11,25 @@ namespace RedCompute.App.Tests;
 public sealed class ClaudeToolAvailabilityTests
 {
     [Fact]
+    public void ResolveClaudePath_prefers_managed_global_Claude_Code_package()
+    {
+        using var scratch = new ScratchDirectory();
+        var globalCli = Path.Combine(scratch.Path, "npm", "node_modules", "@anthropic-ai",
+            "claude-code", "bin", "claude.exe");
+        var sdkCli = Path.Combine(scratch.Path, "npm", "node_modules", "@anthropic-ai",
+            "claude-agent-sdk", "node_modules", "@anthropic-ai",
+            "claude-agent-sdk-win32-x64", "claude.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(globalCli)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(sdkCli)!);
+        File.WriteAllText(globalCli, "global fixture");
+        File.WriteAllText(sdkCli, "sdk fixture");
+
+        var resolved = ClaudeSessionService.ResolveClaudePath(null, scratch.Path, null);
+
+        Assert.Equal(globalCli, resolved);
+    }
+
+    [Fact]
     public void ResolveClaudePath_finds_newest_Claude_Desktop_bundle()
     {
         using var scratch = new ScratchDirectory();
