@@ -15,6 +15,23 @@ public interface ICliVersionManagedProvider
     NpmCliVersionManager CliVersionManager { get; }
 }
 
+public sealed record CliProviderSessionState(
+    int BlockingSessionCount,
+    IReadOnlyList<string> IdleSessionIds,
+    IReadOnlyCollection<int> OwnedProcessIds)
+{
+    public static readonly CliProviderSessionState Empty = new(0, [], []);
+}
+
+public sealed record CliProcessInfo(int ProcessId, string ExecutablePath);
+
+public interface ICliProcessInspector
+{
+    IReadOnlyList<CliProcessInfo> FindPackageProcesses(
+        string packageDirectory,
+        IReadOnlyCollection<int> ownedRootProcessIds);
+}
+
 public sealed record CliCommand(string FileName, IReadOnlyList<string> Arguments);
 
 public sealed record CliCommandResult(int ExitCode, string StandardOutput, string StandardError)
@@ -84,6 +101,113 @@ public sealed class ProcessCliCommandRunner : ICliCommandRunner
     }
 }
 
+public sealed class SystemCliProcessInspector : ICliProcessInspector
+{
+    public IReadOnlyList<CliProcessInfo> FindPackageProcesses(
+        string packageDirectory,
+        IReadOnlyCollection<int> ownedRootProcessIds)
+    {
+        if (string.IsNullOrWhiteSpace(packageDirectory) || !Directory.Exists(packageDirectory))
+            return [];
+
+        var comparison = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(packageDirectory))
+            + Path.DirectorySeparatorChar;
+        var parentProcesses = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? ReadWindowsParentProcesses()
+            : new Dictionary<int, int>();
+        var ownedRoots = ownedRootProcessIds.Where(pid => pid > 0).ToHashSet();
+        var result = new List<CliProcessInfo>();
+
+        foreach (var process in Process.GetProcesses())
+        {
+            using (process)
+            {
+                string? executable;
+                try { executable = process.MainModule?.FileName; }
+                catch { continue; }
+                if (string.IsNullOrWhiteSpace(executable)) continue;
+
+                string fullPath;
+                try { fullPath = Path.GetFullPath(executable); }
+                catch { continue; }
+                if (!fullPath.StartsWith(root, comparison)) continue;
+                if (IsOwnedProcessTree(process.Id, ownedRoots, parentProcesses)) continue;
+                result.Add(new CliProcessInfo(process.Id, fullPath));
+            }
+        }
+
+        return result;
+    }
+
+    private static bool IsOwnedProcessTree(
+        int processId,
+        IReadOnlySet<int> ownedRoots,
+        IReadOnlyDictionary<int, int> parentProcesses)
+    {
+        var current = processId;
+        var visited = new HashSet<int>();
+        while (current > 0 && visited.Add(current))
+        {
+            if (ownedRoots.Contains(current)) return true;
+            if (!parentProcesses.TryGetValue(current, out current)) break;
+        }
+        return false;
+    }
+
+    private static Dictionary<int, int> ReadWindowsParentProcesses()
+    {
+        var result = new Dictionary<int, int>();
+        var snapshot = CreateToolhelp32Snapshot(0x00000002, 0);
+        if (snapshot == new IntPtr(-1)) return result;
+        try
+        {
+            var entry = new ProcessEntry32 { Size = (uint)Marshal.SizeOf<ProcessEntry32>() };
+            if (!Process32First(snapshot, ref entry)) return result;
+            do
+            {
+                result[(int)entry.ProcessId] = (int)entry.ParentProcessId;
+                entry.Size = (uint)Marshal.SizeOf<ProcessEntry32>();
+            } while (Process32Next(snapshot, ref entry));
+        }
+        finally
+        {
+            CloseHandle(snapshot);
+        }
+        return result;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct ProcessEntry32
+    {
+        public uint Size;
+        public uint Usage;
+        public uint ProcessId;
+        public IntPtr DefaultHeapId;
+        public uint ModuleId;
+        public uint Threads;
+        public uint ParentProcessId;
+        public int BasePriority;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string ExecutableFile;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern bool Process32First(IntPtr snapshot, ref ProcessEntry32 entry);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry32 entry);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+}
+
 public sealed record CliInstalledVersionResult(string? Version, string? Error);
 
 public sealed record CliVersionStatus(
@@ -91,9 +215,15 @@ public sealed record CliVersionStatus(
     string? InstalledVersion,
     string? DetectionError,
     int ActiveSessionCount,
+    int IdleSessionCount,
+    int ExternalProcessCount,
     bool InstallAllowed,
     string? BlockedReason,
     CliInstallOperation? Operation);
+
+public sealed record CliVersionCatalog(
+    IReadOnlyList<string> Versions,
+    string? LatestVersion);
 
 public sealed record CliInstallOperation(
     Guid Id,
@@ -120,50 +250,71 @@ public sealed class CliInstallRejectedException : Exception
 }
 
 /// <summary>
-/// Shared npm-backed version manager. It never stops provider sessions; install requests are
-/// refused when the provider reports a Starting or Active session and are checked again in the
-/// asynchronous operation immediately before npm is launched.
+/// Shared npm-backed version manager. Starting or Active sessions and non-Leaf package processes
+/// block installs. Idle provider sessions are parked through the provider's existing resumable
+/// maintenance-stop path immediately before npm is launched.
 /// </summary>
 public sealed class NpmCliVersionManager
 {
     private static readonly Regex VersionPattern = new(
         @"(?<![0-9A-Za-z])v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?![0-9A-Za-z])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly Regex ExactVersionPattern = new(
-        @"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$",
+    private static readonly Regex StableVersionPattern = new(
+        @"^\d+\.\d+\.\d+$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private readonly string _processDisplayName;
     private readonly Func<string?> _resolveExecutable;
     private readonly Func<string?> _resolveNpmExecutable;
-    private readonly Func<int> _activeSessionCount;
+    private readonly Func<string?> _resolvePackageDirectory;
+    private readonly Func<CliProviderSessionState> _sessionState;
+    private readonly Func<IReadOnlyList<string>, CancellationToken, Task> _parkIdleSessions;
     private readonly ICliCommandRunner _runner;
+    private readonly ICliProcessInspector _processInspector;
+    private readonly TimeSpan _installTimeout;
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _launchGate = new(1, 1);
     private readonly Dictionary<Guid, CliInstallOperation> _operations = [];
     private Guid? _currentOperationId;
+    private TaskCompletionSource? _installFinished;
 
     public string PackageName { get; }
 
     public NpmCliVersionManager(
         string packageName,
+        string processDisplayName,
         Func<string?> resolveExecutable,
-        Func<int> activeSessionCount,
+        Func<CliProviderSessionState> sessionState,
+        Func<IReadOnlyList<string>, CancellationToken, Task> parkIdleSessions,
         ICliCommandRunner? runner = null,
-        Func<string?>? resolveNpmExecutable = null)
+        Func<string?>? resolveNpmExecutable = null,
+        Func<string?>? resolvePackageDirectory = null,
+        ICliProcessInspector? processInspector = null,
+        TimeSpan? installTimeout = null)
     {
         PackageName = packageName;
+        _processDisplayName = processDisplayName;
         _resolveExecutable = resolveExecutable;
-        _activeSessionCount = activeSessionCount;
+        _sessionState = sessionState;
+        _parkIdleSessions = parkIdleSessions;
         _runner = runner ?? new ProcessCliCommandRunner();
         _resolveNpmExecutable = resolveNpmExecutable ?? ResolveNpmExecutable;
+        _resolvePackageDirectory = resolvePackageDirectory
+            ?? (() => ResolveGlobalNpmPackageDirectory(packageName));
+        _processInspector = processInspector ?? new SystemCliProcessInspector();
+        _installTimeout = installTimeout ?? TimeSpan.FromMinutes(10);
     }
 
     public async Task<CliVersionStatus> GetStatusAsync(CancellationToken ct = default)
     {
         var installed = await GetInstalledVersionAsync(ct);
-        var activeCount = Math.Max(0, _activeSessionCount());
+        var sessions = GetSessionState();
+        var activeCount = sessions.BlockingSessionCount;
+        var externalProcesses = FindExternalProcesses(sessions);
         var operation = CurrentOperation();
         var installing = operation?.Status is "queued" or "running";
         var blockedReason = activeCount > 0 ? FormatSessionCount(activeCount)
+            : externalProcesses.Count > 0 ? FormatExternalProcessCount(externalProcesses.Count)
             : installing ? "Install already in progress"
             : null;
         return new CliVersionStatus(
@@ -171,6 +322,8 @@ public sealed class NpmCliVersionManager
             installed.Version,
             installed.Error,
             activeCount,
+            sessions.IdleSessionIds.Count,
+            externalProcesses.Count,
             blockedReason is null,
             blockedReason,
             operation);
@@ -202,36 +355,52 @@ public sealed class NpmCliVersionManager
         }
     }
 
-    public async Task<IReadOnlyList<string>> GetAvailableVersionsAsync(CancellationToken ct = default)
+    public async Task<CliVersionCatalog> GetAvailableVersionsAsync(CancellationToken ct = default)
     {
         var npm = _resolveNpmExecutable()
             ?? throw new InvalidOperationException("npm executable not found");
-        var result = await _runner.RunAsync(
+        var versionsResult = await _runner.RunAsync(
             new CliCommand(npm, ["view", PackageName, "versions", "--json"]), ct);
-        if (result.ExitCode != 0)
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.CombinedOutput)
-                ? $"npm view exited with code {result.ExitCode}"
-                : result.CombinedOutput);
-        return ParseAvailableVersions(result.StandardOutput);
+        if (versionsResult.ExitCode != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(versionsResult.CombinedOutput)
+                ? $"npm view exited with code {versionsResult.ExitCode}"
+                : versionsResult.CombinedOutput);
+
+        var latestResult = await _runner.RunAsync(
+            new CliCommand(npm, ["view", PackageName, "dist-tags.latest", "--json"]), ct);
+        if (latestResult.ExitCode != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(latestResult.CombinedOutput)
+                ? $"npm view latest exited with code {latestResult.ExitCode}"
+                : latestResult.CombinedOutput);
+
+        return new CliVersionCatalog(
+            ParseAvailableVersions(versionsResult.StandardOutput),
+            ParseLatestVersion(latestResult.StandardOutput));
     }
 
     public CliInstallOperation StartInstall(string requestedVersion)
     {
         requestedVersion = requestedVersion.Trim();
         if (!requestedVersion.Equals("latest", StringComparison.OrdinalIgnoreCase)
-            && !ExactVersionPattern.IsMatch(requestedVersion))
-            throw new CliInstallRejectedException("invalid_version", "Version must be 'latest' or an npm semantic version");
+            && !StableVersionPattern.IsMatch(requestedVersion))
+            throw new CliInstallRejectedException("invalid_version", "Version must be 'latest' or a stable x.y.z version");
 
         CliInstallOperation operation;
+        TaskCompletionSource installFinished;
         lock (_gate)
         {
             var current = CurrentOperationUnsafe();
             if (current?.Status is "queued" or "running")
                 throw new CliInstallRejectedException("install_in_progress", "Install already in progress");
 
-            var activeCount = Math.Max(0, _activeSessionCount());
+            var sessions = GetSessionState();
+            var activeCount = sessions.BlockingSessionCount;
             if (activeCount > 0)
                 throw new CliInstallRejectedException("sessions_running", FormatSessionCount(activeCount), activeCount);
+            var externalProcesses = FindExternalProcesses(sessions);
+            if (externalProcesses.Count > 0)
+                throw new CliInstallRejectedException(
+                    "external_processes", FormatExternalProcessCount(externalProcesses.Count));
 
             operation = new CliInstallOperation(
                 Guid.NewGuid(), "queued",
@@ -239,9 +408,11 @@ public sealed class NpmCliVersionManager
                 DateTimeOffset.UtcNow);
             _operations[operation.Id] = operation;
             _currentOperationId = operation.Id;
+            installFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _installFinished = installFinished;
         }
 
-        _ = Task.Run(() => RunInstallAsync(operation.Id));
+        _ = Task.Run(() => RunInstallAsync(operation.Id, installFinished));
         return operation;
     }
 
@@ -271,8 +442,19 @@ public sealed class NpmCliVersionManager
                 => [document.RootElement.GetString()!],
             _ => [],
         };
+        versions = versions.Where(version => StableVersionPattern.IsMatch(version)).ToList();
         versions.Sort(SemanticVersionDescendingComparer.Instance);
         return versions;
+    }
+
+    public static string? ParseLatestVersion(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.ValueKind == JsonValueKind.String
+            && document.RootElement.GetString() is { } version
+            && StableVersionPattern.IsMatch(version)
+                ? version
+                : null;
     }
 
     public static CliCommand BuildInstallCommand(
@@ -280,14 +462,79 @@ public sealed class NpmCliVersionManager
         => new(npmExecutable,
             ["install", "--global", $"{packageName}@{requestedVersion}"]);
 
-    private async Task RunInstallAsync(Guid operationId)
+    /// <summary>
+    /// Serializes every provider process launch against an install. A launch already in progress
+    /// finishes first; launches admitted after an install is queued wait for its bounded operation.
+    /// </summary>
+    public async Task<T> RunWhenInstallIdleAsync<T>(
+        Func<Task<T>> launch,
+        CancellationToken ct = default)
     {
+        while (true)
+        {
+            Task? installFinished;
+            lock (_gate)
+                installFinished = CurrentOperationUnsafe()?.Status is "queued" or "running"
+                    ? _installFinished?.Task
+                    : null;
+            if (installFinished is not null)
+            {
+                await installFinished.WaitAsync(ct);
+                continue;
+            }
+
+            await _launchGate.WaitAsync(ct);
+            try
+            {
+                lock (_gate)
+                    installFinished = CurrentOperationUnsafe()?.Status is "queued" or "running"
+                        ? _installFinished?.Task
+                        : null;
+                if (installFinished is null)
+                    return await launch();
+            }
+            finally
+            {
+                _launchGate.Release();
+            }
+
+            await installFinished.WaitAsync(ct);
+        }
+    }
+
+    private async Task RunInstallAsync(Guid operationId, TaskCompletionSource installFinished)
+    {
+        var launchGateAcquired = false;
+        using var timeout = new CancellationTokenSource(_installTimeout);
         try
         {
-            var activeCount = Math.Max(0, _activeSessionCount());
+            var ct = timeout.Token;
+            await _launchGate.WaitAsync(ct);
+            launchGateAcquired = true;
+            var sessions = GetSessionState();
+            var activeCount = sessions.BlockingSessionCount;
             if (activeCount > 0)
             {
                 Complete(operationId, "refused", "sessions_running", FormatSessionCount(activeCount));
+                return;
+            }
+
+            if (sessions.IdleSessionIds.Count > 0)
+                await _parkIdleSessions(sessions.IdleSessionIds, ct);
+
+            sessions = GetSessionState();
+            activeCount = sessions.BlockingSessionCount;
+            if (activeCount > 0)
+            {
+                Complete(operationId, "refused", "sessions_running", FormatSessionCount(activeCount));
+                return;
+            }
+
+            var remainingProcesses = FindPackageProcesses([]);
+            if (remainingProcesses.Count > 0)
+            {
+                Complete(operationId, "refused", "external_processes",
+                    FormatExternalProcessCount(remainingProcesses.Count));
                 return;
             }
 
@@ -301,13 +548,13 @@ public sealed class NpmCliVersionManager
             var npm = _resolveNpmExecutable()
                 ?? throw new InvalidOperationException("npm executable not found");
             var command = BuildInstallCommand(npm, PackageName, operation.RequestedVersion);
-            var result = await _runner.RunAsync(command, CancellationToken.None);
+            var result = await _runner.RunAsync(command, ct);
             if (result.ExitCode != 0)
                 throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.CombinedOutput)
                     ? $"npm install exited with code {result.ExitCode}"
                     : result.CombinedOutput);
 
-            var installed = await GetInstalledVersionAsync(CancellationToken.None);
+            var installed = await GetInstalledVersionAsync(ct);
             Update(operationId, current => current with
             {
                 Status = "completed",
@@ -316,9 +563,19 @@ public sealed class NpmCliVersionManager
                 Error = installed.Error,
             });
         }
+        catch (OperationCanceledException)
+        {
+            Complete(operationId, "failed", "install_timeout",
+                $"CLI install exceeded the {_installTimeout.TotalMinutes:g}-minute time limit");
+        }
         catch (Exception ex)
         {
             Complete(operationId, "failed", "npm_install_failed", ex.Message);
+        }
+        finally
+        {
+            if (launchGateAcquired) _launchGate.Release();
+            installFinished.TrySetResult();
         }
     }
 
@@ -349,8 +606,42 @@ public sealed class NpmCliVersionManager
     private CliInstallOperation? CurrentOperationUnsafe()
         => _currentOperationId is { } id ? _operations.GetValueOrDefault(id) : null;
 
+    private CliProviderSessionState GetSessionState()
+    {
+        var state = _sessionState() ?? CliProviderSessionState.Empty;
+        return state with
+        {
+            BlockingSessionCount = Math.Max(0, state.BlockingSessionCount),
+            IdleSessionIds = state.IdleSessionIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            OwnedProcessIds = state.OwnedProcessIds.Where(pid => pid > 0).Distinct().ToArray(),
+        };
+    }
+
+    private IReadOnlyList<CliProcessInfo> FindExternalProcesses(CliProviderSessionState sessions)
+        => FindPackageProcesses(sessions.OwnedProcessIds);
+
+    private IReadOnlyList<CliProcessInfo> FindPackageProcesses(IReadOnlyCollection<int> ownedRootProcessIds)
+    {
+        var packageDirectory = _resolvePackageDirectory();
+        if (string.IsNullOrWhiteSpace(packageDirectory)) return [];
+        return _processInspector.FindPackageProcesses(packageDirectory, ownedRootProcessIds);
+    }
+
     private static string FormatSessionCount(int count)
         => $"{count} {(count == 1 ? "session" : "sessions")} running";
+
+    private string FormatExternalProcessCount(int count)
+        => $"{count} {_processDisplayName} {(count == 1 ? "process" : "processes")} still running outside Leaf";
+
+    public static string? ResolveGlobalNpmPackageDirectory(string packageName)
+    {
+        var applicationData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (string.IsNullOrWhiteSpace(applicationData)) return null;
+        var segments = packageName.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length == 0
+            ? null
+            : Path.Combine([applicationData, "npm", "node_modules", .. segments]);
+    }
 
     private static string? ResolveNpmExecutable()
     {

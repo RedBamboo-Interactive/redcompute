@@ -19,19 +19,20 @@ public static class CliVersionEndpoints
             });
 
         endpoints.MapGet("/ai-session/providers/{providerId}/cli/versions",
-            "Published npm versions for an opted-in CLI provider, ordered newest first.",
+            "Stable published npm versions and the latest dist-tag for an opted-in CLI provider, ordered newest first.",
             async (string providerId, CancellationToken ct) =>
             {
                 var provider = FindProvider(registry, providerId);
                 if (provider is null) return ProviderNotFound(providerId);
                 try
                 {
-                    var versions = await provider.CliVersionManager.GetAvailableVersionsAsync(ct);
+                    var catalog = await provider.CliVersionManager.GetAvailableVersionsAsync(ct);
                     return Results.Ok(new
                     {
                         providerId = provider.ProviderId,
                         packageName = provider.CliVersionManager.PackageName,
-                        versions,
+                        versions = catalog.Versions,
+                        latestVersion = catalog.LatestVersion,
                     });
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)

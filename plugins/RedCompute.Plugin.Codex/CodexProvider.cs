@@ -71,8 +71,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _accountUsage = new CodexAccountUsageService(codexConfig, log);
         _cliVersionManager = new NpmCliVersionManager(
             "@openai/codex",
+            "Codex",
             () => CodexCliLocator.Resolve(codexConfig.CodexPath),
-            GetBlockingCliSessionCount);
+            GetCliSessionState,
+            ParkIdleCliSessionsAsync);
         _interactive = new CodexInteractiveService(
             codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
             () => GetTitleQualityTier(config), log);
@@ -144,11 +146,14 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential = false)
     {
-        if (!await ValidateRequestedModelAsync(model)) return null;
-        var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
-            userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current);
-        return info != null ? ToUnified(info) : null;
+        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
+        {
+            if (!await ValidateRequestedModelAsync(model)) return null;
+            var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
+                userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
+                scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current);
+            return info != null ? ToUnified(info) : null;
+        });
     }
 
     public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
@@ -157,11 +162,14 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential, string? developerInstructions)
     {
-        if (!await ValidateRequestedModelAsync(model)) return null;
-        var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
-            userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current);
-        return info != null ? ToUnified(info) : null;
+        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
+        {
+            if (!await ValidateRequestedModelAsync(model)) return null;
+            var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
+                userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
+                scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current);
+            return info != null ? ToUnified(info) : null;
+        });
     }
 
     private async Task<bool> ValidateRequestedModelAsync(string? model)
@@ -179,14 +187,20 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
-        var info = await _interactive.ResumeSessionAsync(sessionId);
-        return info != null ? ToUnified(info) : null;
+        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
+        {
+            var info = await _interactive.ResumeSessionAsync(sessionId);
+            return info != null ? ToUnified(info) : null;
+        });
     }
 
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
     {
-        var info = await _interactive.ResumeSessionAsync(sessionId, provenance);
-        return info != null ? ToUnified(info) : null;
+        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
+        {
+            var info = await _interactive.ResumeSessionAsync(sessionId, provenance);
+            return info != null ? ToUnified(info) : null;
+        });
     }
 
     public Task StopSessionAsync(string sessionId) => _interactive.StopSessionAsync(sessionId);
@@ -542,11 +556,38 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         new() { Method = "DELETE", Path = "/codex/sessions/{id}", Description = "Force-kill an execution" }
     };
 
-    private int GetBlockingCliSessionCount()
-        => _codex.GetSessions(100_000, includeDismissed: false)
-            .Concat(_interactive.GetSessions(100_000, includeDismissed: false))
+    private CliProviderSessionState GetCliSessionState()
+    {
+        var legacy = _codex.GetSessions(100_000, includeDismissed: false);
+        var interactive = _interactive.GetSessions(100_000, includeDismissed: false);
+        var blocking = legacy.Select(session => (session.Id, session.Status))
+            .Concat(interactive.Select(session => (session.Id, session.Status)))
             .Where(session => session.Status is "Starting" or "Active")
             .Select(session => session.Id)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
+        var idle = interactive
+            .Where(session => session.Status == "Idle" && session.ProcessId is not null)
+            .Select(session => session.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var ownedProcesses = legacy.Select(session => session.ProcessId)
+            .Concat(interactive.Select(session => session.ProcessId))
+            .Where(processId => processId is > 0)
+            .Select(processId => processId!.Value)
+            .Distinct()
+            .ToArray();
+        return new CliProviderSessionState(blocking, idle, ownedProcesses);
+    }
+
+    private async Task ParkIdleCliSessionsAsync(
+        IReadOnlyList<string> sessionIds,
+        CancellationToken ct)
+    {
+        foreach (var sessionId in sessionIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            await _interactive.ForceKillAsync(sessionId, SessionStopReasons.MaintenanceRestart);
+        }
+    }
 }

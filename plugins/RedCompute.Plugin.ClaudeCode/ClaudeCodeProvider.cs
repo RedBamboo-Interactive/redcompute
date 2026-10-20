@@ -74,7 +74,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _jobTracker = jobTracker;
         _log = log;
         _cliVersionManager = new NpmCliVersionManager(
-            "@anthropic-ai/claude-code", () => null, GetBlockingCliSessionCount);
+            "@anthropic-ai/claude-code", "Claude Code", () => null,
+            GetCliSessionState, ParkIdleCliSessionsAsync);
         WireSessionEvents();
     }
 
@@ -139,17 +140,19 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     // --- ISessionProvider: Session Lifecycle ---
 
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential = false)
     {
-        var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
-            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
-            confidential);
-
-        return Task.FromResult(info != null ? ToUnified(info) : null);
+        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
+        {
+            var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
+                effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
+                confidential);
+            return Task.FromResult(info != null ? ToUnified(info) : null);
+        });
     }
 
     /// <summary>
@@ -157,29 +160,37 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     /// is launched with <c>--append-system-prompt</c>, and the text is persisted with the session
     /// so every later relaunch (resume, restart recovery, interrupt recovery) reapplies it.
     /// </summary>
-    public Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
+    public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
         string? userId, string? userName, string? userAvatarUrl, string? effort, string? endpointUrl,
         string? apiKey, int? thinkingBudget, string? qualityTier, string? providerEntity,
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential, string? developerInstructions)
     {
-        var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
-            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
-            confidential, developerInstructions);
-
-        return Task.FromResult(info != null ? ToUnified(info) : null);
+        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
+        {
+            var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
+                effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
+                confidential, developerInstructions);
+            return Task.FromResult(info != null ? ToUnified(info) : null);
+        });
     }
 
-    public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
+    public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
-        var info = _claude.ResumeSession(sessionId);
-        return Task.FromResult(info != null ? ToUnified(info) : null);
+        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
+        {
+            var info = _claude.ResumeSession(sessionId);
+            return Task.FromResult(info != null ? ToUnified(info) : null);
+        });
     }
 
-    public Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
+    public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
     {
-        var info = _claude.ResumeSession(sessionId, provenance);
-        return Task.FromResult(info != null ? ToUnified(info) : null);
+        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
+        {
+            var info = _claude.ResumeSession(sessionId, provenance);
+            return Task.FromResult(info != null ? ToUnified(info) : null);
+        });
     }
 
     public Task StopSessionAsync(string sessionId) => _claude.StopSession(sessionId);
@@ -403,13 +414,37 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     private NpmCliVersionManager CreateCliVersionManager(ClaudeConfig config)
         => new(
             "@anthropic-ai/claude-code",
+            "Claude Code",
             () => ClaudeSessionService.ResolveClaudePath(
                 config.ClaudePath,
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 Environment.GetEnvironmentVariable("PATH")),
-            GetBlockingCliSessionCount);
+            GetCliSessionState,
+            ParkIdleCliSessionsAsync);
 
-    private int GetBlockingCliSessionCount()
-        => _claude.GetSessions(100_000, includeDismissed: false)
-            .Count(session => session.Status is SessionStatus.Starting or SessionStatus.Active);
+    private CliProviderSessionState GetCliSessionState()
+    {
+        var sessions = _claude.GetSessions(100_000, includeDismissed: false);
+        return new CliProviderSessionState(
+            sessions.Count(session => session.Status is SessionStatus.Starting or SessionStatus.Active),
+            sessions.Where(session => session.Status == SessionStatus.Idle && session.ProcessId is not null)
+                .Select(session => session.Id)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            sessions.Where(session => session.ProcessId is > 0)
+                .Select(session => session.ProcessId!.Value)
+                .Distinct()
+                .ToArray());
+    }
+
+    private async Task ParkIdleCliSessionsAsync(
+        IReadOnlyList<string> sessionIds,
+        CancellationToken ct)
+    {
+        foreach (var sessionId in sessionIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            await _claude.ForceKill(sessionId, SessionStopReasons.MaintenanceRestart);
+        }
+    }
 }
