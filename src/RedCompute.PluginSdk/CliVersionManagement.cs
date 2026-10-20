@@ -32,6 +32,25 @@ public interface ICliProcessInspector
         IReadOnlyCollection<int> ownedRootProcessIds);
 }
 
+/// <summary>
+/// Serializes provider CLI process launches with package installation. Provider services receive
+/// this at their actual spawn boundary so internal resume and one-shot paths cannot bypass it.
+/// </summary>
+public interface ICliProcessLaunchGate
+{
+    Task<T> RunWhenInstallIdleAsync<T>(Func<Task<T>> launch, CancellationToken ct = default);
+}
+
+public sealed class UnrestrictedCliProcessLaunchGate : ICliProcessLaunchGate
+{
+    public static readonly UnrestrictedCliProcessLaunchGate Instance = new();
+
+    private UnrestrictedCliProcessLaunchGate() { }
+
+    public Task<T> RunWhenInstallIdleAsync<T>(Func<Task<T>> launch, CancellationToken ct = default)
+        => launch();
+}
+
 public sealed record CliCommand(string FileName, IReadOnlyList<string> Arguments);
 
 public sealed record CliCommandResult(int ExitCode, string StandardOutput, string StandardError)
@@ -254,7 +273,7 @@ public sealed class CliInstallRejectedException : Exception
 /// block installs. Idle provider sessions are parked through the provider's existing resumable
 /// maintenance-stop path immediately before npm is launched.
 /// </summary>
-public sealed class NpmCliVersionManager
+public sealed class NpmCliVersionManager : ICliProcessLaunchGate
 {
     private static readonly Regex VersionPattern = new(
         @"(?<![0-9A-Za-z])v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?![0-9A-Za-z])",
@@ -329,7 +348,10 @@ public sealed class NpmCliVersionManager
             operation);
     }
 
-    public async Task<CliInstalledVersionResult> GetInstalledVersionAsync(CancellationToken ct = default)
+    public Task<CliInstalledVersionResult> GetInstalledVersionAsync(CancellationToken ct = default)
+        => RunWhenInstallIdleAsync(() => GetInstalledVersionCoreAsync(ct), ct);
+
+    private async Task<CliInstalledVersionResult> GetInstalledVersionCoreAsync(CancellationToken ct)
     {
         var executable = _resolveExecutable();
         if (string.IsNullOrWhiteSpace(executable))
@@ -554,7 +576,7 @@ public sealed class NpmCliVersionManager
                     ? $"npm install exited with code {result.ExitCode}"
                     : result.CombinedOutput);
 
-            var installed = await GetInstalledVersionAsync(ct);
+            var installed = await GetInstalledVersionCoreAsync(ct);
             Update(operationId, current => current with
             {
                 Status = "completed",

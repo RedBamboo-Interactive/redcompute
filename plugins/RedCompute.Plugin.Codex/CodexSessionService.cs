@@ -25,6 +25,7 @@ public class CodexSessionService
 
     /// <summary>Test seam for non-interactive exec invocations.</summary>
     internal Func<ProcessStartInfo, Process?> LaunchExecProcess { get; set; } = Process.Start;
+    internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
     public CodexSessionService(CodexConfig config, IJobTracker jobTracker, ICodexSessionStore store, Action<string, Guid?> log)
     {
@@ -82,7 +83,7 @@ public class CodexSessionService
     public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
-    public async Task<ExecuteResult> ExecuteExecAsync(
+    public Task<ExecuteResult> ExecuteExecAsync(
         string prompt, string? container, string? workingDir,
         string? model, string? sandbox, int timeout,
         CancellationToken ct,
@@ -90,6 +91,19 @@ public class CodexSessionService
         Dictionary<string, string>? env = null,
         bool networkAccess = false,
         string? effort = null)
+        => LaunchGate.RunWhenInstallIdleAsync(
+            () => ExecuteExecCoreAsync(prompt, container, workingDir, model, sandbox, timeout,
+                ct, streamKey, env, networkAccess, effort),
+            ct);
+
+    private async Task<ExecuteResult> ExecuteExecCoreAsync(
+        string prompt, string? container, string? workingDir,
+        string? model, string? sandbox, int timeout,
+        CancellationToken ct,
+        string? streamKey,
+        Dictionary<string, string>? env,
+        bool networkAccess,
+        string? effort)
     {
         ExecuteResult? last = null;
         for (var attempt = 1; attempt <= 3; attempt++)

@@ -78,6 +78,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _interactive = new CodexInteractiveService(
             codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
             () => GetTitleQualityTier(config), log);
+        _codex.LaunchGate = _cliVersionManager;
+        _interactive.LaunchGate = _cliVersionManager;
+        _models.LaunchGate = _cliVersionManager;
+        _accountUsage.LaunchGate = _cliVersionManager;
 
         _codex.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _codex.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
@@ -146,14 +150,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential = false)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
-        {
-            if (!await ValidateRequestedModelAsync(model)) return null;
-            var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
-                userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-                scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current);
-            return info != null ? ToUnified(info) : null;
-        });
+        if (!await ValidateRequestedModelAsync(model)) return null;
+        var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
+            userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
+            scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current);
+        return info != null ? ToUnified(info) : null;
     }
 
     public async Task<UnifiedSessionInfo?> StartSessionAsync(string projectPath, string? model,
@@ -162,14 +163,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential, string? developerInstructions)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
-        {
-            if (!await ValidateRequestedModelAsync(model)) return null;
-            var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
-                userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-                scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current);
-            return info != null ? ToUnified(info) : null;
-        });
+        if (!await ValidateRequestedModelAsync(model)) return null;
+        var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
+            userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
+            scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current);
+        return info != null ? ToUnified(info) : null;
     }
 
     private async Task<bool> ValidateRequestedModelAsync(string? model)
@@ -187,20 +185,14 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
-        {
-            var info = await _interactive.ResumeSessionAsync(sessionId);
-            return info != null ? ToUnified(info) : null;
-        });
+        var info = await _interactive.ResumeSessionAsync(sessionId);
+        return info != null ? ToUnified(info) : null;
     }
 
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(async () =>
-        {
-            var info = await _interactive.ResumeSessionAsync(sessionId, provenance);
-            return info != null ? ToUnified(info) : null;
-        });
+        var info = await _interactive.ResumeSessionAsync(sessionId, provenance);
+        return info != null ? ToUnified(info) : null;
     }
 
     public Task StopSessionAsync(string sessionId) => _interactive.StopSessionAsync(sessionId);

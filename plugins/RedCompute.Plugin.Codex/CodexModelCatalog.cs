@@ -53,6 +53,8 @@ public sealed class CodexModelCatalog(CodexConfig config, Action<string, Guid?> 
     private DateTimeOffset _fetchedAt;
     private string? _lastError;
 
+    internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
+
     /// <summary>Last fetch failure, if the catalog is currently serving nothing.</summary>
     public string? LastError => _lastError;
 
@@ -142,14 +144,15 @@ public sealed class CodexModelCatalog(CodexConfig config, Action<string, Guid?> 
             .ToList();
     }
 
-    private async Task<IReadOnlyList<CodexModel>> FetchAsync(CancellationToken ct)
-    {
-        await using var conn = await CodexAppServerConnection.StartAsync(
-            config.CodexPath, workingDirectory: null, log, env: null, ct);
+    private Task<IReadOnlyList<CodexModel>> FetchAsync(CancellationToken ct)
+        => LaunchGate.RunWhenInstallIdleAsync(async () =>
+        {
+            await using var conn = await CodexAppServerConnection.StartAsync(
+                config.CodexPath, workingDirectory: null, log, env: null, ct);
 
-        var result = await conn.SendRequestAsync("model/list", new { }, timeoutSeconds: 30, ct);
-        return Parse(result);
-    }
+            var result = await conn.SendRequestAsync("model/list", new { }, timeoutSeconds: 30, ct);
+            return Parse(result);
+        }, ct);
 
     internal static IReadOnlyList<CodexModel> Parse(JsonElement result)
     {

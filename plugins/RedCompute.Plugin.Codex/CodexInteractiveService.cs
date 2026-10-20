@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
@@ -80,6 +81,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private readonly CodexSessionService _exec;
 
     private readonly Action<string, Guid?> _log;
+
+    internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
+    internal Func<ProcessStartInfo, Process?> LaunchAppServerProcess { get; set; } = Process.Start;
 
     public event Action<CodexSessionInfo>? SessionCreated;
     public event Action<CodexSessionInfo>? SessionUpdated;
@@ -177,13 +181,25 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
     // ===== Lifecycle =========================================================================
 
-    public async Task<CodexSessionInfo?> StartSessionAsync(
+    public Task<CodexSessionInfo?> StartSessionAsync(
         string projectPath, string? model, string? userId, string? userName,
         string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory = null, bool confidential = false,
         string? developerInstructions = null,
         string executionProfile = SessionExecutionProfile.Default)
+        => LaunchGate.RunWhenInstallIdleAsync(() => StartSessionCoreAsync(
+            projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
+            providerEntity, repositoryId, provenance, scratchDirectory, confidential,
+            developerInstructions, executionProfile));
+
+    private async Task<CodexSessionInfo?> StartSessionCoreAsync(
+        string projectPath, string? model, string? userId, string? userName,
+        string? userAvatarUrl, string? effort, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory, bool confidential,
+        string? developerInstructions,
+        string executionProfile)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -258,7 +274,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
     }
 
-    public async Task<CodexSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance? provenance = null)
+    public Task<CodexSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance? provenance = null)
+        => LaunchGate.RunWhenInstallIdleAsync(() => ResumeSessionCoreAsync(sessionId, provenance));
+
+    private async Task<CodexSessionInfo?> ResumeSessionCoreAsync(
+        string sessionId, JobProvenance? provenance)
     {
         if (_sessions.TryGetValue(sessionId, out var live)) return live.Info;
 
@@ -370,7 +390,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         var conn = await CodexAppServerConnection.StartAsync(
             _config.CodexPath, projectPath, _log,
-            SessionScratch.Environment(scratchDirectory, suiteAccess));
+            SessionScratch.Environment(scratchDirectory, suiteAccess),
+            launchProcess: LaunchAppServerProcess);
         conn.Notification += (method, p) => OnNotification(sessionId, method, p);
         conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);
         conn.Exited += code => OnExited(sessionId, code);

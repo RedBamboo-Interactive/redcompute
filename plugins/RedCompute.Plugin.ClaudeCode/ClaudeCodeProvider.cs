@@ -61,6 +61,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             claudeConfig, jobTracker, _store, qualityModes,
             () => GetTitleQualityTier(config), log);
         _cliVersionManager = CreateCliVersionManager(claudeConfig);
+        _claude.LaunchGate = _cliVersionManager;
         WireSessionEvents();
     }
 
@@ -76,6 +77,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _cliVersionManager = new NpmCliVersionManager(
             "@anthropic-ai/claude-code", "Claude Code", () => null,
             GetCliSessionState, ParkIdleCliSessionsAsync);
+        _claude.LaunchGate = _cliVersionManager;
         WireSessionEvents();
     }
 
@@ -146,13 +148,10 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential = false)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
-        {
-            var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
-                effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
-                confidential);
-            return Task.FromResult(info != null ? ToUnified(info) : null);
-        });
+        var info = await _claude.StartSessionAsync(projectPath, model, userId, userName, userAvatarUrl,
+            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
+            confidential);
+        return info != null ? ToUnified(info) : null;
     }
 
     /// <summary>
@@ -166,31 +165,22 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         Guid? repositoryId, JobProvenance provenance, string? scratchDirectory,
         bool confidential, string? developerInstructions)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
-        {
-            var info = _claude.StartSession(projectPath, model, userId, userName, userAvatarUrl,
-                effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
-                confidential, developerInstructions);
-            return Task.FromResult(info != null ? ToUnified(info) : null);
-        });
+        var info = await _claude.StartSessionAsync(projectPath, model, userId, userName, userAvatarUrl,
+            effort, qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
+            confidential, developerInstructions);
+        return info != null ? ToUnified(info) : null;
     }
 
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
-        {
-            var info = _claude.ResumeSession(sessionId);
-            return Task.FromResult(info != null ? ToUnified(info) : null);
-        });
+        var info = await _claude.ResumeSessionAsync(sessionId);
+        return info != null ? ToUnified(info) : null;
     }
 
     public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
     {
-        return await _cliVersionManager.RunWhenInstallIdleAsync(() =>
-        {
-            var info = _claude.ResumeSession(sessionId, provenance);
-            return Task.FromResult(info != null ? ToUnified(info) : null);
-        });
+        var info = await _claude.ResumeSessionAsync(sessionId, provenance);
+        return info != null ? ToUnified(info) : null;
     }
 
     public Task StopSessionAsync(string sessionId) => _claude.StopSession(sessionId);

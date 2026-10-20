@@ -57,7 +57,8 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         string? workingDirectory,
         Action<string, Guid?> log,
         IReadOnlyDictionary<string, string>? env = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<ProcessStartInfo, Process?>? launchProcess = null)
     {
         var exe = CodexCliLocator.Resolve(configuredCliPath)
             ?? throw new InvalidOperationException(
@@ -84,7 +85,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
             foreach (var (k, v) in env)
                 startInfo.EnvironmentVariables[k] = v;
 
-        var process = Process.Start(startInfo)
+        var process = (launchProcess ?? Process.Start)(startInfo)
             ?? throw new InvalidOperationException("Failed to start 'codex app-server'.");
 
         var conn = new CodexAppServerConnection(process, log);

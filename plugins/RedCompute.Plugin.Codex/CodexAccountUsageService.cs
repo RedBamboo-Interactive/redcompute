@@ -20,6 +20,8 @@ internal sealed class CodexAccountUsageService
     private DateTimeOffset _cacheExpiresAt;
     private bool _cacheIsComplete;
 
+    internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
+
     public CodexAccountUsageService(CodexConfig config, Action<string, Guid?> log)
     {
         _config = config;
@@ -35,11 +37,14 @@ internal sealed class CodexAccountUsageService
         {
             if (!forceRefresh && TryGetCompleteCache(out cached)) return cached;
 
-            await using var connection = await CodexAppServerConnection.StartAsync(
-                _config.CodexPath, workingDirectory: null, _log, ct: ct);
-            var result = await connection.SendRequestAsync(
-                "account/rateLimits/read", timeoutSeconds: 30, ct: ct);
-            var snapshot = ParseSnapshot(result);
+            var snapshot = await LaunchGate.RunWhenInstallIdleAsync(async () =>
+            {
+                await using var connection = await CodexAppServerConnection.StartAsync(
+                    _config.CodexPath, workingDirectory: null, _log, ct: ct);
+                var result = await connection.SendRequestAsync(
+                    "account/rateLimits/read", timeoutSeconds: 30, ct: ct);
+                return ParseSnapshot(result);
+            }, ct);
             lock (_cacheLock)
             {
                 _cached = snapshot;

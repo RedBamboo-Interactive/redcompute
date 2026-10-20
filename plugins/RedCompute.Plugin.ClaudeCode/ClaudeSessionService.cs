@@ -42,6 +42,7 @@ public class ClaudeSessionService
 
     /// <summary>Test seam for the short-lived, tool-free completion process.</summary>
     internal Func<ProcessStartInfo, Process?> LaunchOneshotProcess { get; set; } = Process.Start;
+    internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
     public ClaudeSessionService(
         ClaudeConfig config,
@@ -298,13 +299,25 @@ public class ClaudeSessionService
     public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
-    public async Task<ExecuteResult> ExecuteAgentAsync(
+    public Task<ExecuteResult> ExecuteAgentAsync(
         string prompt, string? container, string? workingDir,
         string? model, string? effort, int maxTurns,
         string[]? tools, string[]? allowedTools, string[]? addDirs, int timeout,
         CancellationToken ct,
         string? streamKey = null,
         Dictionary<string, string>? env = null)
+        => LaunchGate.RunWhenInstallIdleAsync(
+            () => ExecuteAgentCoreAsync(prompt, container, workingDir, model, effort, maxTurns,
+                tools, allowedTools, addDirs, timeout, ct, streamKey, env),
+            ct);
+
+    private async Task<ExecuteResult> ExecuteAgentCoreAsync(
+        string prompt, string? container, string? workingDir,
+        string? model, string? effort, int maxTurns,
+        string[]? tools, string[]? allowedTools, string[]? addDirs, int timeout,
+        CancellationToken ct,
+        string? streamKey,
+        Dictionary<string, string>? env)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
         var useCliArg = Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
@@ -659,7 +672,14 @@ public class ClaudeSessionService
             string.IsNullOrEmpty(lastAssistantText) && !hadToolUse ? "No result event in stream output" : null);
     }
 
-    public async Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages, int maxTokens, CancellationToken ct, string? effort = null, int timeout = 120)
+    public Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages,
+        int maxTokens, CancellationToken ct, string? effort = null, int timeout = 120)
+        => LaunchGate.RunWhenInstallIdleAsync(
+            () => ExecuteOneshotCoreAsync(model, system, messages, maxTokens, ct, effort, timeout),
+            ct);
+
+    private async Task<OneshotResult> ExecuteOneshotCoreAsync(string? model, string? system,
+        JsonElement messages, int maxTokens, CancellationToken ct, string? effort, int timeout)
     {
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
@@ -858,6 +878,25 @@ public class ClaudeSessionService
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory = null, bool confidential = false,
         string? developerInstructions = null)
+        => StartSessionAsync(projectPath, model, userId, userName, userAvatarUrl, effort,
+            qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
+            confidential, developerInstructions).GetAwaiter().GetResult();
+
+    public Task<ClaudeSessionInfo?> StartSessionAsync(string projectPath, string? model, string? userId,
+        string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory = null, bool confidential = false,
+        string? developerInstructions = null, CancellationToken ct = default)
+        => LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
+            projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
+            providerEntity, repositoryId, provenance, scratchDirectory, confidential,
+            developerInstructions)), ct);
+
+    private ClaudeSessionInfo? StartSessionCore(string projectPath, string? model, string? userId,
+        string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
+        string? providerEntity, Guid? repositoryId, JobProvenance provenance,
+        string? scratchDirectory, bool confidential,
+        string? developerInstructions)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -976,6 +1015,14 @@ public class ClaudeSessionService
     }
 
     public ClaudeSessionInfo? ResumeSession(string sessionId, JobProvenance? provenance = null)
+        => ResumeSessionAsync(sessionId, provenance).GetAwaiter().GetResult();
+
+    public Task<ClaudeSessionInfo?> ResumeSessionAsync(string sessionId,
+        JobProvenance? provenance = null, CancellationToken ct = default)
+        => LaunchGate.RunWhenInstallIdleAsync(
+            () => Task.FromResult(ResumeSessionCore(sessionId, provenance)), ct);
+
+    private ClaudeSessionInfo? ResumeSessionCore(string sessionId, JobProvenance? provenance)
     {
         if (_sessions.ContainsKey(sessionId))
         {
@@ -1473,7 +1520,7 @@ public class ClaudeSessionService
             return;
 
         _log($"[Claude] Auto-resuming session {sessionId} after forced interrupt", null);
-        var resumed = ResumeSession(sessionId);
+        var resumed = await ResumeSessionAsync(sessionId);
         if (resumed == null)
         {
             _log($"[Claude] Failed to auto-resume session {sessionId} after forced interrupt: {LastStartError}", null);
