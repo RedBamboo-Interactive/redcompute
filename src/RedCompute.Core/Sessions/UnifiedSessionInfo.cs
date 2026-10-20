@@ -10,6 +10,7 @@ public class UnifiedSessionInfo
     public Guid? RepositoryId { get; set; }
     public SessionStatus Status { get; set; }
     public string? StopReason { get; set; }
+    public DateTimeOffset? StoppedAt { get; set; }
     public DateTimeOffset StartedAt { get; init; }
     public string? Model { get; set; }
     public string? ProviderSessionId { get; set; }

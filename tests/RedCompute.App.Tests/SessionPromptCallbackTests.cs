@@ -15,7 +15,8 @@ public sealed class SessionPromptCallbackTests
     public async Task Restart_pause_retains_subscription_and_transient_idle_cannot_complete_pending_prompt(string stopReason)
     {
         using var f = new SessionRecoveryTests.Fixture(stopReason);
-        await f.Store.EnqueueAsync(f.Submission());
+        var admission = await f.Store.EnqueueAsync(f.Submission());
+        f.Runtime.Info.StoppedAt = admission.Item.CreatedAt;
         var payloads = new List<JsonElement>();
         using var http = new HttpClient(new Handler(async r => {
             payloads.Add(JsonSerializer.Deserialize<JsonElement>(await r.Content!.ReadAsStringAsync())); return new(HttpStatusCode.OK); }));
@@ -47,7 +48,8 @@ public sealed class SessionPromptCallbackTests
     public async Task Lost_acknowledgement_retries_identical_durable_payload_after_reopen()
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
-        await f.Store.EnqueueAsync(f.Submission());
+        var admission = await f.Store.EnqueueAsync(f.Submission());
+        f.Runtime.Info.StoppedAt = admission.Item.CreatedAt;
         var payloads = new List<string>(); var calls = 0; var now = DateTimeOffset.UtcNow;
         using var http = new HttpClient(new Handler(async r => {
             payloads.Add(await r.Content!.ReadAsStringAsync()); return new(++calls == 1 ? HttpStatusCode.BadGateway : HttpStatusCode.OK); }));
@@ -173,7 +175,8 @@ public sealed class SessionPromptCallbackTests
     public async Task Held_webhook_cannot_stall_owning_input_scheduler_and_retry_survives_reopen()
     {
         using var callbackFixture = new SessionRecoveryTests.Fixture("maintenance_restart");
-        await callbackFixture.Store.EnqueueAsync(callbackFixture.Submission());
+        var admission = await callbackFixture.Store.EnqueueAsync(callbackFixture.Submission());
+        callbackFixture.Runtime.Info.StoppedAt = admission.Item.CreatedAt;
         var entered = new TaskCompletionSource(); var release = new TaskCompletionSource();
         var now = DateTimeOffset.UtcNow; var calls = 0; var logs = new List<string>();
         using var http = new HttpClient(new Handler(async _ => { Interlocked.Increment(ref calls); entered.TrySetResult(); await release.Task; return new(HttpStatusCode.BadGateway); }));

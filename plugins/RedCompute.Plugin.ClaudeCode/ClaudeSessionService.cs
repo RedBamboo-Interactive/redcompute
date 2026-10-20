@@ -91,6 +91,7 @@ public class ClaudeSessionService
                 s.StopReason = PlannedRestartCheckpoint.ContainsSession("claude-code", s.Id)
                     ? "maintenance_restart"
                     : "orphaned_on_restart";
+                s.StoppedAt = DateTimeOffset.UtcNow;
                 s.ProcessId = null;
                 _log($"[Claude] Recovered session {s.Id} ({s.ProjectName}, PID {pid}) as stopped ({s.StopReason})", null);
                 BackfillFromJsonl(s);
@@ -132,6 +133,7 @@ public class ClaudeSessionService
                 TryKillByPid(s.ProcessId);
                 s.Status = "Stopped";
                 s.StopReason = "idle_ttl_expired";
+                s.StoppedAt = DateTimeOffset.UtcNow;
                 s.ProcessId = null;
                 _sessionStore.SaveSession(s);
                 SessionEnded?.Invoke(s.Id, "stopped", s.StopReason);
@@ -1157,6 +1159,7 @@ public class ClaudeSessionService
             session.Info.MessageCount++;
             session.Info.Status = SessionStatus.Active;
             session.Info.StopReason = null;
+            session.Info.StoppedAt = null;
             SessionUpdated?.Invoke(session.Info);
 
             // A user message ends the previous assistant turn.
@@ -1540,6 +1543,7 @@ public class ClaudeSessionService
             SettleTurnContent(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
+            session.Info.StoppedAt = DateTimeOffset.UtcNow;
             session.Info.ProcessId = null;
             _sessions.TryRemove(sessionId, out _);
             PersistSessionRecord(session.Info);
@@ -1561,6 +1565,7 @@ public class ClaudeSessionService
 
         record.Status = "Stopped";
         record.StopReason = reason ?? "user_stopped";
+        record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _sessionStore.SaveSession(record);
 
@@ -1580,6 +1585,7 @@ public class ClaudeSessionService
             SettleTurnContent(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
+            session.Info.StoppedAt = DateTimeOffset.UtcNow;
             session.Info.ProcessId = null;
             PersistSessionRecord(session.Info);
 
@@ -1598,6 +1604,7 @@ public class ClaudeSessionService
 
         record.Status = "Stopped";
         record.StopReason = reason ?? "user_stopped";
+        record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _sessionStore.SaveSession(record);
 
@@ -1684,6 +1691,7 @@ public class ClaudeSessionService
         ScratchDirectory = r.ScratchDirectory,
         Status = Enum.TryParse<SessionStatus>(r.Status, out var s) ? s : SessionStatus.Stopped,
         StopReason = r.StopReason,
+        StoppedAt = r.StoppedAt,
         StartedAt = r.StartedAt,
         Model = r.Model,
         ClaudeSessionId = r.ClaudeSessionId,
@@ -2893,6 +2901,7 @@ public class ClaudeSessionService
                 RepositoryId = info.RepositoryId,
                 Status = info.Status.ToString(),
                 StopReason = info.StopReason,
+                StoppedAt = info.StoppedAt,
                 StartedAt = info.StartedAt,
                 Model = info.Model,
                 ClaudeSessionId = info.ClaudeSessionId,

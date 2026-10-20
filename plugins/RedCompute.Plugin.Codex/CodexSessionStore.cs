@@ -141,6 +141,7 @@ public class CodexSessionStore : ICodexSessionStore
             existing.UserName = record.UserName;
             existing.UserAvatarUrl = record.UserAvatarUrl;
             existing.StopReason = record.StopReason;
+            existing.StoppedAt = record.StoppedAt;
         }
         else
         {

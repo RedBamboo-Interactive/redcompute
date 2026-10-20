@@ -52,6 +52,7 @@ public class CodexSessionService
             {
                 s.Status = "Stopped";
                 s.StopReason = RecoveredStopReason(s.Id);
+                s.StoppedAt = DateTimeOffset.UtcNow;
                 log($"[Codex] Marked recovered session {s.Id} ({s.ProjectName}) as stopped ({s.StopReason})", null);
                 store.SaveSession(s);
             }
@@ -62,6 +63,7 @@ public class CodexSessionService
                 s.Status = "Stopped";
                 s.ProcessId = null;
                 s.StopReason = RecoveredStopReason(s.Id);
+                s.StoppedAt = DateTimeOffset.UtcNow;
                 log($"[Codex] Marked Windows-terminated session {s.Id} ({s.ProjectName}) as stopped ({s.StopReason})", null);
                 store.SaveSession(s);
             }
@@ -563,6 +565,8 @@ public class CodexSessionService
         CachedInputTokens = r.CachedInputTokens,
         ContextTokens = r.ContextTokens,
         JobId = r.JobId,
+        StopReason = r.StopReason,
+        StoppedAt = r.StoppedAt,
     };
 
     public string? ResolveCodexPath() => CodexCliLocator.Resolve(_config.CodexPath);

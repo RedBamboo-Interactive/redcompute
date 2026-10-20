@@ -102,6 +102,7 @@ public class OpenCodeSessionService
                 s.StopReason = PlannedRestartCheckpoint.ContainsSession("opencode", s.Id)
                     ? "maintenance_restart"
                     : "orphaned_on_restart";
+                s.StoppedAt = DateTimeOffset.UtcNow;
                 s.ProcessId = null;
                 _log($"[OpenCode] Killed orphaned session {s.Id} ({s.ProjectName}, PID {s.ProcessId})", null);
                 _store.SaveSession(s);
@@ -140,6 +141,7 @@ public class OpenCodeSessionService
                 _log($"[OpenCode] Reaping stale DB session {s.Id} ({s.ProjectName}, last activity {lastActivity:u})", null);
                 TryKillByPid(s.ProcessId);
                 s.Status = "Stopped";
+                s.StoppedAt = DateTimeOffset.UtcNow;
                 s.ProcessId = null;
                 _store.SaveSession(s);
                 SessionEnded?.Invoke(s.Id, "stopped");
@@ -188,6 +190,7 @@ public class OpenCodeSessionService
             RepositoryId = repositoryId,
             Status = "Starting",
             StopReason = null,
+            StoppedAt = null,
             StartedAt = DateTimeOffset.UtcNow,
             UserId = userId,
             UserName = userName,
@@ -752,6 +755,7 @@ public class OpenCodeSessionService
 
             session.Info.Status = "Stopped";
             session.Info.StopReason = reason ?? "user_stopped";
+            session.Info.StoppedAt = DateTimeOffset.UtcNow;
             session.Info.ProcessId = null;
 
             foreach (var (_, tcs) in session.PendingRequests)
@@ -778,6 +782,7 @@ public class OpenCodeSessionService
 
         record.Status = "Stopped";
         record.StopReason = reason ?? "user_stopped";
+        record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _store.SaveSession(record);
 
@@ -793,6 +798,7 @@ public class OpenCodeSessionService
         {
             session.Info.Status = "Stopped";
             session.Info.StopReason = reason ?? "user_stopped";
+            session.Info.StoppedAt = DateTimeOffset.UtcNow;
             session.Info.ProcessId = null;
 
             foreach (var (_, tcs) in session.PendingRequests)
@@ -819,6 +825,7 @@ public class OpenCodeSessionService
 
         record.Status = "Stopped";
         record.StopReason = reason ?? "user_stopped";
+        record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _store.SaveSession(record);
 
@@ -1522,6 +1529,7 @@ public class OpenCodeSessionService
             RepositoryId = info.RepositoryId,
             Status = info.Status,
             StopReason = info.StopReason,
+            StoppedAt = info.StoppedAt,
             StartedAt = info.StartedAt,
             Model = info.Model,
             Title = info.Title,
@@ -2061,6 +2069,8 @@ public class OpenCodeSessionService
         ProjectPath = r.ProjectPath,
         ScratchDirectory = r.ScratchDirectory,
         Status = r.Status,
+        StopReason = r.StopReason,
+        StoppedAt = r.StoppedAt,
         StartedAt = r.StartedAt,
         Model = r.Model,
         Title = r.Title,

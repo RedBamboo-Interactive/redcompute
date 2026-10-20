@@ -266,6 +266,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         Status = Enum.TryParse<SessionStatus>(s.Status, out var st)
             ? st : SessionStatus.Stopped,
         StopReason = s.StopReason,
+        StoppedAt = s.StoppedAt,
         StartedAt = s.StartedAt,
         Model = s.Model,
         ProviderSessionId = s.OpenCodeSessionId,

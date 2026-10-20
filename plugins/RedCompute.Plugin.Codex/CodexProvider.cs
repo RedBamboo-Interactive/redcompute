@@ -438,6 +438,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         UserAvatarUrl = s.UserAvatarUrl,
         ContextWindow = s.ContextWindow,
         StopReason = s.StopReason,
+        StoppedAt = s.StoppedAt,
         // The Codex thread id, which is what makes a session resumable — and resumable from the
         // Codex CLI and desktop app too, since every surface shares the same thread store.
         ProviderSessionId = s.ThreadId,

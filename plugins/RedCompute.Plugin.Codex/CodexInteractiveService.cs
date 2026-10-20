@@ -121,6 +121,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 s.StopReason = PlannedRestartCheckpoint.ContainsSession("codex", s.Id)
                     ? "maintenance_restart"
                     : "orphaned_on_restart";
+                s.StoppedAt = DateTimeOffset.UtcNow;
                 _store.SaveSession(s);
                 _log($"[Codex] Marked orphaned session {s.Id} ({s.ProjectName}) as stopped", null);
             }
@@ -303,6 +304,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
             info.StopReason = null;
+            info.StoppedAt = null;
             info.LastActivity = DateTimeOffset.UtcNow;
             _jobLifecycle.Resume(info, provenance);
             jobRunning = true;
@@ -384,6 +386,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             await session.Connection.DisposeAsync();
             session.Info.Status = "Stopped";
             session.Info.StopReason = stopReason;
+            session.Info.StoppedAt = DateTimeOffset.UtcNow;
             session.Info.ProcessId = null;
             session.Info.LastActivity = DateTimeOffset.UtcNow;
             if (!SessionStopReasons.IsRestartRecoverable(stopReason))
@@ -400,6 +403,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (stored.ProcessId is { } pid) TryKillByPid(pid);
         stored.Status = "Stopped";
         stored.StopReason = stopReason;
+        stored.StoppedAt = DateTimeOffset.UtcNow;
         stored.ProcessId = null;
         stored.LastActivity = DateTimeOffset.UtcNow;
 
@@ -428,6 +432,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (!_sessions.TryRemove(sessionId, out var session)) return;
         session.Info.Status = code == 0 ? "Stopped" : "Error";
         session.Info.StopReason = code == 0 ? "process_exited" : $"process_exited:{code}";
+        session.Info.StoppedAt = code == 0 ? DateTimeOffset.UtcNow : null;
         session.Info.ProcessId = null;
         session.Info.LastActivity = DateTimeOffset.UtcNow;
         if (code == 0)
@@ -1475,6 +1480,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         UserName = info.UserName,
         UserAvatarUrl = info.UserAvatarUrl,
         StopReason = info.StopReason,
+        StoppedAt = info.StoppedAt,
     });
 
     private static CodexSessionInfo ToInfo(CodexSessionRecord r) => new()
@@ -1509,6 +1515,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         UserName = r.UserName,
         UserAvatarUrl = r.UserAvatarUrl,
         StopReason = r.StopReason,
+        StoppedAt = r.StoppedAt,
     };
 
     public async ValueTask DisposeAsync()

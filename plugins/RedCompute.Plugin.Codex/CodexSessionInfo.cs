@@ -24,6 +24,7 @@ public class CodexSessionInfo
     public string? UserName { get; set; }
     public string? UserAvatarUrl { get; set; }
     public string? StopReason { get; set; }
+    public DateTimeOffset? StoppedAt { get; set; }
 
     /// <summary>App-server thread id — what thread/resume needs to reattach.</summary>
     public string? ThreadId { get; set; }

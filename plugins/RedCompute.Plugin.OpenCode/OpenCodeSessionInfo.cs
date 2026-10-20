@@ -9,6 +9,7 @@ public class OpenCodeSessionInfo
     public Guid? RepositoryId { get; set; }
     public string Status { get; set; } = "Starting";
     public string? StopReason { get; set; }
+    public DateTimeOffset? StoppedAt { get; set; }
     public DateTimeOffset StartedAt { get; init; }
     public string? Model { get; set; }
     public string? Title { get; set; }

@@ -52,6 +52,13 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("StoppedAt"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN StoppedAt TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         if (!columns.Contains("ProcessId"))
         {
             using var alter = conn.CreateCommand();
@@ -169,6 +176,9 @@ public class ClaudeDbContext : DbContext
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));
             entity.Property(s => s.LastActivity).HasConversion(
+                v => v.HasValue ? v.Value.ToString("O") : null,
+                v => v != null ? DateTimeOffset.Parse(v) : null);
+            entity.Property(s => s.StoppedAt).HasConversion(
                 v => v.HasValue ? v.Value.ToString("O") : null,
                 v => v != null ? DateTimeOffset.Parse(v) : null);
         });

@@ -26,6 +26,7 @@ public sealed class ClaudeSessionRecoveryTests
             Assert.Equal("idle-1", saved.Id);
             Assert.Equal("Stopped", saved.Status);
             Assert.Equal("orphaned_on_restart", saved.StopReason);
+            Assert.NotNull(saved.StoppedAt);
             Assert.Null(saved.ProcessId);
         }
         finally
@@ -52,6 +53,7 @@ public sealed class ClaudeSessionRecoveryTests
             var saved = Assert.Single(store.Saved);
             Assert.Equal("Stopped", saved.Status);
             Assert.Equal("maintenance_restart", saved.StopReason);
+            Assert.NotNull(saved.StoppedAt);
         }
         finally
         {

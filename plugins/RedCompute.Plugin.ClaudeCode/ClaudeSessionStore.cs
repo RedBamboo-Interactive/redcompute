@@ -94,6 +94,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.RepositoryId = record.RepositoryId;
             existing.Status = record.Status;
             existing.StopReason = record.StopReason;
+            existing.StoppedAt = record.StoppedAt;
             existing.StartedAt = record.StartedAt;
             existing.Model = record.Model;
             existing.ClaudeSessionId = record.ClaudeSessionId;

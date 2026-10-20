@@ -48,6 +48,7 @@ public class CodexDbContext : DbContext
                          "DeveloperInstructions TEXT", "ScratchDirectory TEXT",
                          "ExecutionProfile TEXT NOT NULL DEFAULT 'default'",
                          "StopReason TEXT",
+                         "StoppedAt TEXT",
                      })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";
@@ -93,6 +94,9 @@ public class CodexDbContext : DbContext
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));
             entity.Property(s => s.LastActivity).HasConversion(
+                v => v.HasValue ? v.Value.ToString("O") : null,
+                v => v != null ? DateTimeOffset.Parse(v) : null);
+            entity.Property(s => s.StoppedAt).HasConversion(
                 v => v.HasValue ? v.Value.ToString("O") : null,
                 v => v != null ? DateTimeOffset.Parse(v) : null);
         });

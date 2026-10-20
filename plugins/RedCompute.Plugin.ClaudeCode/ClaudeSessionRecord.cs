@@ -9,6 +9,7 @@ public class ClaudeSessionRecord
     public Guid? RepositoryId { get; set; }
     public required string Status { get; set; }
     public string? StopReason { get; set; }
+    public DateTimeOffset? StoppedAt { get; set; }
     public DateTimeOffset StartedAt { get; set; }
     public string? Model { get; set; }
     public string? ClaudeSessionId { get; set; }

@@ -384,7 +384,7 @@ public sealed class SessionRecoveryTests
     public interface ITestProvider : ISessionProvider, IBackendProvider { }
     public class RuntimeProvider : DispatchProxy
     {
-        internal UnifiedSessionInfo Info = new() { Id = "session", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner", Status = SessionStatus.Stopped };
+        internal UnifiedSessionInfo Info = new() { Id = "session", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner", Status = SessionStatus.Stopped, StoppedAt = DateTimeOffset.UtcNow };
         internal int Resumes, Deliveries;
         internal SessionStatus ResumedStatus = SessionStatus.Idle;
         internal SessionInputDeliveryResult Result = SessionInputDeliveryResult.Accepted();

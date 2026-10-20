@@ -32,7 +32,7 @@ public class OpenCodeDbContext : DbContext
         try
         {
             using var cmd = conn.CreateCommand();
-            foreach (var col in new[] { "OpenCodeSessionId", "Effort", "QualityTier", "ProviderEntity", "RepositoryId", "Source", "UserId", "UserName", "UserAvatarUrl", "StopReason", "DeveloperInstructions", "ScratchDirectory" })
+            foreach (var col in new[] { "OpenCodeSessionId", "Effort", "QualityTier", "ProviderEntity", "RepositoryId", "Source", "UserId", "UserName", "UserAvatarUrl", "StopReason", "StoppedAt", "DeveloperInstructions", "ScratchDirectory" })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col} TEXT";
                 try { cmd.ExecuteNonQuery(); }
@@ -94,6 +94,9 @@ public class OpenCodeDbContext : DbContext
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));
             entity.Property(s => s.LastActivity).HasConversion(
+                v => v.HasValue ? v.Value.ToString("O") : null,
+                v => v != null ? DateTimeOffset.Parse(v) : null);
+            entity.Property(s => s.StoppedAt).HasConversion(
                 v => v.HasValue ? v.Value.ToString("O") : null,
                 v => v != null ? DateTimeOffset.Parse(v) : null);
         });

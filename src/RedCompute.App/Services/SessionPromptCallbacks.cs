@@ -104,8 +104,15 @@ internal sealed class SessionPromptCallbacks
                 if (!cancelled && session is null) continue;
                 if (!cancelled && executionObserved) { Save(entry with { ActiveSeen = true, PauseReason = null }); continue; }
                 if (!cancelled && (observedActive || session!.Status == SessionStatus.Active)) continue;
-                var paused = !cancelled && session!.Status == SessionStatus.Stopped
-                    && session.StopReason is "maintenance_restart" or "orphaned_on_restart" or "usage_limit";
+                var restartPaused = !cancelled && session!.Status == SessionStatus.Stopped
+                    && session.StopReason is "maintenance_restart" or "orphaned_on_restart";
+                var paused = restartPaused || !cancelled && session!.Status == SessionStatus.Stopped
+                    && session.StopReason == "usage_limit";
+                // A recoverable stop which durably predates this exact prompt did not interrupt it.
+                // The prompt was admitted onto an already-stopped session and is waiting for the
+                // queue's automatic resume. Never freeze that stale lifecycle state into the outbox.
+                if (restartPaused && prompt.State == SessionInputQueueState.Pending && !entry.ActiveSeen
+                    && session!.StoppedAt is { } stoppedAt && stoppedAt < prompt.CreatedAt) continue;
                 if (paused && entry.PauseReason == session!.StopReason) continue;
                 if (!cancelled && !paused && session!.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)) continue;
                 if (!cancelled && !paused && session!.Status == SessionStatus.Idle

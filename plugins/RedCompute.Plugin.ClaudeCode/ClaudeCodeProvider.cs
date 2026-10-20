@@ -302,6 +302,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         RepositoryId = s.RepositoryId,
         Status = (Core.Sessions.SessionStatus)(int)s.Status,
         StopReason = s.StopReason,
+        StoppedAt = s.StoppedAt,
         StartedAt = s.StartedAt,
         Model = s.Model,
         ProviderSessionId = s.ClaudeSessionId,

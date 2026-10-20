@@ -244,5 +244,6 @@ internal sealed class CodexSessionJobLifecycle
         UserName = r.UserName,
         UserAvatarUrl = r.UserAvatarUrl,
         StopReason = r.StopReason,
+        StoppedAt = r.StoppedAt,
     };
 }

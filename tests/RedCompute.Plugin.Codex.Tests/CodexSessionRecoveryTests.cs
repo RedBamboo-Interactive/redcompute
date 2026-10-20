@@ -27,6 +27,7 @@ public sealed class CodexSessionRecoveryTests
             var saved = Assert.Single(store.Saved);
             Assert.Equal("Stopped", saved.Status);
             Assert.Equal("maintenance_restart", saved.StopReason);
+            Assert.NotNull(saved.StoppedAt);
         }
         finally
         {
@@ -51,6 +52,7 @@ public sealed class CodexSessionRecoveryTests
             var saved = Assert.Single(store.Saved);
             Assert.Equal("Stopped", saved.Status);
             Assert.Equal("orphaned_on_restart", saved.StopReason);
+            Assert.NotNull(saved.StoppedAt);
         }
         finally
         {
@@ -88,6 +90,7 @@ public sealed class CodexSessionRecoveryTests
             Assert.Same(session, saved);
             Assert.Equal("Stopped", saved.Status);
             Assert.Equal(expectedReason, saved.StopReason);
+            Assert.NotNull(saved.StoppedAt);
             Assert.Null(saved.ProcessId);
             Assert.Equal("thread-3", saved.ThreadId);
             Assert.Equal(jobId, saved.JobId);
