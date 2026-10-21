@@ -3,6 +3,7 @@ using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
 using RedCompute.PluginSdk;
 using Xunit;
+using ClaudeStatus = RedCompute.Plugin.ClaudeCode.SessionStatus;
 
 namespace RedCompute.App.Tests;
 
@@ -81,6 +82,68 @@ public sealed class ClaudeSessionRecoveryTests
         }
     }
 
+    // A row can say Idle with no process behind it: a restart that skipped recovery, or a late
+    // result written over a stop. Treating it as live made every send to that discussion fail
+    // as a non-retryable provider_rejected until the user started a new discussion.
+    [Fact]
+    public void Unloaded_idle_record_is_reported_as_orphaned()
+    {
+        var store = new FakeStore();
+        var service = CreateService(store);
+        store.Put(Session("stale-1", "Idle", "completed"));
+
+        var (info, _) = service.GetSession("stale-1");
+
+        Assert.NotNull(info);
+        Assert.Equal(ClaudeStatus.Stopped, info!.Status);
+        Assert.Equal("orphaned_on_restart", info.StopReason);
+        Assert.Contains(service.GetSessions(10), s => s.Id == "stale-1" && s.Status == ClaudeStatus.Stopped);
+    }
+
+    [Fact]
+    public async Task Send_to_unloaded_idle_record_is_retryable_not_rejected()
+    {
+        var store = new FakeStore();
+        ISessionProvider provider = new ClaudeCodeProvider("ai-session", CreateService(store), store,
+            new NullJobTracker(), (_, _) => { });
+        store.Put(Session("stale-2", "Idle", "completed"));
+
+        var result = await provider.TrySendInputAsync("stale-2", [SessionInputPart.TextPart("ok, done, shall we test?")]);
+
+        Assert.Equal(SessionInputDeliveryStatus.Unavailable, result.Status);
+        Assert.Equal("session_restarting", result.ErrorCode);
+        Assert.True(result.Retryable);
+    }
+
+    [Fact]
+    public async Task Send_to_user_stopped_session_stays_terminal()
+    {
+        var store = new FakeStore();
+        ISessionProvider provider = new ClaudeCodeProvider("ai-session", CreateService(store), store,
+            new NullJobTracker(), (_, _) => { });
+        store.Put(Session("stopped-2", "Stopped", "user_stopped"));
+
+        var result = await provider.TrySendInputAsync("stopped-2", [SessionInputPart.TextPart("hello")]);
+
+        Assert.Equal(SessionInputDeliveryStatus.Unavailable, result.Status);
+        Assert.Equal("session_not_writable", result.ErrorCode);
+        Assert.False(result.Retryable);
+    }
+
+    [Theory]
+    [InlineData(ClaudeStatus.Idle, false, ClaudeStatus.Stopped)]
+    [InlineData(ClaudeStatus.Active, false, ClaudeStatus.Stopped)]
+    [InlineData(ClaudeStatus.Starting, false, ClaudeStatus.Stopped)]
+    [InlineData(ClaudeStatus.Idle, true, ClaudeStatus.Starting)]
+    [InlineData(ClaudeStatus.Active, true, ClaudeStatus.Starting)]
+    [InlineData(ClaudeStatus.Stopped, true, ClaudeStatus.Stopped)]
+    [InlineData(ClaudeStatus.Error, false, ClaudeStatus.Error)]
+    public void Unloaded_status_reports_forced_restart_window_as_starting(
+        ClaudeStatus stored, bool restarting, ClaudeStatus expected)
+    {
+        Assert.Equal(expected, ClaudeSessionService.UnloadedStatus(stored, restarting).Status);
+    }
+
     private static ClaudeSessionService CreateService(FakeStore store) => new(
         new ClaudeConfig(),
         new NullJobTracker(),
@@ -118,6 +181,7 @@ public sealed class ClaudeSessionRecoveryTests
     {
         private readonly List<ClaudeSessionRecord> _sessions = [.. sessions];
         public List<ClaudeSessionRecord> Saved { get; } = [];
+        public void Put(ClaudeSessionRecord record) => _sessions.Add(record);
 
         public ClaudeSessionRecord? FindSession(string sessionId) => _sessions.FirstOrDefault(s => s.Id == sessionId);
         public ClaudeSessionRecord? FindSessionByJobId(Guid jobId) => _sessions.FirstOrDefault(s => s.JobId == jobId);

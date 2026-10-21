@@ -85,7 +85,7 @@ public sealed class ClaudeToolAvailabilityTests
         Assert.Equal("ok", result.Text);
         Assert.Equal([
             "-p", "[User]: hello",
-            "--output-format", "stream-json",
+            "--output-format", "stream-json", "--verbose",
             "--model", "claude-test",
             "--no-session-persistence",
             "--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",

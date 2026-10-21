@@ -76,17 +76,13 @@ public interface ISessionProvider
         if (info.Status is SessionStatus.Active or SessionStatus.Starting)
             return SessionInputDeliveryResult.Busy();
         if (info.Status is SessionStatus.Stopped or SessionStatus.Error)
-            return SessionInputDeliveryResult.Unavailable("session_not_writable", $"Session '{sessionId}' is {info.Status.ToString().ToLowerInvariant()}");
+            return NotWritable(sessionId, info);
 
-          try
-          {
-              if (await SendInputAsync(sessionId, input, attachmentsJson, messageUid))
-                  return SessionInputDeliveryResult.Accepted();
-              var (after, _) = GetSession(sessionId);
-              if (after?.Status is SessionStatus.Active or SessionStatus.Starting)
-                  return SessionInputDeliveryResult.Busy();
-              return SessionInputDeliveryResult.Rejected(
-                  "provider_rejected", $"Provider '{ProviderId}' rejected the input");
+        try
+        {
+            if (await SendInputAsync(sessionId, input, attachmentsJson, messageUid))
+                return SessionInputDeliveryResult.Accepted();
+            return AfterRefusedSend(sessionId);
         }
         catch (Exception ex)
         {
@@ -107,23 +103,43 @@ public interface ISessionProvider
         if (info.Status is SessionStatus.Active or SessionStatus.Starting)
             return SessionInputDeliveryResult.Busy();
         if (info.Status is SessionStatus.Stopped or SessionStatus.Error)
-            return SessionInputDeliveryResult.Unavailable("session_not_writable", $"Session '{sessionId}' is {info.Status.ToString().ToLowerInvariant()}");
+            return NotWritable(sessionId, info);
 
         try
         {
             if (await SendInputAsync(sessionId, input, attachmentsJson, messageUid, displayContent))
                 return SessionInputDeliveryResult.Accepted();
-            var (after, _) = GetSession(sessionId);
-            if (after?.Status is SessionStatus.Active or SessionStatus.Starting)
-                return SessionInputDeliveryResult.Busy();
-            return SessionInputDeliveryResult.Rejected(
-                "provider_rejected", $"Provider '{ProviderId}' rejected the input");
+            return AfterRefusedSend(sessionId);
         }
         catch (Exception ex)
         {
             return SessionInputDeliveryResult.Unavailable("provider_unavailable", ex.Message, retryable: true);
         }
     }
+
+    /// <summary>
+    /// Classifies a send the provider refused after admission passed. The session can lose its
+    /// process between the status check and the write (a restart, a kill, an exit). That is not
+    /// a rejection of the input: a restart-recoverable stop must stay retryable so the queue
+    /// takes its resume path on the next attempt.
+    /// </summary>
+    private SessionInputDeliveryResult AfterRefusedSend(string sessionId)
+    {
+        var (after, _) = GetSession(sessionId);
+        if (after?.Status is SessionStatus.Active or SessionStatus.Starting)
+            return SessionInputDeliveryResult.Busy();
+        if (after?.Status is SessionStatus.Stopped or SessionStatus.Error)
+            return NotWritable(sessionId, after);
+        return SessionInputDeliveryResult.Rejected(
+            "provider_rejected", $"Provider '{ProviderId}' rejected the input");
+    }
+
+    private static SessionInputDeliveryResult NotWritable(string sessionId, UnifiedSessionInfo info)
+        => info.Status == SessionStatus.Stopped && SessionStopReasons.IsRestartRecoverable(info.StopReason)
+            ? SessionInputDeliveryResult.Unavailable("session_restarting",
+                $"Session '{sessionId}' lost its process and will resume", retryable: true)
+            : SessionInputDeliveryResult.Unavailable("session_not_writable",
+                $"Session '{sessionId}' is {info.Status.ToString().ToLowerInvariant()}");
 
     // Provider API compatibility for callers that still construct {content, images}.
     // The public HTTP endpoint stages legacy images before it reaches providers;

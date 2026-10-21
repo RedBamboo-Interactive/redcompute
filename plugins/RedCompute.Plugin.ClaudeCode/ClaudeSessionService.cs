@@ -12,6 +12,9 @@ namespace RedCompute.Plugin.ClaudeCode;
 public class ClaudeSessionService
 {
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
+    // Sessions whose process was killed for an automatic relaunch and is not yet replaced.
+    // They are absent from _sessions for that window, but they are restarting, not stopped.
+    private readonly ConcurrentDictionary<string, Guid?> _restarting = new();
     private readonly ConcurrentDictionary<string, Process> _runningProcesses = new();
     private readonly ClaudeConfig _config;
     private readonly IJobTracker _jobTracker;
@@ -711,6 +714,8 @@ public class ClaudeSessionService
             startInfo.ArgumentList.Add(prompt);
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("stream-json");
+        // Current CLIs refuse --print with stream-json unless --verbose is also present.
+        startInfo.ArgumentList.Add("--verbose");
         if (!string.IsNullOrWhiteSpace(model))
         {
             startInfo.ArgumentList.Add("--model");
@@ -1183,13 +1188,17 @@ public class ClaudeSessionService
         string? attachmentsJson = null, string? messageUid = null, string? displayContent = null)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
+        {
+            _log($"[Claude] Refused input for {sessionId}: no live process"
+                + (_restarting.ContainsKey(sessionId) ? " (restarting)" : ""), null);
             return false;
+        }
 
-        if (session.Info.Status is SessionStatus.Stopped or SessionStatus.Error)
+        if (session.Info.Status is SessionStatus.Stopped or SessionStatus.Error or SessionStatus.Active)
+        {
+            _log($"[Claude] Refused input for {sessionId}: session is {session.Info.Status}", null);
             return false;
-
-        if (session.Info.Status == SessionStatus.Active)
-            return false;
+        }
 
         try
         {
@@ -1504,7 +1513,19 @@ public class ClaudeSessionService
         session.RestartPending = true;
         session.InterruptPending = false;
         session.InterruptCompletion = null;
+        _restarting[sessionId] = session.Info.JobId;
+        try
+        {
+            await KillAndResumeAfterForcedInterrupt(sessionId, session);
+        }
+        finally
+        {
+            _restarting.TryRemove(sessionId, out _);
+        }
+    }
 
+    private async Task KillAndResumeAfterForcedInterrupt(string sessionId, ManagedSession session)
+    {
         // Distinct from the graceful "interrupted" status: this is a kill, the
         // process is about to die and be replaced. Clients must not treat this
         // as safe-to-write; wait for the "idle" status emitted after resume below.
@@ -1680,7 +1701,7 @@ public class ClaudeSessionService
         var activeIds = _sessions.Keys.ToHashSet();
 
         var recent = _sessionStore.GetRecentSessions(activeIds, limit, includeDismissed);
-        var dbSessions = recent.Select(ToSessionInfo).ToList();
+        var dbSessions = recent.Select(ToUnloadedSessionInfo).ToList();
 
         return [.. live, .. dbSessions];
     }
@@ -1692,7 +1713,7 @@ public class ClaudeSessionService
 
         var record = _sessionStore.FindSession(sessionId);
         if (record == null) return (null, []);
-        return (ToSessionInfo(record), GetHistory(sessionId));
+        return (ToUnloadedSessionInfo(record), GetHistory(sessionId));
     }
 
     public Dictionary<Guid, SessionStatus> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds)
@@ -1712,7 +1733,7 @@ public class ClaudeSessionService
             foreach (var (jobId, statusStr) in dbStatuses)
             {
                 if (Enum.TryParse<SessionStatus>(statusStr, out var status))
-                    result[jobId] = status;
+                    result[jobId] = UnloadedStatus(status, _restarting.Values.Contains(jobId)).Status;
             }
         }
 
@@ -1727,7 +1748,34 @@ public class ClaudeSessionService
 
         var record = _sessionStore.FindSessionByJobId(jobId);
         if (record == null) return (null, []);
-        return (ToSessionInfo(record), GetHistory(record.Id));
+        return (ToUnloadedSessionInfo(record), GetHistory(record.Id));
+    }
+
+    /// <summary>
+    /// Maps a stored record for a session that is not loaded in this process. Only a loaded
+    /// session has a CLI behind it, so a stored Idle/Active/Starting row is stale (a restart
+    /// that skipped recovery, or a late write after a stop). Reporting it as live makes every
+    /// send fail as provider_rejected; reporting it as orphaned lets the input queue resume it.
+    /// </summary>
+    private ClaudeSessionInfo ToUnloadedSessionInfo(ClaudeSessionRecord record)
+    {
+        var info = ToSessionInfo(record);
+        var (status, stopReason) = UnloadedStatus(info.Status, _restarting.ContainsKey(record.Id));
+        if (status != info.Status)
+        {
+            info.Status = status;
+            info.StopReason = stopReason ?? info.StopReason;
+        }
+        return info;
+    }
+
+    internal static (SessionStatus Status, string? StopReason) UnloadedStatus(SessionStatus stored, bool restarting)
+    {
+        if (stored is not (SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting))
+            return (stored, null);
+        return restarting
+            ? (SessionStatus.Starting, null)
+            : (SessionStatus.Stopped, SessionStopReasons.OrphanedOnRestart);
     }
 
     private static ClaudeSessionInfo ToSessionInfo(ClaudeSessionRecord r) => new()
@@ -2601,6 +2649,17 @@ public class ClaudeSessionService
 
     private ClaudeStreamEvent? ParseResultEvent(JsonElement root, ManagedSession session)
     {
+        // Buffered stdout can deliver a result after StopSession, ForceKill or a forced restart
+        // already settled this session. Their terminal state is authoritative: writing Idle
+        // here would persist a live-looking row with no process behind it.
+        if (session.Cts.IsCancellationRequested || session.RestartPending
+            || !_sessions.TryGetValue(session.Info.Id, out var current) || !ReferenceEquals(current, session))
+        {
+            SettleTurnContent(session);
+            session.InterruptCompletion?.TrySetResult(true);
+            return null;
+        }
+
         var subtype = root.TryGetProperty("subtype", out var sub) ? sub.GetString() : null;
 
         var terminalError = ReadTerminalResultError(root, subtype);
