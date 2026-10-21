@@ -68,12 +68,16 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     }
 
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions);
-    private sealed record PendingSteer(
-        string ExpectedTurnId,
-        string MessageUid,
-        string TranscriptContent,
-        string? AttachmentsJson,
-        TaskCompletionSource<SessionInputDeliveryResult> Completion);
+    private sealed class PendingSteer
+    {
+        public required string ExpectedTurnId { get; init; }
+        public required string MessageUid { get; init; }
+        public required string TranscriptContent { get; init; }
+        public string? AttachmentsJson { get; init; }
+        public bool Committed { get; set; }
+        public bool Persisted { get; set; }
+        public bool TurnCompleted { get; set; }
+    }
 
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     private readonly ConcurrentDictionary<string, Lazy<Task>> _titleTasks = new();
@@ -85,6 +89,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private readonly CodexAccountUsageService _accountUsage;
     private readonly IProviderQualityModeResolver _qualityModes;
     private readonly Func<string?> _titleQualityTier;
+
+    internal int SteerRequestTimeoutSeconds { get; set; } = 120;
 
     /// <summary>Stateless exec used for the separately audited semantic-title operation.</summary>
     private readonly CodexSessionService _exec;
@@ -413,8 +419,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
-            SettlePendingSteer(session, SessionInputDeliveryResult.NotSteerable(
-                "session_stopped", "The session stopped before steering was acknowledged"));
+            FinishPendingSteer(session);
             await session.Connection.DisposeAsync();
             session.Info.Status = "Stopped";
             session.Info.StopReason = stopReason;
@@ -462,8 +467,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private void OnExited(string sessionId, int code)
     {
         if (!_sessions.TryRemove(sessionId, out var session)) return;
-        SettlePendingSteer(session, SessionInputDeliveryResult.Unavailable(
-            "provider_exited", $"Codex app-server exited with code {code}", retryable: true));
+        FinishPendingSteer(session);
         session.Info.Status = code == 0 ? "Stopped" : "Error";
         session.Info.StopReason = code == 0 ? "process_exited" : $"process_exited:{code}";
         session.Info.StoppedAt = code == 0 ? DateTimeOffset.UtcNow : null;
@@ -602,12 +606,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (turnInput.Length == 0)
             return SessionInputDeliveryResult.Rejected("missing_content", "Steering input was empty");
         var uid = messageUid ?? Guid.NewGuid().ToString("N");
-        var pending = new PendingSteer(
-            activeTurnId,
-            uid,
-            SessionInputFormatting.TranscriptText(input, displayContent),
-            attachmentsJson,
-            new(TaskCreationOptions.RunContinuationsAsynchronously));
+        var pending = new PendingSteer
+        {
+            ExpectedTurnId = activeTurnId,
+            MessageUid = uid,
+            TranscriptContent = SessionInputFormatting.TranscriptText(input, displayContent),
+            AttachmentsJson = attachmentsJson,
+        };
         lock (session.SteerGate)
         {
             if (session.PendingSteer is not null)
@@ -623,7 +628,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 expectedTurnId = activeTurnId,
                 clientUserMessageId = uid,
                 input = turnInput,
-            }, timeoutSeconds: 120);
+            }, timeoutSeconds: SteerRequestTimeoutSeconds);
             var returnedTurnId = result.TryGetProperty("turnId", out var turnId)
                 && turnId.ValueKind == JsonValueKind.String ? turnId.GetString() : null;
             if (!string.Equals(returnedTurnId, activeTurnId, StringComparison.Ordinal))
@@ -632,14 +637,31 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 return SessionInputDeliveryResult.NotSteerable(
                     "turn_changed", "Codex accepted steering for a different turn");
             }
-            return await pending.Completion.Task;
+
+            var persistAtCompletion = false;
+            lock (session.SteerGate)
+            {
+                pending.Committed = true;
+                persistAtCompletion = pending.TurnCompleted && !pending.Persisted;
+                if (persistAtCompletion) pending.Persisted = true;
+                if (pending.Persisted && ReferenceEquals(session.PendingSteer, pending))
+                    session.PendingSteer = null;
+            }
+            if (persistAtCompletion) PersistSteeredUserMessage(session, pending, nativeItemId: null);
+            return SessionInputDeliveryResult.Accepted();
         }
         catch (Exception ex)
         {
+            bool persisted;
+            lock (session.SteerGate) persisted = pending.Persisted;
             ClearPendingSteer(session, pending);
+            if (persisted) return SessionInputDeliveryResult.Accepted();
             return IsNotSteerableError(ex.Message)
                 ? SessionInputDeliveryResult.NotSteerable("turn_not_steerable", ex.Message)
-                : SessionInputDeliveryResult.Unavailable("provider_unavailable", ex.Message, retryable: true);
+                : SessionInputDeliveryResult.Unavailable(
+                    "steer_unconfirmed",
+                    $"Codex steering could not be confirmed after it was sent: {ex.Message}",
+                    retryable: false);
         }
     }
 
@@ -659,15 +681,40 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
     }
 
-    private static void SettlePendingSteer(ManagedSession session, SessionInputDeliveryResult result)
+    private void FinishPendingSteer(ManagedSession session)
     {
         PendingSteer? pending;
+        var shouldPersist = false;
         lock (session.SteerGate)
         {
             pending = session.PendingSteer;
             session.PendingSteer = null;
+            if (pending is { Committed: true, Persisted: false })
+            {
+                pending.Persisted = true;
+                shouldPersist = true;
+            }
         }
-        pending?.Completion.TrySetResult(result);
+        if (shouldPersist) PersistSteeredUserMessage(session, pending!, nativeItemId: null);
+    }
+
+    private void PersistSteeredUserMessage(ManagedSession session, PendingSteer pending, string? nativeItemId)
+    {
+        _store.AddMessage(new CodexMessageRecord
+        {
+            SessionId = session.Info.Id,
+            Role = "user",
+            EventType = "text",
+            Content = pending.TranscriptContent,
+            MessageId = nativeItemId,
+            MessageUid = pending.MessageUid,
+            AttachmentsJson = pending.AttachmentsJson,
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+        session.Info.MessageCount++;
+        session.Info.LastActivity = DateTimeOffset.UtcNow;
+        Persist(session.Info);
+        SessionUpdated?.Invoke(session.Info);
     }
 
     /// <summary>
@@ -943,13 +990,20 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
             case "turn/completed":
                 PendingSteer? incompleteSteer;
+                var persistIncompleteSteer = false;
                 lock (session.SteerGate)
                 {
                     incompleteSteer = session.PendingSteer;
-                    session.PendingSteer = null;
+                    if (incompleteSteer is not null)
+                    {
+                        incompleteSteer.TurnCompleted = true;
+                        persistIncompleteSteer = incompleteSteer.Committed && !incompleteSteer.Persisted;
+                        if (persistIncompleteSteer) incompleteSteer.Persisted = true;
+                        if (incompleteSteer.Persisted) session.PendingSteer = null;
+                    }
                 }
-                incompleteSteer?.Completion.TrySetResult(SessionInputDeliveryResult.NotSteerable(
-                    "turn_ended", "The active turn ended before Codex acknowledged steering"));
+                if (persistIncompleteSteer)
+                    PersistSteeredUserMessage(session, incompleteSteer!, nativeItemId: null);
                 ApplyUsage(session, @params);
                 if (!session.HasFinalOutput
                     && CompletionFinalOutput(@params) is { } recoveredFinal)
@@ -1000,6 +1054,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             && CodexEventMapper.NormaliseItemType(userItemType.GetString()) == "userMessage")
         {
             PendingSteer? pending;
+            var shouldPersist = false;
             lock (session.SteerGate)
             {
                 var eventTurnId = @params.TryGetProperty("turnId", out var turn)
@@ -1009,28 +1064,18 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 pending = string.Equals(session.PendingSteer?.ExpectedTurnId, eventTurnId, StringComparison.Ordinal)
                     && string.Equals(session.PendingSteer?.MessageUid, eventClientId, StringComparison.Ordinal)
                     ? session.PendingSteer : null;
-                if (pending is not null) session.PendingSteer = null;
+                if (pending is not null && !pending.Persisted)
+                {
+                    pending.Persisted = true;
+                    shouldPersist = true;
+                    if (pending.Committed) session.PendingSteer = null;
+                }
             }
-            if (pending is not null)
+            if (pending is not null && shouldPersist)
             {
                 var nativeItemId = userItem.TryGetProperty("id", out var itemId)
                     && itemId.ValueKind == JsonValueKind.String ? itemId.GetString() : null;
-                _store.AddMessage(new CodexMessageRecord
-                {
-                    SessionId = session.Info.Id,
-                    Role = "user",
-                    EventType = "text",
-                    Content = pending.TranscriptContent,
-                    MessageId = nativeItemId,
-                    MessageUid = pending.MessageUid,
-                    AttachmentsJson = pending.AttachmentsJson,
-                    Timestamp = DateTimeOffset.UtcNow,
-                });
-                session.Info.MessageCount++;
-                session.Info.LastActivity = DateTimeOffset.UtcNow;
-                Persist(session.Info);
-                SessionUpdated?.Invoke(session.Info);
-                pending.Completion.TrySetResult(SessionInputDeliveryResult.Accepted());
+                PersistSteeredUserMessage(session, pending, nativeItemId);
             }
         }
 

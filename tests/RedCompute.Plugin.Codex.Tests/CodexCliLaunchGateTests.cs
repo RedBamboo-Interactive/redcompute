@@ -85,7 +85,72 @@ public sealed class CodexCliLaunchGateTests : IDisposable
     }
 
     [Fact]
-    public async Task SteeringWaitsForMatchingUserMessageItemAndPersistsItInsideActiveTurn()
+    public async Task MatchingSteerResponseCommitsBeforeUserItemAndItemPersistsInEventOrder()
+    {
+        await using var fixture = await CreateSteeringFixtureAsync("item");
+
+        var result = await fixture.Service.TrySteerInputAsync(fixture.Session.Id,
+            [SessionInputPart.TextPart("steered")], messageUid: "steer-uid",
+            displayContent: "Steered display").WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionInputDeliveryStatus.Accepted, result.Status);
+        Assert.Equal("Active", fixture.Session.Status);
+        await WaitUntilAsync(() => fixture.Store.Messages.Any(m => m.MessageUid == "steer-uid"));
+        var persisted = Assert.Single(fixture.Store.Messages,
+            message => message.MessageUid == "steer-uid");
+        Assert.Equal("Steered display", persisted.Content);
+        Assert.Equal("item-steer", persisted.MessageId);
+    }
+
+    [Fact]
+    public async Task CompletedBeforeUserItemPersistsCommittedSteerWithoutRedelivery()
+    {
+        await using var fixture = await CreateSteeringFixtureAsync("completed");
+
+        var result = await fixture.Service.TrySteerInputAsync(fixture.Session.Id,
+            [SessionInputPart.TextPart("steered")], messageUid: "steer-completed",
+            displayContent: "Persist at completion").WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionInputDeliveryStatus.Accepted, result.Status);
+        await WaitUntilAsync(() => fixture.Store.Messages.Any(m => m.MessageUid == "steer-completed"));
+        var persisted = Assert.Single(fixture.Store.Messages,
+            message => message.MessageUid == "steer-completed");
+        Assert.Equal("Persist at completion", persisted.Content);
+        Assert.Null(persisted.MessageId);
+    }
+
+    [Fact]
+    public async Task TimeoutAfterSendIsNonRetryableAndNeverBlindlyRedelivered()
+    {
+        await using var fixture = await CreateSteeringFixtureAsync("timeout");
+        fixture.Service.SteerRequestTimeoutSeconds = 1;
+
+        var result = await fixture.Service.TrySteerInputAsync(fixture.Session.Id,
+            [SessionInputPart.TextPart("uncertain")], messageUid: "steer-timeout")
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionInputDeliveryStatus.Unavailable, result.Status);
+        Assert.Equal("steer_unconfirmed", result.ErrorCode);
+        Assert.False(result.Retryable);
+        Assert.DoesNotContain(fixture.Store.Messages, message => message.MessageUid == "steer-timeout");
+    }
+
+    [Fact]
+    public async Task MismatchedTurnResponseRemainsDemotable()
+    {
+        await using var fixture = await CreateSteeringFixtureAsync("mismatch");
+
+        var result = await fixture.Service.TrySteerInputAsync(fixture.Session.Id,
+            [SessionInputPart.TextPart("wrong turn")], messageUid: "steer-mismatch")
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionInputDeliveryStatus.NotSteerable, result.Status);
+        Assert.Equal("turn_changed", result.ErrorCode);
+        Assert.False(result.Retryable);
+        Assert.DoesNotContain(fixture.Store.Messages, message => message.MessageUid == "steer-mismatch");
+    }
+
+    private async Task<SteeringFixture> CreateSteeringFixtureAsync(string behavior)
     {
         Directory.CreateDirectory(_root);
         var codexPath = Path.Combine(_root, "codex.exe");
@@ -104,29 +169,18 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         var config = new CodexConfig { CodexPath = codexPath };
         var jobs = new TestJobTracker(job);
         var exec = new CodexSessionService(config, jobs, store, (_, _) => { });
-        await using var interactive = new CodexInteractiveService(
+        var interactive = new CodexInteractiveService(
             config, store, new CodexModelCatalog(config, (_, _) => { }), exec, jobs,
             new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
             () => null, (_, _) => { });
-        interactive.LaunchAppServerProcess = _ => StartSteeringFakeAppServer();
-
+        interactive.LaunchAppServerProcess = _ => StartSteeringFakeAppServer(behavior);
         var session = await interactive.StartSessionAsync(
-            _root, null, "owner", null, null, null, null, null, null,
-            Provenance());
+            _root, null, "owner", null, null, null, null, null, null, Provenance());
         Assert.NotNull(session);
         Assert.True(await interactive.SendInputAsync(session.Id,
             [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
-
-        var result = await interactive.TrySteerInputAsync(session.Id,
-            [SessionInputPart.TextPart("steered")], messageUid: "steer-uid",
-            displayContent: "Steered display").WaitAsync(TimeSpan.FromSeconds(5));
-
-        Assert.Equal(SessionInputDeliveryStatus.Accepted, result.Status);
-        Assert.Equal("Active", session.Status);
-        var persisted = Assert.Single(store.Messages,
-            message => message.MessageUid == "steer-uid");
-        Assert.Equal("Steered display", persisted.Content);
-        Assert.Equal("item-steer", persisted.MessageId);
+        await WaitUntilAsync(() => session.Status == "Active");
+        return new SteeringFixture(interactive, store, session);
     }
 
     private static Process StartFakeAppServer()
@@ -161,9 +215,10 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         return Process.Start(startInfo)!;
     }
 
-    private static Process StartSteeringFakeAppServer()
+    private static Process StartSteeringFakeAppServer(string behavior)
     {
-        const string script = """
+        var script = $$"""
+            $behavior = '{{behavior}}'
             while ($null -ne ($line = [Console]::In.ReadLine())) {
               try { $request = $line | ConvertFrom-Json } catch { continue }
               if ($null -eq $request.id) { continue }
@@ -172,7 +227,8 @@ public sealed class CodexCliLaunchGateTests : IDisposable
               } elseif ($request.method -eq 'turn/start') {
                 $result = @{ turn = @{ id = 'turn-1' } }
               } elseif ($request.method -eq 'turn/steer') {
-                $result = @{ turnId = 'turn-1' }
+                if ($behavior -eq 'timeout') { continue }
+                $result = @{ turnId = $(if ($behavior -eq 'mismatch') { 'turn-2' } else { 'turn-1' }) }
               } else {
                 $result = @{}
               }
@@ -186,8 +242,14 @@ public sealed class CodexCliLaunchGateTests : IDisposable
                 [Console]::Out.WriteLine($notification)
                 [Console]::Out.Flush()
               } elseif ($request.method -eq 'turn/steer') {
-                $notification = @{ jsonrpc = '2.0'; method = 'item/started'; params = @{ threadId = 'thread-1'; turnId = 'turn-1'; item = @{ type = 'userMessage'; id = 'item-steer'; clientId = $request.params.clientUserMessageId; content = @() } } } |
-                  ConvertTo-Json -Compress -Depth 8
+                if ($behavior -eq 'mismatch') { continue }
+                if ($behavior -eq 'completed') {
+                  $notification = @{ jsonrpc = '2.0'; method = 'turn/completed'; params = @{ threadId = 'thread-1'; turn = @{ id = 'turn-1'; status = 'completed'; items = @(@{ type = 'agentMessage'; phase = 'final_answer'; text = 'done' }) } } } |
+                    ConvertTo-Json -Compress -Depth 8
+                } else {
+                  $notification = @{ jsonrpc = '2.0'; method = 'item/started'; params = @{ threadId = 'thread-1'; turnId = 'turn-1'; item = @{ type = 'userMessage'; id = 'item-steer'; clientId = $request.params.clientUserMessageId; content = @() } } } |
+                    ConvertTo-Json -Compress -Depth 8
+                }
                 [Console]::Out.WriteLine($notification)
                 [Console]::Out.Flush()
               }
@@ -203,6 +265,20 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         startInfo.ArgumentList.Add("-Command");
         startInfo.ArgumentList.Add(script);
         return Process.Start(startInfo)!;
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!condition()) await Task.Delay(10, timeout.Token);
+    }
+
+    private sealed record SteeringFixture(
+        CodexInteractiveService Service,
+        TestStore Store,
+        CodexSessionInfo Session) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => Service.DisposeAsync();
     }
 
     private static async Task<CliInstallOperation> WaitForTerminalAsync(
