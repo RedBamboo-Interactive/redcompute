@@ -76,6 +76,25 @@ public sealed class SessionSteeringQueueTests
     }
 
     [Fact]
+    public async Task UnconfirmedCommittedSteerFailsNonRetryablyForGhostErrorDisplay()
+    {
+        using var f = new Fixture();
+        f.Runtime.SteerResult = SessionInputDeliveryResult.Unavailable(
+            "steer_unconfirmed", "Provider accepted the write but did not confirm delivery", retryable: false);
+        var admitted = await f.Store.EnqueueAsync(f.Submission("steer", SessionInputDeliveryPolicy.SteerCurrent));
+
+        await f.Service().ProcessSessionAsync("session", default);
+
+        var failed = (await f.Store.GetAsync("session", admitted.Item.Id, "owner"))!;
+        Assert.Equal(SessionInputQueueState.Failed, failed.State);
+        Assert.Equal("steer_unconfirmed", failed.ErrorCode);
+        Assert.False(failed.ErrorRetryable);
+        Assert.Null(failed.NextAttemptAt);
+        Assert.Equal(1, f.Runtime.Steers);
+        Assert.Equal(0, f.Runtime.Sends);
+    }
+
+    [Fact]
     public async Task MaintenancePauseDurablyAdmitsThenDemotesSteer()
     {
         using var f = new Fixture { Paused = true };

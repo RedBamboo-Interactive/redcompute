@@ -153,6 +153,58 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     }
 
     [Fact]
+    public async Task SilentBoundaryWatchdogFailsCommittedSteerWithoutRedeliveryAndPublishesIdle()
+    {
+        var (service, store, live, id, capturePath) = StartCapturingSession();
+        service.SteerBoundarySilenceTimeout = TimeSpan.FromMilliseconds(150);
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+
+        var delivery = service.TrySteerInputAsync(id, [SessionInputPart.TextPart("silent boundary")],
+            messageUid: "silent-boundary-uid");
+        var correlationId = await CapturedSteerUuid(capturePath);
+        Feed(service, id, Result());
+
+        var result = await delivery.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SessionInputDeliveryStatus.Unavailable, result.Status);
+        Assert.Equal("steer_unconfirmed", result.ErrorCode);
+        Assert.False(result.Retryable);
+        Assert.Equal("Idle", store.FindSession(id)!.Status);
+        Assert.Equal("steer_unconfirmed", store.FindSession(id)!.StopReason);
+        Assert.Single(live, item => item is { Type: "status", Content: "idle" });
+        Assert.DoesNotContain(store.Messages, item => item.MessageUid == "silent-boundary-uid");
+        Assert.Equal(1, CountCapturedUuid(capturePath, correlationId));
+    }
+
+    [Fact]
+    public async Task BoundaryWatchdogResetsWhileStdoutKeepsFlowing()
+    {
+        var (service, store, live, id, capturePath) = StartCapturingSession();
+        service.SteerBoundarySilenceTimeout = TimeSpan.FromMilliseconds(180);
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+
+        var delivery = service.TrySteerInputAsync(id, [SessionInputPart.TextPart("active boundary")],
+            messageUid: "active-boundary-uid");
+        var correlationId = await CapturedSteerUuid(capturePath);
+        Feed(service, id, Result());
+
+        for (var i = 0; i < 4; i++)
+        {
+            await Task.Delay(90);
+            Feed(service, id, $$"""{"type":"system","subtype":"heartbeat","sequence":{{i}}}""");
+        }
+
+        Assert.False(delivery.IsCompleted);
+        Assert.Equal("Active", store.FindSession(id)!.Status);
+        Assert.DoesNotContain(live, item => item is { Type: "status", Content: "idle" });
+
+        Feed(service, id, Replay(correlationId, "active boundary"));
+        var result = await delivery.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SessionInputDeliveryStatus.Accepted, result.Status);
+        Assert.Single(store.Messages, item => item.MessageUid == "active-boundary-uid");
+        Assert.Equal(1, CountCapturedUuid(capturePath, correlationId));
+    }
+
+    [Fact]
     public void Text_before_a_tool_call_is_commentary_and_the_turn_ending_text_is_final()
     {
         var (service, store, live, id) = StartSession();

@@ -25,6 +25,12 @@ public class ClaudeSessionService
     private readonly ConcurrentDictionary<string, Lazy<Task>> _titleTasks = new();
     private readonly Action<string, Guid?> _log;
 
+    // A boundary result means Claude has finished the old command and should promptly replay the
+    // committed stdin message. Two minutes matches the provider request timeout while leaving
+    // ample room for CLI bookkeeping; normal model/tool work cannot trigger it because replay
+    // precedes that work and all stdout activity resets the clock.
+    internal TimeSpan SteerBoundarySilenceTimeout { get; set; } = TimeSpan.FromSeconds(120);
+
     public event Action<ClaudeSessionInfo>? SessionCreated;
     public event Action<ClaudeSessionInfo>? SessionUpdated;
     public event Action<string, string, string?>? SessionEnded;
@@ -2062,6 +2068,7 @@ public class ClaudeSessionService
 
     private void HandleOutputLine(ManagedSession session, string line)
     {
+        ResetSteerBoundaryWatchdogs(session);
         var evt = ParseStreamLine(line, session);
         if (evt == null) return;
 
@@ -2272,6 +2279,7 @@ public class ClaudeSessionService
             || !session.PendingSteers.TryRemove(correlationId, out var pending))
             return false;
 
+        CancelSteerBoundaryWatchdog(pending);
         session.Info.MessageCount++;
         session.CurrentAssistantUid = null;
         PersistMessage(session.Info.Id, "user", "text", pending.TranscriptContent,
@@ -2286,7 +2294,87 @@ public class ClaudeSessionService
     {
         foreach (var correlationId in session.PendingSteers.Keys)
             if (session.PendingSteers.TryRemove(correlationId, out var pending))
+            {
+                CancelSteerBoundaryWatchdog(pending);
                 pending.Completion.TrySetResult(result);
+            }
+    }
+
+    private void StartSteerBoundaryWatchdogs(ManagedSession session)
+    {
+        foreach (var entry in session.PendingSteers)
+            StartOrResetSteerBoundaryWatchdog(session, entry.Key, entry.Value, start: true);
+    }
+
+    private void ResetSteerBoundaryWatchdogs(ManagedSession session)
+    {
+        foreach (var entry in session.PendingSteers)
+            StartOrResetSteerBoundaryWatchdog(session, entry.Key, entry.Value, start: false);
+    }
+
+    private void StartOrResetSteerBoundaryWatchdog(
+        ManagedSession session, string correlationId, PendingSteer pending, bool start)
+    {
+        CancellationTokenSource watchdog;
+        lock (pending.WatchdogGate)
+        {
+            if (!start && pending.WatchdogCts is null) return;
+            pending.WatchdogCts?.Cancel();
+            pending.WatchdogCts?.Dispose();
+            watchdog = new CancellationTokenSource();
+            pending.WatchdogCts = watchdog;
+        }
+        _ = WatchSteerBoundarySilenceAsync(session, correlationId, pending, watchdog);
+    }
+
+    private async Task WatchSteerBoundarySilenceAsync(
+        ManagedSession session, string correlationId, PendingSteer pending,
+        CancellationTokenSource watchdog)
+    {
+        try
+        {
+            await Task.Delay(SteerBoundarySilenceTimeout, watchdog.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        lock (pending.WatchdogGate)
+        {
+            if (!ReferenceEquals(pending.WatchdogCts, watchdog)) return;
+            pending.WatchdogCts = null;
+        }
+        watchdog.Dispose();
+
+        if (!_sessions.TryGetValue(session.Info.Id, out var current)
+            || !ReferenceEquals(current, session)
+            || session.Process.HasExited
+            || !session.PendingSteers.TryRemove(correlationId, out var removed)
+            || !ReferenceEquals(removed, pending))
+            return;
+
+        session.Info.Status = SessionStatus.Idle;
+        session.Info.StopReason = "steer_unconfirmed";
+        PersistSessionRecord(session.Info);
+        _log($"[Claude] Session {session.Info.Id} became idle after {SteerBoundarySilenceTimeout.TotalSeconds:N0}s without stdout or replay for a committed steer", null);
+        SessionUpdated?.Invoke(session.Info);
+        StreamEvent?.Invoke(session.Info.Id,
+            new ClaudeStreamEvent { Type = "status", Content = "idle" });
+        pending.Completion.TrySetResult(SessionInputDeliveryResult.Unavailable(
+            "steer_unconfirmed",
+            "Claude did not replay the committed steer after the preceding turn ended",
+            retryable: false));
+    }
+
+    private static void CancelSteerBoundaryWatchdog(PendingSteer pending)
+    {
+        lock (pending.WatchdogGate)
+        {
+            pending.WatchdogCts?.Cancel();
+            pending.WatchdogCts?.Dispose();
+            pending.WatchdogCts = null;
+        }
     }
 
     private static void DiscardPendingSteers(ManagedSession session) =>
@@ -2785,6 +2873,7 @@ public class ClaudeSessionService
                 SyncTitleFromClaudeSession(session);
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
+                StartSteerBoundaryWatchdogs(session);
                 return null;
             }
             session.Info.Status = SessionStatus.Idle;
@@ -2832,6 +2921,7 @@ public class ClaudeSessionService
                 ParseTokenUsage(root, session);
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
+                StartSteerBoundaryWatchdogs(session);
                 return null;
             }
 
@@ -3229,6 +3319,8 @@ public class ClaudeSessionService
         public required string? AttachmentsJson { get; init; }
         public required TaskCompletionSource<SessionInputDeliveryResult> Completion { get; init; }
         public bool Committed { get; set; }
+        public object WatchdogGate { get; } = new();
+        public CancellationTokenSource? WatchdogCts { get; set; }
     }
 
     private class ManagedSession
