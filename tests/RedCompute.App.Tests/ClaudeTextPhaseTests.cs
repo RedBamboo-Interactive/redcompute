@@ -5,6 +5,7 @@ using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
 using RedCompute.PluginSdk;
 using Xunit;
+using ClaudeSessionStatus = RedCompute.Plugin.ClaudeCode.SessionStatus;
 
 namespace RedCompute.App.Tests;
 
@@ -24,6 +25,132 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     private readonly List<Process> _processes = [];
 
     public ClaudeTextPhaseTests() => Directory.CreateDirectory(_root);
+
+    [Fact]
+    public async Task SteeringWaitsForExactReplayUuidAndPersistsUserInsideActiveTurn()
+    {
+        const string script = """
+            while ($null -ne ($line = [Console]::In.ReadLine())) {
+              try { $message = $line | ConvertFrom-Json } catch { continue }
+              if ($message.type -ne 'user') { continue }
+              $message | Add-Member -NotePropertyName isReplay -NotePropertyValue $true -Force
+              [Console]::Out.WriteLine(($message | ConvertTo-Json -Compress -Depth 20))
+              [Console]::Out.Flush()
+            }
+            """;
+        var (service, store, _, id) = StartSession(startInfo =>
+        {
+            Assert.Contains("--replay-user-messages", startInfo.ArgumentList);
+            var fake = new ProcessStartInfo
+            {
+                FileName = "powershell.exe", CreateNoWindow = true, UseShellExecute = false,
+                RedirectStandardInput = true, RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            fake.ArgumentList.Add("-NoProfile");
+            fake.ArgumentList.Add("-Command");
+            fake.ArgumentList.Add(script);
+            return Track(Process.Start(fake)!);
+        });
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")],
+            messageUid: "initial-uid"));
+
+        var result = await service.TrySteerInputAsync(id,
+            [SessionInputPart.TextPart("model text")], attachmentsJson: "{\"attachments\":[]}",
+            messageUid: "steer-uid", displayContent: "Steered display")
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionInputDeliveryStatus.Accepted, result.Status);
+        var message = Assert.Single(store.Messages, item => item.MessageUid == "steer-uid");
+        Assert.Equal("user", message.Role);
+        Assert.Equal("Steered display", message.Content);
+        Assert.Equal("{\"attachments\":[]}", message.AttachmentsJson);
+        Assert.Equal("Active", store.FindSession(id)!.Status);
+    }
+
+    [Fact]
+    public async Task CommittedSteerCrossesFinalResultBoundaryWithoutIdleAndRunsExactlyOnce()
+    {
+        var (service, store, live, id, capturePath) = StartCapturingSession();
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+        var statuses = new List<ClaudeSessionStatus>();
+        service.SessionUpdated += info => { if (info.Id == id) statuses.Add(info.Status); };
+
+        var delivery = service.TrySteerInputAsync(id, [SessionInputPart.TextPart("final boundary")],
+            messageUid: "final-boundary-uid");
+        var correlationId = await CapturedSteerUuid(capturePath);
+        Feed(service, id, Result());
+
+        Assert.False(delivery.IsCompleted);
+        Assert.Equal("Active", store.FindSession(id)!.Status);
+        Assert.DoesNotContain(ClaudeSessionStatus.Idle, statuses);
+        Assert.DoesNotContain(live, item => item is { Type: "status", Content: "idle" });
+
+        Feed(service, id, Replay(correlationId, "final boundary"));
+        Assert.Equal(SessionInputDeliveryStatus.Accepted,
+            (await delivery.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Feed(service, id, Result());
+
+        Assert.Single(store.Messages, item => item.MessageUid == "final-boundary-uid");
+        Assert.Equal(1, CountCapturedUuid(capturePath, correlationId));
+        Assert.Equal("Idle", store.FindSession(id)!.Status);
+        Assert.Single(live, item => item is { Type: "status", Content: "idle" });
+    }
+
+    [Fact]
+    public async Task CommittedSteerSurvivesInterruptResultWithoutIdleAndRunsExactlyOnce()
+    {
+        var (service, store, live, id, capturePath) = StartCapturingSession();
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+        var statuses = new List<ClaudeSessionStatus>();
+        service.SessionUpdated += info => { if (info.Id == id) statuses.Add(info.Status); };
+
+        var delivery = service.TrySteerInputAsync(id, [SessionInputPart.TextPart("interrupt boundary")],
+            messageUid: "interrupt-boundary-uid");
+        var correlationId = await CapturedSteerUuid(capturePath);
+        Assert.Equal(ClaudeSessionService.InterruptResult.Interrupted, service.InterruptSession(id));
+        Feed(service, id,
+            Json(new
+            {
+                type = "control_response",
+                response = new { subtype = "success", request_id = "interrupt-test", response = new { still_queued = new[] { correlationId } } },
+            }),
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["aborted_tools"],"total_cost_usd":0.01}""");
+
+        Assert.False(delivery.IsCompleted);
+        Assert.Equal("Active", store.FindSession(id)!.Status);
+        Assert.DoesNotContain(ClaudeSessionStatus.Idle, statuses);
+        Assert.DoesNotContain(live, item => item is { Type: "status", Content: "idle" });
+
+        Feed(service, id, Replay(correlationId, "interrupt boundary"));
+        Assert.Equal(SessionInputDeliveryStatus.Accepted,
+            (await delivery.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Feed(service, id, Result());
+
+        Assert.Single(store.Messages, item => item.MessageUid == "interrupt-boundary-uid");
+        Assert.Equal(1, CountCapturedUuid(capturePath, correlationId));
+        Assert.Equal("Idle", store.FindSession(id)!.Status);
+        Assert.Single(live, item => item is { Type: "status", Content: "idle" });
+    }
+
+    [Fact]
+    public async Task HardKillBeforeReplayDemotesCommittedSteerWithoutPersistingIt()
+    {
+        var (service, store, live, id, capturePath) = StartCapturingSession();
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+
+        var delivery = service.TrySteerInputAsync(id, [SessionInputPart.TextPart("kill boundary")],
+            messageUid: "kill-boundary-uid");
+        var correlationId = await CapturedSteerUuid(capturePath);
+        await service.ForceKill(id, "maintenance_restart");
+        var result = await delivery.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionInputDeliveryStatus.NotSteerable, result.Status);
+        Assert.Equal("steer_discarded", result.ErrorCode);
+        Assert.DoesNotContain(store.Messages, item => item.MessageUid == "kill-boundary-uid");
+        Assert.Equal(1, CountCapturedUuid(capturePath, correlationId));
+        Assert.DoesNotContain(live, item => item is { Type: "status", Content: "idle" });
+    }
 
     [Fact]
     public void Text_before_a_tool_call_is_commentary_and_the_turn_ending_text_is_final()
@@ -586,6 +713,47 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         return (service, store, live, info!.Id);
     }
 
+    private (ClaudeSessionService Service, RecordingStore Store, List<ClaudeStreamEvent> Live, string Id, string CapturePath)
+        StartCapturingSession()
+    {
+        var capturePath = Path.Combine(_root, $"stdin-{Guid.NewGuid():N}.jsonl");
+        var session = StartSession(_ =>
+        {
+            var fake = new ProcessStartInfo
+            {
+                FileName = "powershell.exe", CreateNoWindow = true, UseShellExecute = false,
+                RedirectStandardInput = true, RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            fake.Environment["STEER_CAPTURE_PATH"] = capturePath;
+            fake.ArgumentList.Add("-NoProfile");
+            fake.ArgumentList.Add("-Command");
+            fake.ArgumentList.Add("while ($null -ne ($line = [Console]::In.ReadLine())) { [IO.File]::AppendAllText($env:STEER_CAPTURE_PATH, $line + [Environment]::NewLine) }");
+            return Track(Process.Start(fake)!);
+        });
+        return (session.Service, session.Store, session.Live, session.Id, capturePath);
+    }
+
+    private static async Task<string> CapturedSteerUuid(string path)
+    {
+        string? correlationId = null;
+        await WaitUntil(() =>
+        {
+            if (!File.Exists(path)) return false;
+            foreach (var line in File.ReadAllLines(path))
+            {
+                using var document = JsonDocument.Parse(line);
+                if (document.RootElement.TryGetProperty("uuid", out var uuid))
+                    correlationId = uuid.GetString();
+            }
+            return correlationId is not null;
+        });
+        return correlationId!;
+    }
+
+    private static int CountCapturedUuid(string path, string correlationId) =>
+        File.ReadAllLines(path).Count(line => line.Contains(correlationId, StringComparison.Ordinal));
+
     private ClaudeSessionService CreateService(RecordingStore store)
     {
         var claudePath = Path.Combine(_root, "claude.exe");
@@ -680,6 +848,12 @@ public sealed class ClaudeTextPhaseTests : IDisposable
 
     private static string Result() =>
         """{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.01}""";
+
+    private static string Replay(string correlationId, string content) => Json(new
+    {
+        type = "user", isReplay = true, uuid = correlationId,
+        message = new { role = "user", content }, parent_tool_use_id = (string?)null,
+    });
 
     public void Dispose()
     {

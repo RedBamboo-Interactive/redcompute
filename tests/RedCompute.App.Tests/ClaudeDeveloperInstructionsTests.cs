@@ -31,7 +31,7 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
     private static readonly string[] BaseSessionArgs =
     [
         "--output-format", "stream-json", "--verbose",
-        "--input-format", "stream-json", "--include-partial-messages",
+        "--input-format", "stream-json", "--include-partial-messages", "--replay-user-messages",
         "--permission-mode", "bypassPermissions",
         "--permission-prompt-tool", "stdio",
         "--thinking-display", "summarized",
@@ -67,7 +67,7 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
     [Theory]
     [InlineData(null)]
     [InlineData("   ")]
-    public void Start_without_instructions_launches_exactly_as_before(string? instructions)
+    public void Start_without_instructions_uses_base_interactive_args(string? instructions)
     {
         var store = new MemoryStore();
         var service = CreateService(store);
@@ -110,7 +110,7 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
     }
 
     [Fact]
-    public void Resume_of_session_without_instructions_is_unchanged()
+    public void Resume_without_instructions_uses_base_interactive_args()
     {
         var store = new MemoryStore();
         store.SaveSession(new ClaudeSessionRecord

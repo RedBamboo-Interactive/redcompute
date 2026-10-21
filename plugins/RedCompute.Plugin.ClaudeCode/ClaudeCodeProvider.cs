@@ -41,7 +41,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.Resume | SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
         SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
-        SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate;
+        SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate |
+        SessionCapabilities.SupportsSteering;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
 
     public string? LastStartError => _claude.LastStartError;
@@ -197,6 +198,11 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         string? attachmentsJson, string? messageUid, string? displayContent)
         => _claude.SendInput(sessionId, input, attachmentsJson, messageUid, displayContent);
 
+    public Task<SessionInputDeliveryResult> TrySteerInputAsync(string sessionId,
+        IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null,
+        string? messageUid = null, string? displayContent = null)
+        => _claude.TrySteerInputAsync(sessionId, input, attachmentsJson, messageUid, displayContent);
+
     public bool SendAnswer(string sessionId, string answer) => _claude.SendAnswer(sessionId, answer);
 
     public QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)
@@ -329,6 +335,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         UserId = s.UserId,
         UserName = s.UserName,
         UserAvatarUrl = s.UserAvatarUrl,
+        SupportsSteering = true,
         ProviderMetadata = new()
         {
             ["cacheReadInputTokens"] = s.CacheReadInputTokens,

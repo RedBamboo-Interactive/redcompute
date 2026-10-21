@@ -1234,6 +1234,67 @@ public class ClaudeSessionService
         }
     }
 
+    public async Task<SessionInputDeliveryResult> TrySteerInputAsync(string sessionId,
+        IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null,
+        string? messageUid = null, string? displayContent = null)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)
+            || session.Info.Status != SessionStatus.Active)
+            return SessionInputDeliveryResult.NotSteerable();
+        if (!session.PendingQuestions.IsEmpty)
+            return SessionInputDeliveryResult.NotSteerable("question_parked",
+                "The active turn is waiting for a question answer");
+        if (!input.Any(part => part.Type == "text" && !string.IsNullOrWhiteSpace(part.Text)
+                || part.Attachment is not null || part.LegacyImage is not null))
+            return SessionInputDeliveryResult.Rejected("empty_input", "Steering input is empty");
+
+        var correlationId = Guid.NewGuid().ToString();
+        var pending = new PendingSteer
+        {
+            MessageUid = messageUid ?? Guid.NewGuid().ToString("N"),
+            TranscriptContent = SessionInputFormatting.TranscriptText(input, displayContent),
+            AttachmentsJson = attachmentsJson,
+            Completion = new(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        if (!session.PendingSteers.TryAdd(correlationId, pending))
+            return SessionInputDeliveryResult.Busy();
+
+        try
+        {
+            var msg = new
+            {
+                type = "user",
+                message = new { role = "user", content = BuildContentPayload(input) },
+                parent_tool_use_id = (string?)null,
+                uuid = correlationId,
+            };
+            await WriteControlLineAsync(session, msg, () => pending.Committed = true);
+            // A successful stdin write is the provider's commit point. Claude may not replay the
+            // UUID until after the current result (and may run it as the next CLI turn), so session
+            // cancellation cannot turn this into a retry. Process-loss paths settle it explicitly.
+            return await pending.Completion.Task;
+        }
+        catch (OperationCanceledException)
+        {
+            if (pending.Committed)
+                return await pending.Completion.Task;
+            session.PendingSteers.TryRemove(correlationId, out _);
+            return SessionInputDeliveryResult.NotSteerable("steer_discarded",
+                "The session ended before steering was written");
+        }
+        catch (Exception ex)
+        {
+            if (pending.Committed)
+            {
+                _log($"[Claude] Steer write for {sessionId} failed after stdin commit; awaiting replay or process loss: {ex.Message}", null);
+                return await pending.Completion.Task;
+            }
+            session.PendingSteers.TryRemove(correlationId, out _);
+            _log($"[Claude] Failed to steer session {sessionId}: {ex.Message}", null);
+            return SessionInputDeliveryResult.Unavailable("steer_write_failed", ex.Message, retryable: true);
+        }
+    }
+
     private void EnsureTitle(ManagedSession session, string firstUserMessage)
     {
         if (!string.IsNullOrWhiteSpace(session.Info.Title)) return;
@@ -1606,8 +1667,9 @@ public class ClaudeSessionService
                 try { session.Process.Kill(entireProcessTree: true); } catch { }
             }
 
-            session.Cts.Cancel();
             DiscardPendingQuestions(session, "session_ended");
+            DiscardPendingSteers(session);
+            session.Cts.Cancel();
             SettleTurnContent(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
@@ -1648,8 +1710,9 @@ public class ClaudeSessionService
         if (_sessions.TryRemove(sessionId, out var session))
         {
             try { session.Process.Kill(entireProcessTree: true); } catch { }
-            session.Cts.Cancel();
             DiscardPendingQuestions(session, "session_ended");
+            DiscardPendingSteers(session);
+            session.Cts.Cancel();
             SettleTurnContent(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
@@ -1888,7 +1951,7 @@ public class ClaudeSessionService
         string? developerInstructions = null)
     {
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
-            "--input-format", "stream-json", "--include-partial-messages",
+            "--input-format", "stream-json", "--include-partial-messages", "--replay-user-messages",
             "--permission-mode", "bypassPermissions",
             // Routes tool asks to us as inbound `control_request`s instead of letting the
             // CLI self-deny them. This does NOT weaken bypassPermissions: the permission
@@ -2161,6 +2224,8 @@ public class ClaudeSessionService
                 return ParseAssistantEvent(root);
 
             case "user":
+                if (TryAcceptSteerReplay(root, session))
+                    return null;
                 return ParseUserEvent(root);
 
             case "result":
@@ -2196,6 +2261,37 @@ public class ClaudeSessionService
                 return null;
         }
     }
+
+    private bool TryAcceptSteerReplay(JsonElement root, ManagedSession session)
+    {
+        if (!root.TryGetProperty("isReplay", out var replay)
+            || replay.ValueKind != JsonValueKind.True
+            || !root.TryGetProperty("uuid", out var uuidElement)
+            || uuidElement.ValueKind != JsonValueKind.String
+            || uuidElement.GetString() is not { } correlationId
+            || !session.PendingSteers.TryRemove(correlationId, out var pending))
+            return false;
+
+        session.Info.MessageCount++;
+        session.CurrentAssistantUid = null;
+        PersistMessage(session.Info.Id, "user", "text", pending.TranscriptContent,
+            null, null, null, null, pending.AttachmentsJson, pending.MessageUid);
+        PersistSessionRecord(session.Info);
+        SessionUpdated?.Invoke(session.Info);
+        pending.Completion.TrySetResult(SessionInputDeliveryResult.Accepted());
+        return true;
+    }
+
+    private static void SettlePendingSteers(ManagedSession session, SessionInputDeliveryResult result)
+    {
+        foreach (var correlationId in session.PendingSteers.Keys)
+            if (session.PendingSteers.TryRemove(correlationId, out var pending))
+                pending.Completion.TrySetResult(result);
+    }
+
+    private static void DiscardPendingSteers(ManagedSession session) =>
+        SettlePendingSteers(session, SessionInputDeliveryResult.NotSteerable(
+            "steer_discarded", "The Claude process ended before replaying the committed steer"));
 
     private static string? ExtractTextFromContent(JsonElement el)
     {
@@ -2656,6 +2752,7 @@ public class ClaudeSessionService
             || !_sessions.TryGetValue(session.Info.Id, out var current) || !ReferenceEquals(current, session))
         {
             SettleTurnContent(session);
+            DiscardPendingSteers(session);
             session.InterruptCompletion?.TrySetResult(true);
             return null;
         }
@@ -2675,6 +2772,21 @@ public class ClaudeSessionService
             session.InterruptPending = false;
             session.InterruptCompletion?.TrySetResult(true);
             session.InterruptCompletion = null;
+            if (!session.PendingSteers.IsEmpty)
+            {
+                // Claude reports the old result before starting a buffered stdin command. The
+                // exact replay is the acceptance event; remain Active so after-current delivery
+                // cannot race the queued turn and clients never observe an Idle flicker.
+                session.Info.Status = SessionStatus.Active;
+                session.Info.StopReason = null;
+                if (root.TryGetProperty("total_cost_usd", out var boundaryCost))
+                    session.Info.CostUsd = boundaryCost.GetDouble();
+                ParseTokenUsage(root, session);
+                SyncTitleFromClaudeSession(session);
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                return null;
+            }
             session.Info.Status = SessionStatus.Idle;
             session.Info.StopReason = "completed";
 
@@ -2704,6 +2816,23 @@ public class ClaudeSessionService
             else if (IsAuthenticationError(root, error))
             {
                 session.Info.StopReason = "authentication_failed";
+            }
+
+            if (!session.PendingSteers.IsEmpty)
+            {
+                // An interrupt can abort the old turn while explicitly leaving this stdin command
+                // queued. The scratch sequence proves Claude then replays and runs that command.
+                session.InterruptPending = false;
+                session.InterruptCompletion?.TrySetResult(true);
+                session.InterruptCompletion = null;
+                session.Info.Status = SessionStatus.Active;
+                session.Info.StopReason = null;
+                if (root.TryGetProperty("total_cost_usd", out var boundaryCost))
+                    session.Info.CostUsd = boundaryCost.GetDouble();
+                ParseTokenUsage(root, session);
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                return null;
             }
 
             if (session.InterruptPending)
@@ -2857,8 +2986,9 @@ public class ClaudeSessionService
             return;
 
         var exitCode = session.Process.ExitCode;
-        session.Cts.Cancel();
         DiscardPendingQuestions(session, "session_ended");
+        DiscardPendingSteers(session);
+        session.Cts.Cancel();
         SettleTurnContent(session);
 
         if (session.RestartPending)
@@ -2971,13 +3101,14 @@ public class ClaudeSessionService
         }
     }
 
-    private async Task WriteControlLineAsync(ManagedSession session, object message)
+    private async Task WriteControlLineAsync(ManagedSession session, object message, Action? onWritten = null)
     {
         var json = JsonSerializer.Serialize(message);
         await session.WriteLock.WaitAsync(session.Cts.Token);
         try
         {
             session.Process.StandardInput.WriteLine(json);
+            onWritten?.Invoke();
             session.Process.StandardInput.Flush();
         }
         finally
@@ -3091,6 +3222,15 @@ public class ClaudeSessionService
         public void Dispose() => ExpiryTimer?.Dispose();
     }
 
+    private sealed class PendingSteer
+    {
+        public required string MessageUid { get; init; }
+        public required string TranscriptContent { get; init; }
+        public required string? AttachmentsJson { get; init; }
+        public required TaskCompletionSource<SessionInputDeliveryResult> Completion { get; init; }
+        public bool Committed { get; set; }
+    }
+
     private class ManagedSession
     {
         public ClaudeSessionInfo Info { get; }
@@ -3100,6 +3240,9 @@ public class ClaudeSessionService
         // the claim: whoever wins TryRemove owns writing the single control_response, so an
         // answer racing the expiry timer cannot produce two.
         public ConcurrentDictionary<string, PendingQuestion> PendingQuestions { get; } = new();
+        // Outbound steering messages wait for their exact replay UUID before the queue item
+        // is acknowledged. Content matching would conflate duplicate user text.
+        public ConcurrentDictionary<string, PendingSteer> PendingSteers { get; } = new();
         public List<ClaudeStreamEvent> MessageHistory { get; } = new();
         public bool InterruptPending { get; set; }
         // Completed by ParseResultEvent when the result for the interrupted (or
