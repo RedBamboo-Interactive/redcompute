@@ -153,6 +153,42 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     }
 
     [Fact]
+    public async Task IdleProcessExitIsRecoverableInsteadOfErrorWithStaleCompletedReason()
+    {
+        var (service, store, live, id, _) = StartCapturingSession();
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+        Feed(service, id, Result());
+        Assert.Equal("Idle", store.FindSession(id)!.Status);
+        Assert.Equal("completed", store.FindSession(id)!.StopReason);
+
+        _processes[^1].Kill(entireProcessTree: true);
+        await WaitUntil(() => store.FindSession(id)!.Status != "Idle");
+
+        var record = store.FindSession(id)!;
+        Assert.Equal("Stopped", record.Status);
+        Assert.Equal(SessionStopReasons.OrphanedOnRestart, record.StopReason);
+        Assert.Null(record.ProcessId);
+        Assert.True(SessionStopReasons.IsRestartRecoverable(record.StopReason));
+    }
+
+    [Fact]
+    public async Task ActiveProcessExitIsErrorWithExplicitProcessExitedReason()
+    {
+        var (service, store, _, id, _) = StartCapturingSession();
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+        Feed(service, id, Result());
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("second")], messageUid: "second-uid"));
+        Assert.Equal(ClaudeSessionStatus.Active, service.GetSession(id).Info!.Status);
+
+        _processes[^1].Kill(entireProcessTree: true);
+        await WaitUntil(() => store.FindSession(id)!.Status == "Error");
+
+        var record = store.FindSession(id)!;
+        Assert.Equal("Error", record.Status);
+        Assert.Equal("process_exited", record.StopReason);
+    }
+
+    [Fact]
     public async Task SilentBoundaryWatchdogFailsCommittedSteerWithoutRedeliveryAndPublishesIdle()
     {
         var (service, store, live, id, capturePath) = StartCapturingSession();

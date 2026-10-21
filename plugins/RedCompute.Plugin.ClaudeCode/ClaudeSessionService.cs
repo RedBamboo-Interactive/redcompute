@@ -3087,10 +3087,29 @@ public class ClaudeSessionService
             return;
         }
 
+        if (session.Info.Status == SessionStatus.Idle)
+        {
+            // No turn was in flight, so nothing can be replayed: losing an idle process is
+            // recoverable infrastructure loss, not a terminal error. Keeping Idle's stale
+            // "completed" reason under Error left queued input blocked with no resume path.
+            session.Info.Status = SessionStatus.Stopped;
+            session.Info.StopReason = SessionStopReasons.OrphanedOnRestart;
+            session.Info.ProcessId = null;
+            session.Info.StoppedAt = DateTimeOffset.UtcNow;
+            PersistSessionRecord(session.Info);
+            _log($"[Claude] Session {sessionId} idle process exited (code {exitCode}); recoverable as {session.Info.StopReason}", null);
+            SessionUpdated?.Invoke(session.Info);
+            SessionEnded?.Invoke(sessionId, $"process_exited:{exitCode}", session.Info.StopReason);
+            return;
+        }
+
         if (session.Info.Status != SessionStatus.Stopped)
         {
             session.Info.Status = SessionStatus.Error;
-            session.Info.StopReason ??= "error";
+            // A turn-level reason such as authentication_failed is more specific; a leftover
+            // "completed" from the previous turn is not a reason for this exit.
+            if (session.Info.StopReason is null or "completed")
+                session.Info.StopReason = "process_exited";
             PersistSessionRecord(session.Info);
             _log($"[Claude] Session {sessionId} process exited unexpectedly (code {exitCode}, reason={session.Info.StopReason})", null);
 
