@@ -47,7 +47,9 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
-        _mutex = new Mutex(true, @"Global\RedCompute_SingleInstance", out bool createdNew);
+        var threadPoolFloor = ThreadPoolFloor.Ensure();
+
+        _mutex =new Mutex(true, @"Global\RedCompute_SingleInstance", out bool createdNew);
         if (!createdNew)
         {
             // Headless: no message box. A distinctive exit code lets the kernel's process
@@ -70,6 +72,7 @@ public partial class App : Application
         ConfigManager.Load();
         ApplyCliArgs(e.Args);
         Log("[App] Configuration loaded");
+        Log($"[App] Thread pool minimum: {threadPoolFloor.Workers} workers, {threadPoolFloor.CompletionPorts} completion ports");
 
         ProviderConfig = new ProviderConfigService(ConfigManager.Config, (msg, _) => Log(msg));
         await ProviderConfig.ImportLegacyApiKeysAsync();
