@@ -84,6 +84,51 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(1, Volatile.Read(ref spawnCount));
     }
 
+    [Fact]
+    public async Task SteeringWaitsForMatchingUserMessageItemAndPersistsItInsideActiveTurn()
+    {
+        Directory.CreateDirectory(_root);
+        var codexPath = Path.Combine(_root, "codex.exe");
+        File.WriteAllText(codexPath, "test seam only");
+        var job = new JobRecord
+        {
+            Id = Guid.NewGuid(), CapabilitySlug = "ai-session", ProviderName = "Codex",
+            CreationProvenance = Provenance(),
+        };
+        var placeholder = new CodexSessionRecord
+        {
+            Id = "placeholder", ProjectName = "placeholder", ProjectPath = _root,
+            Status = "Stopped", StartedAt = DateTimeOffset.UtcNow,
+        };
+        var store = new TestStore(placeholder);
+        var config = new CodexConfig { CodexPath = codexPath };
+        var jobs = new TestJobTracker(job);
+        var exec = new CodexSessionService(config, jobs, store, (_, _) => { });
+        await using var interactive = new CodexInteractiveService(
+            config, store, new CodexModelCatalog(config, (_, _) => { }), exec, jobs,
+            new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
+            () => null, (_, _) => { });
+        interactive.LaunchAppServerProcess = _ => StartSteeringFakeAppServer();
+
+        var session = await interactive.StartSessionAsync(
+            _root, null, "owner", null, null, null, null, null, null,
+            Provenance());
+        Assert.NotNull(session);
+        Assert.True(await interactive.SendInputAsync(session.Id,
+            [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
+
+        var result = await interactive.TrySteerInputAsync(session.Id,
+            [SessionInputPart.TextPart("steered")], messageUid: "steer-uid",
+            displayContent: "Steered display").WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionInputDeliveryStatus.Accepted, result.Status);
+        Assert.Equal("Active", session.Status);
+        var persisted = Assert.Single(store.Messages,
+            message => message.MessageUid == "steer-uid");
+        Assert.Equal("Steered display", persisted.Content);
+        Assert.Equal("item-steer", persisted.MessageId);
+    }
+
     private static Process StartFakeAppServer()
     {
         const string script = """
@@ -108,6 +153,50 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-Command");
+        startInfo.ArgumentList.Add(script);
+        return Process.Start(startInfo)!;
+    }
+
+    private static Process StartSteeringFakeAppServer()
+    {
+        const string script = """
+            while ($null -ne ($line = [Console]::In.ReadLine())) {
+              try { $request = $line | ConvertFrom-Json } catch { continue }
+              if ($null -eq $request.id) { continue }
+              if ($request.method -eq 'thread/start') {
+                $result = @{ thread = @{ id = 'thread-1' } }
+              } elseif ($request.method -eq 'turn/start') {
+                $result = @{ turn = @{ id = 'turn-1' } }
+              } elseif ($request.method -eq 'turn/steer') {
+                $result = @{ turnId = 'turn-1' }
+              } else {
+                $result = @{}
+              }
+              $response = @{ jsonrpc = '2.0'; id = $request.id; result = $result } |
+                ConvertTo-Json -Compress -Depth 8
+              [Console]::Out.WriteLine($response)
+              [Console]::Out.Flush()
+              if ($request.method -eq 'turn/start') {
+                $notification = @{ jsonrpc = '2.0'; method = 'turn/started'; params = @{ threadId = 'thread-1'; turn = @{ id = 'turn-1' } } } |
+                  ConvertTo-Json -Compress -Depth 8
+                [Console]::Out.WriteLine($notification)
+                [Console]::Out.Flush()
+              } elseif ($request.method -eq 'turn/steer') {
+                $notification = @{ jsonrpc = '2.0'; method = 'item/started'; params = @{ threadId = 'thread-1'; turnId = 'turn-1'; item = @{ type = 'userMessage'; id = 'item-steer'; clientId = $request.params.clientUserMessageId; content = @() } } } |
+                  ConvertTo-Json -Compress -Depth 8
+                [Console]::Out.WriteLine($notification)
+                [Console]::Out.Flush()
+              }
+            }
+            """;
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "powershell.exe", CreateNoWindow = true, UseShellExecute = false,
+            RedirectStandardInput = true, RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
         startInfo.ArgumentList.Add("-NoProfile");
@@ -192,6 +281,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
 
     private sealed class TestStore(CodexSessionRecord session) : ICodexSessionStore
     {
+        public List<CodexMessageRecord> Messages { get; } = [];
         public CodexSessionRecord? FindSession(string sessionId) =>
             session.Id == sessionId ? session : null;
         public CodexSessionRecord? FindSessionByJobId(Guid jobId) =>
@@ -204,9 +294,10 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             excludeIds.Contains(session.Id) ? [] : [session];
         public void SaveSession(CodexSessionRecord record) { }
         public void DismissSession(string sessionId) { }
-        public void AddMessage(CodexMessageRecord message) { }
-        public void AddMessages(List<CodexMessageRecord> messages) { }
-        public List<CodexMessageRecord> GetMessages(string sessionId, int limit = 50_000) => [];
+        public void AddMessage(CodexMessageRecord message) => Messages.Add(message);
+        public void AddMessages(List<CodexMessageRecord> messages) => Messages.AddRange(messages);
+        public List<CodexMessageRecord> GetMessages(string sessionId, int limit = 50_000) =>
+            Messages.Where(message => message.SessionId == sessionId).TakeLast(limit).ToList();
         public Dictionary<Guid, string> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds) => [];
     }
 }

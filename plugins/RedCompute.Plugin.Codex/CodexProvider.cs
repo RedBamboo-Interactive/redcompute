@@ -47,6 +47,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.Resume
         | SessionCapabilities.Interrupt
         | SessionCapabilities.SendMessage
+        | SessionCapabilities.SupportsSteering
         | SessionCapabilities.ImageAttachments
         | SessionCapabilities.FileAttachments
         | SessionCapabilities.ImageOutputs;
@@ -219,6 +220,12 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input,
         string? attachmentsJson, string? messageUid, string? displayContent)
         => _interactive.SendInputAsync(sessionId, input, attachmentsJson, messageUid, displayContent);
+
+    public Task<SessionInputDeliveryResult> TrySteerInputAsync(
+        string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson = null, string? messageUid = null, string? displayContent = null)
+        => _interactive.TrySteerInputAsync(
+            sessionId, input, attachmentsJson, messageUid, displayContent);
 
     public Task<bool> InjectMessageAsync(string sessionId, string role, string content,
         string? attachmentsJson = null, string? messageUid = null)
@@ -455,6 +462,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         // Codex CLI and desktop app too, since every surface shares the same thread store.
         ProviderSessionId = s.ThreadId,
         ProviderMetadata = new() { ["executionProfile"] = s.ExecutionProfile },
+        SupportsSteering = true,
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(CodexStreamEvent e) => new()

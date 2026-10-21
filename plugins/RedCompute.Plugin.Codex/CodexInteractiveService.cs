@@ -62,9 +62,18 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         /// <summary>An explicitly interrupted turn may legitimately finish without a final answer.</summary>
         public bool InterruptRequested { get; set; }
+
+        public object SteerGate { get; } = new();
+        public PendingSteer? PendingSteer { get; set; }
     }
 
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions);
+    private sealed record PendingSteer(
+        string ExpectedTurnId,
+        string MessageUid,
+        string TranscriptContent,
+        string? AttachmentsJson,
+        TaskCompletionSource<SessionInputDeliveryResult> Completion);
 
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     private readonly ConcurrentDictionary<string, Lazy<Task>> _titleTasks = new();
@@ -404,6 +413,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
+            SettlePendingSteer(session, SessionInputDeliveryResult.NotSteerable(
+                "session_stopped", "The session stopped before steering was acknowledged"));
             await session.Connection.DisposeAsync();
             session.Info.Status = "Stopped";
             session.Info.StopReason = stopReason;
@@ -451,6 +462,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private void OnExited(string sessionId, int code)
     {
         if (!_sessions.TryRemove(sessionId, out var session)) return;
+        SettlePendingSteer(session, SessionInputDeliveryResult.Unavailable(
+            "provider_exited", $"Codex app-server exited with code {code}", retryable: true));
         session.Info.Status = code == 0 ? "Stopped" : "Error";
         session.Info.StopReason = code == 0 ? "process_exited" : $"process_exited:{code}";
         session.Info.StoppedAt = code == 0 ? DateTimeOffset.UtcNow : null;
@@ -558,6 +571,103 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             Persist(info);
             return false;
         }
+    }
+
+    public async Task<SessionInputDeliveryResult> TrySteerInputAsync(
+        string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson = null, string? messageUid = null, string? displayContent = null)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session))
+            return SessionInputDeliveryResult.NotSteerable("session_not_active", "The session has no live active turn");
+        var info = session.Info;
+        var activeTurnId = session.ActiveTurnId;
+        if (info.Status != "Active" || string.IsNullOrWhiteSpace(activeTurnId)
+            || string.IsNullOrWhiteSpace(info.ThreadId))
+            return SessionInputDeliveryResult.NotSteerable("no_active_turn", "The session has no active turn");
+        if (!session.Questions.IsEmpty)
+            return SessionInputDeliveryResult.NotSteerable("parked_question", "The active turn is waiting for a structured question answer");
+        if (SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            && !IsConversationInputAllowed(input))
+            return SessionInputDeliveryResult.Rejected(
+                "unsupported_input", "Conversation-only sessions accept text input only");
+        if (input.Any(p => p.LegacyImage is not null || p.Attachment?.Kind == "image"))
+        {
+            var support = GetImageAttachmentSupport(info.Model, _catalog.Cached);
+            if (!support.Supported)
+                return SessionInputDeliveryResult.Rejected(
+                    "image_attachments_not_supported", support.Reason ?? "The model does not support image input");
+        }
+
+        var turnInput = BuildTurnInput(input);
+        if (turnInput.Length == 0)
+            return SessionInputDeliveryResult.Rejected("missing_content", "Steering input was empty");
+        var uid = messageUid ?? Guid.NewGuid().ToString("N");
+        var pending = new PendingSteer(
+            activeTurnId,
+            uid,
+            SessionInputFormatting.TranscriptText(input, displayContent),
+            attachmentsJson,
+            new(TaskCreationOptions.RunContinuationsAsynchronously));
+        lock (session.SteerGate)
+        {
+            if (session.PendingSteer is not null)
+                return SessionInputDeliveryResult.Busy();
+            session.PendingSteer = pending;
+        }
+
+        try
+        {
+            var result = await session.Connection.SendRequestAsync("turn/steer", new
+            {
+                threadId = info.ThreadId,
+                expectedTurnId = activeTurnId,
+                clientUserMessageId = uid,
+                input = turnInput,
+            }, timeoutSeconds: 120);
+            var returnedTurnId = result.TryGetProperty("turnId", out var turnId)
+                && turnId.ValueKind == JsonValueKind.String ? turnId.GetString() : null;
+            if (!string.Equals(returnedTurnId, activeTurnId, StringComparison.Ordinal))
+            {
+                ClearPendingSteer(session, pending);
+                return SessionInputDeliveryResult.NotSteerable(
+                    "turn_changed", "Codex accepted steering for a different turn");
+            }
+            return await pending.Completion.Task;
+        }
+        catch (Exception ex)
+        {
+            ClearPendingSteer(session, pending);
+            return IsNotSteerableError(ex.Message)
+                ? SessionInputDeliveryResult.NotSteerable("turn_not_steerable", ex.Message)
+                : SessionInputDeliveryResult.Unavailable("provider_unavailable", ex.Message, retryable: true);
+        }
+    }
+
+    internal static bool IsNotSteerableError(string message)
+        => message.Contains("ExpectedTurnMismatch", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("NoActiveTurn", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("activeTurnNotSteerable", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("expected turn", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("no active turn", StringComparison.OrdinalIgnoreCase);
+
+    private static void ClearPendingSteer(ManagedSession session, PendingSteer pending)
+    {
+        lock (session.SteerGate)
+        {
+            if (ReferenceEquals(session.PendingSteer, pending))
+                session.PendingSteer = null;
+        }
+    }
+
+    private static void SettlePendingSteer(ManagedSession session, SessionInputDeliveryResult result)
+    {
+        PendingSteer? pending;
+        lock (session.SteerGate)
+        {
+            pending = session.PendingSteer;
+            session.PendingSteer = null;
+        }
+        pending?.Completion.TrySetResult(result);
     }
 
     /// <summary>
@@ -832,6 +942,14 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 return;
 
             case "turn/completed":
+                PendingSteer? incompleteSteer;
+                lock (session.SteerGate)
+                {
+                    incompleteSteer = session.PendingSteer;
+                    session.PendingSteer = null;
+                }
+                incompleteSteer?.Completion.TrySetResult(SessionInputDeliveryResult.NotSteerable(
+                    "turn_ended", "The active turn ended before Codex acknowledged steering"));
                 ApplyUsage(session, @params);
                 if (!session.HasFinalOutput
                     && CompletionFinalOutput(@params) is { } recoveredFinal)
@@ -871,6 +989,49 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                     SessionUpdated?.Invoke(session.Info);
                 }
                 return;
+        }
+
+        if (method.Replace('.', '/') == "item/started"
+            && @params.ValueKind == JsonValueKind.Object
+            && @params.TryGetProperty("item", out var userItem)
+            && userItem.ValueKind == JsonValueKind.Object
+            && userItem.TryGetProperty("type", out var userItemType)
+            && userItemType.ValueKind == JsonValueKind.String
+            && CodexEventMapper.NormaliseItemType(userItemType.GetString()) == "userMessage")
+        {
+            PendingSteer? pending;
+            lock (session.SteerGate)
+            {
+                var eventTurnId = @params.TryGetProperty("turnId", out var turn)
+                    && turn.ValueKind == JsonValueKind.String ? turn.GetString() : null;
+                var eventClientId = userItem.TryGetProperty("clientId", out var clientId)
+                    && clientId.ValueKind == JsonValueKind.String ? clientId.GetString() : null;
+                pending = string.Equals(session.PendingSteer?.ExpectedTurnId, eventTurnId, StringComparison.Ordinal)
+                    && string.Equals(session.PendingSteer?.MessageUid, eventClientId, StringComparison.Ordinal)
+                    ? session.PendingSteer : null;
+                if (pending is not null) session.PendingSteer = null;
+            }
+            if (pending is not null)
+            {
+                var nativeItemId = userItem.TryGetProperty("id", out var itemId)
+                    && itemId.ValueKind == JsonValueKind.String ? itemId.GetString() : null;
+                _store.AddMessage(new CodexMessageRecord
+                {
+                    SessionId = session.Info.Id,
+                    Role = "user",
+                    EventType = "text",
+                    Content = pending.TranscriptContent,
+                    MessageId = nativeItemId,
+                    MessageUid = pending.MessageUid,
+                    AttachmentsJson = pending.AttachmentsJson,
+                    Timestamp = DateTimeOffset.UtcNow,
+                });
+                session.Info.MessageCount++;
+                session.Info.LastActivity = DateTimeOffset.UtcNow;
+                Persist(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                pending.Completion.TrySetResult(SessionInputDeliveryResult.Accepted());
+            }
         }
 
         // Completion evidence must be captured before mapping: empty text deliberately maps to no display event.
