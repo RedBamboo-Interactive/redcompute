@@ -71,6 +71,14 @@ public class ClaudeSessionStore : IClaudeSessionStore
             .ToList();
     }
 
+    public List<ClaudeSessionRecord> GetStrandedIdleExitSessions()
+    {
+        using var db = new ClaudeDbContext();
+        return db.Sessions
+            .Where(s => s.Status == "Error" && s.StopReason == "completed")
+            .ToList();
+    }
+
     public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false)
     {
         using var db = new ClaudeDbContext();

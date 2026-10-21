@@ -107,6 +107,21 @@ public class ClaudeSessionService
                 BackfillFromJsonl(s);
                 _sessionStore.SaveSession(s);
             }
+
+            // Repair rows that older builds left as Error/"completed" after an idle process died.
+            // Their process is long gone and its PID may now belong to something unrelated, so
+            // relabel only: never kill by the recorded PID here.
+            var stranded = _sessionStore.GetStrandedIdleExitSessions();
+            foreach (var s in stranded)
+            {
+                s.Status = "Stopped";
+                s.StopReason = SessionStopReasons.OrphanedOnRestart;
+                s.StoppedAt ??= DateTimeOffset.UtcNow;
+                s.ProcessId = null;
+                _sessionStore.SaveSession(s);
+            }
+            if (stranded.Count > 0)
+                _log($"[Claude] Repaired {stranded.Count} session(s) stranded as Error/completed by an earlier idle process exit", null);
         }
         catch (Exception ex)
         {

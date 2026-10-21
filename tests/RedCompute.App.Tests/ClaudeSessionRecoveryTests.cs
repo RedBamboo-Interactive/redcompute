@@ -37,6 +37,41 @@ public sealed class ClaudeSessionRecoveryTests
     }
 
     [Fact]
+    public void Construction_repairs_stranded_idle_exit_rows_without_killing_their_recorded_pid()
+    {
+        var path = CheckpointPath();
+        // Stand-in for an unrelated process that has since reused the dead session's PID.
+        using var bystander = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "powershell.exe", ArgumentList = { "-NoProfile", "-Command", "Start-Sleep -Seconds 30" },
+            CreateNoWindow = true, UseShellExecute = false,
+        })!;
+        var stranded = Session("stranded-1", "Error", "completed");
+        stranded.ProcessId = bystander.Id;
+        var store = new FakeStore(
+            stranded,
+            Session("crashed-turn", "Error", "process_exited"),
+            Session("user-stop", "Stopped", "user_stopped"));
+        try
+        {
+            _ = CreateService(store);
+
+            var saved = Assert.Single(store.Saved);
+            Assert.Equal("stranded-1", saved.Id);
+            Assert.Equal("Stopped", saved.Status);
+            Assert.Equal("orphaned_on_restart", saved.StopReason);
+            Assert.NotNull(saved.StoppedAt);
+            Assert.Null(saved.ProcessId);
+            Assert.False(bystander.HasExited);
+        }
+        finally
+        {
+            try { bystander.Kill(); } catch { }
+            Cleanup(path);
+        }
+    }
+
+    [Fact]
     public void Construction_marks_checkpointed_session_as_maintenance_restart()
     {
         var path = CheckpointPath();
@@ -187,6 +222,8 @@ public sealed class ClaudeSessionRecoveryTests
         public ClaudeSessionRecord? FindSessionByJobId(Guid jobId) => _sessions.FirstOrDefault(s => s.JobId == jobId);
         public List<ClaudeSessionRecord> GetActiveSessions() =>
             _sessions.Where(s => s.Status is "Active" or "Idle" or "Starting").ToList();
+        public List<ClaudeSessionRecord> GetStrandedIdleExitSessions() =>
+            _sessions.Where(s => s.Status == "Error" && s.StopReason == "completed").ToList();
         public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false) =>
             _sessions.Where(s => !excludeIds.Contains(s.Id)).Take(limit).ToList();
         public void SaveSession(ClaudeSessionRecord record) => Saved.Add(record);
