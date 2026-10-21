@@ -80,6 +80,16 @@ public static class UnifiedSessionEndpoints
                     ? jobTracker.GetJob(jobId)
                     : null);
 
+        // Steering is a live provider capability, not durable session history. RedLeaf-backed
+        // reads would otherwise report false until the next session.updated event.
+        UnifiedSessionInfo WithLiveCapabilities(UnifiedSessionInfo session)
+        {
+            session.SupportsSteering = registry.FindProviders<ISessionProvider>().Any(provider =>
+                string.Equals(provider.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase)
+                && provider.Capabilities.HasFlag(SessionCapabilities.SupportsSteering));
+            return session;
+        }
+
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
         var usageProviderReferences = providerIds
@@ -220,6 +230,7 @@ public static class UnifiedSessionEndpoints
                 allSessions.RemoveAll(s => s.Source == excludeSource);
 
             allSessions.RemoveAll(session => !CanReadSession(ctx, session));
+            foreach (var session in allSessions) WithLiveCapabilities(session);
 
             return Results.Json(allSessions);
         })
@@ -429,7 +440,7 @@ public static class UnifiedSessionEndpoints
 
             var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
             var transcript = TranscriptOrdering.Cursor(info.Provider, info.Id, history);
-            return Results.Json(new { session = info, messages = history, inputQueue = queue, transcript });
+            return Results.Json(new { session = WithLiveCapabilities(info), messages = history, inputQueue = queue, transcript });
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("tail", "integer", description: "Legacy bounded newest-record read. Use transcript-page for complete keyset pagination; the backing stream clamps this compatibility read to 1000 records.", location: ParamLocation.Query);
