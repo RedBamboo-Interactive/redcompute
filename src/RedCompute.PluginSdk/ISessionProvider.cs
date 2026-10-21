@@ -141,6 +141,15 @@ public interface ISessionProvider
             : SessionInputDeliveryResult.Unavailable("session_not_writable",
                 $"Session '{sessionId}' is {info.Status.ToString().ToLowerInvariant()}");
 
+    /// <summary>
+    /// Injects input into the active provider turn without interrupting, stopping, or restarting it.
+    /// Providers that do not implement same-turn input remain side-effect-free.
+    /// </summary>
+    Task<SessionInputDeliveryResult> TrySteerInputAsync(
+        string sessionId, IReadOnlyList<SessionInputPart> input,
+        string? attachmentsJson = null, string? messageUid = null, string? displayContent = null)
+        => Task.FromResult(SessionInputDeliveryResult.Unsupported());
+
     // Provider API compatibility for callers that still construct {content, images}.
     // The public HTTP endpoint stages legacy images before it reaches providers;
     // this default exists for binary/source compatibility during the migration.

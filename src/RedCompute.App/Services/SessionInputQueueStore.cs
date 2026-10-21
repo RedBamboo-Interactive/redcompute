@@ -21,6 +21,7 @@ public enum SessionInputDeliveryPolicy
 {
     AfterCurrent,
     InterruptCurrent,
+    SteerCurrent,
 }
 
 public sealed record QueuedSessionInputPart(string Type, string Value);
@@ -107,6 +108,24 @@ public sealed class SessionInputQueueStore
         command.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId = $id AND State IN ('Pending','Delivering','Failed') ORDER BY Sequence LIMIT 1";
         Add(command, "$id", sessionId);
         return (await ReadItemsAsync(command, ct)).FirstOrDefault();
+    }
+
+    internal async Task<SessionInputQueueItem?> GetSteerHeadAsync(string sessionId, CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$id AND State='Pending' AND DeliveryPolicy='SteerCurrent' ORDER BY Sequence LIMIT 1";
+        Add(command, "$id", sessionId);
+        return (await ReadItemsAsync(command, ct)).FirstOrDefault();
+    }
+
+    internal async Task<IReadOnlyList<SessionInputQueueItem>> GetDeliveringSteersAsync(
+        CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM SessionQueuedInputs WHERE State='Delivering' AND DeliveryPolicy='SteerCurrent' ORDER BY SessionId, Sequence";
+        return await ReadItemsAsync(command, ct);
     }
 
     internal async Task<string?> CurrentDeliveryUidAsync(string sessionId, CancellationToken ct = default)
@@ -458,6 +477,7 @@ public sealed class SessionInputQueueStore
         foreach (var item in pending)
         {
             if (!string.Equals(item.ProvenanceScope, head.ProvenanceScope, StringComparison.Ordinal)) break;
+            if (item.DeliveryPolicy != head.DeliveryPolicy) break;
             if (DeploymentVerificationTarget.FromMetadata(item.MetadataJson) != DeploymentVerificationTarget.FromMetadata(head.MetadataJson)) break;
             if (item.NextAttemptAt is { } retryAt && retryAt > now) break;
             batch.Add(item);
@@ -488,6 +508,122 @@ public sealed class SessionInputQueueStore
             AttemptCount = item.AttemptCount + 1,
             LeaseExpiresAt = leaseExpires,
         }).ToArray();
+    }
+
+    /// <summary>
+    /// Claims the earliest steer item even when ordinary after-current input precedes it. A failed
+    /// head or another live lease still blocks the session; steering is an overtaking policy, not a
+    /// second delivery lane.
+    /// </summary>
+    public async Task<IReadOnlyList<SessionInputQueueItem>> ClaimSteerBatchAsync(
+        string sessionId, string leaseOwner, TimeSpan leaseDuration, CancellationToken ct = default)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: false);
+
+        var blockerCommand = connection.CreateCommand();
+        blockerCommand.Transaction = transaction;
+        blockerCommand.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$sessionId AND State IN ('Delivering','Failed') ORDER BY Sequence LIMIT 1";
+        Add(blockerCommand, "$sessionId", sessionId);
+        var blocker = (await ReadItemsAsync(blockerCommand, ct)).FirstOrDefault();
+        if (blocker?.State == SessionInputQueueState.Failed) return [];
+        if (blocker?.State == SessionInputQueueState.Delivering)
+        {
+            if (blocker.LeaseExpiresAt is null || blocker.LeaseExpiresAt > now) return [];
+            await MarkUnknownOutcomeAsync(connection, transaction, blocker.Id, now, ct);
+            await transaction.CommitAsync(ct);
+            return [];
+        }
+
+        var headCommand = connection.CreateCommand();
+        headCommand.Transaction = transaction;
+        headCommand.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$sessionId AND State='Pending' AND DeliveryPolicy='SteerCurrent' ORDER BY Sequence LIMIT 1";
+        Add(headCommand, "$sessionId", sessionId);
+        var head = (await ReadItemsAsync(headCommand, ct)).FirstOrDefault();
+        if (head is null || head.NextAttemptAt is { } due && due > now) return [];
+
+        var candidates = connection.CreateCommand();
+        candidates.Transaction = transaction;
+        candidates.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$sessionId AND State='Pending' AND Sequence >= $sequence ORDER BY Sequence";
+        Add(candidates, "$sessionId", sessionId);
+        Add(candidates, "$sequence", head.Sequence);
+        var pending = await ReadItemsAsync(candidates, ct);
+        var batch = new List<SessionInputQueueItem>();
+        foreach (var item in pending)
+        {
+            if (item.DeliveryPolicy != SessionInputDeliveryPolicy.SteerCurrent) break;
+            if (!string.Equals(item.ProvenanceScope, head.ProvenanceScope, StringComparison.Ordinal)) break;
+            if (DeploymentVerificationTarget.FromMetadata(item.MetadataJson) != DeploymentVerificationTarget.FromMetadata(head.MetadataJson)) break;
+            if (item.NextAttemptAt is { } retryAt && retryAt > now) break;
+            batch.Add(item);
+        }
+        if (batch.Count == 0) return [];
+
+        var leaseExpires = now.Add(leaseDuration);
+        foreach (var item in batch)
+        {
+            var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE SessionQueuedInputs SET State='Delivering', UpdatedAt=$now, AttemptCount=AttemptCount+1, LeaseOwner=$leaseOwner, LeaseExpiresAt=$leaseExpires, DeliveredMessageUid=$deliveredMessageUid WHERE Id=$id AND State='Pending' AND DeliveryPolicy='SteerCurrent'";
+            Add(update, "$now", now.ToString("O"));
+            Add(update, "$leaseOwner", leaseOwner);
+            Add(update, "$leaseExpires", leaseExpires.ToString("O"));
+            Add(update, "$deliveredMessageUid", head.MessageUid);
+            Add(update, "$id", item.Id);
+            if (await update.ExecuteNonQueryAsync(ct) != 1)
+                throw new SessionInputQueueStoreException("queue_race", "The steer queue changed while claiming a delivery batch");
+        }
+        await transaction.CommitAsync(ct);
+        return batch.Select(item => item with
+        {
+            State = SessionInputQueueState.Delivering,
+            UpdatedAt = now,
+            AttemptCount = item.AttemptCount + 1,
+            LeaseExpiresAt = leaseExpires,
+            DeliveredMessageUid = head.MessageUid,
+        }).ToArray();
+    }
+
+    public Task DemoteSteerAsync(IReadOnlyList<SessionInputQueueItem> batch, CancellationToken ct = default) =>
+        DemoteSteerCoreAsync(batch.Select(item => item.Id).ToArray(), "Delivering", ct);
+
+    public async Task<IReadOnlyList<SessionInputQueueItem>> DemotePendingSteerAsync(
+        string sessionId, CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        var select = connection.CreateCommand();
+        select.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$sessionId AND State='Pending' AND DeliveryPolicy='SteerCurrent' ORDER BY Sequence";
+        Add(select, "$sessionId", sessionId);
+        var items = await ReadItemsAsync(select, ct);
+        await DemoteSteerCoreAsync(items.Select(item => item.Id).ToArray(), "Pending", ct);
+        return items.Select(item => item with
+        {
+            DeliveryPolicy = SessionInputDeliveryPolicy.AfterCurrent,
+            ErrorCode = "steer_unavailable",
+            ErrorMessage = "Steering was unavailable; the input will send after the current turn",
+            ErrorRetryable = false,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        }).ToArray();
+    }
+
+    private async Task DemoteSteerCoreAsync(IReadOnlyList<string> itemIds, string expectedState, CancellationToken ct)
+    {
+        if (itemIds.Count == 0) return;
+        var now = DateTimeOffset.UtcNow;
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        foreach (var id in itemIds)
+        {
+            var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE SessionQueuedInputs SET DeliveryPolicy='AfterCurrent', State='Pending', UpdatedAt=$now, NextAttemptAt=NULL, LeaseOwner=NULL, LeaseExpiresAt=NULL, ErrorCode='steer_unavailable', ErrorMessage='Steering was unavailable; the input will send after the current turn', ErrorRetryable=0, DeliveredMessageUid=NULL WHERE Id=$id AND State=$state AND DeliveryPolicy='SteerCurrent'";
+            Add(update, "$now", now.ToString("O"));
+            Add(update, "$id", id);
+            Add(update, "$state", expectedState);
+            await update.ExecuteNonQueryAsync(ct);
+        }
+        await transaction.CommitAsync(ct);
     }
 
     public Task MarkDeliveredAsync(IReadOnlyList<SessionInputQueueItem> batch, string deliveredMessageUid, CancellationToken ct = default) =>

@@ -686,7 +686,7 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/message",
-            "Send a user message to a persistent session. Returns {\"sent\": true}", async (HttpContext ctx, string id) =>
+            "Durably admit a user message, then deliver now, steer into the active turn, or queue after it according to delivery policy.", async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -820,12 +820,13 @@ public static class UnifiedSessionEndpoints
                     && deliveryElement.ValueKind != JsonValueKind.Null)
                 {
                     if (deliveryElement.ValueKind != JsonValueKind.String)
-                        return Error(400, "invalid_delivery_policy", "delivery must be 'after-current' or 'interrupt-current'");
+                        return Error(400, "invalid_delivery_policy", "delivery must be 'after-current', 'steer-current', or 'interrupt-current'");
                     deliveryPolicy = deliveryElement.GetString() switch
                     {
                         "after-current" => SessionInputDeliveryPolicy.AfterCurrent,
+                        "steer-current" => SessionInputDeliveryPolicy.SteerCurrent,
                         "interrupt-current" => SessionInputDeliveryPolicy.InterruptCurrent,
-                        _ => throw new SessionInputQueueStoreException("invalid_delivery_policy", "delivery must be 'after-current' or 'interrupt-current'"),
+                        _ => throw new SessionInputQueueStoreException("invalid_delivery_policy", "delivery must be 'after-current', 'steer-current', or 'interrupt-current'"),
                     };
                 }
 
@@ -921,7 +922,7 @@ public static class UnifiedSessionEndpoints
                     metadata = new { type = "object", description = "Arbitrary key-value metadata (display-only, not sent to model)" },
                     deploymentVerificationTarget = DeploymentVerificationTargetSchema,
                     displayContent = new { type = "string", description = "Human-readable draft shown in queue views when provider input contains an enriched context envelope" },
-                    delivery = new { type = "string", @enum = new[] { "after-current", "interrupt-current" }, @default = "after-current", description = "Durable delivery policy" },
+                    delivery = new { type = "string", @enum = new[] { "after-current", "steer-current", "interrupt-current" }, @default = "after-current", description = "Durable delivery policy. steer-current injects into a supported active turn without interruption and otherwise demotes to after-current." },
                     messageUid = new { type = "string", description = "Stable message identity to persist with the message. Supply it when the same logical message is also stored elsewhere (cross-stream dedup); minted server-side when omitted. Returned in the response." },
                 },
             })
@@ -2156,8 +2157,12 @@ public static class UnifiedSessionEndpoints
         sessionId = item.SessionId,
         sequence = item.Sequence,
         state = item.State.ToString().ToLowerInvariant(),
-        delivery = item.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent
-            ? "interrupt-current" : "after-current",
+        delivery = item.DeliveryPolicy switch
+        {
+            SessionInputDeliveryPolicy.InterruptCurrent => "interrupt-current",
+            SessionInputDeliveryPolicy.SteerCurrent => "steer-current",
+            _ => "after-current",
+        },
         input = item.Input.Select(part => part.Type == "text"
             ? (object)new { type = "text", text = part.Value }
             : new { type = "attachment", attachmentId = part.Value }),
@@ -2278,7 +2283,7 @@ public static class UnifiedSessionEndpoints
             sessionId = new { type = "string" },
             sequence = new { type = "integer" },
             state = new { type = "string", @enum = new[] { "pending", "delivering", "failed", "delivered", "cancelled" } },
-            delivery = new { type = "string", @enum = new[] { "after-current", "interrupt-current" } },
+            delivery = new { type = "string", @enum = new[] { "after-current", "steer-current", "interrupt-current" } },
             input = new { type = "array", items = new { type = "object" } },
             displayContent = new { type = "string" },
             metadata = new { type = new[] { "object", "null" } },

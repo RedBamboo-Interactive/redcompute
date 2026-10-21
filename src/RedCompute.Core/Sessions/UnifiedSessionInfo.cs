@@ -35,4 +35,5 @@ public class UnifiedSessionInfo
     public string? OwnerAgentId { get; set; }
     public bool Confidential { get; set; }
     public Dictionary<string, object?>? ProviderMetadata { get; set; }
+    public bool SupportsSteering { get; set; }
 }

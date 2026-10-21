@@ -406,10 +406,10 @@ public class RelayServer
             Fields: ["slug", "displayName", "status", "sleeping", "provider"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.created",
             "Fired when a new AI session is started", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode"]));
+            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.updated",
             "Fired when a session's status, tokens, cost, or title changes", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens"]));
+            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason", "stopReason"]));

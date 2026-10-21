@@ -19,4 +19,6 @@ public enum SessionCapabilities
     /// from the provider runtime before returning model text.
     /// </summary>
     ToolFreeGenerate = 1 << 12,
+    /// <summary>Injects user input into the currently active provider turn without interrupting it.</summary>
+    SupportsSteering = 1 << 13,
 }

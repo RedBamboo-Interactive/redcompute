@@ -146,6 +146,52 @@ public sealed class SessionInputQueueStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ClaimNeverCoalescesAcrossDeliveryPolicies()
+    {
+        var (_, queue) = Stores();
+        var first = await queue.EnqueueAsync(Submission("one"));
+        await queue.EnqueueAsync(Submission("steer", policy: SessionInputDeliveryPolicy.SteerCurrent));
+
+        var batch = await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+
+        Assert.Equal([first.Item.Id], batch.Select(item => item.Id));
+    }
+
+    [Fact]
+    public async Task SteerClaimOvertakesWaitingAfterCurrentAndCoalescesOnlyConsecutiveSteers()
+    {
+        var (_, queue) = Stores();
+        var waiting = await queue.EnqueueAsync(Submission("waiting"));
+        var firstSteer = await queue.EnqueueAsync(Submission("steer-one", policy: SessionInputDeliveryPolicy.SteerCurrent));
+        var secondSteer = await queue.EnqueueAsync(Submission("steer-two", policy: SessionInputDeliveryPolicy.SteerCurrent));
+        await queue.EnqueueAsync(Submission("later-waiting"));
+        await queue.EnqueueAsync(Submission("later-steer", policy: SessionInputDeliveryPolicy.SteerCurrent));
+
+        var batch = await queue.ClaimSteerBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+
+        Assert.Equal([firstSteer.Item.Id, secondSteer.Item.Id], batch.Select(item => item.Id));
+        Assert.Equal(SessionInputQueueState.Pending,
+            (await queue.GetAsync("session-a", waiting.Item.Id, "owner-a"))!.State);
+    }
+
+    [Fact]
+    public async Task SteerPolicySurvivesRestartAndIdempotentReplay()
+    {
+        var (_, queue) = Stores();
+        var first = await queue.EnqueueAsync(Submission("steer", idempotencyKey: "steer-key",
+            policy: SessionInputDeliveryPolicy.SteerCurrent));
+
+        var (_, reopened) = Stores();
+        var replay = await reopened.EnqueueAsync(Submission("steer", idempotencyKey: "steer-key",
+            policy: SessionInputDeliveryPolicy.SteerCurrent));
+        var restored = await reopened.GetAsync("session-a", first.Item.Id, "owner-a");
+
+        Assert.True(replay.Existing);
+        Assert.Equal(first.Item.Id, replay.Item.Id);
+        Assert.Equal(SessionInputDeliveryPolicy.SteerCurrent, restored!.DeliveryPolicy);
+    }
+
+    [Fact]
     public async Task CancelReleasesReservedAttachmentToDraft()
     {
         var (attachments, queue) = Stores();
@@ -198,14 +244,15 @@ public sealed class SessionInputQueueStoreTests : IDisposable
         string owner = "owner-a",
         IReadOnlyList<string>? attachments = null,
         string? idempotencyKey = null,
-        JobProvenance? provenance = null) => new(
+        JobProvenance? provenance = null,
+        SessionInputDeliveryPolicy policy = SessionInputDeliveryPolicy.AfterCurrent) => new(
             "session-a",
             owner,
             [new QueuedSessionInputPart("text", text), .. (attachments ?? []).Select(id => new QueuedSessionInputPart("attachment", id))],
             text,
             null,
             provenance ?? Provenance("test-app"),
-            SessionInputDeliveryPolicy.AfterCurrent,
+            policy,
             "m_" + Guid.NewGuid().ToString("N"),
             attachments ?? [],
             idempotencyKey);

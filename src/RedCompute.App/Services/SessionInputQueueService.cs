@@ -38,6 +38,7 @@ public sealed record SessionInputQueueChanged(
 public sealed class SessionInputQueueService
 {
     private static readonly TimeSpan DeliveryLease = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan SteeringLease = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan TerminalRetention = TimeSpan.FromHours(24);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -98,6 +99,7 @@ public sealed class SessionInputQueueService
 
     public async Task RunAsync(CancellationToken ct)
     {
+        await RecoverSteeringDeliveriesAsync(ct);
         var recovered = await _store.RecoverExpiredLeasesAsync(ct);
         if (recovered > 0)
             _log($"[InputQueue] Marked {recovered} expired delivery lease(s) as outcome unknown", null);
@@ -143,6 +145,14 @@ public sealed class SessionInputQueueService
     {
         var admitted = await _store.EnqueueAsync(submission, ct);
         await PublishAsync(submission.SessionId, [admitted.Item.Id], admitted.Existing ? "idempotent_replay" : "queued", ct);
+
+        if (_deliveryPaused() && admitted.Item.DeliveryPolicy == SessionInputDeliveryPolicy.SteerCurrent)
+        {
+            var demoted = await _store.DemotePendingSteerAsync(submission.SessionId, ct);
+            if (demoted.Count > 0)
+                await PublishAsync(submission.SessionId, demoted.Select(item => item.Id).ToArray(),
+                    "steer_unavailable", ct, errorCode: "steer_unavailable");
+        }
 
         if (!_deliveryPaused()
             && !admitted.Existing
@@ -304,16 +314,140 @@ public sealed class SessionInputQueueService
     }
 
     internal Task ProcessSessionAsync(string sessionId, CancellationToken ct) => ProcessSessionAsync(sessionId, ct, null);
+
+    internal async Task RecoverSteeringDeliveriesAsync(CancellationToken ct)
+    {
+        var delivering = await _store.GetDeliveringSteersAsync(ct);
+        foreach (var sessionItems in delivering.GroupBy(item => item.SessionId))
+        {
+            var provider = FindSession(sessionItems.Key).Provider;
+            var messages = provider?.GetSession(sessionItems.Key).History ?? [];
+            foreach (var item in sessionItems)
+            {
+                // Coalesced queue items share the provider message UID recorded at claim time.
+                // It is durable before stdin delivery, so restart recovery can reconcile without
+                // ever blindly calling the provider a second time.
+                var messageUid = item.DeliveredMessageUid ?? item.MessageUid;
+                var persisted = messages.Any(message =>
+                    string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(message.MessageUid, messageUid, StringComparison.Ordinal));
+                if (persisted)
+                {
+                    await _store.MarkDeliveredAsync([item], messageUid, ct);
+                    await PublishAsync(item.SessionId, [item.Id], "delivered", ct,
+                        deliveredMessageUid: messageUid);
+                }
+                else
+                {
+                    await _store.DemoteSteerAsync([item], ct);
+                    await PublishAsync(item.SessionId, [item.Id], "steer_unavailable", ct,
+                        errorCode: "steer_unavailable");
+                }
+            }
+        }
+    }
+
     private async Task ProcessSessionAsync(string sessionId, CancellationToken ct, CallerRecovery? caller)
     {
-        if (_deliveryPaused() || HasStopIntent(sessionId)) return;
+        if (HasStopIntent(sessionId)) return;
         var gate = _sessionLocks.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
         if (!await gate.WaitAsync(0, ct)) return;
         try
         {
-            if (_deliveryPaused() || HasStopIntent(sessionId)) return;
+            if (HasStopIntent(sessionId)) return;
+            if (_deliveryPaused())
+            {
+                var demoted = await _store.DemotePendingSteerAsync(sessionId, ct);
+                if (demoted.Count > 0)
+                    await PublishAsync(sessionId, demoted.Select(item => item.Id).ToArray(),
+                        "steer_unavailable", ct, errorCode: "steer_unavailable");
+                return;
+            }
             var (provider, info) = FindSession(sessionId);
             if (provider is null || info is null) return;
+
+            if (info.Status is SessionStatus.Active or SessionStatus.Starting)
+            {
+                var steerHead = await _store.GetSteerHeadAsync(sessionId, ct);
+                if (steerHead is null) return;
+                if (info.Status != SessionStatus.Active
+                    || !provider.Capabilities.HasFlag(SessionCapabilities.SupportsSteering))
+                {
+                    var demoted = await _store.DemotePendingSteerAsync(sessionId, ct);
+                    if (demoted.Count > 0)
+                        await PublishAsync(sessionId, demoted.Select(item => item.Id).ToArray(),
+                            "steer_unavailable", ct, errorCode: "steer_unavailable");
+                    return;
+                }
+                if (DeploymentVerificationTarget.FromMetadata(steerHead.MetadataJson) is { } steerTarget)
+                {
+                    var targetState = _deploymentTarget?.Invoke(steerTarget)
+                        ?? new("unknown", "deployment_target_unknown");
+                    if (targetState.State != "succeeded")
+                    {
+                        await _store.BlockPendingAsync(steerHead,
+                            targetState.ErrorCode ?? "deployment_target_pending",
+                            targetState.State == "pending", ct);
+                        await PublishAsync(sessionId, [steerHead.Id], "blocked", ct);
+                        return;
+                    }
+                }
+
+                var steerBatch = await _store.ClaimSteerBatchAsync(
+                    sessionId, _leaseOwner, SteeringLease, ct);
+                if (steerBatch.Count == 0) return;
+                await PublishAsync(sessionId, steerBatch.Select(item => item.Id).ToArray(), "delivering", ct);
+                try
+                {
+                    var payload = await BuildDeliveryPayloadAsync(steerBatch, ct);
+                    var deliveredMessageUid = steerBatch[0].MessageUid;
+                    var result = await provider.TrySteerInputAsync(sessionId, payload.Input,
+                        payload.AttachmentsJson, deliveredMessageUid, payload.DisplayContent);
+                    switch (result.Status)
+                    {
+                        case SessionInputDeliveryStatus.Accepted:
+                            await _store.MarkDeliveredAsync(steerBatch, deliveredMessageUid, CancellationToken.None);
+                            await PublishAsync(sessionId, steerBatch.Select(item => item.Id).ToArray(),
+                                "delivered", CancellationToken.None, deliveredMessageUid: deliveredMessageUid);
+                            break;
+                        case SessionInputDeliveryStatus.NotSteerable:
+                        case SessionInputDeliveryStatus.Unsupported:
+                            await _store.DemoteSteerAsync(steerBatch, CancellationToken.None);
+                            await PublishAsync(sessionId, steerBatch.Select(item => item.Id).ToArray(),
+                                "steer_unavailable", CancellationToken.None, errorCode: "steer_unavailable");
+                            break;
+                        case SessionInputDeliveryStatus.Busy:
+                            await _store.RequeueBusyAsync(steerBatch, CancellationToken.None);
+                            await PublishAsync(sessionId, steerBatch.Select(item => item.Id).ToArray(),
+                                "waiting_for_session", CancellationToken.None);
+                            break;
+                        default:
+                            await _store.FailAsync(steerBatch, result.ErrorCode ?? "delivery_failed",
+                                result.ErrorMessage ?? "Provider steering failed", result.Retryable,
+                                CancellationToken.None);
+                            await PublishAsync(sessionId, steerBatch.Select(item => item.Id).ToArray(),
+                                result.Retryable ? "retry_scheduled" : "failed", CancellationToken.None,
+                                errorCode: result.ErrorCode ?? "delivery_failed");
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var retryable = ex is not SessionInputQueueStoreException and not AttachmentStoreException;
+                    var code = ex switch
+                    {
+                        SessionInputQueueStoreException queue => queue.Code,
+                        AttachmentStoreException attachment => attachment.Code,
+                        _ => "delivery_failed",
+                    };
+                    await _store.FailAsync(steerBatch, code, ex.Message, retryable, CancellationToken.None);
+                    await PublishAsync(sessionId, steerBatch.Select(item => item.Id).ToArray(),
+                        retryable ? "retry_scheduled" : "failed", CancellationToken.None, errorCode: code);
+                    _log($"[InputQueue] Steering failed for session {sessionId}: {ex.Message}", info.JobId);
+                }
+                return;
+            }
+
             var restart = info.Status == SessionStatus.Stopped && info.StopReason is "maintenance_restart" or "orphaned_on_restart";
             if (info.Status != SessionStatus.Idle && !restart) return;
             // Every pre-restart accepted authority must be revalidated, including later FIFO scopes.
@@ -402,58 +536,9 @@ public sealed class SessionInputQueueService
                 foreach (var item in batch) await _store.RequireRecoveryAsync(item, ct);
             await PublishAsync(sessionId, batch.Select(item => item.Id).ToArray(), "delivering", ct);
 
-            var input = new List<SessionInputPart>();
-            var publicAttachments = new List<object>();
             try
             {
-                foreach (var item in batch)
-                {
-                    foreach (var part in item.Input)
-                    {
-                        if (part.Type == "text")
-                        {
-                            if (!string.IsNullOrWhiteSpace(part.Value)) input.Add(SessionInputPart.TextPart(part.Value));
-                            continue;
-                        }
-                        if (part.Type != "attachment")
-                            throw new SessionInputQueueStoreException("unsupported_input_part", $"Unsupported queued input part '{part.Type}'");
-                        var attachment = await _attachments.GetAuthorizedAsync(part.Value, item.OwnerUserId, ct)
-                            ?? throw new SessionInputQueueStoreException("attachment_not_found", $"Attachment '{part.Value}' was not found");
-                        input.Add(SessionInputPart.AttachmentPart(attachment.ToProviderAttachment()));
-                        publicAttachments.Add(new
-                        {
-                            id = attachment.Id,
-                            kind = attachment.Kind,
-                            name = attachment.Name,
-                            mediaType = attachment.MediaType,
-                            size = attachment.Size,
-                            sha256 = attachment.Sha256,
-                            downloadUrl = $"/ai-session/input-attachments/{Uri.EscapeDataString(attachment.Id)}",
-                        });
-                    }
-                }
-
-                var metadata = batch.Select(item => item.MetadataJson)
-                    .Where(json => !string.IsNullOrWhiteSpace(json))
-                    .Select(json => JsonSerializer.Deserialize<JsonElement>(json!))
-                    .ToArray();
-                string? attachmentsJson = null;
-                if (publicAttachments.Count > 0 || metadata.Length > 0 || batch.Count > 1)
-                {
-                    attachmentsJson = JsonSerializer.Serialize(new
-                    {
-                        // The user record can be mirrored before provider acknowledgement.
-                        // Persist the represented inputs with that same record, not a later event.
-                        inputMessageUids = batch.Select(item => item.MessageUid).ToArray(),
-                        attachments = publicAttachments,
-                        metadata = metadata.Length switch
-                        {
-                            0 => (object?)null,
-                            1 => metadata[0],
-                            _ => metadata,
-                        },
-                    }, JsonOptions);
-                }
+                var payload = await BuildDeliveryPayloadAsync(batch, ct);
 
                 if (info.JobId is { } jobId && _jobTracker.GetJob(jobId) is not null)
                 {
@@ -467,12 +552,9 @@ public sealed class SessionInputQueueService
 
                 var deliveredMessageUid = batch[0].MessageUid;
                 using var recoveryScope = authority?.AccessToken is { } token ? SessionScratch.PushExecutionToken(token) : null;
-                var displayContent = batch.Count == 1
-                    ? batch[0].DisplayContent
-                    : string.Join("\n", batch.Select(item => item.DisplayContent)
-                        .Where(content => !string.IsNullOrWhiteSpace(content)));
                 var result = await provider.TrySendInputAsync(
-                    sessionId, input, attachmentsJson, deliveredMessageUid, displayContent);
+                    sessionId, payload.Input, payload.AttachmentsJson, deliveredMessageUid,
+                    payload.DisplayContent);
                 switch (result.Status)
                 {
                     case SessionInputDeliveryStatus.Accepted:
@@ -512,6 +594,72 @@ public sealed class SessionInputQueueService
         {
             gate.Release();
         }
+    }
+
+    private sealed record DeliveryPayload(
+        IReadOnlyList<SessionInputPart> Input,
+        string? AttachmentsJson,
+        string DisplayContent);
+
+    private async Task<DeliveryPayload> BuildDeliveryPayloadAsync(
+        IReadOnlyList<SessionInputQueueItem> batch, CancellationToken ct)
+    {
+        var input = new List<SessionInputPart>();
+        var publicAttachments = new List<object>();
+        foreach (var item in batch)
+        {
+            foreach (var part in item.Input)
+            {
+                if (part.Type == "text")
+                {
+                    if (!string.IsNullOrWhiteSpace(part.Value)) input.Add(SessionInputPart.TextPart(part.Value));
+                    continue;
+                }
+                if (part.Type != "attachment")
+                    throw new SessionInputQueueStoreException(
+                        "unsupported_input_part", $"Unsupported queued input part '{part.Type}'");
+                var attachment = await _attachments.GetAuthorizedAsync(part.Value, item.OwnerUserId, ct)
+                    ?? throw new SessionInputQueueStoreException(
+                        "attachment_not_found", $"Attachment '{part.Value}' was not found");
+                input.Add(SessionInputPart.AttachmentPart(attachment.ToProviderAttachment()));
+                publicAttachments.Add(new
+                {
+                    id = attachment.Id,
+                    kind = attachment.Kind,
+                    name = attachment.Name,
+                    mediaType = attachment.MediaType,
+                    size = attachment.Size,
+                    sha256 = attachment.Sha256,
+                    downloadUrl = $"/ai-session/input-attachments/{Uri.EscapeDataString(attachment.Id)}",
+                });
+            }
+        }
+
+        var metadata = batch.Select(item => item.MetadataJson)
+            .Where(json => !string.IsNullOrWhiteSpace(json))
+            .Select(json => JsonSerializer.Deserialize<JsonElement>(json!))
+            .ToArray();
+        string? attachmentsJson = null;
+        if (publicAttachments.Count > 0 || metadata.Length > 0 || batch.Count > 1)
+        {
+            attachmentsJson = JsonSerializer.Serialize(new
+            {
+                inputMessageUids = batch.Select(item => item.MessageUid).ToArray(),
+                attachments = publicAttachments,
+                metadata = metadata.Length switch
+                {
+                    0 => (object?)null,
+                    1 => metadata[0],
+                    _ => metadata,
+                },
+            }, JsonOptions);
+        }
+
+        var displayContent = batch.Count == 1
+            ? batch[0].DisplayContent
+            : string.Join("\n", batch.Select(item => item.DisplayContent)
+                .Where(content => !string.IsNullOrWhiteSpace(content)));
+        return new DeliveryPayload(input, attachmentsJson, displayContent);
     }
 
     private async Task PublishAsync(string sessionId, IReadOnlyList<string> itemIds, string transition,
