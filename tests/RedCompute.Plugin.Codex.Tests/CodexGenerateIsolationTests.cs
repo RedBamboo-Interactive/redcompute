@@ -40,6 +40,7 @@ public sealed class CodexGenerateIsolationTests : IDisposable
 
         Assert.True(result.Success, result.Error);
         Assert.Equal("ok", result.Text);
+        Assert.Equal(SessionIsolation.SandboxedBestEffort, result.Isolation);
         Assert.NotNull(captured);
         Assert.Equal([
             "exec", "-", "--json", "--skip-git-repo-check",
@@ -51,10 +52,9 @@ public sealed class CodexGenerateIsolationTests : IDisposable
         Assert.Contains("redcompute-codex-generate-", captured.WorkingDirectory);
         Assert.True(wasEmpty);
         Assert.False(Directory.Exists(captured.WorkingDirectory));
-        Assert.False(CodexProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.ToolFreeGenerate));
     }
 
-    private static Process StartOutputProcess(string output)
+    internal static Process StartOutputProcess(string output)
     {
         var fake = new ProcessStartInfo
         {
@@ -82,7 +82,7 @@ public sealed class CodexGenerateIsolationTests : IDisposable
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => null;
     }
 
-    private sealed class EmptyStore : ICodexSessionStore
+    internal sealed class EmptyStore : ICodexSessionStore
     {
         public CodexSessionRecord? FindSession(string sessionId) => null;
         public CodexSessionRecord? FindSessionByJobId(Guid jobId) => null;

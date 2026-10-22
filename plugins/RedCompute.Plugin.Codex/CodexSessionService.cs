@@ -81,7 +81,26 @@ public class CodexSessionService
             : SessionStopReasons.OrphanedOnRestart;
 
     public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
-                                int InputTokens, int OutputTokens, double? CostUsd, string? Error);
+                                int InputTokens, int OutputTokens, double? CostUsd, string? Error,
+                                string? Isolation = null, string? IsolationMechanism = null);
+
+    internal const string ToolFreeProviderId = "redcompute_tool_free";
+
+    private CodexToolFreeRelay? _toolFreeRelay;
+
+    /// <summary>Loopback model-boundary relay for tool-free generate; created on first use. Test seam.</summary>
+    internal CodexToolFreeRelay ToolFreeRelay
+    {
+        get
+        {
+            if (_toolFreeRelay != null) return _toolFreeRelay;
+            var created = new CodexToolFreeRelay(_log);
+            if (Interlocked.CompareExchange(ref _toolFreeRelay, created, null) != null)
+                _ = created.DisposeAsync().AsTask();
+            return _toolFreeRelay!;
+        }
+        set => _toolFreeRelay = value;
+    }
 
     public Task<ExecuteResult> ExecuteExecAsync(
         string prompt, string? container, string? workingDir,
@@ -90,10 +109,11 @@ public class CodexSessionService
         string? streamKey = null,
         Dictionary<string, string>? env = null,
         bool networkAccess = false,
-        string? effort = null)
+        string? effort = null,
+        IReadOnlyList<string>? extraArgs = null)
         => LaunchGate.RunWhenInstallIdleAsync(
             () => ExecuteExecCoreAsync(prompt, container, workingDir, model, sandbox, timeout,
-                ct, streamKey, env, networkAccess, effort),
+                ct, streamKey, env, networkAccess, effort, extraArgs),
             ct);
 
     private async Task<ExecuteResult> ExecuteExecCoreAsync(
@@ -103,13 +123,14 @@ public class CodexSessionService
         string? streamKey,
         Dictionary<string, string>? env,
         bool networkAccess,
-        string? effort)
+        string? effort,
+        IReadOnlyList<string>? extraArgs)
     {
         ExecuteResult? last = null;
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             last = await ExecuteExecOnceAsync(prompt, container, workingDir, model, sandbox,
-                timeout, ct, streamKey, env, networkAccess, effort);
+                timeout, ct, streamKey, env, networkAccess, effort, extraArgs);
             if (last.Success || !IsTransientWorkspaceLock(last) || attempt == 3)
                 return last;
 
@@ -123,16 +144,135 @@ public class CodexSessionService
     }
 
     /// <summary>
-    /// Runs the existing Codex generate behavior from a fresh empty directory. Codex exec does not
-    /// expose an assertable empty tool surface, so this is isolation hardening, not a claim of the
-    /// ToolFreeGenerate capability.
+    /// Runs the existing Codex generate behavior from a fresh empty directory. Codex's own tools
+    /// remain available to the model, bounded only by the read-only sandbox, so this reports
+    /// sandboxed-best-effort. <see cref="ExecuteToolFreeGenerateAsync"/> is the verified path.
     /// </summary>
     public async Task<ExecuteResult> ExecuteGenerateAsync(
-        string prompt, string? model, int timeout, CancellationToken ct, string? effort = null)
+        string prompt, string? model, int timeout, CancellationToken ct, string? effort = null,
+        string? outputSchemaJson = null)
     {
         using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
-        return await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
-            timeout, ct, effort: effort);
+        using var schema = OutputSchemaFile.Create(outputSchemaJson);
+        var result = await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
+            timeout, ct, effort: effort, extraArgs: schema?.Args);
+        return result with
+        {
+            Isolation = SessionIsolation.SandboxedBestEffort,
+            IsolationMechanism = "codex-sandbox:read-only",
+        };
+    }
+
+    /// <summary>
+    /// Generate with every tool removed at the model boundary. Codex is pointed at a private route
+    /// on <see cref="CodexToolFreeRelay"/> through a custom model provider, so each model request
+    /// is stripped of tool definitions and each response is inspected before Codex can act on it.
+    /// The text is returned only when the relay verified the call and Codex's own event stream
+    /// shows no tool item; otherwise the call fails closed without model text.
+    /// </summary>
+    public async Task<ExecuteResult> ExecuteToolFreeGenerateAsync(
+        string prompt, string? model, int timeout, CancellationToken ct, string? effort = null,
+        string? outputSchemaJson = null)
+    {
+        using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
+        using var schema = OutputSchemaFile.Create(outputSchemaJson);
+        using var lease = await ToolFreeRelay.OpenAsync(ct);
+
+        var args = ToolFreeExecArgs(lease.BaseUrl);
+        if (schema != null) args.AddRange(schema.Args);
+
+        var result = await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
+            timeout, ct, effort: effort, extraArgs: args);
+
+        var toolItems = ExecToolItemTypes(result.StreamOutput);
+        var refusal = toolItems.Count > 0
+            ? $"Codex reported tool items: {string.Join(", ", toolItems)}"
+            : lease.Evidence.Refusals.Count > 0 ? lease.Evidence.VerificationError : null;
+        // An ordinary failure (auth, quota, timeout) keeps Codex's own error; it returns no text.
+        if (refusal == null && !result.Success)
+            return result;
+        refusal ??= lease.Evidence.VerificationError;
+        if (refusal != null)
+        {
+            _log($"[Codex] Tool-free generate failed closed: {refusal}", null);
+            return new ExecuteResult(false, null, result.StreamOutput, result.Model,
+                result.InputTokens, result.OutputTokens, result.CostUsd,
+                $"Codex tool-free generate could not be verified: {refusal}");
+        }
+
+        _log($"[Codex] Tool-free generate verified: {lease.Evidence.Responses} response(s), " +
+             $"{lease.Evidence.StrippedToolDefinitions} tool definition(s) removed", null);
+        return result with
+        {
+            Isolation = SessionIsolation.VerifiedToolFree,
+            IsolationMechanism = "codex-model-boundary-relay",
+        };
+    }
+
+    /// <summary>
+    /// Exec flags for tool-free generate. User config, rules and session files are left out so
+    /// nothing ambient (MCP servers, hooks, providers) joins the run, and request compression is
+    /// disabled so the relay can read the body (an encoded body is refused, never forwarded).
+    /// </summary>
+    internal static List<string> ToolFreeExecArgs(Uri relayBaseUrl) =>
+    [
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--disable", "enable_request_compression",
+        "-c", $"model_provider=\"{ToolFreeProviderId}\"",
+        "-c", $"model_providers.{ToolFreeProviderId}.name=\"RedCompute tool-free relay\"",
+        "-c", $"model_providers.{ToolFreeProviderId}.base_url=\"{relayBaseUrl}\"",
+        "-c", $"model_providers.{ToolFreeProviderId}.wire_api=\"responses\"",
+        "-c", $"model_providers.{ToolFreeProviderId}.requires_openai_auth=true",
+    ];
+
+    private static readonly HashSet<string> NonToolExecItems = ["agentMessage", "reasoning", "error"];
+
+    /// <summary>Codex exec item types in a JSONL stream that are not plain messages or reasoning.</summary>
+    internal static List<string> ExecToolItemTypes(string? stdout)
+    {
+        var found = new List<string>();
+        if (string.IsNullOrEmpty(stdout)) return found;
+        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (type is not ("item.started" or "item.updated" or "item.completed")
+                    || !root.TryGetProperty("item", out var item))
+                    continue;
+                var itemType = CodexEventMapper.NormaliseItemType(
+                    item.TryGetProperty("type", out var it) ? it.GetString() : null) ?? "(untyped)";
+                if (!NonToolExecItems.Contains(itemType) && !found.Contains(itemType))
+                    found.Add(itemType);
+            }
+            catch (JsonException) { }
+        }
+        return found;
+    }
+
+    /// <summary>A response schema written where only Codex reads it, outside the empty working directory.</summary>
+    private sealed class OutputSchemaFile : IDisposable
+    {
+        private readonly IsolatedWorkingDirectory _directory;
+
+        private OutputSchemaFile(string json)
+        {
+            _directory = IsolatedWorkingDirectory.Create("redcompute-codex-schema");
+            var path = Path.Combine(_directory.Path, "output-schema.json");
+            File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            Args = ["--output-schema", path];
+        }
+
+        public IReadOnlyList<string> Args { get; }
+
+        public static OutputSchemaFile? Create(string? json)
+            => string.IsNullOrWhiteSpace(json) ? null : new OutputSchemaFile(json);
+
+        public void Dispose() => _directory.Dispose();
     }
 
     private static bool IsTransientWorkspaceLock(ExecuteResult result)
@@ -148,7 +288,8 @@ public class CodexSessionService
         CancellationToken ct, string? streamKey,
         Dictionary<string, string>? env,
         bool networkAccess,
-        string? effort)
+        string? effort,
+        IReadOnlyList<string>? extraArgs)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
 
@@ -187,6 +328,9 @@ public class CodexSessionService
         }
 
         BuildExecArgs(startInfo, model, sandbox, networkAccess, effort);
+        if (extraArgs != null)
+            foreach (var arg in extraArgs)
+                startInfo.ArgumentList.Add(arg);
 
         var sw = Stopwatch.StartNew();
         using var process = LaunchExecProcess(startInfo);
@@ -560,6 +704,12 @@ public class CodexSessionService
         foreach (var key in _runningProcesses.Keys.ToList())
             CancelExecution(key);
         await Task.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _toolFreeRelay, null) is { } relay)
+            await relay.DisposeAsync();
     }
 
     private static CodexSessionInfo ToSessionInfo(CodexSessionRecord r) => new()

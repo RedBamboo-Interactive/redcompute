@@ -14,6 +14,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 {
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
+    private readonly string _defaultSandbox;
     private readonly CodexInteractiveService _interactive;
     private readonly CodexSessionStore _store;
     private readonly object _injectionGate = new();
@@ -43,6 +44,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     internal const SessionCapabilities DeclaredCapabilities =
         SessionCapabilities.StatelessExecution
         | SessionCapabilities.Generate
+        // Only for requests that require it: CodexToolFreeRelay strips every tool at the model
+        // boundary and verifies the call before text is returned.
+        | SessionCapabilities.ToolFreeGenerate
         | SessionCapabilities.PersistentSessions
         | SessionCapabilities.Resume
         | SessionCapabilities.Interrupt
@@ -67,6 +71,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         using (var db = new CodexDbContext()) { db.Initialize(); }
         _store = new CodexSessionStore();
         var codexConfig = BuildConfig(config);
+        _defaultSandbox = codexConfig.SandboxMode;
         _codex = new CodexSessionService(codexConfig, jobTracker, _store, log);
         _models = new CodexModelCatalog(codexConfig, log);
         _accountUsage = new CodexAccountUsageService(codexConfig, log);
@@ -128,7 +133,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         => _accountUsage.GetAsync(forceRefresh, ct);
     public string? GetProxyTargetUrl() => null;
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
-    public async ValueTask DisposeAsync() => await _interactive.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _interactive.DisposeAsync();
+        await _codex.DisposeAsync();
+    }
 
     public void MapCustomEndpoints(WebApplication app)
     {
@@ -293,23 +302,37 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     /// </summary>
     public bool SetPermissionMode(string sessionId, string mode) => false;
 
-    public async Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
+    public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
+        => GenerateAsync(new SessionGenerateRequest(model, system, messagesJson, maxTokens, effort, timeout), ct);
+
+    /// <summary>
+    /// Without <see cref="SessionGenerateRequest.RequireToolFree"/> this is the long-standing
+    /// read-only-sandbox exec. With it, the call goes through the tool-free relay and reports
+    /// verified-tool-free only when that call was verified. A strict-compatible response schema is
+    /// enforced natively with --output-schema (Codex sends it as a strict json_schema format).
+    /// </summary>
+    public async Task<SessionGenerateResult> GenerateAsync(SessionGenerateRequest request, CancellationToken ct)
     {
         string prompt;
         try
         {
-            prompt = BuildGeneratePrompt(system, messagesJson, maxTokens);
+            prompt = BuildGeneratePrompt(request.System, request.MessagesJson, request.MaxTokens);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
-            return new SessionGenerateResult(false, null, null, model, 0, 0, null,
+            return new SessionGenerateResult(false, null, null, request.Model, 0, 0, null,
                 $"Invalid completion messages: {ex.Message}");
         }
 
-        var result = await _codex.ExecuteGenerateAsync(prompt, model, timeout ?? 120, ct, effort);
+        var nativeSchema = request.ResponseSchema is { IsStrictCompatible: true } schema ? schema.Json : null;
+        var timeout = request.Timeout ?? 120;
+        var result = request.RequireToolFree
+            ? await _codex.ExecuteToolFreeGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, nativeSchema)
+            : await _codex.ExecuteGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, nativeSchema);
         return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput,
-            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
+            result.Isolation, result.IsolationMechanism, NativeResponseSchema: nativeSchema != null);
     }
 
     private static string BuildGeneratePrompt(string? system, string messagesJson, int maxTokens)
@@ -400,9 +423,20 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
         var result = await _codex.ExecuteExecAsync(prompt, container, workingDir, model, sandbox,
             timeout, ct, streamKey, env, networkAccess, effort);
+        var (isolation, mechanism) = ExecuteIsolation(sandbox ?? _defaultSandbox);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
-            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
+            isolation, mechanism);
     }
+
+    /// <summary>
+    /// Execute keeps Codex's full tool surface, so the sandbox is the only boundary: never verified
+    /// tool-free, and unrestricted when the sandbox itself is turned off.
+    /// </summary>
+    internal static (string Isolation, string Mechanism) ExecuteIsolation(string sandbox)
+        => sandbox == "danger-full-access"
+            ? (SessionIsolation.Unrestricted, $"codex-sandbox:{sandbox}")
+            : (SessionIsolation.SandboxedBestEffort, $"codex-sandbox:{sandbox}");
 
     public List<ModelInfo> GetAvailableModels()
     {

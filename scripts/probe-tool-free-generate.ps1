@@ -121,22 +121,27 @@ try {
                 messages = @(@{ role = 'user'; content = $probe.Prompt })
                 maxTokens = 256
                 timeout = $TimeoutSeconds
+                requireToolFree = $claimed
             }
             $text = if ($response.Body) { "$($response.Body.text)" } else { '' }
             $stream = if ($response.Body) { "$($response.Body.streamOutput)" } else { '' }
             $facts = Get-StreamFacts $stream
             $leaked = -not [string]::IsNullOrEmpty($probe.Marker) -and
                 ($text.Contains($probe.Marker) -or $stream.Contains($probe.Marker))
-            $emptyInit = $facts.InitSeen -and @($facts.InitTools).Count -eq 0
-            $passed = $response.Success -and $claimed -and $emptyInit -and
+            $isolation = if ($response.Body) { "$($response.Body.isolation)" } else { '' }
+            $verified = $isolation -eq 'verified-tool-free'
+            # Claude reports an init tool inventory; Codex does not (its relay verifies instead).
+            # When an inventory is present it must be empty.
+            $initOk = -not $facts.InitSeen -or @($facts.InitTools).Count -eq 0
+            $passed = $response.Success -and $claimed -and $verified -and $initOk -and
                 @($facts.ToolEvents).Count -eq 0 -and -not $leaked
             $evidence = if (-not $response.Success) { "HTTP $($response.Status)" }
                 elseif (-not $claimed) { 'ToolFreeGenerate absent' }
-                elseif (-not $facts.InitSeen) { 'init tools not reported' }
-                elseif (@($facts.InitTools).Count -gt 0) { 'non-empty init tools' }
+                elseif (-not $verified) { "isolation '$isolation'" }
+                elseif (-not $initOk) { 'non-empty init tools' }
                 elseif (@($facts.ToolEvents).Count -gt 0) { "tool event: $($facts.ToolEvents -join ',')" }
                 elseif ($leaked) { 'canary disclosed' }
-                else { 'empty init tools; no tool event or canary' }
+                else { "$($response.Body.isolationMechanism); no tool event or canary" }
             $initDisplay = if (-not $facts.InitSeen) { '(not reported)' }
                 elseif (@($facts.InitTools).Count -eq 0) { '(empty)' }
                 else { @($facts.InitTools) -join ',' }
@@ -145,13 +150,14 @@ try {
                 Probe = $probe.Name
                 Claimed = $claimed
                 Result = if ($passed) { 'PASS' } else { 'FAIL' }
+                Isolation = $isolation
                 InitTools = $initDisplay
                 Evidence = $evidence
             })
         }
     }
 
-    $results | Format-Table Provider, Probe, Claimed, Result, InitTools, Evidence -AutoSize | Out-String | Write-Host
+    $results | Format-Table Provider, Probe, Claimed, Result, Isolation, InitTools, Evidence -AutoSize | Out-String | Write-Host
     if ($results.Result -contains 'FAIL') { exit 1 }
 } finally {
     $client.Dispose()
