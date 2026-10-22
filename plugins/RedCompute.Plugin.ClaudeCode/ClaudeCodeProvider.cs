@@ -287,18 +287,21 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     }
 
     /// <summary>
-    /// What an execute call actually ran with. An explicit empty <c>tools</c> grant launches with
-    /// no built-ins and an empty strict MCP config; it is verified only when this run's init event
-    /// reported an empty tool list. Any other grant is a restriction, not a verified boundary, and
-    /// no grant at all is the full agent with permissions skipped.
+    /// What an execute call actually ran with. Execute always passes
+    /// --dangerously-skip-permissions, so whatever tools are present run unprompted: the call is
+    /// unrestricted unless the caller granted no tools (built-ins removed, empty strict MCP config)
+    /// and this run's init event confirmed an empty tool list. A non-empty grant is not a sandbox.
     /// </summary>
     internal static (string Isolation, string Mechanism) ExecuteIsolation(string[]? tools, string? streamOutput)
     {
-        if (tools is null)
-            return (SessionIsolation.Unrestricted, "claude-default-tools");
-        if (tools.Length == 0 && streamOutput != null && ClaudeSessionService.ToolFreeInitError(streamOutput) == null)
+        if (tools is { Length: 0 } && streamOutput != null && ClaudeSessionService.ToolFreeInitError(streamOutput) == null)
             return (SessionIsolation.VerifiedToolFree, "claude-empty-init-tools");
-        return (SessionIsolation.SandboxedBestEffort, "claude-tools-allowlist");
+        return tools switch
+        {
+            null => (SessionIsolation.Unrestricted, "claude-skip-permissions:default-tools"),
+            { Length: 0 } => (SessionIsolation.Unrestricted, "claude-skip-permissions:empty-grant-unverified"),
+            _ => (SessionIsolation.Unrestricted, "claude-skip-permissions:tool-grant"),
+        };
     }
 
     // --- ISessionProvider: Generate ---

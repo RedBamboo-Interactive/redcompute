@@ -904,8 +904,11 @@ public class ClaudeSessionService
             {
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
-                if (!root.TryGetProperty("type", out var type) || type.GetString() != "system"
-                    || !root.TryGetProperty("subtype", out var subtype) || subtype.GetString() != "init")
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String
+                    || type.GetString() != "system"
+                    || !root.TryGetProperty("subtype", out var subtype) || subtype.ValueKind != JsonValueKind.String
+                    || subtype.GetString() != "init")
                     continue;
 
                 if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
@@ -915,13 +918,13 @@ public class ClaudeSessionService
 
                 var names = tools.EnumerateArray().Select(tool => tool.ValueKind == JsonValueKind.String
                     ? tool.GetString()
-                    : tool.TryGetProperty("name", out var name) ? name.GetString() : tool.GetRawText());
+                    : tool.GetRawText());
                 return $"Claude Code tool-free generate refused a non-empty init tool list: {string.Join(", ", names)}";
             }
-            catch (JsonException)
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
             {
                 // Other stream lines are parsed by the ordinary result parser. Only a valid init
-                // event can establish the security invariant.
+                // event can establish the security invariant; an unreadable line establishes nothing.
             }
         }
 

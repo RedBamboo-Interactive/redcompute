@@ -125,15 +125,34 @@ public sealed class ClaudeToolAvailabilityTests
     {
         Assert.Equal((SessionIsolation.VerifiedToolFree, "claude-empty-init-tools"),
             ClaudeCodeProvider.ExecuteIsolation([], ToolFreeOutput([])));
-        // An empty grant whose run still reported a tool (ambient plugin, CLI change) is not verified.
-        Assert.Equal(SessionIsolation.SandboxedBestEffort,
-            ClaudeCodeProvider.ExecuteIsolation([], ToolFreeOutput(["mcp__ambient__fetch"])).Isolation);
-        Assert.Equal(SessionIsolation.SandboxedBestEffort,
-            ClaudeCodeProvider.ExecuteIsolation([], null).Isolation);
-        Assert.Equal(SessionIsolation.SandboxedBestEffort,
-            ClaudeCodeProvider.ExecuteIsolation(["Read"], ToolFreeOutput(["Read"])).Isolation);
-        Assert.Equal(SessionIsolation.Unrestricted,
-            ClaudeCodeProvider.ExecuteIsolation(null, ToolFreeOutput([])).Isolation);
+        // Execute always skips permissions, so anything short of a verified empty surface runs
+        // whatever tools it has unprompted: an unverified empty grant (ambient plugin, CLI change,
+        // missing init) and a non-empty grant are both unrestricted, never "sandboxed".
+        Assert.Equal((SessionIsolation.Unrestricted, "claude-skip-permissions:empty-grant-unverified"),
+            ClaudeCodeProvider.ExecuteIsolation([], ToolFreeOutput(["mcp__ambient__fetch"])));
+        Assert.Equal(SessionIsolation.Unrestricted, ClaudeCodeProvider.ExecuteIsolation([], null).Isolation);
+        Assert.Equal(SessionIsolation.Unrestricted, ClaudeCodeProvider.ExecuteIsolation([], "not json").Isolation);
+        Assert.Equal((SessionIsolation.Unrestricted, "claude-skip-permissions:tool-grant"),
+            ClaudeCodeProvider.ExecuteIsolation(["Read"], ToolFreeOutput(["Read"])));
+        Assert.Equal((SessionIsolation.Unrestricted, "claude-skip-permissions:default-tools"),
+            ClaudeCodeProvider.ExecuteIsolation(null, ToolFreeOutput([])));
+        Assert.Contains("--dangerously-skip-permissions", AgentArgs(["Read"]));
+        Assert.Contains("--dangerously-skip-permissions", AgentArgs([]));
+    }
+
+    [Theory]
+    [InlineData("{\"type\":7,\"subtype\":\"init\",\"tools\":[]}")]
+    [InlineData("{\"type\":\"system\",\"subtype\":[\"init\"],\"tools\":[]}")]
+    [InlineData("{\"\\udc00\":1,\"type\":\"system\",\"subtype\":\"init\",\"tools\":[\"\\ud800\"]}")]
+    [InlineData("[1,2]")]
+    public void Init_check_fails_closed_on_lines_it_cannot_read_without_throwing(string line)
+        => Assert.NotNull(ClaudeSessionService.ToolFreeInitError(line + "\n"));
+
+    private static List<string> AgentArgs(string[] tools)
+    {
+        var args = new List<string>();
+        ClaudeSessionService.AddAgentArgs(args, null, null, 1, tools, null, null);
+        return args;
     }
 
     private static string ValueAfter(IReadOnlyList<string> values, string key)
