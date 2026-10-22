@@ -189,10 +189,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     }
 
     private void TryKillByPid(int pid)
-    {
-        try { System.Diagnostics.Process.GetProcessById(pid).Kill(entireProcessTree: true); }
-        catch { }
-    }
+        => OwnedProcessKiller.TryKill(pid, "codex", m => _log($"[Codex] {m}", null));
 
     // ===== Lifecycle =========================================================================
 

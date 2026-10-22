@@ -1553,16 +1553,8 @@ public class OpenCodeSessionService
         });
     }
 
-    private static void TryKillByPid(int? pid)
-    {
-        if (pid is not { } p) return;
-        try
-        {
-            var proc = Process.GetProcessById(p);
-            proc.Kill(entireProcessTree: true);
-        }
-        catch { }
-    }
+    private void TryKillByPid(int? pid)
+        => OwnedProcessKiller.TryKill(pid, "opencode", m => _log($"[OpenCode] {m}", null));
 
     // ===== Stateless Execution (unchanged) =====
 

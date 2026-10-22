@@ -223,16 +223,8 @@ public class ClaudeSessionService
         }
     }
 
-    private static void TryKillByPid(int? pid)
-    {
-        if (pid is not { } p) return;
-        try
-        {
-            var proc = Process.GetProcessById(p);
-            proc.Kill(entireProcessTree: true);
-        }
-        catch { }
-    }
+    private void TryKillByPid(int? pid)
+        => OwnedProcessKiller.TryKill(pid, "claude", m => _log($"[Claude] {m}", null));
 
     private void BackfillFromJsonl(ClaudeSessionRecord session)
     {
