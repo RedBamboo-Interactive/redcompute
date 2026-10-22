@@ -1122,9 +1122,9 @@ public class ClaudeSessionService
             return null;
         }
 
-        if (string.IsNullOrEmpty(sessionRecord.ClaudeSessionId))
+        if (ResumeLaunchError(sessionRecord.ClaudeSessionId, sessionRecord.MessageCount) is { } resumeError)
         {
-            LastStartError = "Session has no Claude session ID to resume";
+            LastStartError = resumeError;
             return null;
         }
 
@@ -1195,7 +1195,9 @@ public class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        PopulateSessionArgs(startInfo, sessionRecord.ClaudeSessionId, sessionRecord.Model, sessionRecord.Effort,
+        PopulateSessionArgs(startInfo,
+            string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
+            sessionRecord.Model, sessionRecord.Effort,
             sessionRecord.DeveloperInstructions);
         if (SessionScratch.Environment(sessionRecord.ScratchDirectory) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
@@ -2120,6 +2122,18 @@ public class ClaudeSessionService
             startInfo.ArgumentList.Add(resumeClaudeSessionId);
         }
     }
+
+    /// <summary>
+    /// Claude issues its conversation id on the first completed turn. A session stopped before
+    /// any turn (for example a fresh Discord session that only received outreach appends when a
+    /// restart hit) has no Claude conversation to lose, so it relaunches fresh with the same
+    /// instructions. A session that did complete turns but lost its id must not silently
+    /// restart without its history.
+    /// </summary>
+    internal static string? ResumeLaunchError(string? claudeSessionId, int messageCount)
+        => string.IsNullOrEmpty(claudeSessionId) && messageCount > 0
+            ? "Session has no Claude session ID to resume"
+            : null;
 
     /// <summary>
     /// Developer instructions are a security boundary, so a launch that cannot deliver them
