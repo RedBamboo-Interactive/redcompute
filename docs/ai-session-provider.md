@@ -25,6 +25,8 @@ Never read credentials from ordinary entity `settings`, source, logs, command ar
 
 Declare only capabilities that work end to end. Unsupported interface operations must remain side-effect-free and return the contract's not-supported/not-found result or throw `NotSupportedException` at the admission boundary. In particular, never claim `Resume`, `Interrupt`, `ImageAttachments`, `FileAttachments`, `Generate`, or `StatelessExecution` because the underlying harness merely has something similarly named.
 
+Stateless results report the isolation actually applied (`SessionIsolation`: `verified-tool-free`, `sandboxed-best-effort`, `unrestricted`); a result that reports nothing is surfaced as `unverified`. Claim `ToolFreeGenerate` only if the provider overrides `GenerateAsync(SessionGenerateRequest, CancellationToken)`, removes every tool by construction when `RequireToolFree` is set, verifies that for the call, and then reports `verified-tool-free`; the endpoint withholds text from any other report. A provider may enforce `SessionGenerateRequest.ResponseSchema` natively and set `NativeResponseSchema`, but RedCompute always validates. See [tool-free-generate.md](tool-free-generate.md).
+
 ## Persistent-session invariants
 
 For `PersistentSessions`, the provider owns one durable adapter state machine but not a second transcript:

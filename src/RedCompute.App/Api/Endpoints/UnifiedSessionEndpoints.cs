@@ -1741,12 +1741,7 @@ public static class UnifiedSessionEndpoints
                     {
                         var result = await provider.ExecuteAsync(prompt, workingDir, model, timeout,
                             CancellationToken.None, streamKey, env, providerParams);
-                        var rj = JsonSerializer.Serialize(new
-                        {
-                            success = result.Success, text = result.Text, streamOutput = result.StreamOutput,
-                            model = result.Model, inputTokens = result.InputTokens,
-                            outputTokens = result.OutputTokens, costUsd = result.CostUsd, error = result.Error
-                        });
+                        var rj = ExecuteResultJson(result);
                         if (result.Success)
                             jobTracker.MarkCompleted(job.Id, resultJson: rj, costUsd: result.CostUsd);
                         else
@@ -1768,12 +1763,7 @@ public static class UnifiedSessionEndpoints
                 var result = await provider.ExecuteAsync(prompt, workingDir, model, timeout,
                     ctx.RequestAborted, streamKey, env, providerParams);
 
-                var resultJson = JsonSerializer.Serialize(new
-                {
-                    success = result.Success, text = result.Text, streamOutput = result.StreamOutput,
-                    model = result.Model, inputTokens = result.InputTokens,
-                    outputTokens = result.OutputTokens, costUsd = result.CostUsd, error = result.Error
-                });
+                var resultJson = ExecuteResultJson(result);
 
                 if (result.Success)
                     jobTracker.MarkCompleted(job.Id, resultJson: resultJson, costUsd: result.CostUsd);
@@ -1849,7 +1839,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("model", "string", description: "Model to use", location: ParamLocation.Body)
             .WithParam("system", "string", description: "System prompt", location: ParamLocation.Body)
             .WithParam("maxTokens", "integer", description: "Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
-            .WithParam("requireToolFree", "boolean", description: "Require a runtime that enforces and verifies an empty tool surface", defaultValue: false, location: ParamLocation.Body)
+            .WithParam("requireToolFree", "boolean", description: "Require a runtime that enforces and verifies an empty tool surface. The response reports isolation 'verified-tool-free' or the call fails (422 tool_free_unavailable before running, 502 tool_free_unverified after).", defaultValue: false, location: ParamLocation.Body)
+            .WithParam("responseSchema", "object", description: "Optional JSON Schema (bounded subset: type, properties, required, additionalProperties, items, enum, const, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minItems, maxItems, title, description). Enforced natively where the provider supports strict structured output, otherwise by prompt; RedCompute always validates and returns json, schemaValid, errors and schemaMode.", location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved to a model+effort. Ignored when model is set.", location: ParamLocation.Body)
@@ -1919,6 +1910,21 @@ public static class UnifiedSessionEndpoints
                     $"Provider '{provider.ProviderId}' does not support verified tool-free generation");
         }
 
+        var toolFreeRequired = body.TryGetProperty("requireToolFree", out var toolFreeValue)
+            && toolFreeValue.ValueKind == JsonValueKind.True;
+
+        ResponseSchema? responseSchema = null;
+        if (body.TryGetProperty("responseSchema", out var schemaValue) && schemaValue.ValueKind != JsonValueKind.Null)
+        {
+            if (!ResponseSchema.TryParse(schemaValue, out responseSchema, out var schemaErrors))
+                return Results.Json(new
+                {
+                    error = "invalid_response_schema",
+                    message = "responseSchema uses unsupported or invalid JSON Schema",
+                    errors = schemaErrors,
+                }, statusCode: 422);
+        }
+
         if (!body.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array || messages.GetArrayLength() == 0)
             return Error(422, "validation_failed", "messages is required and must be a non-empty array");
 
@@ -1933,6 +1939,13 @@ public static class UnifiedSessionEndpoints
         var model = q.Model;
         var effort = q.Effort;
         var system = body.TryGetProperty("system", out var sys) ? sys.GetString() : null;
+        // Always prompt for the schema: native enforcement is an extra guarantee where a provider
+        // has it, and RedCompute's own validation below decides schemaValid either way.
+        var providerSystem = responseSchema == null
+            ? system
+            : string.IsNullOrWhiteSpace(system)
+                ? responseSchema.PromptInstruction()
+                : system + "\n\n" + responseSchema.PromptInstruction();
 
         string? prompt = null;
         foreach (var msg in messages.EnumerateArray())
@@ -1942,7 +1955,12 @@ public static class UnifiedSessionEndpoints
                 prompt = content.GetString();
         }
 
-        var inputJson = JsonSerializer.Serialize(new { model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, effort, prompt, system, messages, provider = provider.ProviderId });
+        var inputJson = JsonSerializer.Serialize(new
+        {
+            model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, effort, prompt, system,
+            messages, provider = provider.ProviderId, requireToolFree = toolFreeRequired,
+            responseSchema = responseSchema?.Json,
+        });
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
             jobName = prompt.Length > 60 ? prompt[..57] + "..." : prompt;
@@ -1956,18 +1974,26 @@ public static class UnifiedSessionEndpoints
 
         try
         {
-            var result = await provider.GenerateAsync(model, system, messages.GetRawText(), maxTokens, ctx.RequestAborted, effort, timeout);
+            var result = await provider.GenerateAsync(new SessionGenerateRequest(
+                model, providerSystem, messages.GetRawText(), maxTokens, effort, timeout,
+                toolFreeRequired, responseSchema), ctx.RequestAborted);
             if (!result.Success)
             {
                 jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
                 return Error(502, "execution_failed", result.Error ?? "Unknown error");
             }
 
-            var resultJson = JsonSerializer.Serialize(new
+            var isolation = result.Isolation ?? SessionIsolation.Unverified;
+            if (toolFreeRequired && isolation != SessionIsolation.VerifiedToolFree)
             {
-                success = true, text = result.Text, streamOutput = result.StreamOutput, model = result.Model,
-                inputTokens = result.InputTokens, outputTokens = result.OutputTokens, costUsd = result.CostUsd
-            });
+                // The capability check admitted the call; this is the per-call proof. Without it
+                // the model text is withheld, never returned with a weaker label.
+                var message = $"Provider '{provider.ProviderId}' did not verify tool-free isolation for this call (reported '{isolation}')";
+                jobTracker.MarkFailed(job.Id, message);
+                return Error(502, "tool_free_unverified", message);
+            }
+
+            var resultJson = GenerateResultJson(result, isolation, responseSchema);
             jobTracker.MarkCompleted(job.Id, resultJson: resultJson, costUsd: result.CostUsd);
             ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
             return Results.Content(resultJson, "application/json");
@@ -1982,6 +2008,50 @@ public static class UnifiedSessionEndpoints
             jobTracker.MarkFailed(job.Id, ex.Message);
             return Error(500, "execution_failed", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// The generate result document. With a response schema it adds <c>json</c> (the extracted
+    /// value or null), <c>schemaValid</c>, <c>errors</c> and <c>schemaMode</c> (<c>native</c> when
+    /// the provider enforced the schema itself, else <c>prompt</c>). Validation is RedCompute's
+    /// own and is never delegated to the model or provider.
+    /// </summary>
+    internal static string GenerateResultJson(SessionGenerateResult result, string isolation, ResponseSchema? schema)
+    {
+        var document = new Dictionary<string, object?>
+        {
+            ["success"] = true,
+            ["text"] = result.Text,
+            ["streamOutput"] = result.StreamOutput,
+            ["model"] = result.Model,
+            ["inputTokens"] = result.InputTokens,
+            ["outputTokens"] = result.OutputTokens,
+            ["costUsd"] = result.CostUsd,
+            ["isolation"] = isolation,
+            ["isolationMechanism"] = result.IsolationMechanism,
+        };
+
+        if (schema != null)
+        {
+            IReadOnlyList<string> errors;
+            JsonElement? json = null;
+            if (ResponseSchema.TryExtractJson(result.Text, out var extracted))
+            {
+                json = extracted;
+                errors = schema.Validate(extracted);
+            }
+            else
+            {
+                errors = ["$: response did not contain a JSON value"];
+            }
+
+            document["json"] = json;
+            document["schemaValid"] = errors.Count == 0;
+            document["errors"] = errors;
+            document["schemaMode"] = result.NativeResponseSchema ? "native" : "prompt";
+        }
+
+        return JsonSerializer.Serialize(document);
     }
 
     /// <summary>
@@ -2171,6 +2241,20 @@ public static class UnifiedSessionEndpoints
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
+
+    /// <summary>
+    /// The execute result document. <c>isolation</c> is what the provider reports it applied to this
+    /// call (<see cref="SessionIsolation"/>); a provider that reports nothing is <c>unverified</c>.
+    /// </summary>
+    internal static string ExecuteResultJson(SessionExecuteResult result)
+        => JsonSerializer.Serialize(new
+        {
+            success = result.Success, text = result.Text, streamOutput = result.StreamOutput,
+            model = result.Model, inputTokens = result.InputTokens,
+            outputTokens = result.OutputTokens, costUsd = result.CostUsd, error = result.Error,
+            isolation = result.Isolation ?? SessionIsolation.Unverified,
+            isolationMechanism = result.IsolationMechanism,
+        });
 
     internal static string ExecuteFailureResultJson(string? model, string error)
         => JsonSerializer.Serialize(new

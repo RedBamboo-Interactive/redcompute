@@ -280,19 +280,49 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
         var result = await _claude.ExecuteAgentAsync(prompt, container, workingDir, model, effort,
             maxTurns, tools, allowedTools, addDirs, timeout, ct, streamKey, env);
+        var (isolation, mechanism) = ExecuteIsolation(tools, result.StreamOutput);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
-            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+            result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
+            isolation, mechanism);
+    }
+
+    /// <summary>
+    /// What an execute call actually ran with. An explicit empty <c>tools</c> grant launches with
+    /// no built-ins and an empty strict MCP config; it is verified only when this run's init event
+    /// reported an empty tool list. Any other grant is a restriction, not a verified boundary, and
+    /// no grant at all is the full agent with permissions skipped.
+    /// </summary>
+    internal static (string Isolation, string Mechanism) ExecuteIsolation(string[]? tools, string? streamOutput)
+    {
+        if (tools is null)
+            return (SessionIsolation.Unrestricted, "claude-default-tools");
+        if (tools.Length == 0 && streamOutput != null && ClaudeSessionService.ToolFreeInitError(streamOutput) == null)
+            return (SessionIsolation.VerifiedToolFree, "claude-empty-init-tools");
+        return (SessionIsolation.SandboxedBestEffort, "claude-tools-allowlist");
     }
 
     // --- ISessionProvider: Generate ---
 
-    public async Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
+    public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
+        => GenerateAsync(new SessionGenerateRequest(model, system, messagesJson, maxTokens, effort, timeout), ct);
+
+    /// <summary>
+    /// Every Claude generate is tool-free: the oneshot launch removes all tools and fails without
+    /// text unless the init event reports an empty list. The response schema is never passed as
+    /// --json-schema, because the CLI implements it with a StructuredOutput tool (2.1.308 reports
+    /// it in init tools), which would break that invariant; the schema travels in the system
+    /// prompt and RedCompute validates the result.
+    /// </summary>
+    public async Task<SessionGenerateResult> GenerateAsync(SessionGenerateRequest request, CancellationToken ct)
     {
-        var messages = JsonDocument.Parse(messagesJson).RootElement;
-        var result = await _claude.ExecuteOneshotAsync(model, system, messages, maxTokens, ct, effort, timeout ?? 120);
+        var messages = JsonDocument.Parse(request.MessagesJson).RootElement;
+        var result = await _claude.ExecuteOneshotAsync(request.Model, request.System, messages,
+            request.MaxTokens, ct, request.Effort, request.Timeout ?? 120);
         return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput, result.Model,
-            result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+            result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
+            result.Success ? SessionIsolation.VerifiedToolFree : null,
+            result.Success ? "claude-empty-init-tools" : null);
     }
 
     public List<ModelInfo> GetAvailableModels() =>

@@ -206,6 +206,16 @@ public interface ISessionProvider
     Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null);
 
+    /// <summary>
+    /// The request-object form used by <c>/ai-session/generate</c>. The default forwards to the
+    /// positional overload, which neither honours <see cref="SessionGenerateRequest.RequireToolFree"/>
+    /// nor reports isolation, so a provider claiming <see cref="SessionCapabilities.ToolFreeGenerate"/>
+    /// must override this and report <see cref="SessionIsolation.VerifiedToolFree"/> per call.
+    /// </summary>
+    Task<SessionGenerateResult> GenerateAsync(SessionGenerateRequest request, CancellationToken ct)
+        => GenerateAsync(request.Model, request.System, request.MessagesJson, request.MaxTokens, ct,
+            request.Effort, request.Timeout);
+
     // Model discovery
     List<ModelInfo> GetAvailableModels();
 

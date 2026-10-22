@@ -120,6 +120,22 @@ public sealed class ClaudeToolAvailabilityTests
     public void Generate_fails_closed_when_init_cannot_prove_the_tool_surface(string stream, string error)
         => Assert.Contains(error, ClaudeSessionService.ToolFreeInitError(stream));
 
+    [Fact]
+    public void Execute_is_verified_tool_free_only_for_an_empty_grant_with_an_empty_init_list()
+    {
+        Assert.Equal((SessionIsolation.VerifiedToolFree, "claude-empty-init-tools"),
+            ClaudeCodeProvider.ExecuteIsolation([], ToolFreeOutput([])));
+        // An empty grant whose run still reported a tool (ambient plugin, CLI change) is not verified.
+        Assert.Equal(SessionIsolation.SandboxedBestEffort,
+            ClaudeCodeProvider.ExecuteIsolation([], ToolFreeOutput(["mcp__ambient__fetch"])).Isolation);
+        Assert.Equal(SessionIsolation.SandboxedBestEffort,
+            ClaudeCodeProvider.ExecuteIsolation([], null).Isolation);
+        Assert.Equal(SessionIsolation.SandboxedBestEffort,
+            ClaudeCodeProvider.ExecuteIsolation(["Read"], ToolFreeOutput(["Read"])).Isolation);
+        Assert.Equal(SessionIsolation.Unrestricted,
+            ClaudeCodeProvider.ExecuteIsolation(null, ToolFreeOutput([])).Isolation);
+    }
+
     private static string ValueAfter(IReadOnlyList<string> values, string key)
     {
         var index = values.IndexOf(key);

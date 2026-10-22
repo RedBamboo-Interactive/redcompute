@@ -15,8 +15,9 @@ public enum SessionCapabilities
     FileAttachments = 1 << 10,
     ImageOutputs = 1 << 11,
     /// <summary>
-    /// Stateless generation starts with an enforced empty tool surface and verifies that surface
-    /// from the provider runtime before returning model text.
+    /// Stateless generation can run with an enforced empty tool surface that the provider verifies
+    /// for each call before returning model text, at least when the request sets requireToolFree.
+    /// Such a call reports <see cref="SessionIsolation.VerifiedToolFree"/>.
     /// </summary>
     ToolFreeGenerate = 1 << 12,
     /// <summary>Injects user input into the currently active provider turn without interrupting it.</summary>
