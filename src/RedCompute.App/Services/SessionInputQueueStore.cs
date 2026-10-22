@@ -77,6 +77,17 @@ public sealed class SessionInputQueueStoreException(string code, string message)
 /// </summary>
 public sealed class SessionInputQueueStore
 {
+    /// <summary>
+    /// The longest wait this queue ever schedules is the 30-minute steering lease; retries and
+    /// recovery waits are seconds to minutes. A due time further out than this horizon can only
+    /// come from a wall-clock jump (the 2026-10-08 jump to 24 December parked recovery for two
+    /// months), so it is treated as due instead of waiting for the clock to catch up.
+    /// </summary>
+    internal static readonly TimeSpan MaxScheduleHorizon = TimeSpan.FromHours(2);
+
+    internal static bool IsDeferred(DateTimeOffset? due, DateTimeOffset now)
+        => due is { } at && at > now && at - now <= MaxScheduleHorizon;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _connectionString;
     private readonly RedComputeConfig _config;
@@ -457,12 +468,12 @@ public sealed class SessionInputQueueStore
         if (head is null || head.State == SessionInputQueueState.Failed) return [];
         if (head.State == SessionInputQueueState.Delivering)
         {
-            if (head.LeaseExpiresAt is null || head.LeaseExpiresAt > now) return [];
+            if (head.LeaseExpiresAt is null || IsDeferred(head.LeaseExpiresAt, now)) return [];
             await MarkUnknownOutcomeAsync(connection, transaction, head.Id, now, ct);
             await transaction.CommitAsync(ct);
             return [];
         }
-        if (head.NextAttemptAt is { } next && next > now) return [];
+        if (IsDeferred(head.NextAttemptAt, now)) return [];
 
         var candidates = connection.CreateCommand();
         candidates.Transaction = transaction;
@@ -479,7 +490,7 @@ public sealed class SessionInputQueueStore
             if (!string.Equals(item.ProvenanceScope, head.ProvenanceScope, StringComparison.Ordinal)) break;
             if (item.DeliveryPolicy != head.DeliveryPolicy) break;
             if (DeploymentVerificationTarget.FromMetadata(item.MetadataJson) != DeploymentVerificationTarget.FromMetadata(head.MetadataJson)) break;
-            if (item.NextAttemptAt is { } retryAt && retryAt > now) break;
+            if (IsDeferred(item.NextAttemptAt, now)) break;
             batch.Add(item);
         }
         if (batch.Count == 0) return [];
@@ -530,7 +541,7 @@ public sealed class SessionInputQueueStore
         if (blocker?.State == SessionInputQueueState.Failed) return [];
         if (blocker?.State == SessionInputQueueState.Delivering)
         {
-            if (blocker.LeaseExpiresAt is null || blocker.LeaseExpiresAt > now) return [];
+            if (blocker.LeaseExpiresAt is null || IsDeferred(blocker.LeaseExpiresAt, now)) return [];
             await MarkUnknownOutcomeAsync(connection, transaction, blocker.Id, now, ct);
             await transaction.CommitAsync(ct);
             return [];
@@ -541,7 +552,7 @@ public sealed class SessionInputQueueStore
         headCommand.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$sessionId AND State='Pending' AND DeliveryPolicy='SteerCurrent' ORDER BY Sequence LIMIT 1";
         Add(headCommand, "$sessionId", sessionId);
         var head = (await ReadItemsAsync(headCommand, ct)).FirstOrDefault();
-        if (head is null || head.NextAttemptAt is { } due && due > now) return [];
+        if (head is null || IsDeferred(head.NextAttemptAt, now)) return [];
 
         var candidates = connection.CreateCommand();
         candidates.Transaction = transaction;
@@ -555,7 +566,7 @@ public sealed class SessionInputQueueStore
             if (item.DeliveryPolicy != SessionInputDeliveryPolicy.SteerCurrent) break;
             if (!string.Equals(item.ProvenanceScope, head.ProvenanceScope, StringComparison.Ordinal)) break;
             if (DeploymentVerificationTarget.FromMetadata(item.MetadataJson) != DeploymentVerificationTarget.FromMetadata(head.MetadataJson)) break;
-            if (item.NextAttemptAt is { } retryAt && retryAt > now) break;
+            if (IsDeferred(item.NextAttemptAt, now)) break;
             batch.Add(item);
         }
         if (batch.Count == 0) return [];
@@ -647,9 +658,10 @@ public sealed class SessionInputQueueStore
         var cmd = connection.CreateCommand();
         cmd.CommandText = """
             SELECT DISTINCT SessionId FROM SessionQueuedInputs
-            WHERE State = 'Pending' AND (NextAttemptAt IS NULL OR NextAttemptAt <= $now)
+            WHERE State = 'Pending' AND (NextAttemptAt IS NULL OR NextAttemptAt <= $now OR NextAttemptAt > $horizon)
             """;
         Add(cmd, "$now", DateTimeOffset.UtcNow.ToString("O"));
+        Add(cmd, "$horizon", DateTimeOffset.UtcNow.Add(MaxScheduleHorizon).ToString("O"));
         var ids = new List<string>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct)) ids.Add(reader.GetString(0));
@@ -665,9 +677,10 @@ public sealed class SessionInputQueueStore
             SET State = 'Failed', UpdatedAt = $now, ErrorCode = 'delivery_outcome_unknown',
                 ErrorMessage = 'RedCompute restarted before provider delivery was acknowledged',
                 ErrorRetryable = 1, LeaseOwner = NULL, LeaseExpiresAt = NULL
-            WHERE State = 'Delivering' AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= $now)
+            WHERE State = 'Delivering' AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= $now OR LeaseExpiresAt > $horizon)
             """;
         Add(cmd, "$now", DateTimeOffset.UtcNow.ToString("O"));
+        Add(cmd, "$horizon", DateTimeOffset.UtcNow.Add(MaxScheduleHorizon).ToString("O"));
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 

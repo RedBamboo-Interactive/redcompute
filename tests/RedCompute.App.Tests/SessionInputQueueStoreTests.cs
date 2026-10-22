@@ -239,6 +239,49 @@ public sealed class SessionInputQueueStoreTests : IDisposable
         Assert.True(item.ErrorRetryable);
     }
 
+    // A wall-clock jump (the 2026-10-08 jump to 24 December) can write a retry or lease time
+    // months ahead. Nothing this queue schedules is more than 30 minutes out, so such a time is due.
+    [Theory]
+    [InlineData(5, false)]
+    [InlineData(100, false)]
+    [InlineData(60 * 24 * 63, true)]
+    public async Task Retry_time_beyond_the_schedule_horizon_is_treated_as_due(int minutesAhead, bool due)
+    {
+        var (attachments, queue) = Stores();
+        var admitted = await queue.EnqueueAsync(Submission("hello"));
+        await SetAsync(attachments, admitted.Item.Id, "NextAttemptAt", DateTimeOffset.UtcNow.AddMinutes(minutesAhead));
+
+        Assert.Equal(due, (await queue.GetRunnableSessionIdsAsync()).Contains("session-a"));
+        var batch = await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+        Assert.Equal(due ? 1 : 0, batch.Count);
+    }
+
+    [Fact]
+    public async Task Delivery_lease_written_by_a_forward_clock_jump_is_treated_as_expired()
+    {
+        var (attachments, queue) = Stores();
+        var admitted = await queue.EnqueueAsync(Submission("hello"));
+        await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+        await SetAsync(attachments, admitted.Item.Id, "LeaseExpiresAt", DateTimeOffset.UtcNow.AddDays(63));
+
+        Assert.Equal(1, await queue.RecoverExpiredLeasesAsync());
+
+        var item = await queue.GetAsync("session-a", admitted.Item.Id, "owner-a");
+        Assert.Equal(SessionInputQueueState.Failed, item!.State);
+        Assert.Equal("delivery_outcome_unknown", item.ErrorCode);
+    }
+
+    private static async Task SetAsync(InputAttachmentStore attachments, string itemId, string column, DateTimeOffset value)
+    {
+        await using var connection = new SqliteConnection($"Data Source={attachments.DatabasePath};Pooling=False");
+        await connection.OpenAsync();
+        var command = connection.CreateCommand();
+        command.CommandText = $"UPDATE SessionQueuedInputs SET {column} = $value WHERE Id = $id";
+        command.Parameters.AddWithValue("$value", value.ToString("O"));
+        command.Parameters.AddWithValue("$id", itemId);
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+    }
+
     private static SessionInputQueueSubmission Submission(
         string text,
         string owner = "owner-a",
