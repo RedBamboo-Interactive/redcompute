@@ -85,6 +85,8 @@ internal sealed class CompletedTranscriptPublisher(
                 ToolName = message.ToolName,
                 MessageId = message.MessageId,
                 MessageUid = message.MessageUid,
+                ParentToolUseId = message.ParentToolUseId,
+                TurnOrigin = message.TurnOrigin,
                 PayloadRef = receipt.Payload,
                 Phase = message.Phase,
                 Epoch = receipt.Stamp.Epoch,

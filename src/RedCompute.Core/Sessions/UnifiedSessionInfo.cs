@@ -36,4 +36,7 @@ public class UnifiedSessionInfo
     public bool Confidential { get; set; }
     public Dictionary<string, object?>? ProviderMetadata { get; set; }
     public bool SupportsSteering { get; set; }
+    // Live background work (subagents, background shells) still running. It never makes the
+    // session Active. Overlaid from the provider on every read; empty when nothing runs.
+    public IReadOnlyList<BackgroundTaskInfo> BackgroundTasks { get; set; } = [];
 }

@@ -21,4 +21,6 @@ public enum SessionCapabilities
     ToolFreeGenerate = 1 << 12,
     /// <summary>Injects user input into the currently active provider turn without interrupting it.</summary>
     SupportsSteering = 1 << 13,
+    /// <summary>Stops one running background task (subagent or background shell) without interrupting the session.</summary>
+    SupportsBackgroundTaskStop = 1 << 14,
 }

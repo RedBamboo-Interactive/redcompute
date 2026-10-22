@@ -42,7 +42,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
         SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
         SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate |
-        SessionCapabilities.SupportsSteering;
+        SessionCapabilities.SupportsSteering | SessionCapabilities.SupportsBackgroundTaskStop;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
 
     public string? LastStartError => _claude.LastStartError;
@@ -222,6 +222,12 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         };
     }
 
+    public Task<BackgroundTaskStopResult> TryStopBackgroundTaskAsync(string sessionId, string taskId)
+        => _claude.TryStopBackgroundTaskAsync(sessionId, taskId);
+
+    public IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId)
+        => _claude.GetBackgroundTasks(sessionId);
+
     // --- ISessionProvider: Configuration ---
 
     public bool SetPermissionMode(string sessionId, string mode) => _claude.SetPermissionMode(sessionId, mode);
@@ -336,6 +342,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         UserName = s.UserName,
         UserAvatarUrl = s.UserAvatarUrl,
         SupportsSteering = true,
+        BackgroundTasks = s.BackgroundTasks,
         ProviderMetadata = new()
         {
             ["cacheReadInputTokens"] = s.CacheReadInputTokens,
@@ -354,6 +361,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         MessageId = e.MessageId,
         Phase = e.Phase,
         MessageUid = e.MessageUid,
+        ParentToolUseId = e.ParentToolUseId,
+        TurnOrigin = e.TurnOrigin,
         RequestId = e.RequestId,
     };
 
@@ -370,6 +379,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         MessageId = m.MessageId,
         Phase = m.Phase,
         MessageUid = m.MessageUid,
+        ParentToolUseId = m.ParentToolUseId,
+        TurnOrigin = ClaudeSessionStore.ReadTurnOrigin(m.TurnOriginJson),
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
     };

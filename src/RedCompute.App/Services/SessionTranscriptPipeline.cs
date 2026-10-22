@@ -77,7 +77,7 @@ public sealed class SessionTranscriptPipeline
                 var image = DecodeImage(evt.Attachments);
                 var payloadRef = PersistSynchronously(() => PersistImageAsync(
                     provider, sessionId, "assistant", evt.Content, evt.MessageId, evt.MessageUid,
-                    DateTimeOffset.UtcNow, image, stamp));
+                    DateTimeOffset.UtcNow, image, stamp, evt.ParentToolUseId));
 
                 _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, image.Bytes)] = DateTimeOffset.UtcNow;
                 Broadcast(provider, sessionId, WithPayload(evt, payloadRef));
@@ -109,7 +109,8 @@ public sealed class SessionTranscriptPipeline
                     DateTimeOffset.UtcNow,
                     evt.Attachments is { Count: > 0 } ? JsonSerializer.Serialize(evt.Attachments) : null,
                     output,
-                    stamp));
+                    stamp,
+                    evt.ParentToolUseId));
 
             _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, output)] = DateTimeOffset.UtcNow;
             Broadcast(provider, sessionId, WithPayload(evt, payloadRef));
@@ -130,14 +131,15 @@ public sealed class SessionTranscriptPipeline
             var image = DecodeImage(message.AttachmentsJson);
             return PersistSynchronously(() => PersistImageAsync(
                 message.Provider, message.SessionId, message.Role, message.Content,
-                message.MessageId, message.MessageUid, message.Timestamp, image, stamp));
+                message.MessageId, message.MessageUid, message.Timestamp, image, stamp,
+                message.ParentToolUseId));
         }
 
         var output = message.EventType == "tool_result" ? message.ToolResult ?? message.Content : null;
         if (!string.IsNullOrEmpty(output))
             return PersistSynchronously(() => PersistToolOutputAsync(message.Provider, message.SessionId, message.Role,
                 message.ToolName, message.ToolInput, message.MessageId, message.MessageUid,
-                message.Timestamp, message.AttachmentsJson, output, stamp));
+                message.Timestamp, message.AttachmentsJson, output, stamp, message.ParentToolUseId));
 
         PersistSynchronously(() => _streams.AppendForEntityAsync("session-messages", SessionEntitySlug(message.Provider, message.SessionId),
             InlineData(message, stamp), $"transcript:{stamp.Epoch}:{stamp.Sequence}",
@@ -163,7 +165,7 @@ public sealed class SessionTranscriptPipeline
                     PersistSynchronously(() => PersistImageAsync(
                         message.Provider, message.SessionId, message.Role, message.Content,
                         message.MessageId, message.MessageUid, message.Timestamp, image,
-                        _sequences.Next(message.Provider, message.SessionId)));
+                        _sequences.Next(message.Provider, message.SessionId), message.ParentToolUseId));
                     continue;
                 }
                 catch (Exception ex)
@@ -191,7 +193,7 @@ public sealed class SessionTranscriptPipeline
                             message.Provider, message.SessionId, message.Role,
                             message.ToolName, message.ToolInput, message.MessageId,
                             message.MessageUid, message.Timestamp, message.AttachmentsJson, output,
-                            _sequences.Next(message.Provider, message.SessionId)));
+                            _sequences.Next(message.Provider, message.SessionId), message.ParentToolUseId));
                     continue;
                 }
                 catch (Exception ex)
@@ -244,7 +246,8 @@ public sealed class SessionTranscriptPipeline
         DateTimeOffset timestamp,
         string? attachmentsJson,
         string output,
-        TranscriptStamp stamp)
+        TranscriptStamp stamp,
+        string? parentToolUseId)
     {
         var bytes = Encoding.UTF8.GetBytes(output);
         var descriptor = await _streams.AppendPayloadForEntityAsync(
@@ -260,6 +263,7 @@ public sealed class SessionTranscriptPipeline
                 tool_input = toolInput,
                 message_id = messageId,
                 message_uid = messageUid,
+                parent_tool_use_id = parentToolUseId,
                 epoch = stamp.Epoch,
                 sequence = stamp.Sequence,
                 timestamp = timestamp.ToString("O"),
@@ -292,7 +296,8 @@ public sealed class SessionTranscriptPipeline
         string? messageUid,
         DateTimeOffset timestamp,
         ImagePayload image,
-        TranscriptStamp stamp)
+        TranscriptStamp stamp,
+        string? parentToolUseId)
     {
         var descriptor = await _streams.AppendPayloadForEntityAsync(
             "session-messages",
@@ -306,6 +311,7 @@ public sealed class SessionTranscriptPipeline
                 content,
                 message_id = messageId,
                 message_uid = messageUid,
+                parent_tool_use_id = parentToolUseId,
                 epoch = stamp.Epoch,
                 sequence = stamp.Sequence,
                 timestamp = timestamp.ToString("O"),
@@ -344,6 +350,10 @@ public sealed class SessionTranscriptPipeline
             message_id = message.MessageId,
             phase = message.Phase,
             message_uid = message.MessageUid,
+            parent_tool_use_id = message.ParentToolUseId,
+            turn_origin = message.TurnOrigin is { } origin
+                ? new { kind = origin.Kind, task_id = origin.TaskId }
+                : null,
             epoch = stamp.Epoch,
             sequence = stamp.Sequence,
             timestamp = message.Timestamp.ToString("O"),
@@ -388,6 +398,8 @@ public sealed class SessionTranscriptPipeline
         MessageId = evt.MessageId,
         Phase = evt.Phase,
         MessageUid = evt.MessageUid,
+        ParentToolUseId = evt.ParentToolUseId,
+        TurnOrigin = evt.TurnOrigin,
         RequestId = evt.RequestId,
         Epoch = evt.Epoch,
         Sequence = evt.Sequence,
@@ -408,6 +420,8 @@ public sealed class SessionTranscriptPipeline
         MessageId = evt.MessageId,
         Phase = evt.Phase,
         MessageUid = evt.MessageUid,
+        ParentToolUseId = evt.ParentToolUseId,
+        TurnOrigin = evt.TurnOrigin,
         RequestId = evt.RequestId,
         Epoch = stamp.Epoch,
         Sequence = stamp.Sequence,
@@ -501,6 +515,7 @@ public sealed class SessionTranscriptPipeline
         Content = "The generated image could not be stored safely.",
         MessageId = evt.MessageId,
         MessageUid = evt.MessageUid,
+        ParentToolUseId = evt.ParentToolUseId,
         Epoch = evt.Epoch,
         Sequence = evt.Sequence,
     };
@@ -516,6 +531,8 @@ public sealed class SessionTranscriptPipeline
         ProviderPartId = message.ProviderPartId,
         Phase = message.Phase,
         MessageUid = message.MessageUid,
+        ParentToolUseId = message.ParentToolUseId,
+        TurnOrigin = message.TurnOrigin,
         Timestamp = message.Timestamp,
     };
 

@@ -46,6 +46,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         MessageId = m.MessageId,
         ProviderPartId = m.ProviderPartId,
         MessageUid = m.MessageUid,
+        ParentToolUseId = m.ParentToolUseId,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
     };

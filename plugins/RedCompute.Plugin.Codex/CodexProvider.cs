@@ -499,6 +499,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         MessageId = m.MessageId,
         Phase = m.Phase,
         MessageUid = m.MessageUid,
+        ParentToolUseId = m.ParentToolUseId,
         Timestamp = m.Timestamp,
     };
 

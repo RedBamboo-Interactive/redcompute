@@ -399,6 +399,7 @@ public sealed class SessionRecoveryTests
                 case "get_ProviderId": return "test";
                 case "get_ProviderDisplayName": return "Test";
                 case nameof(ISessionProvider.GetSession): return (Info, new List<UnifiedMessageRecord>());
+                case nameof(ISessionProvider.GetBackgroundTasks): return (IReadOnlyList<BackgroundTaskInfo>)[];
                 case nameof(ISessionProvider.ResumeSessionAsync):
                     Resumes++; ResumeHadFreshIdentity = SessionScratch.Environment(null)?.ContainsKey("REDLEAF_EXECUTION_TOKEN") == true;
                     OnResume?.Invoke((JobProvenance)args![1]!);

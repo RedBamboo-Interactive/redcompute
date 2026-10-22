@@ -40,6 +40,17 @@ For `PersistentSessions`, the provider owns one durable adapter state machine bu
 
 Read the current `ISessionProvider`, existing Codex/OpenCode implementations, and their tests before coding. The interface is the source of truth when this guide and source differ.
 
+## Background work
+
+Some harnesses keep working after a turn ends: subagents, background shells. Session status describes the main loop only, so background work never makes a session Active. Providers that support it follow one contract (Claude Code is the first adapter):
+
+- Every record and stream event produced by background work carries `ParentToolUseId`, the tool call that launched it, and keeps that call's turn `MessageUid`. It never mints, reuses or resets the main loop's current turn uid. Clients attribute by this id, never by position or timing.
+- Each task gets a durable `task` record (role `system`) when it starts and when it reaches a terminal state. `ToolInput` holds `{taskId, kind: agent|shell|other, status: running|completed|failed|stopped|lost, description, agentType, summary?, usage?{toolUses, tokens, durationMs}, startedAt, endedAt?, parentTaskId?}`. `ParentToolUseId` is the launching call and `MessageUid` is the launching turn. Progress is live-only.
+- `UnifiedSessionInfo.BackgroundTasks` lists the running tasks (with `lastActivity` and `lastToolName`). Report it through `GetBackgroundTasks(sessionId)` and `session.updated`. The API overlays it on every session read.
+- When the provider process ends with tasks still running, record each of them as `lost`, including at startup recovery for rows that still list them. Nothing may stay `running` forever.
+- A turn the provider starts by itself because a task finished carries `TurnOrigin {kind: "background-task", taskId}` on its first record and on its closing status event.
+- Claim `SupportsBackgroundTaskStop` only if `TryStopBackgroundTaskAsync` reaches the harness. Acceptance means the request was delivered; the terminal state comes from the harness's own events (`POST /ai-session/sessions/{id}/background-tasks/{taskId}/stop`).
+
 ## Database registration
 
 A dedicated plugin instance is opt-in. Upsert a Provider entity by exact slug:

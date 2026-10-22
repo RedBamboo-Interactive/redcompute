@@ -20,6 +20,9 @@ public class CodexMessageRecord
     /// </summary>
     public string? MessageUid { get; set; }
 
+    /// <summary>Launching tool call of background work this record belongs to; null for main-loop records.</summary>
+    public string? ParentToolUseId { get; set; }
+
     public string? AttachmentsJson { get; set; }
     public DateTimeOffset Timestamp { get; set; }
 }

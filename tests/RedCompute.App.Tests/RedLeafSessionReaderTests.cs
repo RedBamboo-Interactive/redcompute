@@ -37,6 +37,10 @@ public sealed class RedLeafSessionReaderTests
         Assert.All(history, message => Assert.Equal("final_answer", message.Phase));
         Assert.All(history, message => Assert.Equal("epoch-1", message.Epoch));
         Assert.Equal([2L, 3L], history.Select(message => message.Sequence));
+        // Background attribution survives the RedLeaf read path.
+        Assert.Equal([null, "toolu_agent"], history.Select(message => message.ParentToolUseId));
+        Assert.Null(history[0].TurnOrigin);
+        Assert.Equal(("background-task", "task-1"), (history[1].TurnOrigin?.Kind, history[1].TurnOrigin?.TaskId));
         Assert.Equal(
             [
                 DateTimeOffset.Parse("2026-08-03T18:00:02Z"),
@@ -162,6 +166,8 @@ public sealed class RedLeafSessionReaderTests
                 epoch = "epoch-1",
                 sequence = id,
                 timestamp = $"2026-08-02T18:00:0{id}Z",
+                parent_tool_use_id = id == 3 ? "toolu_agent" : null,
+                turn_origin = id == 3 ? new { kind = "background-task", task_id = "task-1" } : null,
             }),
         };
     }

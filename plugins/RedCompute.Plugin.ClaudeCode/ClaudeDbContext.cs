@@ -108,7 +108,7 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
-        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl" })
+        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson" })
         {
             if (columns.Contains(column)) continue;
             using var alter = conn.CreateCommand();
@@ -147,6 +147,15 @@ public class ClaudeDbContext : DbContext
         {
             using var alter = conn.CreateCommand();
             alter.CommandText = "ALTER TABLE Messages ADD COLUMN Phase TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        // Nullable: main-loop records and history written before background work was attributed.
+        foreach (var column in new[] { "ParentToolUseId", "TurnOriginJson" })
+        {
+            if (msgColumns.Contains(column)) continue;
+            using var alter = conn.CreateCommand();
+            alter.CommandText = $"ALTER TABLE Messages ADD COLUMN {column} TEXT";
             alter.ExecuteNonQuery();
         }
     }

@@ -32,5 +32,8 @@
     <Content Include="..\..\deploy-staged.ps1" Link="deploy-staged.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <None Include="Fixtures\**\*.jsonl">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>

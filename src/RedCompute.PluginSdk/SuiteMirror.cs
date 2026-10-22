@@ -57,6 +57,10 @@ public sealed class AiMessageSnapshot
     // Provider-neutral message uid minted by RedCompute; shared by all
     // events of one assistant turn and carried into the RedLeaf mirror.
     public string? MessageUid { get; init; }
+    // Launching tool call of the background work this record belongs to (see
+    // UnifiedStreamEvent.ParentToolUseId); mirrored as `parent_tool_use_id`.
+    public string? ParentToolUseId { get; init; }
+    public TurnOrigin? TurnOrigin { get; init; }
     public DateTimeOffset Timestamp { get; init; }
     public string? AttachmentsJson { get; init; }
 }
@@ -76,6 +80,53 @@ public static class SuiteMirror
     /// Unlike the asynchronous mirror, failure propagates so the provider can
     /// retry the same native parts and history cannot expose half a checkpoint.</summary>
     public static Action<IReadOnlyList<AiMessageSnapshot>>? CompletedMessagesAdded { get; set; }
+
+    private static readonly object InstallGate = new();
+    private static bool _installed;
+    private static List<Action> _whenInstalled = [];
+
+    /// <summary>
+    /// Runs <paramref name="action"/> once the app has installed the mirror delegates, or now if it
+    /// already has. Providers are constructed before the mirror exists, so durable records written
+    /// by constructor-time recovery would otherwise never reach the suite read model.
+    /// </summary>
+    public static void WhenInstalled(Action action)
+    {
+        lock (InstallGate)
+        {
+            if (!_installed)
+            {
+                _whenInstalled.Add(action);
+                return;
+            }
+        }
+        RunSafely(action);
+    }
+
+    /// <summary>Called by the app after assigning the delegates; flushes deferred work in order.</summary>
+    public static void MarkInstalled()
+    {
+        List<Action> pending;
+        lock (InstallGate)
+        {
+            _installed = true;
+            pending = _whenInstalled;
+            _whenInstalled = [];
+        }
+        foreach (var action in pending) RunSafely(action);
+    }
+
+    /// <summary>Called by the app when it removes the delegates.</summary>
+    public static void MarkUninstalled()
+    {
+        lock (InstallGate) _installed = false;
+    }
+
+    private static void RunSafely(Action action)
+    {
+        try { action(); }
+        catch { /* deferred mirror work must never break startup */ }
+    }
 
     public static void PublishCompletedMessages(IReadOnlyList<AiMessageSnapshot> messages)
     {

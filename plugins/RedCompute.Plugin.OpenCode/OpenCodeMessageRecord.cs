@@ -12,6 +12,8 @@ public class OpenCodeMessageRecord
     public string? ToolResult { get; set; }
     public string? MessageId { get; set; }
     public string? MessageUid { get; set; }
+    // Launching tool call of background work this record belongs to; null for main-loop records.
+    public string? ParentToolUseId { get; set; }
     public string? ProviderPartId { get; set; }
     public DateTimeOffset Timestamp { get; set; }
     public string? AttachmentsJson { get; set; }

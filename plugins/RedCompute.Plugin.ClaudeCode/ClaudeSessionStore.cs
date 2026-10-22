@@ -1,3 +1,5 @@
+using System.Text.Json;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
@@ -47,9 +49,18 @@ public class ClaudeSessionStore : IClaudeSessionStore
         MessageId = m.MessageId,
         Phase = m.Phase,
         MessageUid = m.MessageUid,
+        ParentToolUseId = m.ParentToolUseId,
+        TurnOrigin = ReadTurnOrigin(m.TurnOriginJson),
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
     };
+
+    internal static TurnOrigin? ReadTurnOrigin(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try { return JsonSerializer.Deserialize<TurnOrigin>(json); }
+        catch (JsonException) { return null; }
+    }
 
     public ClaudeSessionRecord? FindSession(string sessionId)
     {
@@ -77,6 +88,24 @@ public class ClaudeSessionStore : IClaudeSessionStore
         return db.Sessions
             .Where(s => s.Status == "Error" && s.StopReason == "completed")
             .ToList();
+    }
+
+    public List<ClaudeSessionRecord> GetSessionsWithBackgroundTasks()
+    {
+        using var db = new ClaudeDbContext();
+        return db.Sessions
+            .Where(s => s.BackgroundTasksJson != null && s.BackgroundTasksJson != "" && s.BackgroundTasksJson != "[]")
+            .ToList();
+    }
+
+    public string? FindToolUseMessageUid(string sessionId, string toolUseId)
+    {
+        using var db = new ClaudeDbContext();
+        return db.Messages
+            .Where(m => m.SessionId == sessionId && m.EventType == "tool_use" && m.MessageId == toolUseId)
+            .OrderByDescending(m => m.Id)
+            .Select(m => m.MessageUid)
+            .FirstOrDefault();
     }
 
     public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false)
@@ -126,6 +155,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.UserName = record.UserName;
             existing.UserAvatarUrl = record.UserAvatarUrl;
             existing.ProcessId = record.ProcessId;
+            existing.BackgroundTasksJson = record.BackgroundTasksJson;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;
         }

@@ -19,6 +19,13 @@ public class UnifiedStreamEvent
     // the persisted records carry the same value, so a streamed block and its
     // reloaded counterpart resolve to the same id. Null on legacy events.
     public string? MessageUid { get; init; }
+    // The tool call that launched the background work (a subagent) this event belongs to. A child
+    // event keeps the launching turn's MessageUid; clients attribute it by this id, never by
+    // position or timing. Null for main-loop events.
+    public string? ParentToolUseId { get; init; }
+    // Set on the first event of a turn the provider started without user input (a background task
+    // finishing), and on that turn's terminal status event.
+    public TurnOrigin? TurnOrigin { get; init; }
     // Correlation id for a provider control request the client must answer out-of-band
     // (Claude Code's "question" / "question_resolved" events). Echoed back to
     // POST /ai-session/sessions/{id}/question. Null on every other event.

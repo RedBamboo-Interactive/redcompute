@@ -277,6 +277,10 @@ public class RelayServer
 
         SuiteMirror.MessagesAdded = transcriptPipeline.MirrorMessages;
         SuiteMirror.CompletedMessagesAdded = transcriptPipeline.MirrorCompletedMessages;
+        // Providers recover in their constructors, before these hooks existed. Flush the durable
+        // records they deferred (for example background tasks lost with a dead CLI) off the
+        // startup path: a slow RedLeaf must not hold the listener.
+        _ = Task.Run(SuiteMirror.MarkInstalled);
 
         // Jobs mirror as compute-job entities — the parent type compute-logs
         // records link to. Progress is deliberately excluded (churns per tick;
@@ -406,15 +410,15 @@ public class RelayServer
             Fields: ["slug", "displayName", "status", "sleeping", "provider"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.created",
             "Fired when a new AI session is started", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering"]));
+            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering", "backgroundTasks"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.updated",
-            "Fired when a session's status, tokens, cost, or title changes", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering"]));
+            "Fired when a session's status, tokens, cost, title, or live background tasks change (background progress coalesced to ~500 ms)", "UnifiedSessionInfo",
+            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "backgroundTasks"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason", "stopReason"]));
         broadcaster.RegisterEvent(new WsEventSchema(SessionTranscriptPipeline.StreamEventType,
-            "Fired for each streaming event from an active session (text, tool calls, thinking, errors)",
+            "Fired for each streaming event from a session (text, tool calls, thinking, errors, background task records). Events with parentToolUseId belong to background work and never mean the main turn is busy.",
             Fields: ["sessionId", "event", "timestamp"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.input-queue.updated",
             "Fired when durable input is queued, delivered, cancelled, retried, or blocked",
@@ -591,6 +595,7 @@ public class RelayServer
         SuiteMirror.SessionUpserted = null;
         SuiteMirror.MessagesAdded = null;
         SuiteMirror.CompletedMessagesAdded = null;
+        SuiteMirror.MarkUninstalled();
 
         if (_jobAuditCts != null)
         {

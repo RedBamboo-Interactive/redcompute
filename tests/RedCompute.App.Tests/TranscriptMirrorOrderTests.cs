@@ -47,6 +47,51 @@ public sealed class TranscriptMirrorOrderTests
         Assert.Equal(["tool_use:1"], redLeaf.Arrivals);
     }
 
+    // Background work is attributed by id. RedLeaf record data is schemaless, so the key must be
+    // written on every record path a child can take: inline (tool_use, task), payload (results).
+    [Fact]
+    public async Task ChildRecordsCarryTheirParentToolUseIdIntoRedLeafOnEveryPath()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start();
+        var pipeline = redLeaf.Pipeline();
+
+        pipeline.MirrorMessages([
+            new AiMessageSnapshot
+            {
+                Provider = "claude-code", SessionId = "session-1", Role = "assistant", EventType = "tool_use",
+                ToolName = "Bash", ToolInput = "{}", MessageId = "toolu_child", MessageUid = "turn-1",
+                ParentToolUseId = "toolu_agent", Timestamp = DateTimeOffset.UtcNow,
+            },
+            new AiMessageSnapshot
+            {
+                Provider = "claude-code", SessionId = "session-1", Role = "system", EventType = "task",
+                ToolInput = "{\"taskId\":\"task-1\",\"status\":\"running\"}", MessageId = "task-1",
+                MessageUid = "turn-1", ParentToolUseId = "toolu_agent", Timestamp = DateTimeOffset.UtcNow,
+            },
+            new AiMessageSnapshot
+            {
+                Provider = "claude-code", SessionId = "session-1", Role = "assistant", EventType = "text",
+                Content = "noted", MessageUid = "turn-2", Timestamp = DateTimeOffset.UtcNow,
+                TurnOrigin = new TurnOrigin { Kind = TurnOrigin.BackgroundTask, TaskId = "task-1" },
+            },
+        ]);
+        pipeline.HandleLiveEvent("claude-code", "session-1", new UnifiedStreamEvent
+        {
+            Type = "tool_result", MessageId = "toolu_child", MessageUid = "turn-1", ToolResult = "alpha",
+            ParentToolUseId = "toolu_agent",
+        });
+
+        var data = redLeaf.Data.ToList();
+        Assert.Equal(4, data.Count);
+        Assert.All(data.Take(2).Append(data[3]), record =>
+            Assert.Equal("toolu_agent", record.GetProperty("parent_tool_use_id").GetString()));
+        Assert.Equal("tool-output", data[3].GetProperty("payload_kind").GetString());
+        Assert.Equal(JsonValueKind.Null, data[2].GetProperty("parent_tool_use_id").ValueKind);
+        var origin = data[2].GetProperty("turn_origin");
+        Assert.Equal(("background-task", "task-1"),
+            (origin.GetProperty("kind").GetString(), origin.GetProperty("task_id").GetString()));
+    }
+
     private static AiMessageSnapshot ToolUse() => new()
     {
         Provider = "claude-code", SessionId = "session-1", Role = "assistant", EventType = "tool_use",
@@ -67,6 +112,7 @@ public sealed class TranscriptMirrorOrderTests
         private int _rejectRecordWrites;
         public ConcurrentQueue<string> Arrivals { get; } = new();
         public ConcurrentBag<string> ExternalIds { get; } = [];
+        public ConcurrentQueue<JsonElement> Data { get; } = new();
 
         private FakeRedLeaf(WebApplication server) => _server = server;
 
@@ -112,6 +158,7 @@ public sealed class TranscriptMirrorOrderTests
         private void Arrive(string json)
         {
             using var data = JsonDocument.Parse(json);
+            Data.Enqueue(data.RootElement.Clone());
             Arrivals.Enqueue($"{data.RootElement.GetProperty("event_type").GetString()}:{data.RootElement.GetProperty("sequence").GetInt64()}");
         }
 

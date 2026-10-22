@@ -38,4 +38,9 @@ public class ClaudeSessionRecord
     public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
     public DateTimeOffset? LastActivity { get; set; }
+    /// <summary>
+    /// Background tasks running when the row was last saved (JSON list of BackgroundTaskInfo).
+    /// Recovery reads it to settle tasks that died with their CLI process as `lost`.
+    /// </summary>
+    public string? BackgroundTasksJson { get; set; }
 }

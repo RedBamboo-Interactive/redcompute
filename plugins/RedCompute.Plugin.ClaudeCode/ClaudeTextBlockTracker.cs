@@ -32,12 +32,15 @@ internal sealed class ClaudeTextBlockTracker
     private readonly Dictionary<string, string> _apiMessageIds = new(StringComparer.Ordinal);
     private int _anonymousMessages;
 
-    internal sealed record SettledText(string MessageId, string? MessageUid, string Content, string Phase);
-    internal sealed record SettledThinking(string MessageId, string? MessageUid, string Content);
+    internal sealed record SettledText(string MessageId, string? MessageUid, string Content, string Phase,
+        string? ParentToolUseId = null);
+    internal sealed record SettledThinking(string MessageId, string? MessageUid, string Content,
+        string? ParentToolUseId = null);
 
     private sealed class Block(string thread, string messageId, int index, string? messageUid)
     {
         public string Thread { get; } = thread;
+        public string? ParentToolUseId => Thread.Length == 0 ? null : Thread;
         public string MessageId { get; } = messageId;
         public int Index { get; } = index;
         public string? MessageUid { get; } = messageUid;
@@ -132,7 +135,8 @@ internal sealed class ClaudeTextBlockTracker
                 .Select(block => (Block: block, Content: block.Content.ToString()))
                 // Empty text maps to no display record, exactly as Codex drops empty agent text.
                 .Where(item => !string.IsNullOrWhiteSpace(item.Content))
-                .Select(item => new SettledText(BlockId(item.Block), item.Block.MessageUid, item.Content, phase(item.Block)))
+                .Select(item => new SettledText(BlockId(item.Block), item.Block.MessageUid, item.Content,
+                    phase(item.Block), item.Block.ParentToolUseId))
                 .ToList();
         }
     }
@@ -148,7 +152,7 @@ internal sealed class ClaudeTextBlockTracker
                 .Select(block => (Block: block, Content: block.Content.ToString()))
                 .Where(item => !string.IsNullOrWhiteSpace(item.Content))
                 .Select(item => new SettledThinking(
-                    BlockId(item.Block), item.Block.MessageUid, item.Content))
+                    BlockId(item.Block), item.Block.MessageUid, item.Content, item.Block.ParentToolUseId))
                 .ToList();
         }
     }

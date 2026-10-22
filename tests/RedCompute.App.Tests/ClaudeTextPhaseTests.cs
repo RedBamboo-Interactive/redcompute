@@ -777,6 +777,38 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         Assert.DoesNotContain(store.Assistant(id), m => m.EventType == "thinking");
     }
 
+    // A background subagent keeps calling tools after the launching turn's result. Before its
+    // parent was read, each such call minted a fresh turn uid: a phantom assistant turn.
+    [Fact]
+    public void Subagent_calls_after_the_result_keep_the_launching_turn_and_do_not_open_a_new_one()
+    {
+        var (service, store, live, id) = StartSession();
+
+        Feed(service, id,
+            MessageStart("msg_1"),
+            BlockStart(0, "tool_use"),
+            AssistantToolUse("msg_1", "toolu_agent", "Agent", """{"run_in_background":true}"""),
+            ToolResult("toolu_agent", "Async agent launched"),
+            MessageStart("msg_2"),
+            BlockStart(0, "text"),
+            TextDelta(0, "Launched."),
+            Result(),
+            AssistantToolUse("msg_sub", "toolu_child", "Bash", """{"command":"echo alpha"}""", parent: "toolu_agent"),
+            ToolResult("toolu_child", "alpha", parent: "toolu_agent"));
+
+        var launchUid = Assert.Single(store.Assistant(id), m => m.MessageId == "toolu_agent" && m.EventType == "tool_use").MessageUid;
+        var children = store.Assistant(id).Where(m => m.ParentToolUseId == "toolu_agent").ToList();
+        Assert.Equal(2, children.Count);
+        Assert.All(children, child => Assert.Equal(launchUid, child.MessageUid));
+        Assert.Equal(launchUid, Assert.Single(live, e => e.MessageId == "toolu_child" && e.Type == "tool_use").MessageUid);
+        Assert.Single(store.Assistant(id).Where(m => m.EventType != "status").Select(m => m.MessageUid).Distinct());
+        Assert.Equal(ClaudeSessionStatus.Idle, service.GetSession(id).Info!.Status);
+
+        // The next main-loop event still opens a fresh turn: children never reused or reset it.
+        Feed(service, id, SystemInit(), MessageStart("msg_3"), BlockStart(0, "text"), TextDelta(0, "next"));
+        Assert.NotEqual(launchUid, live[^1].MessageUid);
+    }
+
     // --- harness ---
 
     private (ClaudeSessionService Service, RecordingStore Store, List<ClaudeStreamEvent> Live, string Id) StartSession(
@@ -912,15 +944,15 @@ public sealed class ClaudeTextPhaseTests : IDisposable
 
     private static string MessageStop() => Stream(new { type = "message_stop" });
 
-    private static string AssistantText(string id, string text) => Json(new
+    private static string AssistantText(string id, string text, string? parent = null) => Json(new
     {
-        type = "assistant", parent_tool_use_id = (string?)null,
+        type = "assistant", parent_tool_use_id = parent,
         message = new { id, role = "assistant", stop_reason = (string?)null, content = new[] { new { type = "text", text } } },
     });
 
-    private static string AssistantToolUse(string id, string toolId, string name, string inputJson) => Json(new
+    private static string AssistantToolUse(string id, string toolId, string name, string inputJson, string? parent = null) => Json(new
     {
-        type = "assistant", parent_tool_use_id = (string?)null,
+        type = "assistant", parent_tool_use_id = parent,
         message = new
         {
             id, role = "assistant", stop_reason = (string?)null,
@@ -928,9 +960,9 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         },
     });
 
-    private static string ToolResult(string toolId, string content) => Json(new
+    private static string ToolResult(string toolId, string content, string? parent = null) => Json(new
     {
-        type = "user", parent_tool_use_id = (string?)null,
+        type = "user", parent_tool_use_id = parent,
         message = new { role = "user", content = new[] { new { type = "tool_result", tool_use_id = toolId, content } } },
     });
 

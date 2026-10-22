@@ -474,6 +474,8 @@ public sealed class RedLeafSessionReader
                 MessageId = Str(d, "message_id"),
                 Phase = Str(d, "phase"),
                 MessageUid = Str(d, "message_uid"),
+                ParentToolUseId = Str(d, "parent_tool_use_id"),
+                TurnOrigin = MapTurnOrigin(d),
                 Epoch = Str(d, "epoch"),
                 Sequence = sequence,
                 Timestamp = Str(d, "timestamp") is { } ts && DateTimeOffset.TryParse(ts, out var t)
@@ -607,6 +609,12 @@ public sealed class RedLeafSessionReader
         response.EnsureSuccessStatusCode();
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
     }
+
+    private static TurnOrigin? MapTurnOrigin(JsonElement data) =>
+        data.TryGetProperty("turn_origin", out var origin) && origin.ValueKind == JsonValueKind.Object
+            && Str(origin, "kind") is { } kind
+            ? new TurnOrigin { Kind = kind, TaskId = Str(origin, "task_id") }
+            : null;
 
     private static string? Str(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

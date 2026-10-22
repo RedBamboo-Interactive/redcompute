@@ -56,7 +56,7 @@ public class CodexDbContext : DbContext
                 catch { }
             }
 
-            foreach (var col in new[] { "MessageUid TEXT", "AttachmentsJson TEXT", "Phase TEXT" })
+            foreach (var col in new[] { "MessageUid TEXT", "AttachmentsJson TEXT", "Phase TEXT", "ParentToolUseId TEXT" })
             {
                 cmd.CommandText = $"ALTER TABLE Messages ADD COLUMN {col}";
                 try { cmd.ExecuteNonQuery(); }

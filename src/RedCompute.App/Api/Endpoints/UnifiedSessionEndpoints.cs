@@ -80,13 +80,24 @@ public static class UnifiedSessionEndpoints
                     ? jobTracker.GetJob(jobId)
                     : null);
 
-        // Steering is a live provider capability, not durable session history. RedLeaf-backed
-        // reads would otherwise report false until the next session.updated event.
+        // Steering is a live provider capability, and background tasks are live provider state;
+        // neither is durable session history. RedLeaf-backed reads would otherwise report them
+        // only after the next session.updated event.
         UnifiedSessionInfo WithLiveCapabilities(UnifiedSessionInfo session)
         {
-            session.SupportsSteering = registry.FindProviders<ISessionProvider>().Any(provider =>
-                string.Equals(provider.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase)
-                && provider.Capabilities.HasFlag(SessionCapabilities.SupportsSteering));
+            var provider = registry.FindProviders<ISessionProvider>().FirstOrDefault(candidate =>
+                string.Equals(candidate.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase));
+            session.SupportsSteering = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsSteering) == true;
+            try
+            {
+                session.BackgroundTasks = provider?.GetBackgroundTasks(session.Id) ?? [];
+            }
+            catch (Exception ex)
+            {
+                // Live state is an overlay; a provider fault must not fail the durable read.
+                session.BackgroundTasks = [];
+                log($"[Sessions] Background tasks unavailable for {session.Provider}/{session.Id}: {ex.Message}", null);
+            }
             return session;
         }
 
@@ -535,7 +546,7 @@ public static class UnifiedSessionEndpoints
             var (fromSequence, throughSequence) = TranscriptPageSequenceRange(page.Messages, epoch);
             var response = new TranscriptPageResponse
             {
-                Session = info,
+                Session = WithLiveCapabilities(info),
                 Messages = page.Messages,
                 Page = new TranscriptPageMetadata
                 {
@@ -1230,6 +1241,32 @@ public static class UnifiedSessionEndpoints
             var result = provider.InterruptSession(id);
             return Results.Json(new { interrupted = result == InterruptResult.Interrupted, reason = result.ToString() });
         });
+
+        endpoints.MapPost("/ai-session/sessions/{id}/background-tasks/{taskId}/stop",
+            "Stop one running background task (subagent or background shell) without interrupting the session. "
+            + "The response confirms the request; the task's terminal state arrives as a `task` record and session.updated.",
+            async (HttpContext ctx, string id, string taskId) =>
+        {
+            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info == null)
+                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            if (!CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
+            if (!provider!.Capabilities.HasFlag(SessionCapabilities.SupportsBackgroundTaskStop))
+                return NotSupported(provider.ProviderId, "stopping background tasks");
+
+            var result = await provider.TryStopBackgroundTaskAsync(id, taskId);
+            return result.Status switch
+            {
+                BackgroundTaskStopStatus.Accepted => Results.Json(new { stopRequested = true, taskId }),
+                BackgroundTaskStopStatus.SessionNotFound => Error(409, "session_not_running", result.Message ?? $"Session '{id}' is not running"),
+                BackgroundTaskStopStatus.TaskNotFound => Error(404, "task_not_found", result.Message ?? $"Background task '{taskId}' was not found"),
+                BackgroundTaskStopStatus.Unsupported => NotSupported(provider.ProviderId, "stopping background tasks"),
+                _ => Error(502, "stop_failed", result.Message ?? "The provider did not stop the background task"),
+            };
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("taskId", "string", required: true, location: ParamLocation.Path, description: "Background task id from session.backgroundTasks or a `task` record");
 
         endpoints.MapPost("/ai-session/sessions/{id}/resume",
             "Resume a stopped session", async (HttpContext ctx, string id) =>
@@ -2245,8 +2282,40 @@ public static class UnifiedSessionEndpoints
         required = new[] { "session", "messages", "page" },
         properties = new
         {
-            session = new { type = "object" },
-            messages = new { type = "array", items = new { type = "object" } },
+            session = new
+            {
+                type = "object",
+                properties = new
+                {
+                    supportsSteering = new { type = "boolean" },
+                    backgroundTasks = new
+                    {
+                        type = "array",
+                        description = "Live background work (subagents, background shells) still running. Never makes the session Active.",
+                        items = BackgroundTaskSchema,
+                    },
+                },
+            },
+            messages = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        eventType = new { type = "string", description = "text, thinking, tool_use, tool_result, status, error, image, or task (a background task's start/terminal state; toolInput holds it)" },
+                        messageUid = new { type = new[] { "string", "null" }, description = "Logical turn. Background children keep the launching turn's uid." },
+                        parentToolUseId = new { type = new[] { "string", "null" }, description = "Launching tool call of the background work this record belongs to; null for the main loop" },
+                        turnOrigin = new
+                        {
+                            type = new[] { "object", "null" },
+                            description = "Why a turn started without user input; set on its first record and closing status",
+                            properties = new { kind = new { type = "string", @enum = new[] { "background-task" } }, taskId = new { type = "string" } },
+                        },
+                    },
+                },
+            },
             page = new
             {
                 type = "object",
@@ -2268,6 +2337,38 @@ public static class UnifiedSessionEndpoints
                     boundaryComplete = new { type = "boolean" },
                 },
             },
+        },
+    };
+
+    private static readonly object BackgroundTaskSchema = new
+    {
+        type = "object",
+        required = new[] { "taskId", "kind", "status", "startedAt" },
+        properties = new
+        {
+            taskId = new { type = "string" },
+            kind = new { type = "string", @enum = new[] { "agent", "shell", "other" } },
+            status = new { type = "string", @enum = new[] { "running", "completed", "failed", "stopped", "lost" } },
+            description = new { type = new[] { "string", "null" } },
+            agentType = new { type = new[] { "string", "null" } },
+            summary = new { type = new[] { "string", "null" } },
+            usage = new
+            {
+                type = new[] { "object", "null" },
+                properties = new
+                {
+                    toolUses = new { type = new[] { "integer", "null" } },
+                    tokens = new { type = new[] { "integer", "null" } },
+                    durationMs = new { type = new[] { "integer", "null" } },
+                },
+            },
+            startedAt = new { type = "string", format = "date-time" },
+            endedAt = new { type = new[] { "string", "null" }, format = "date-time" },
+            lastActivity = new { type = new[] { "string", "null" } },
+            lastToolName = new { type = new[] { "string", "null" } },
+            parentToolUseId = new { type = new[] { "string", "null" }, description = "Tool call that launched the task" },
+            messageUid = new { type = new[] { "string", "null" }, description = "Turn that launched the task" },
+            parentTaskId = new { type = new[] { "string", "null" } },
         },
     };
 

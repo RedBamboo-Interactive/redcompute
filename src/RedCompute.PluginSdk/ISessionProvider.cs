@@ -172,6 +172,22 @@ public interface ISessionProvider
     // Interrupt
     InterruptResult InterruptSession(string sessionId);
 
+    /// <summary>
+    /// Asks the provider to stop one running background task (subagent or background shell)
+    /// without interrupting the session's main loop. Acceptance means the request reached the
+    /// provider; the task's terminal state is reported by the provider's own lifecycle events.
+    /// Providers without <see cref="SessionCapabilities.SupportsBackgroundTaskStop"/> stay
+    /// side-effect-free.
+    /// </summary>
+    Task<BackgroundTaskStopResult> TryStopBackgroundTaskAsync(string sessionId, string taskId)
+        => Task.FromResult(BackgroundTaskStopResult.Unsupported());
+
+    /// <summary>
+    /// The session's live background tasks, without reading history. Durable reads come from the
+    /// suite mirror, which holds no live state, so the API overlays this on every session read.
+    /// </summary>
+    IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId) => [];
+
     // Configuration
     bool SetPermissionMode(string sessionId, string mode);
 

@@ -47,6 +47,9 @@ public class OpenCodeDbContext : DbContext
             cmd.CommandText = "ALTER TABLE Messages ADD COLUMN ProviderPartId TEXT";
             try { cmd.ExecuteNonQuery(); }
             catch { }
+            cmd.CommandText = "ALTER TABLE Messages ADD COLUMN ParentToolUseId TEXT";
+            try { cmd.ExecuteNonQuery(); }
+            catch { }
             cmd.CommandText = """
                 CREATE UNIQUE INDEX IF NOT EXISTS IX_Messages_SessionId_ProviderPartId_EventType
                 ON Messages (SessionId, ProviderPartId, EventType)

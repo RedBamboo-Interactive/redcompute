@@ -10,6 +10,15 @@ public interface IClaudeSessionStore
     /// turn's "completed" reason. They are skipped by active recovery and block queued input.
     /// </summary>
     List<ClaudeSessionRecord> GetStrandedIdleExitSessions() => [];
+    /// <summary>Rows that still list running background tasks; recovery settles them as lost.</summary>
+    List<ClaudeSessionRecord> GetSessionsWithBackgroundTasks() => [];
+    /// <summary>
+    /// The logical turn of a persisted tool call, for a background child whose launching tool call
+    /// is not in the current process's memory.
+    /// </summary>
+    string? FindToolUseMessageUid(string sessionId, string toolUseId)
+        => GetMessages(sessionId).LastOrDefault(message =>
+            message.EventType == "tool_use" && message.MessageId == toolUseId)?.MessageUid;
     List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false);
     void SaveSession(ClaudeSessionRecord record);
     void DismissSession(string sessionId);

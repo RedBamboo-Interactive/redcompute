@@ -31,6 +31,13 @@ public class ClaudeSessionService
     // precedes that work and all stdout activity resets the clock.
     internal TimeSpan SteerBoundarySilenceTimeout { get; set; } = TimeSpan.FromSeconds(120);
 
+    // Background-task progress is chatty (one line per subagent tool call). Session updates for
+    // progress are coalesced to this interval per session; lifecycle changes publish immediately.
+    internal TimeSpan BackgroundProgressInterval { get; set; } = TimeSpan.FromMilliseconds(500);
+    // stop_task is answered by a control_response right after the CLI kills the task.
+    internal TimeSpan BackgroundTaskStopTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    private readonly Action<Action> _whenMirrorInstalled;
+
     public event Action<ClaudeSessionInfo>? SessionCreated;
     public event Action<ClaudeSessionInfo>? SessionUpdated;
     public event Action<string, string, string?>? SessionEnded;
@@ -59,7 +66,8 @@ public class ClaudeSessionService
         IClaudeSessionStore sessionStore,
         IProviderQualityModeResolver qualityModes,
         Func<string?> titleQualityTier,
-        Action<string, Guid?> log)
+        Action<string, Guid?> log,
+        Action<Action>? whenMirrorInstalled = null)
     {
         _config = config;
         _jobTracker = jobTracker;
@@ -67,6 +75,7 @@ public class ClaudeSessionService
         _qualityModes = qualityModes;
         _titleQualityTier = titleQualityTier;
         _log = log;
+        _whenMirrorInstalled = whenMirrorInstalled ?? SuiteMirror.WhenInstalled;
         // Recover at construction, like Codex and OpenCode. StartAsync only runs for a
         // capability's default provider, so a non-default Claude provider never recovered.
         RecoverSessions();
@@ -122,6 +131,16 @@ public class ClaudeSessionService
             }
             if (stranded.Count > 0)
                 _log($"[Claude] Repaired {stranded.Count} session(s) stranded as Error/completed by an earlier idle process exit", null);
+
+            // Background tasks are in-process children of the CLI, so every task a row still lists
+            // died with its process. Settle them once the suite mirror can carry the records:
+            // recovery runs before the app installs it, and RedLeaf is the transcript read path.
+            foreach (var s in _sessionStore.GetSessionsWithBackgroundTasks())
+            {
+                var sessionId = s.Id;
+                var tasks = ReadBackgroundTasks(s.BackgroundTasksJson);
+                _whenMirrorInstalled(() => SettleRecoveredBackgroundTasks(sessionId, tasks));
+            }
         }
         catch (Exception ex)
         {
@@ -129,6 +148,40 @@ public class ClaudeSessionService
         }
 
         _reaperTimer = new Timer(_ => ReapExpiredSessions(), null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(24));
+    }
+
+    internal static IReadOnlyList<BackgroundTaskInfo> ReadBackgroundTasks(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return JsonSerializer.Deserialize<List<BackgroundTaskInfo>>(json) ?? []; }
+        catch (JsonException) { return []; }
+    }
+
+    private void SettleRecoveredBackgroundTasks(string sessionId, IReadOnlyList<BackgroundTaskInfo> tasks)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var task in tasks.Where(task => !BackgroundTaskStatuses.IsTerminal(task.Status)))
+        {
+            var lost = new BackgroundTaskInfo
+            {
+                TaskId = task.TaskId, Kind = task.Kind, Status = BackgroundTaskStatuses.Lost,
+                Description = task.Description, AgentType = task.AgentType, Summary = task.Summary,
+                Usage = task.Usage, StartedAt = task.StartedAt, EndedAt = now,
+                ParentToolUseId = task.ParentToolUseId, MessageUid = task.MessageUid,
+                ParentTaskId = task.ParentTaskId,
+            };
+            PersistMessage(sessionId, "system", "task", null, null,
+                ClaudeBackgroundTaskTracker.RecordInput(lost), null, lost.TaskId,
+                messageUid: lost.MessageUid, parentToolUseId: lost.ParentToolUseId);
+        }
+
+        // A live process owns the column again; its own saves already replaced the old list.
+        if (_sessions.ContainsKey(sessionId)) return;
+        var record = _sessionStore.FindSession(sessionId);
+        if (record is null || record.BackgroundTasksJson is null) return;
+        record.BackgroundTasksJson = null;
+        _sessionStore.SaveSession(record);
+        _log($"[Claude] Session {sessionId}: {tasks.Count} background task(s) lost with the previous process", null);
     }
 
     private void ReapExpiredSessions()
@@ -1232,7 +1285,10 @@ public class ClaudeSessionService
                 message = new { role = "user", content = contentPayload },
                 parent_tool_use_id = (string?)null
             };
-            await WriteControlLineAsync(session, msg);
+            // Set before the write: the reader may see the CLI's replay before this method resumes.
+            session.UserInputUnconsumed = true;
+            try { await WriteControlLineAsync(session, msg); }
+            catch { session.UserInputUnconsumed = false; throw; }
             session.Info.MessageCount++;
             session.Info.Status = SessionStatus.Active;
             session.Info.StopReason = null;
@@ -1508,7 +1564,9 @@ public class ClaudeSessionService
                 message = new { role = "user", content = (object)answer },
                 parent_tool_use_id = (string?)null
             };
-            WriteControlLine(session, msg);
+            session.UserInputUnconsumed = true;
+            try { WriteControlLine(session, msg); }
+            catch { session.UserInputUnconsumed = false; throw; }
             session.Info.Status = SessionStatus.Active;
             SessionUpdated?.Invoke(session.Info);
 
@@ -1574,6 +1632,50 @@ public class ClaudeSessionService
             _log($"[Claude] Failed to send interrupt to {sessionId}: {ex.Message}", null);
             return InterruptResult.Error;
         }
+    }
+
+    /// <summary>
+    /// Asks the CLI to stop one background task. The control_response only confirms the request;
+    /// the task's terminal state arrives through its own task_updated/task_notification lines.
+    /// The CLI answers success for a task that already ended, so a repeated stop is harmless.
+    /// </summary>
+    public async Task<BackgroundTaskStopResult> TryStopBackgroundTaskAsync(string sessionId, string taskId)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session))
+            return new(BackgroundTaskStopStatus.SessionNotFound, $"Session '{sessionId}' is not running");
+        if (!session.BackgroundTasks.Knows(taskId))
+            return new(BackgroundTaskStopStatus.TaskNotFound,
+                $"Background task '{taskId}' is not known to the running session");
+
+        var requestId = $"stop-task-{Guid.NewGuid():N}";
+        var response = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        session.PendingControlRequests[requestId] = response;
+        try
+        {
+            await WriteControlLineAsync(session, new
+            {
+                type = "control_request",
+                request_id = requestId,
+                request = new { subtype = "stop_task", task_id = taskId },
+            });
+        }
+        catch (Exception ex)
+        {
+            session.PendingControlRequests.TryRemove(requestId, out _);
+            _log($"[Claude] Failed to stop background task {taskId} on {sessionId}: {ex.Message}", null);
+            return new(BackgroundTaskStopStatus.Failed, ex.Message);
+        }
+
+        _log($"[Claude] Stop requested for background task {taskId} on session {sessionId} (request {requestId})", null);
+        var timeout = Task.Delay(BackgroundTaskStopTimeout);
+        if (await Task.WhenAny(response.Task, timeout) != response.Task)
+        {
+            session.PendingControlRequests.TryRemove(requestId, out _);
+            return new(BackgroundTaskStopStatus.Failed, "The CLI did not confirm the stop request");
+        }
+        return await response.Task is { } error
+            ? new(BackgroundTaskStopStatus.Failed, error)
+            : BackgroundTaskStopResult.Accepted();
     }
 
     private async Task ForceInterruptAfterTimeout(string sessionId, ManagedSession session, TaskCompletionSource<bool> completion, TimeSpan timeout)
@@ -1692,6 +1794,7 @@ public class ClaudeSessionService
             DiscardPendingSteers(session);
             session.Cts.Cancel();
             SettleTurnContent(session);
+            SettleLostBackgroundTasks(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.StoppedAt = DateTimeOffset.UtcNow;
@@ -1735,6 +1838,7 @@ public class ClaudeSessionService
             DiscardPendingSteers(session);
             session.Cts.Cancel();
             SettleTurnContent(session);
+            SettleLostBackgroundTasks(session);
             session.Info.Status = SessionStatus.Stopped;
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.StoppedAt = DateTimeOffset.UtcNow;
@@ -1890,6 +1994,10 @@ public class ClaudeSessionService
         JobId = r.JobId,
         Source = r.Source
     };
+
+    /// <summary>Live background tasks of a loaded session; a session without a process has none.</summary>
+    public IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId)
+        => _sessions.TryGetValue(sessionId, out var session) ? session.Info.BackgroundTasks : [];
 
     public List<ClaudeMessageRecord> GetHistory(string sessionId, int limit = 50_000)
     {
@@ -2089,11 +2197,30 @@ public class ClaudeSessionService
 
         // Stamp the turn uid before the event is broadcast or persisted so the
         // streamed copy and the stored record carry the same identity.
-        // status/error close the turn.
+        // status/error close the turn. Background work (a subagent's line, tagged with the tool
+        // call that launched it) keeps the launching turn's uid and never opens, closes or
+        // reuses the main loop's current turn.
         if (evt.Type is "status" or "error")
             session.CurrentAssistantUid = null;
+        else if (evt.ParentToolUseId is { } parentToolUseId)
+            evt.MessageUid = ResolveLaunchUid(session, parentToolUseId);
         else
-            evt.MessageUid = session.CurrentAssistantUid ??= Guid.NewGuid().ToString("N");
+        {
+            if (session.CurrentAssistantUid is null)
+            {
+                session.CurrentAssistantUid = Guid.NewGuid().ToString("N");
+                if (session.PendingLiveTurnOrigin is { } origin)
+                {
+                    evt.TurnOrigin = origin;
+                    session.PendingLiveTurnOrigin = null;
+                    session.DurableTurnOrigin = (session.CurrentAssistantUid, origin);
+                }
+            }
+            evt.MessageUid = session.CurrentAssistantUid;
+        }
+        // Children of a tool call (nested subagents included) resolve to the turn that made it.
+        if (evt is { Type: "tool_use", MessageId: { } toolUseId })
+            session.ToolTurnUids[toolUseId] = evt.MessageUid;
 
         // Streamed text and thinking are live-only, as Codex's agent-message/reasoning deltas are.
         // Each block is persisted once, whole: text when its commentary/final phase is decided,
@@ -2113,7 +2240,26 @@ public class ClaudeSessionService
         if (!deferred)
             PersistMessage(session.Info.Id, "assistant", evt.Type, evt.Content,
                 evt.ToolName, evt.ToolInput?.ToString(), evt.ToolResult, evt.MessageId,
-                messageUid: evt.MessageUid, phase: evt.Phase);
+                messageUid: evt.MessageUid, phase: evt.Phase,
+                parentToolUseId: evt.ParentToolUseId, turnOrigin: evt.Type == "status" ? evt.TurnOrigin : null);
+    }
+
+    /// <summary>
+    /// The logical turn that launched a tool call. Filled as tool calls stream; a launching call
+    /// from before this process (none in practice: tasks die with their process) is looked up in
+    /// the durable history. Never mints: an unresolvable child stays unattached to any turn.
+    /// </summary>
+    private string? ResolveLaunchUid(ManagedSession session, string toolUseId)
+    {
+        if (session.ToolTurnUids.TryGetValue(toolUseId, out var uid)) return uid;
+        try { uid = _sessionStore.FindToolUseMessageUid(session.Info.Id, toolUseId); }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to resolve the turn of tool call {toolUseId}: {ex.Message}", null);
+            uid = null;
+        }
+        session.ToolTurnUids[toolUseId] = uid;
+        return uid;
     }
 
     /// <summary>
@@ -2191,7 +2337,9 @@ public class ClaudeSessionService
     {
         foreach (var text in settled)
             PersistMessage(session.Info.Id, "assistant", "text", text.Content, null, null, null,
-                text.MessageId, messageUid: text.MessageUid ?? session.CurrentAssistantUid, phase: text.Phase);
+                text.MessageId,
+                messageUid: text.ParentToolUseId is null ? text.MessageUid ?? session.CurrentAssistantUid : text.MessageUid,
+                phase: text.Phase, parentToolUseId: text.ParentToolUseId);
     }
 
     private void PersistSettledThinking(ManagedSession session,
@@ -2199,7 +2347,9 @@ public class ClaudeSessionService
     {
         foreach (var thinking in settled)
             PersistMessage(session.Info.Id, "assistant", "thinking", thinking.Content, null, null, null,
-                thinking.MessageId, messageUid: thinking.MessageUid ?? session.CurrentAssistantUid);
+                thinking.MessageId,
+                messageUid: thinking.ParentToolUseId is null ? thinking.MessageUid ?? session.CurrentAssistantUid : thinking.MessageUid,
+                parentToolUseId: thinking.ParentToolUseId);
     }
 
     /// <summary>
@@ -2248,6 +2398,9 @@ public class ClaudeSessionService
             case "user":
                 if (TryAcceptSteerReplay(root, session))
                     return null;
+                // The CLI echoes a written user message when it takes it into a turn.
+                if (root.TryGetProperty("isReplay", out var replayed) && replayed.ValueKind == JsonValueKind.True)
+                    session.UserInputUnconsumed = false;
                 return ParseUserEvent(root);
 
             case "result":
@@ -2413,20 +2566,174 @@ public class ClaudeSessionService
 
     private void HandleSystemEvent(JsonElement root, ManagedSession session)
     {
-        if (root.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "init")
+        var subtype = root.TryGetProperty("subtype", out var subtypeElement)
+            && subtypeElement.ValueKind == JsonValueKind.String ? subtypeElement.GetString() : null;
+        var now = DateTimeOffset.UtcNow;
+        switch (subtype)
         {
-            if (root.TryGetProperty("session_id", out var sid))
-                session.Info.ClaudeSessionId = sid.GetString();
-            if (root.TryGetProperty("model", out var model))
-                session.Info.Model = model.GetString();
-            if (root.TryGetProperty("permissionMode", out var pm))
-                session.Info.PermissionMode = pm.GetString() ?? "bypassPermissions";
+            case "init":
+            {
+                if (root.TryGetProperty("session_id", out var sid))
+                    session.Info.ClaudeSessionId = sid.GetString();
+                if (root.TryGetProperty("model", out var model))
+                    session.Info.Model = model.GetString();
+                if (root.TryGetProperty("permissionMode", out var pm))
+                    session.Info.PermissionMode = pm.GetString() ?? "bypassPermissions";
 
-            session.Info.Status = SessionStatus.Active;
-            PersistSessionRecord(session.Info);
-            SessionUpdated?.Invoke(session.Info);
-            _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode})", null);
+                // init opens every CLI turn. With no user input waiting, a turn after a background
+                // task finished is the CLI waking itself up to report it.
+                if (!session.UserInputUnconsumed && session.WakeTasks.TryDequeue(out var wakeTaskId))
+                {
+                    var origin = new TurnOrigin { Kind = TurnOrigin.BackgroundTask, TaskId = wakeTaskId };
+                    session.WakeTurnOrigin = origin;
+                    session.PendingLiveTurnOrigin = origin;
+                }
+
+                session.Info.Status = SessionStatus.Active;
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode})", null);
+                return;
+            }
+
+            case "task_started":
+                ApplyBackgroundChange(session,
+                    session.BackgroundTasks.Started(root, toolUseId => ResolveLaunchUid(session, toolUseId), now));
+                return;
+
+            case "task_progress":
+                ApplyBackgroundChange(session, session.BackgroundTasks.Progress(root));
+                return;
+
+            case "task_updated":
+                ApplyBackgroundChange(session, session.BackgroundTasks.Updated(root));
+                return;
+
+            case "task_notification":
+            {
+                var change = session.BackgroundTasks.Notification(root, now);
+                if (change.WakeTaskId is { } finished)
+                    session.WakeTasks.Enqueue(finished);
+                else if (change.Kind == ClaudeBackgroundTaskTracker.ChangeKind.None
+                    && root.TryGetProperty("task_id", out var unknown))
+                    _log($"[Claude] Session {session.Info.Id}: ignoring notification for background task {unknown} from a previous process", null);
+                ApplyBackgroundChange(session, change);
+                return;
+            }
+
+            case "background_tasks_changed":
+                ApplyBackgroundChange(session, session.BackgroundTasks.Snapshot(root, now));
+                return;
+
+            default:
+                if (session.LoggedSystemSubtypes.TryAdd(subtype ?? "", 0))
+                    _log($"[Claude] Session {session.Info.Id}: ignoring system subtype '{subtype}' (logged once per session)", null);
+                return;
         }
+    }
+
+    private void ApplyBackgroundChange(ManagedSession session, ClaudeBackgroundTaskTracker.Change change)
+    {
+        foreach (var task in change.Records)
+            EmitTaskRecord(session, task);
+        if (change.Kind == ClaudeBackgroundTaskTracker.ChangeKind.None)
+            return;
+
+        session.Info.BackgroundTasks = session.BackgroundTasks.Running;
+        if (change.Kind == ClaudeBackgroundTaskTracker.ChangeKind.Lifecycle)
+        {
+            // Recovery reads the running set from the row, so persist every lifecycle change.
+            PersistSessionRecord(session.Info);
+            PublishBackgroundTasks(session, immediate: true);
+        }
+        else
+        {
+            PublishBackgroundTasks(session, immediate: false);
+        }
+    }
+
+    /// <summary>
+    /// One durable `task` record per start and terminal transition, attributed to the tool call
+    /// that launched the task and the turn that made that call. Stamped and broadcast like any
+    /// record; clients fold it into the launching square instead of rendering it as a part.
+    /// </summary>
+    private void EmitTaskRecord(ManagedSession session, BackgroundTaskInfo task)
+    {
+        var input = ClaudeBackgroundTaskTracker.RecordInput(task);
+        var evt = new ClaudeStreamEvent
+        {
+            Type = "task",
+            ToolInput = input,
+            MessageId = task.TaskId,
+            MessageUid = task.MessageUid,
+            ParentToolUseId = task.ParentToolUseId,
+        };
+        StreamEvent?.Invoke(session.Info.Id, evt);
+        session.MessageHistory.Add(evt);
+        TrimHistory(session);
+        PersistMessage(session.Info.Id, "system", "task", null, null, input, null, task.TaskId,
+            messageUid: task.MessageUid, parentToolUseId: task.ParentToolUseId);
+    }
+
+    private void PublishBackgroundTasks(ManagedSession session, bool immediate)
+    {
+        TimeSpan? delay = null;
+        var publish = false;
+        lock (session.BackgroundPublishGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var elapsed = now - session.LastBackgroundPublish;
+            if (immediate || elapsed >= BackgroundProgressInterval)
+            {
+                session.LastBackgroundPublish = now;
+                publish = true;
+            }
+            else if (!session.BackgroundPublishScheduled)
+            {
+                session.BackgroundPublishScheduled = true;
+                delay = BackgroundProgressInterval - elapsed;
+            }
+        }
+
+        if (publish)
+            SessionUpdated?.Invoke(session.Info);
+        else if (delay is { } wait)
+            _ = PublishBackgroundTasksLaterAsync(session, wait);
+    }
+
+    private async Task PublishBackgroundTasksLaterAsync(ManagedSession session, TimeSpan delay)
+    {
+        try { await Task.Delay(delay, session.Cts.Token); }
+        catch (OperationCanceledException) { return; }
+        lock (session.BackgroundPublishGate)
+        {
+            session.BackgroundPublishScheduled = false;
+            session.LastBackgroundPublish = DateTimeOffset.UtcNow;
+        }
+        if (_sessions.TryGetValue(session.Info.Id, out var current) && ReferenceEquals(current, session))
+            SessionUpdated?.Invoke(session.Info);
+    }
+
+    /// <summary>
+    /// The CLI process is gone (exit, stop, kill, forced restart): its background tasks died with
+    /// it. Record each one as lost so no square stays running forever, and clear the live list.
+    /// </summary>
+    private void SettleLostBackgroundTasks(ManagedSession session)
+    {
+        foreach (var pending in session.PendingControlRequests.Keys)
+            if (session.PendingControlRequests.TryRemove(pending, out var response))
+                response.TrySetResult("The Claude process ended");
+
+        var lost = session.BackgroundTasks.MarkAllLost(DateTimeOffset.UtcNow);
+        foreach (var task in lost)
+            EmitTaskRecord(session, task);
+        session.WakeTasks.Clear();
+        if (session.Info.BackgroundTasks.Count == 0 && lost.Count == 0)
+            return;
+        session.Info.BackgroundTasks = [];
+        if (lost.Count > 0)
+            _log($"[Claude] Session {session.Info.Id}: {lost.Count} background task(s) lost with the process", null);
+        PersistSessionRecord(session.Info);
     }
 
     private void HandleControlResponse(JsonElement root, ManagedSession session)
@@ -2436,15 +2743,18 @@ public class ClaudeSessionService
             var subtype = resp.TryGetProperty("subtype", out var sub) ? sub.GetString() : null;
             var reqId = resp.TryGetProperty("request_id", out var rid) ? rid.GetString() : null;
 
+            string? error = null;
             if (subtype == "error")
             {
-                var error = resp.TryGetProperty("error", out var e) ? e.GetString() : "unknown";
+                error = resp.TryGetProperty("error", out var e) ? e.GetString() ?? "unknown" : "unknown";
                 _log($"[Claude] Control request {reqId} failed: {error}", null);
             }
             else
             {
                 _log($"[Claude] Control request {reqId} succeeded", null);
             }
+            if (reqId is not null && session.PendingControlRequests.TryRemove(reqId, out var pending))
+                pending.TrySetResult(error);
         }
     }
 
@@ -2771,7 +3081,8 @@ public class ClaudeSessionService
                         Type = "tool_use",
                         ToolName = toolName,
                         ToolInput = toolInput,
-                        MessageId = toolId
+                        MessageId = toolId,
+                        ParentToolUseId = ParentToolUseId(root),
                     };
             }
         }
@@ -2802,7 +3113,8 @@ public class ClaudeSessionService
                 ToolResult = resultContent,
                 Content = resultContent,
                 MessageId = toolUseId,
-                IsPartial = false
+                IsPartial = false,
+                ParentToolUseId = ParentToolUseId(root),
             };
         }
 
@@ -2862,6 +3174,21 @@ public class ClaudeSessionService
 
         var subtype = root.TryGetProperty("subtype", out var sub) ? sub.GetString() : null;
 
+        // A turn the CLI started by itself after a background task finished. result.origin is the
+        // CLI's confirmation; the turn's own records were tagged when it opened.
+        var wakeResult = IsTaskNotificationResult(root);
+        var turnOrigin = wakeResult ? ConfirmWakeTurnOrigin(root, session) : null;
+        session.WakeTurnOrigin = null;
+        session.PendingLiveTurnOrigin = null;
+        // DurableTurnOrigin stays: the turn's final text settles below, and its uid matches
+        // nothing else.
+        if (!wakeResult)
+        {
+            session.UserInputUnconsumed = false;
+            // A notification that landed during a user turn was folded into it.
+            session.WakeTasks.Clear();
+        }
+
         var terminalError = ReadTerminalResultError(root, subtype);
         if (terminalError == null && subtype == "success")
         {
@@ -2891,6 +3218,19 @@ public class ClaudeSessionService
                 StartSteerBoundaryWatchdogs(session);
                 return null;
             }
+            if (wakeResult && session.UserInputUnconsumed)
+            {
+                // The CLI ran a background-task wake turn ahead of a user message it has not taken
+                // yet (a resumed CLI does this for every task the previous process lost). That
+                // message's turn is still to come: Idle now would invite another send into it.
+                session.CurrentAssistantUid = null;
+                if (root.TryGetProperty("total_cost_usd", out var wakeCost))
+                    session.Info.CostUsd = wakeCost.GetDouble();
+                ParseTokenUsage(root, session);
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                return null;
+            }
             session.Info.Status = SessionStatus.Idle;
             session.Info.StopReason = "completed";
 
@@ -2902,7 +3242,7 @@ public class ClaudeSessionService
             PersistSessionRecord(session.Info);
             SessionUpdated?.Invoke(session.Info);
 
-            return new ClaudeStreamEvent { Type = "status", Content = "idle" };
+            return new ClaudeStreamEvent { Type = "status", Content = "idle", TurnOrigin = turnOrigin };
         }
 
         if (terminalError != null)
@@ -2979,6 +3319,26 @@ public class ClaudeSessionService
             ToolResult = content,
             MessageId = toolUseId
         };
+    }
+
+    private static bool IsTaskNotificationResult(JsonElement root)
+        => root.TryGetProperty("origin", out var origin) && origin.ValueKind == JsonValueKind.Object
+            && origin.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String
+            && kind.GetString() == "task-notification";
+
+    /// <summary>
+    /// The task a wake turn reported, by the run id the CLI puts on result.origin, else the task
+    /// predicted when the turn opened. Tasks of a previous process (whose stopped notifications a
+    /// resumed CLI replays) are not this session's to report.
+    /// </summary>
+    private static TurnOrigin? ConfirmWakeTurnOrigin(JsonElement root, ManagedSession session)
+    {
+        var runId = root.GetProperty("origin").TryGetProperty("runId", out var run)
+            && run.ValueKind == JsonValueKind.String ? run.GetString() : null;
+        var taskId = session.BackgroundTasks.TaskIdForRun(runId) ?? session.WakeTurnOrigin?.TaskId;
+        return taskId is not null && session.BackgroundTasks.Knows(taskId)
+            ? new TurnOrigin { Kind = TurnOrigin.BackgroundTask, TaskId = taskId }
+            : null;
     }
 
     internal static string? ReadTerminalResultError(JsonElement root, string? subtype = null)
@@ -3095,6 +3455,7 @@ public class ClaudeSessionService
         DiscardPendingSteers(session);
         session.Cts.Cancel();
         SettleTurnContent(session);
+        SettleLostBackgroundTasks(session);
 
         if (session.RestartPending)
         {
@@ -3295,6 +3656,9 @@ public class ClaudeSessionService
                 UserAvatarUrl = info.UserAvatarUrl,
                 ProcessId = info.ProcessId,
                 LastActivity = DateTimeOffset.UtcNow,
+                BackgroundTasksJson = info.BackgroundTasks.Count > 0
+                    ? JsonSerializer.Serialize(info.BackgroundTasks)
+                    : null,
             });
         }
         catch (Exception ex)
@@ -3305,10 +3669,20 @@ public class ClaudeSessionService
 
     private void PersistMessage(string sessionId, string role, string eventType, string? content,
         string? toolName, string? toolInput, string? toolResult, string? messageId,
-        string? attachmentsJson = null, string? messageUid = null, string? phase = null)
+        string? attachmentsJson = null, string? messageUid = null, string? phase = null,
+        string? parentToolUseId = null, TurnOrigin? turnOrigin = null)
     {
         try
         {
+            // The first durable record of a self-started turn carries why it started, whichever
+            // record that is (a settled block, a tool call): live-only deltas are not durable.
+            if (turnOrigin is null && messageUid is not null && parentToolUseId is null
+                && _sessions.TryGetValue(sessionId, out var owner)
+                && owner.DurableTurnOrigin is { } pendingOrigin && pendingOrigin.Uid == messageUid)
+            {
+                turnOrigin = pendingOrigin.Origin;
+                owner.DurableTurnOrigin = null;
+            }
             _sessionStore.AddMessage(new ClaudeMessageRecord
             {
                 SessionId = sessionId,
@@ -3321,6 +3695,8 @@ public class ClaudeSessionService
                 MessageId = messageId,
                 MessageUid = messageUid,
                 Phase = phase,
+                ParentToolUseId = parentToolUseId,
+                TurnOriginJson = turnOrigin is null ? null : JsonSerializer.Serialize(turnOrigin),
                 Timestamp = DateTimeOffset.UtcNow,
                 AttachmentsJson = attachmentsJson,
             });
@@ -3383,6 +3759,27 @@ public class ClaudeSessionService
         public string? CurrentAssistantUid { get; set; }
         // Streamed text/thinking blocks awaiting phase or block-stop settlement.
         public ClaudeTextBlockTracker TextBlocks { get; } = new();
+        // Background tasks (subagents, background shells) of this CLI process.
+        public ClaudeBackgroundTaskTracker BackgroundTasks { get; } = new();
+        // tool_use id -> uid of the logical turn that made the call. A background child line names
+        // its launching call, so it resolves to that turn however long after it arrives.
+        public ConcurrentDictionary<string, string?> ToolTurnUids { get; } = new(StringComparer.Ordinal);
+        // A written user message (send or answer) the CLI has not yet echoed back as taken.
+        public bool UserInputUnconsumed { get; set; }
+        // Top-level tasks that finished; the CLI wakes its main loop for each, in order.
+        public ConcurrentQueue<string> WakeTasks { get; } = new();
+        // The current self-started turn, its first live event still to be tagged, and its first
+        // durable record still to be tagged.
+        public TurnOrigin? WakeTurnOrigin { get; set; }
+        public TurnOrigin? PendingLiveTurnOrigin { get; set; }
+        public (string Uid, TurnOrigin Origin)? DurableTurnOrigin { get; set; }
+        // Outbound control requests awaiting their control_response (stop_task), keyed by request_id.
+        // The result is the CLI's error, or null on success.
+        public ConcurrentDictionary<string, TaskCompletionSource<string?>> PendingControlRequests { get; } = new();
+        public ConcurrentDictionary<string, byte> LoggedSystemSubtypes { get; } = new(StringComparer.Ordinal);
+        public object BackgroundPublishGate { get; } = new();
+        public DateTimeOffset LastBackgroundPublish { get; set; }
+        public bool BackgroundPublishScheduled { get; set; }
         // Guards every StandardInput write so a queued-message drain can never
         // interleave with a concurrent interrupt/permission-mode control write
         // (mirrors OpenCodeSessionService.ManagedSession.WriteLock).

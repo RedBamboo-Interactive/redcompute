@@ -49,6 +49,7 @@ public class CodexSessionStore : ICodexSessionStore
         MessageId = m.MessageId,
         Phase = m.Phase,
         MessageUid = m.MessageUid,
+        ParentToolUseId = m.ParentToolUseId,
         AttachmentsJson = m.AttachmentsJson,
         Timestamp = m.Timestamp,
     };

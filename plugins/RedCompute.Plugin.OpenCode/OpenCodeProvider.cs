@@ -316,6 +316,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ToolResult = m.ToolResult,
         MessageId = m.MessageId,
         MessageUid = m.MessageUid,
+        ParentToolUseId = m.ParentToolUseId,
         Timestamp = m.Timestamp,
         AttachmentsJson = m.AttachmentsJson,
     };
