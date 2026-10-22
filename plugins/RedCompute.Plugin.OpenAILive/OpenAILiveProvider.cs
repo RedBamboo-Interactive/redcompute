@@ -198,6 +198,34 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
         }, ct);
     }
 
+    public bool SupportsBackendUpdates => true;
+
+    public async Task SendBackendUpdateAsync(string providerSessionId, VoiceBackendUpdate update,
+        CancellationToken ct)
+    {
+        if (!_connections.TryGetValue(providerSessionId, out var connection))
+            throw new KeyNotFoundException("Voice session is not connected");
+        await SendJsonAsync(connection.Socket, BuildBackendUpdateCommand(update), ct);
+    }
+
+    /// <summary>
+    /// Session-wide GPT-Live append (<c>delegation_id: null</c>). Commentary is content the
+    /// model paraphrases aloud; thinking is unspoken context it can draw on later.
+    /// </summary>
+    internal static Dictionary<string, object?> BuildBackendUpdateCommand(VoiceBackendUpdate update)
+        => new()
+        {
+            ["type"] = update.Mode switch
+            {
+                VoiceBackendUpdateModes.Speak => "session.commentary.append",
+                VoiceBackendUpdateModes.Context => "session.thinking.append",
+                _ => throw new ArgumentException("Unknown backend update mode", nameof(update)),
+            },
+            ["event_id"] = update.EventId,
+            ["delegation_id"] = null,
+            ["content"] = update.Content,
+        };
+
     public async Task CloseVoiceSessionAsync(string providerSessionId, CancellationToken ct)
     {
         if (!_connections.TryGetValue(providerSessionId, out var connection)) return;

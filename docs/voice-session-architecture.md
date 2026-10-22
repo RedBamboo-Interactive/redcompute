@@ -133,6 +133,16 @@ Response:
 
 `POST /voice-session/sessions/{id}/delegations/{delegationId}/update` accepts `thinking`, `commentary`, or `failed` updates from the owning Nova execution. It is idempotent by `eventId`.
 
+`POST /voice-session/sessions/{id}/updates` delivers unsolicited backend content that no delegation asked for
+(`{ updateId, mode: "speak" | "context", content }`), with the same authorization as the delegation update. It is
+idempotent by `updateId`. `context` is appended at once as unspoken context (GPT-Live `session.thinking.append`,
+`delegation_id: null`). `speak` asks the voice model to convey it (`session.commentary.append`, `delegation_id: null`)
+but is queued while either side has produced a transcript delta, or a spoken append was sent, within a short quiet
+period (2 s), because the provider exposes no speech start/stop events; when several are waiting only the newest is
+spoken and older ones become context. Output caused by a spoken update is finalized with `updateId` and is delivery
+of the existing canonical message, not a new assistant turn. Providers that keep the SDK default report
+`501 voice_update_unsupported`.
+
 `POST /voice-session/sessions/{id}/close` is idempotent and performs a bounded graceful shutdown.
 
 The Nova-to-RedCompute contract never exposes the provider API key or the sideband socket.

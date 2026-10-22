@@ -37,6 +37,16 @@ public sealed record VoiceSessionStart(
     IReadOnlyList<VoiceHistoryMessage>? InitialHistory = null,
     string? CallbackAccessToken = null);
 
+public enum VoiceBackendUpdateOutcome
+{
+    NotFound,
+    Unsupported,
+    Closed,
+    Duplicate,
+    Sent,
+    Queued,
+}
+
 public sealed class VoiceSessionCoordinator
 {
     private sealed record PendingDelegationUpdate(
@@ -44,6 +54,14 @@ public sealed class VoiceSessionCoordinator
         bool MarksSpokenDelivery,
         string? PreviousActiveDelegationId,
         string? PreviousOpenDelegationId);
+
+    private sealed record QueuedBackendUpdate(string UpdateId, string Mode, string Content);
+
+    private sealed record PendingBackendUpdate(
+        string UpdateId,
+        bool MarksSpokenDelivery,
+        string? PreviousActiveUpdateId,
+        string? PreviousOpenUpdateId);
 
     private sealed class SessionState
     {
@@ -76,6 +94,17 @@ public sealed class VoiceSessionCoordinator
         public HashSet<string> SeenUpdates { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, PendingDelegationUpdate> PendingDelegationUpdates { get; } =
             new(StringComparer.Ordinal);
+        // Unsolicited backend updates. Spoken ones wait for a quiet conversation; the
+        // resulting speech is delivery of an existing canonical message, never a new turn.
+        public HashSet<string> SeenBackendUpdates { get; } = new(StringComparer.Ordinal);
+        public List<QueuedBackendUpdate> QueuedBackendUpdates { get; } = [];
+        public Dictionary<string, PendingBackendUpdate> PendingBackendUpdates { get; } =
+            new(StringComparer.Ordinal);
+        public string? ActiveSpokenUpdateId { get; set; }
+        public string? OpenUpdateId { get; set; }
+        public DateTimeOffset? LastSpeechAt { get; set; }
+        public long BackendUpdateOrdinal { get; set; }
+        public bool BackendDeliveryScheduled { get; set; }
         public SemaphoreSlim Gate { get; } = new(1, 1);
         public TaskCompletionSource<bool>? CloseCompletion { get; set; }
     }
@@ -87,12 +116,19 @@ public sealed class VoiceSessionCoordinator
     private readonly TimeSpan _idleTimeout;
     private readonly TimeSpan _maxLifetime;
     private readonly TimeSpan _watchdogInterval;
+    private readonly TimeSpan _speechQuietPeriod;
     private readonly Func<DateTimeOffset> _utcNow;
 
     public VoiceSessionCoordinator(HttpClient callbacks, Action<string, Guid?> log,
         string redLeafUrl, TimeSpan? idleTimeout = null, TimeSpan? maxLifetime = null,
-        TimeSpan? watchdogInterval = null, Func<DateTimeOffset>? utcNow = null)
+        TimeSpan? watchdogInterval = null, Func<DateTimeOffset>? utcNow = null,
+        TimeSpan? speechQuietPeriod = null)
     {
+        // The provider exposes no speech start/stop events, only timed transcript deltas.
+        // A spoken backend update waits until neither side has produced a delta (and no
+        // spoken append is in flight) for this long, so it never talks over anyone.
+        _speechQuietPeriod = speechQuietPeriod ?? TimeSpan.FromSeconds(2);
+        if (_speechQuietPeriod < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(speechQuietPeriod));
         _callbacks = callbacks;
         _log = log;
         _callbackUri = new Uri(new Uri(redLeafUrl.TrimEnd('/') + "/"),
@@ -185,6 +221,7 @@ public sealed class VoiceSessionCoordinator
                 await state.Provider.SendDelegationUpdateAsync(
                     state.ProviderSessionId, delegationId, update, ct);
                 state.LastActivityAt = _utcNow();
+                if (marksSpokenDelivery) state.LastSpeechAt = state.LastActivityAt;
             }
             catch
             {
@@ -202,6 +239,169 @@ public sealed class VoiceSessionCoordinator
             return true;
         }
         finally { state.Gate.Release(); }
+    }
+
+    /// <summary>
+    /// Accepts one unsolicited backend update, idempotent by <paramref name="updateId"/>.
+    /// Context is appended at once unless earlier updates are still queued (order is kept).
+    /// Speech is queued while anyone is speaking and delivered after the conversation is
+    /// quiet; when several spoken updates are waiting only the newest is spoken and the
+    /// older ones become context.
+    /// </summary>
+    public async Task<VoiceBackendUpdateOutcome> UpdateBackendAsync(string id, string updateId,
+        string mode, string content, string? userId, bool trustedInfrastructure,
+        CancellationToken ct)
+    {
+        if (!VoiceBackendUpdateModes.IsKnown(mode))
+            throw new ArgumentException("mode must be speak or context", nameof(mode));
+        if (!_sessions.TryGetValue(id, out var state) || !CanAccess(state, userId, trustedInfrastructure))
+            return VoiceBackendUpdateOutcome.NotFound;
+        if (!state.Provider.SupportsBackendUpdates) return VoiceBackendUpdateOutcome.Unsupported;
+
+        var scheduleDelivery = false;
+        await state.Gate.WaitAsync(ct);
+        try
+        {
+            if (state.Status is "closing" or "closed" or "error") return VoiceBackendUpdateOutcome.Closed;
+            if (!state.SeenBackendUpdates.Add(updateId)) return VoiceBackendUpdateOutcome.Duplicate;
+
+            var update = new QueuedBackendUpdate(updateId, mode, content);
+            if (state.QueuedBackendUpdates.Count == 0
+                && (mode == VoiceBackendUpdateModes.Context || !IsSpeechBusy(state, _utcNow())))
+            {
+                try { await SendBackendUpdateAsync(state, update, ct); }
+                catch
+                {
+                    state.SeenBackendUpdates.Remove(updateId);
+                    throw;
+                }
+                return VoiceBackendUpdateOutcome.Sent;
+            }
+
+            state.QueuedBackendUpdates.Add(update);
+            if (!state.BackendDeliveryScheduled)
+            {
+                state.BackendDeliveryScheduled = true;
+                scheduleDelivery = true;
+            }
+        }
+        finally { state.Gate.Release(); }
+
+        if (scheduleDelivery) _ = RunBackendDeliveryAsync(state);
+        return VoiceBackendUpdateOutcome.Queued;
+    }
+
+    private bool IsSpeechBusy(SessionState state, DateTimeOffset now)
+        => state.LastSpeechAt is { } lastSpeech && now - lastSpeech < _speechQuietPeriod;
+
+    private async Task RunBackendDeliveryAsync(SessionState state)
+    {
+        try
+        {
+            while (true)
+            {
+                TimeSpan wait;
+                await state.Gate.WaitAsync();
+                try
+                {
+                    if (state.Status is "closing" or "closed" or "error" || state.QueuedBackendUpdates.Count == 0)
+                    {
+                        state.QueuedBackendUpdates.Clear();
+                        state.BackendDeliveryScheduled = false;
+                        return;
+                    }
+                    var now = _utcNow();
+                    if (!IsSpeechBusy(state, now))
+                    {
+                        await DeliverQueuedBackendUpdatesAsync(state);
+                        state.BackendDeliveryScheduled = false;
+                        return;
+                    }
+                    wait = _speechQuietPeriod - (now - state.LastSpeechAt!.Value);
+                }
+                finally { state.Gate.Release(); }
+                await Task.Delay(wait < TimeSpan.FromMilliseconds(50) ? TimeSpan.FromMilliseconds(50) : wait);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[Voice] Backend update delivery failed for {state.Id}: {ex.Message}", null);
+            await state.Gate.WaitAsync();
+            try { state.BackendDeliveryScheduled = false; }
+            finally { state.Gate.Release(); }
+        }
+    }
+
+    internal async Task<int> DeliverQueuedBackendUpdatesAsync(string id)
+    {
+        if (!_sessions.TryGetValue(id, out var state)) return 0;
+        await state.Gate.WaitAsync();
+        try { return await DeliverQueuedBackendUpdatesAsync(state); }
+        finally { state.Gate.Release(); }
+    }
+
+    // Caller holds the gate.
+    private async Task<int> DeliverQueuedBackendUpdatesAsync(SessionState state)
+    {
+        var queued = state.QueuedBackendUpdates.ToList();
+        state.QueuedBackendUpdates.Clear();
+        var lastSpeech = queued.FindLastIndex(update => update.Mode == VoiceBackendUpdateModes.Speak);
+        for (var index = 0; index < queued.Count; index++)
+        {
+            var update = queued[index];
+            if (update.Mode == VoiceBackendUpdateModes.Speak && index != lastSpeech)
+                update = update with { Mode = VoiceBackendUpdateModes.Context };
+            try { await SendBackendUpdateAsync(state, update, CancellationToken.None); }
+            catch (Exception ex)
+            {
+                state.SeenBackendUpdates.Remove(update.UpdateId);
+                _log($"[Voice] Backend update {update.Mode} failed for {state.Id}: {ex.Message}", null);
+            }
+        }
+        return queued.Count;
+    }
+
+    // Caller holds the gate.
+    private async Task SendBackendUpdateAsync(SessionState state, QueuedBackendUpdate update,
+        CancellationToken ct)
+    {
+        var speaks = update.Mode == VoiceBackendUpdateModes.Speak;
+        var previousActiveUpdateId = state.ActiveSpokenUpdateId;
+        var previousOpenUpdateId = state.OpenUpdateId;
+        var eventId = $"upd_{state.Id}_{++state.BackendUpdateOrdinal}";
+        if (speaks)
+        {
+            // Whatever GPT-Live said before this point is its own finished utterance. Close
+            // it so the speech this update causes is correlated on its own and is not
+            // persisted as a second assistant answer.
+            if (state.OpenRole == "assistant")
+                await FlushUtteranceAsync(state, "backend_update", null, CancellationToken.None);
+            state.ActiveSpokenUpdateId = update.UpdateId;
+        }
+        state.PendingBackendUpdates[eventId] = new(update.UpdateId, speaks,
+            previousActiveUpdateId, previousOpenUpdateId);
+        try
+        {
+            await state.Provider.SendBackendUpdateAsync(state.ProviderSessionId,
+                new VoiceBackendUpdate(eventId, update.UpdateId, update.Mode, update.Content), ct);
+            state.LastActivityAt = _utcNow();
+            if (speaks) state.LastSpeechAt = state.LastActivityAt;
+        }
+        catch
+        {
+            state.PendingBackendUpdates.Remove(eventId);
+            if (speaks) RestoreSpokenUpdate(state, update.UpdateId, previousActiveUpdateId, previousOpenUpdateId);
+            throw;
+        }
+    }
+
+    private static void RestoreSpokenUpdate(SessionState state, string updateId,
+        string? previousActiveUpdateId, string? previousOpenUpdateId)
+    {
+        if (string.Equals(state.ActiveSpokenUpdateId, updateId, StringComparison.Ordinal))
+            state.ActiveSpokenUpdateId = previousActiveUpdateId;
+        if (string.Equals(state.OpenUpdateId, updateId, StringComparison.Ordinal))
+            state.OpenUpdateId = previousOpenUpdateId;
     }
 
     public async Task<bool> CloseAsync(string id, string? userId, bool trustedInfrastructure,
@@ -275,6 +475,8 @@ public sealed class VoiceSessionCoordinator
                 or "session.output_transcript.delta" or "session.delegation.created"
                 or "session.delegation.update.accepted")
                 state.LastActivityAt = _utcNow();
+            if (evt.Type is "session.input_transcript.delta" or "session.output_transcript.delta")
+                state.LastSpeechAt = state.LastActivityAt;
             switch (evt.Type)
             {
                 case "session.started":
@@ -302,7 +504,10 @@ public sealed class VoiceSessionCoordinator
                     break;
                 case "session.delegation.update.accepted":
                     if (!string.IsNullOrWhiteSpace(evt.ClientEventId))
+                    {
                         state.PendingDelegationUpdates.Remove(evt.ClientEventId);
+                        state.PendingBackendUpdates.Remove(evt.ClientEventId);
+                    }
                     break;
                 case "session.closed":
                     await FlushUtteranceAsync(state, "provider_close", null, CancellationToken.None);
@@ -327,6 +532,14 @@ public sealed class VoiceSessionCoordinator
                                 state.OpenDelegationId = rejected.PreviousOpenDelegationId;
                         }
                     }
+                    if (!string.IsNullOrWhiteSpace(evt.ClientEventId)
+                        && state.PendingBackendUpdates.Remove(evt.ClientEventId, out var rejectedUpdate))
+                    {
+                        state.SeenBackendUpdates.Remove(rejectedUpdate.UpdateId);
+                        if (rejectedUpdate.MarksSpokenDelivery)
+                            RestoreSpokenUpdate(state, rejectedUpdate.UpdateId,
+                                rejectedUpdate.PreviousActiveUpdateId, rejectedUpdate.PreviousOpenUpdateId);
+                    }
                     state.Status = "degraded";
                     state.ErrorCode = evt.ErrorCode ?? "provider_error";
                     state.ErrorMessage = evt.ErrorMessage ?? "Voice provider error";
@@ -345,12 +558,18 @@ public sealed class VoiceSessionCoordinator
         if (state.OpenRole is not null && !string.Equals(state.OpenRole, role, StringComparison.Ordinal))
         {
             await FlushUtteranceAsync(state, "speaker_change", null, ct);
-            if (role == "user") state.ActiveSpokenDelegationId = null;
+            if (role == "user")
+            {
+                state.ActiveSpokenDelegationId = null;
+                state.ActiveSpokenUpdateId = null;
+            }
         }
         if (state.OpenRole is null)
         {
             state.OpenDelegationId = role == "assistant"
                 ? state.ActiveSpokenDelegationId : null;
+            state.OpenUpdateId = role == "assistant"
+                ? state.ActiveSpokenUpdateId : null;
         }
         state.OpenRole = role;
         state.OpenText += evt.Delta;
@@ -368,8 +587,10 @@ public sealed class VoiceSessionCoordinator
         var startMs = state.OpenStartMs;
         var endMs = state.OpenEndMs;
         var spokenDelegationId = state.OpenDelegationId;
+        var spokenUpdateId = state.OpenUpdateId;
         state.OpenRole = null;
         state.OpenDelegationId = null;
+        state.OpenUpdateId = null;
         state.OpenText = "";
         state.OpenStartMs = null;
         state.OpenEndMs = null;
@@ -390,6 +611,9 @@ public sealed class VoiceSessionCoordinator
                 endMs,
                 reason,
                 delegationId = correlatedDelegationId,
+                // Spoken delivery of an unsolicited backend update: like a delegated
+                // result, the canonical message already exists and must not be duplicated.
+                updateId = role == "assistant" ? spokenUpdateId : null,
             }, ct);
     }
 

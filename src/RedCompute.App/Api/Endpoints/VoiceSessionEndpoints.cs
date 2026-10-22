@@ -98,6 +98,65 @@ public static class VoiceSessionEndpoints
             catch (Exception) { return Error(502, "voice_provider_failed", "The voice provider could not accept the update"); }
         });
 
+        endpoints.MapPost("/voice-session/sessions/{id}/updates",
+            "Deliver an unsolicited backend message to a voice session: speak it in the agent's voice when the conversation is quiet, or add it as context. Idempotent by updateId",
+            async (HttpContext ctx, string id) =>
+        {
+            NoStore(ctx);
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            var updateId = String(body, "updateId");
+            var mode = String(body, "mode");
+            var content = String(body, "content");
+            if (string.IsNullOrWhiteSpace(updateId) || updateId.Length > 200
+                || !VoiceBackendUpdateModes.IsKnown(mode)
+                || string.IsNullOrWhiteSpace(content) || content.Length > 4_000)
+                return Error(400, "invalid_update",
+                    "updateId (up to 200 characters), mode (speak or context) and content (up to 4000 characters) are required");
+            try
+            {
+                var outcome = await coordinator.UpdateBackendAsync(id, updateId!, mode!, content!,
+                    UserInfoHelper.ResolveUserId(ctx), IsTrustedInfrastructure(ctx), ctx.RequestAborted);
+                return outcome switch
+                {
+                    VoiceBackendUpdateOutcome.NotFound => Results.NotFound(new { error = "not_found" }),
+                    VoiceBackendUpdateOutcome.Unsupported => Error(501, "voice_update_unsupported",
+                        "The voice provider does not accept backend updates"),
+                    VoiceBackendUpdateOutcome.Closed => Error(409, "voice_session_closed",
+                        "The voice session is closing or closed"),
+                    VoiceBackendUpdateOutcome.Queued => Results.Json(
+                        new { accepted = true, delivery = "queued" }, statusCode: StatusCodes.Status202Accepted),
+                    VoiceBackendUpdateOutcome.Duplicate => Results.Ok(new { accepted = true, delivery = "duplicate" }),
+                    _ => Results.Ok(new { accepted = true, delivery = "sent" }),
+                };
+            }
+            catch (ArgumentException ex) { return Error(400, "invalid_update", ex.Message); }
+            catch (Exception) { return Error(502, "voice_provider_failed", "The voice provider could not accept the update"); }
+        })
+            .WithRequestBody(new
+            {
+                type = "object",
+                required = new[] { "updateId", "mode", "content" },
+                properties = new
+                {
+                    updateId = new { type = "string", maxLength = 200,
+                        description = "Stable idempotency key, e.g. the canonical messageUid. Repeats are accepted without redelivery." },
+                    mode = new { type = "string", @enum = new[] { "speak", "context" },
+                        description = "speak: convey it aloud once nobody is speaking. context: add it silently." },
+                    content = new { type = "string", maxLength = 4000 },
+                },
+            })
+            .WithResponse(new
+            {
+                type = "object",
+                properties = new
+                {
+                    accepted = new { type = "boolean" },
+                    delivery = new { type = "string", @enum = new[] { "sent", "queued", "duplicate" } },
+                },
+            });
+
         endpoints.MapPost("/voice-session/sessions/{id}/close", "Gracefully close a voice session", async (HttpContext ctx, string id) =>
         {
             NoStore(ctx);
