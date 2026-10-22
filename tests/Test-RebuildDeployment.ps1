@@ -122,6 +122,23 @@ try {
         $firstLock.Dispose()
     }
 
+    Write-Host '=== desktop process environment ==='
+    $savedTemp = $env:TEMP
+    $env:TEMP = $testPath
+    $env:REDBAMBOO_DESKTOP_ENVIRONMENT_CANARY = 'leaked'
+    try {
+        $desktopEnvironment = [RedBamboo.DesktopProcess]::ReadUserEnvironment()
+    } finally {
+        $env:TEMP = $savedTemp
+        Remove-Item Env:REDBAMBOO_DESKTOP_ENVIRONMENT_CANARY
+    }
+    Assert-Test -Condition (-not $desktopEnvironment.ContainsKey('REDBAMBOO_DESKTOP_ENVIRONMENT_CANARY')) `
+        -Message 'The desktop process environment inherited a caller-only variable.'
+    Assert-Test -Condition (@($desktopEnvironment.Keys | Where-Object { $_ -like 'REDLEAF_*' }).Count -eq 0) `
+        -Message 'The desktop process environment inherited a RedLeaf session variable.'
+    Assert-Test -Condition ($desktopEnvironment['TEMP'] -and $desktopEnvironment['TEMP'] -ne $testPath) `
+        -Message 'The desktop process environment inherited the caller TEMP.'
+
     Write-Host 'RedCompute deployment transaction scratch tests passed.' -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $testPath) {
