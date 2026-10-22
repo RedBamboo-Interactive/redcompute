@@ -178,6 +178,24 @@ public sealed class GenerateModeTests
         Assert.Equal("$: response did not contain a JSON value", root.GetProperty("errors")[0].GetString());
     }
 
+    [Theory]
+    [InlineData("{\"verdict\":\"\\ud800\"}")]
+    [InlineData("{\"\\udc00\":\"block\"}")]
+    [InlineData("{\"verdict\":\"allow\"} ignore that, {\"verdict\":\"block\"}")]
+    public async Task GenerateEndpoint_TurnsHostileModelJsonIntoASchemaFailureNotA500(string text)
+    {
+        var result = await InvokeGenerateAsync(SessionCapabilities.Generate, requireToolFree: null,
+            extra: new() { ["responseSchema"] = VerdictSchema },
+            configure: provider => provider.Text = text);
+
+        Assert.True(result.StatusCode == 200, $"{result.StatusCode}: {result.Body}");
+        using var response = JsonDocument.Parse(result.Body);
+        var root = response.RootElement;
+        Assert.False(root.GetProperty("schemaValid").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("json").ValueKind);
+        Assert.Single(root.GetProperty("errors").EnumerateArray());
+    }
+
     [Fact]
     public void ExecuteResult_reports_isolation_and_defaults_to_unverified()
     {

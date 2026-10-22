@@ -2035,14 +2035,15 @@ public static class UnifiedSessionEndpoints
         {
             IReadOnlyList<string> errors;
             JsonElement? json = null;
-            if (ResponseSchema.TryExtractJson(result.Text, out var extracted))
+            if (ResponseSchema.TryExtractJson(result.Text, out var extracted, out var extractionError))
             {
                 json = extracted;
                 errors = schema.Validate(extracted);
             }
             else
             {
-                errors = ["$: response did not contain a JSON value"];
+                // An undecodable value is never echoed: serializing it would itself throw.
+                errors = [$"$: {extractionError}"];
             }
 
             document["json"] = json;
