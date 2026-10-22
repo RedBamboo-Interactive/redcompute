@@ -85,6 +85,51 @@ public sealed class CodexCliLaunchGateTests : IDisposable
     }
 
     [Fact]
+    public async Task App_server_token_is_issued_for_the_session_it_serves_on_start_and_resume()
+    {
+        Directory.CreateDirectory(_root);
+        var codexPath = Path.Combine(_root, "codex.exe");
+        File.WriteAllText(codexPath, "test seam only");
+        var job = new JobRecord
+        {
+            Id = Guid.NewGuid(), CapabilitySlug = "ai-session", ProviderName = "Codex",
+            CreationProvenance = Provenance(),
+        };
+        var store = new TestStore(new CodexSessionRecord
+        {
+            Id = "parked-session", ProjectName = "Parked", ProjectPath = _root,
+            Status = "Stopped", StopReason = SessionStopReasons.MaintenanceRestart,
+            ThreadId = "thread-1", JobId = job.Id,
+            StartedAt = DateTimeOffset.UtcNow, LastActivity = DateTimeOffset.UtcNow,
+        });
+        var config = new CodexConfig { CodexPath = codexPath };
+        var jobs = new TestJobTracker(job);
+        await using var interactive = new CodexInteractiveService(
+            config, store, new CodexModelCatalog(config, (_, _) => { }),
+            new CodexSessionService(config, jobs, store, (_, _) => { }), jobs,
+            new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
+            () => null, (_, _) => { });
+        var launchedTokens = new List<string?>();
+        interactive.LaunchAppServerProcess = startInfo =>
+        {
+            launchedTokens.Add(startInfo.Environment.TryGetValue("REDLEAF_EXECUTION_TOKEN", out var token) ? token : null);
+            return StartSteeringFakeAppServer("item");
+        };
+
+        CodexSessionInfo? session;
+        using (SessionScratch.PushExecutionTokenIssuer(sessionId => $"token-for-{sessionId}"))
+        {
+            session = await interactive.StartSessionAsync(
+                _root, null, "owner", null, null, null, null, null, null, Provenance());
+            Assert.NotNull(session);
+            Assert.NotNull(await interactive.ResumeSessionAsync("parked-session", Provenance()));
+        }
+
+        Assert.NotEqual("parked-session", session.Id);
+        Assert.Equal([$"token-for-{session.Id}", "token-for-parked-session"], launchedTokens);
+    }
+
+    [Fact]
     public async Task MatchingSteerResponseCommitsBeforeUserItemAndItemPersistsInEventOrder()
     {
         await using var fixture = await CreateSteeringFixtureAsync("item");

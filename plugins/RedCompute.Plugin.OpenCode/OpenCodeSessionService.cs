@@ -362,7 +362,7 @@ public class OpenCodeSessionService
             StandardErrorEncoding = Encoding.UTF8,
         };
         startInfo.ArgumentList.Add("acp");
-        if (SessionScratch.Environment(scratchDirectory) is { } scratchEnvironment)
+        if (SessionScratch.Environment(scratchDirectory, sessionId: info.Id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
         ApplyDeveloperInstructions(startInfo, info.Id, developerInstructions);

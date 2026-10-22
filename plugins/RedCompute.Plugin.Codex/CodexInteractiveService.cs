@@ -402,7 +402,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         var conn = await CodexAppServerConnection.StartAsync(
             _config.CodexPath, projectPath, _log,
-            SessionScratch.Environment(scratchDirectory, suiteAccess),
+            SessionScratch.Environment(scratchDirectory, suiteAccess, sessionId),
             launchProcess: LaunchAppServerProcess);
         conn.Notification += (method, p) => OnNotification(sessionId, method, p);
         conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);

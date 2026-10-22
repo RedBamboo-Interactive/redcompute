@@ -2,7 +2,7 @@ namespace RedCompute.PluginSdk;
 
 public static class SessionScratch
 {
-    private static readonly AsyncLocal<string?> CurrentExecutionToken = new();
+    private static readonly AsyncLocal<Func<string?, string?>?> CurrentExecutionToken = new();
 
     public static bool TryResolveDirectory(string? value, out string? directory)
     {
@@ -18,9 +18,15 @@ public static class SessionScratch
         catch { return false; }
     }
 
-    public static IReadOnlyDictionary<string, string>? Environment(string? directory, bool suiteAccess = true)
+    /// <summary>
+    /// Builds the provider process environment. Pass the RedCompute session id the process belongs
+    /// to so the signed execution identity can name that session from the first turn.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string>? Environment(string? directory, bool suiteAccess = true,
+        string? sessionId = null)
     {
-        if (directory is null && CurrentExecutionToken.Value is null && suiteAccess) return null;
+        var token = suiteAccess ? CurrentExecutionToken.Value?.Invoke(sessionId) : null;
+        if (directory is null && token is null && suiteAccess) return null;
         var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (directory is not null)
         {
@@ -32,7 +38,7 @@ public static class SessionScratch
         }
         if (!suiteAccess)
             environment["REDLEAF_EXECUTION_TOKEN"] = "";
-        else if (CurrentExecutionToken.Value is { } token)
+        else if (token is not null)
             environment["REDLEAF_EXECUTION_TOKEN"] = token;
         return environment;
     }
@@ -41,8 +47,18 @@ public static class SessionScratch
     {
         if (string.IsNullOrWhiteSpace(token))
             throw new ArgumentException("Execution token is required", nameof(token));
+        return PushExecutionTokenIssuer(_ => token);
+    }
+
+    /// <summary>
+    /// Defers token issuance until a provider builds its process environment. Persistent providers
+    /// allocate their session id inside StartSessionAsync, so only then can the issuer stamp it.
+    /// </summary>
+    public static IDisposable PushExecutionTokenIssuer(Func<string?, string?> issue)
+    {
+        ArgumentNullException.ThrowIfNull(issue);
         var previous = CurrentExecutionToken.Value;
-        CurrentExecutionToken.Value = token;
+        CurrentExecutionToken.Value = issue;
         return new Restore(() => CurrentExecutionToken.Value = previous);
     }
 

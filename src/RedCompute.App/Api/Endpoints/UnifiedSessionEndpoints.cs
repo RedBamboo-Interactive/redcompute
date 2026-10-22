@@ -30,7 +30,7 @@ public static class UnifiedSessionEndpoints
             && submission.Provenance.OnBehalfOf.Kind == "user" && submission.Provenance.OnBehalfOf.Id == owner
             && submission.Provenance.Actor.Kind == identity.Actor.Kind && submission.Provenance.Actor.Id == identity.Actor.Id
             && submission.Provenance.Actor.EntityId == identity.Actor.EntityId && submission.Provenance.Origin.App.Id == identity.App.Id;
-        var token = authorized ? SessionExecutionToken.Issue(ctx, provider.ProviderId, provider.ProviderDisplayName, null) : null;
+        var token = authorized ? SessionExecutionToken.Issue(ctx, provider.ProviderId, provider.ProviderDisplayName, null, info.Id) : null;
         if (identity is null && owner == info.UserId && owner == submission.OwnerUserId
             && !ctx.Request.Headers.ContainsKey(ProvenanceCapture.HeaderName)
             && submission.Provenance.OnBehalfOf.Kind == "user" && submission.Provenance.OnBehalfOf.Id == owner

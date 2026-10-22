@@ -1038,7 +1038,7 @@ public class ClaudeSessionService
         };
         PopulateSessionArgs(startInfo, model: model, effort: effort,
             developerInstructions: developerInstructions);
-        if (SessionScratch.Environment(scratchDirectory) is { } scratchEnvironment)
+        if (SessionScratch.Environment(scratchDirectory, sessionId: id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
 
@@ -1197,7 +1197,7 @@ public class ClaudeSessionService
             string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
             sessionRecord.Model, sessionRecord.Effort,
             sessionRecord.DeveloperInstructions);
-        if (SessionScratch.Environment(sessionRecord.ScratchDirectory) is { } scratchEnvironment)
+        if (SessionScratch.Environment(sessionRecord.ScratchDirectory, sessionId: sessionRecord.Id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
 

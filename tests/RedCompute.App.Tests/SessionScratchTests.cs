@@ -53,6 +53,27 @@ public sealed class SessionScratchTests : IDisposable
     }
 
     [Fact]
+    public void DeferredIssuerReceivesTheProviderSessionIdAndIsSkippedWithoutSuiteAccess()
+    {
+        var requested = new List<string?>();
+        using (SessionScratch.PushExecutionTokenIssuer(sessionId =>
+        {
+            requested.Add(sessionId);
+            return sessionId is null ? null : $"token-for-{sessionId}";
+        }))
+        {
+            Assert.Equal("token-for-abc123",
+                SessionScratch.Environment(null, sessionId: "abc123")!["REDLEAF_EXECUTION_TOKEN"]);
+            Assert.Null(SessionScratch.Environment(null));
+            Assert.Equal("", SessionScratch.Environment(null, suiteAccess: false, sessionId: "abc123")!
+                ["REDLEAF_EXECUTION_TOKEN"]);
+        }
+
+        Assert.Equal(["abc123", null], requested);
+        Assert.Null(SessionScratch.Environment(null, sessionId: "abc123"));
+    }
+
+    [Fact]
     public void ConversationProfileNormalizesAndRestoresAcrossNestedScopes()
     {
         Assert.Equal(SessionExecutionProfile.Default, SessionExecutionProfile.Current);

@@ -69,6 +69,7 @@ public sealed class RecoveryAdmissionEndpointTests
             Assert.Equal(actorKind == "plain" ? "app" : actorKind, child!.Actor.Kind);
             Assert.Equal(actorKind == "plain" ? "direct-redcompute-api" : parent.Actor.Id, child.Actor.Id);
             Assert.Equal(actorKind == "plain" ? null : parent.ExecutionId, child.ParentExecutionId);
+            Assert.Equal("session", Assert.Single(child.Context, c => c.Kind == "session").Id);
         };
         var registry = new EndpointRegistry(app);
         UnifiedSessionEndpoints.Map(registry, f.Registry, jobs, (_, _) => { }, f.Config, attachmentStore: f.Attachments, inputQueue: queue);
