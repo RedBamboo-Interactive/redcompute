@@ -52,9 +52,33 @@ so a caller never believes a constraint was checked when it was not. Limits: 32 
 depth 16, 512 schema nodes, 256 enum values, 512-character patterns.
 
 The schema instruction is always appended to the system prompt. A provider may additionally enforce
-it natively. Either way, RedCompute extracts the JSON deterministically (whole text, then each
-fenced code block, then the first balanced object or array that parses) and validates it in C#. The
-model and provider are never trusted for validity.
+it natively. Either way, RedCompute extracts the JSON deterministically and validates it in C#. The
+model and provider are never trusted for validity:
+
+- Extraction accepts the whole message as the JSON (optionally inside one Markdown fence), or else
+  exactly one balanced object/array in the text. Two candidates, such as an injected verdict echoed
+  next to the real one, are ambiguous and extract nothing (`more than one JSON candidate`). The scan
+  is one linear pass over at most 256 Ki characters.
+- Model output is untrusted input: a value whose strings or property names cannot be decoded
+  (unpaired UTF-16 surrogates such as `"\ud800"`) is reported as a schema failure, never thrown and
+  never echoed in `json`.
+- `pattern` uses .NET `RegexOptions.NonBacktracking` (linear-time). Patterns it cannot run
+  (backreferences, lookarounds, atomic groups, oversized automata) are rejected at parse. The
+  dialect is .NET, not ECMA-262: `\d`/`\w`/`\s` are Unicode-aware, `$` also matches before a final
+  `\n`, `.` excludes only `\n`, .NET-only syntax (`[a-z-[aeiou]]`, `(?i)`, `\p{IsGreek}`) is
+  accepted and ECMA-only syntax (`\u{1F600}`, `\p{Script=Greek}`) is not. Patterns are unanchored,
+  as in JSON Schema.
+- Validation has an aggregate budget (500,000 work units, one per value visited plus one per
+  pattern input character, and 250 ms); exceeding it is a schema error.
+
+Native strict mode is used only for schemas inside OpenAI's documented strict subset
+(developers.openai.com/api/docs/guides/structured-outputs, checked 2026-10-22): object root;
+every node typed with one type or one type plus `null`; every object closed, all properties
+required; no `const`, `pattern`, `minLength` or `maxLength`; enum values matching the type; at most
+10 nesting levels, 5000 properties and 1000 enum values (and 15,000 characters for an enum with more
+than 250 values). The root `$schema` keyword is stripped. Anything else is prompt-only rather than
+risking a 400, and if the API still rejects the schema (`invalid_json_schema` on
+`text.format.schema`, refused before generation and not billed), Codex reruns once in prompt mode.
 
 ## Runtime status
 
@@ -75,9 +99,12 @@ Response schemas are prompted, never passed as `--json-schema`: Claude Code 2.1.
 `init tools = ['StructuredOutput']` and answered through a `tool_use` block. That would break the
 empty-tool invariant, so `schemaMode` is `prompt` for Claude.
 
-Execute reports `verified-tool-free` only when the caller passed an explicit empty `tools` array and
-that run's init event reported no tools; a non-empty `tools` grant is `sandboxed-best-effort`, and no
-grant (the full agent with permissions skipped) is `unrestricted`.
+Execute always passes `--dangerously-skip-permissions`, so it reports `verified-tool-free` only when
+the caller passed an explicit empty `tools` array and that run's init event reported no tools.
+Everything else is `unrestricted`: no grant (`claude-skip-permissions:default-tools`), a non-empty
+grant (`claude-skip-permissions:tool-grant`), or an empty grant that init did not confirm
+(`claude-skip-permissions:empty-grant-unverified`). A tool allowlist with permissions skipped is not
+a sandbox.
 
 ### Codex: asserts `ToolFreeGenerate` (when the request sets `requireToolFree`)
 
@@ -100,8 +127,29 @@ codex exec - --json --skip-git-repo-check --sandbox read-only
   -c model_providers.redcompute_tool_free.base_url="http://127.0.0.1:<port>/<random nonce>/v1"
   -c model_providers.redcompute_tool_free.wire_api="responses"
   -c model_providers.redcompute_tool_free.requires_openai_auth=true
+  -c model_providers.redcompute_tool_free.request_max_retries=0
+  -c model_providers.redcompute_tool_free.stream_max_retries=0
+  -c model_providers.redcompute_tool_free.stream_idle_timeout_ms=<(timeout + 60) * 1000>
   [--output-schema <file>] [-c model_reasoning_effort=...] [--model ...]
 ```
+
+The relay buffers each upstream response before Codex sees a byte, so Codex's own retry and idle
+behaviour was measured against a stalling loopback server (codex-cli 0.163.0; all three keys are
+present in the binary):
+
+- headers sent, then silence: with default retries Codex re-sent the request 6 times (1 + 5
+  `stream_max_retries`), i.e. six billed calls upstream. With `stream_max_retries=0` it sent 1 and
+  failed with `idle timeout waiting for SSE` at the configured idle timeout.
+- no headers at all (what the relay does while it buffers): a 3 s idle timeout did not fire, and a
+  400 s header-less stall produced no error and no retry (1 POST) until the process was killed. The
+  idle timer only runs once response headers arrive, and there is no hidden ~300 s pre-header
+  timeout.
+
+So tool-free calls disable both Codex retry loops, set the idle timeout past the call timeout in
+case a later release starts it earlier, and do not rerun Codex after a failure (the generic
+workspace-lock retry is off on this path). The bound that applies is RedCompute's own call
+timeout (10–600 s), which kills the process; one call is billed at most once. The only automatic
+second run is the schema fallback above, after a pre-generation 400.
 
 Codex keeps its own login, token refresh and prompt assembly; with `requires_openai_auth` it sends
 its ChatGPT (or API-key) credentials to the relay, which forwards them only to the fixed upstream for
@@ -117,16 +165,20 @@ present, else `https://api.openai.com/v1/`). For every `POST /responses` the rel
    other than `message`/`reasoning`, or any tool event (`*_call*`, `*tool*`, `response.mcp*`), is
    withheld and replaced by HTTP 400, which Codex treats as terminal rather than retrying.
 
-Only `GET models` is passed through unchanged (no authority); every other route is refused. The call
+Only `GET models` is passed through unchanged (no authority); every other route is refused. Besides
+the unguessable per-call nonce, the relay requires `Host` to be exactly its own `127.0.0.1:<port>`
+and refuses any request carrying an `Origin` header (DNS rebinding, browser pages); both fail the
+call. The upstream client never follows redirects (`AllowAutoRedirect = false`), and an upstream 3xx
+is refused with 502 rather than passed to Codex. The relay's evidence records, by name only, the
+forwarded headers, dropped request fields, upstream URLs and statuses, and refusals. The call
 reports `verified-tool-free` / `codex-model-boundary-relay` only when at least one model response
 crossed the relay, nothing was refused, and Codex's own JSONL contains no item other than
 `agent_message`, `reasoning` or `error`. Otherwise it fails closed with no model text. Without
 `requireToolFree`, Codex generate is unchanged (`codex exec --sandbox read-only` from an empty
 temporary directory) and reports `sandboxed-best-effort` / `codex-sandbox:read-only`.
 
-Response schemas that satisfy OpenAI strict structured outputs (object root, every node typed,
-every object closed with all properties required, no `minLength`/`maxLength`) are also passed as
-`--output-schema`; Codex sends them as `text.format = {type: "json_schema", strict: true}`, which the
+On both Codex generate paths, only a schema inside the strict subset described above is passed as
+`--output-schema` (with root `$schema` removed); Codex sends them as `text.format = {type: "json_schema", strict: true}`, which the
 relay forwards. Other schemas are prompted only.
 
 Codex execute keeps the full Codex tool surface and reports `sandboxed-best-effort` with the sandbox

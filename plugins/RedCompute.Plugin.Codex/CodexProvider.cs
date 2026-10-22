@@ -309,7 +309,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     /// <summary>
     /// Without <see cref="SessionGenerateRequest.RequireToolFree"/> this is the long-standing
     /// read-only-sandbox exec. With it, the call goes through the tool-free relay and reports
-    /// verified-tool-free only when that call was verified. A strict-compatible response schema is
+    /// verified-tool-free only when that call was verified. A schema with a StrictJson form is also
     /// enforced natively with --output-schema (Codex sends it as a strict json_schema format).
     /// </summary>
     public async Task<SessionGenerateResult> GenerateAsync(SessionGenerateRequest request, CancellationToken ct)
@@ -325,14 +325,13 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
                 $"Invalid completion messages: {ex.Message}");
         }
 
-        var nativeSchema = request.ResponseSchema is { IsStrictCompatible: true } schema ? schema.Json : null;
         var timeout = request.Timeout ?? 120;
         var result = request.RequireToolFree
-            ? await _codex.ExecuteToolFreeGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, nativeSchema)
-            : await _codex.ExecuteGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, nativeSchema);
+            ? await _codex.ExecuteToolFreeGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, request.ResponseSchema)
+            : await _codex.ExecuteGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, request.ResponseSchema);
         return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
-            result.Isolation, result.IsolationMechanism, NativeResponseSchema: nativeSchema != null);
+            result.Isolation, result.IsolationMechanism, result.NativeResponseSchema);
     }
 
     private static string BuildGeneratePrompt(string? system, string messagesJson, int maxTokens)

@@ -82,7 +82,8 @@ public class CodexSessionService
 
     public record ExecuteResult(bool Success, string? Text, string? StreamOutput, string? Model,
                                 int InputTokens, int OutputTokens, double? CostUsd, string? Error,
-                                string? Isolation = null, string? IsolationMechanism = null);
+                                string? Isolation = null, string? IsolationMechanism = null,
+                                bool NativeResponseSchema = false);
 
     internal const string ToolFreeProviderId = "redcompute_tool_free";
 
@@ -110,10 +111,11 @@ public class CodexSessionService
         Dictionary<string, string>? env = null,
         bool networkAccess = false,
         string? effort = null,
-        IReadOnlyList<string>? extraArgs = null)
+        IReadOnlyList<string>? extraArgs = null,
+        bool retryTransientLocks = true)
         => LaunchGate.RunWhenInstallIdleAsync(
             () => ExecuteExecCoreAsync(prompt, container, workingDir, model, sandbox, timeout,
-                ct, streamKey, env, networkAccess, effort, extraArgs),
+                ct, streamKey, env, networkAccess, effort, extraArgs, retryTransientLocks),
             ct);
 
     private async Task<ExecuteResult> ExecuteExecCoreAsync(
@@ -124,14 +126,15 @@ public class CodexSessionService
         Dictionary<string, string>? env,
         bool networkAccess,
         string? effort,
-        IReadOnlyList<string>? extraArgs)
+        IReadOnlyList<string>? extraArgs,
+        bool retryTransientLocks)
     {
         ExecuteResult? last = null;
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             last = await ExecuteExecOnceAsync(prompt, container, workingDir, model, sandbox,
                 timeout, ct, streamKey, env, networkAccess, effort, extraArgs);
-            if (last.Success || !IsTransientWorkspaceLock(last) || attempt == 3)
+            if (last.Success || !retryTransientLocks || !IsTransientWorkspaceLock(last) || attempt == 3)
                 return last;
 
             var delay = TimeSpan.FromMilliseconds(400 * attempt);
@@ -147,42 +150,52 @@ public class CodexSessionService
     /// Runs the existing Codex generate behavior from a fresh empty directory. Codex's own tools
     /// remain available to the model, bounded only by the read-only sandbox, so this reports
     /// sandboxed-best-effort. <see cref="ExecuteToolFreeGenerateAsync"/> is the verified path.
+    /// Only <see cref="ResponseSchema.StrictJson"/> is ever passed as --output-schema.
     /// </summary>
-    public async Task<ExecuteResult> ExecuteGenerateAsync(
+    public Task<ExecuteResult> ExecuteGenerateAsync(
         string prompt, string? model, int timeout, CancellationToken ct, string? effort = null,
-        string? outputSchemaJson = null)
-    {
-        using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
-        using var schema = OutputSchemaFile.Create(outputSchemaJson);
-        var result = await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
-            timeout, ct, effort: effort, extraArgs: schema?.Args);
-        return result with
+        ResponseSchema? responseSchema = null)
+        => WithSchemaFallbackAsync(responseSchema, async strictSchema =>
         {
-            Isolation = SessionIsolation.SandboxedBestEffort,
-            IsolationMechanism = "codex-sandbox:read-only",
-        };
-    }
+            using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
+            using var schema = OutputSchemaFile.Create(strictSchema);
+            var result = await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
+                timeout, ct, effort: effort, extraArgs: schema?.Args);
+            return result with
+            {
+                Isolation = SessionIsolation.SandboxedBestEffort,
+                IsolationMechanism = "codex-sandbox:read-only",
+            };
+        });
 
     /// <summary>
     /// Generate with every tool removed at the model boundary. Codex is pointed at a private route
     /// on <see cref="CodexToolFreeRelay"/> through a custom model provider, so each model request
     /// is stripped of tool definitions and each response is inspected before Codex can act on it.
     /// The text is returned only when the relay verified the call and Codex's own event stream
-    /// shows no tool item; otherwise the call fails closed without model text.
+    /// shows no tool item; otherwise the call fails closed without model text. Nothing is retried
+    /// behind the caller's back (see <see cref="ToolFreeExecArgs"/>), so one call is billed once.
     /// </summary>
-    public async Task<ExecuteResult> ExecuteToolFreeGenerateAsync(
+    public Task<ExecuteResult> ExecuteToolFreeGenerateAsync(
         string prompt, string? model, int timeout, CancellationToken ct, string? effort = null,
-        string? outputSchemaJson = null)
+        ResponseSchema? responseSchema = null, Action<ToolFreeEvidence>? evidence = null)
+        => WithSchemaFallbackAsync(responseSchema, strictSchema =>
+            ExecuteToolFreeGenerateOnceAsync(prompt, model, timeout, ct, effort, strictSchema, evidence));
+
+    private async Task<ExecuteResult> ExecuteToolFreeGenerateOnceAsync(
+        string prompt, string? model, int timeout, CancellationToken ct, string? effort,
+        string? strictSchema, Action<ToolFreeEvidence>? evidence)
     {
         using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
-        using var schema = OutputSchemaFile.Create(outputSchemaJson);
+        using var schema = OutputSchemaFile.Create(strictSchema);
         using var lease = await ToolFreeRelay.OpenAsync(ct);
 
-        var args = ToolFreeExecArgs(lease.BaseUrl);
+        var args = ToolFreeExecArgs(lease.BaseUrl, timeout);
         if (schema != null) args.AddRange(schema.Args);
 
         var result = await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
-            timeout, ct, effort: effort, extraArgs: args);
+            timeout, ct, effort: effort, extraArgs: args, retryTransientLocks: false);
+        evidence?.Invoke(lease.Evidence);
 
         var toolItems = ExecToolItemTypes(result.StreamOutput);
         var refusal = toolItems.Count > 0
@@ -200,8 +213,8 @@ public class CodexSessionService
                 $"Codex tool-free generate could not be verified: {refusal}");
         }
 
-        _log($"[Codex] Tool-free generate verified: {lease.Evidence.Responses} response(s), " +
-             $"{lease.Evidence.StrippedToolDefinitions} tool definition(s) removed", null);
+        _log($"[Codex] Tool-free generate verified: {lease.Evidence.Requests} request(s), " +
+             $"{lease.Evidence.Responses} response(s), {lease.Evidence.StrippedToolDefinitions} tool definition(s) removed", null);
         return result with
         {
             Isolation = SessionIsolation.VerifiedToolFree,
@@ -210,11 +223,67 @@ public class CodexSessionService
     }
 
     /// <summary>
+    /// Runs with the strict schema when there is one. If the model API refused that schema
+    /// (HTTP 400 <c>invalid_json_schema</c> on <c>text.format.schema</c>, rejected before any
+    /// generation, so nothing was billed), runs once more in prompt mode rather than failing.
+    /// </summary>
+    private async Task<ExecuteResult> WithSchemaFallbackAsync(ResponseSchema? responseSchema,
+        Func<string?, Task<ExecuteResult>> run)
+    {
+        var strict = responseSchema?.StrictJson;
+        if (strict == null)
+            return await run(null);
+
+        var result = await run(strict);
+        if (!IsSchemaRejection(result))
+            return result with { NativeResponseSchema = result.Success };
+
+        _log("[Codex] Model API rejected the strict output schema; retrying once in prompt mode", null);
+        return await run(null);
+    }
+
+    /// <summary>
+    /// True only for Codex's own turn failure carrying the API's schema rejection. Model text can
+    /// never satisfy this: agent messages are items, not turn errors.
+    /// </summary>
+    internal static bool IsSchemaRejection(ExecuteResult result)
+    {
+        if (result.Success || string.IsNullOrEmpty(result.StreamOutput)) return false;
+        foreach (var line in result.StreamOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String
+                    || type.GetString() != "turn.failed"
+                    || !root.TryGetProperty("error", out var error) || error.ValueKind != JsonValueKind.Object
+                    || !error.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.String)
+                    continue;
+                var text = message.GetString()!;
+                if (text.Contains("\"invalid_json_schema\"", StringComparison.Ordinal)
+                    && text.Contains("\"text.format.schema\"", StringComparison.Ordinal))
+                    return true;
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException) { }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Exec flags for tool-free generate. User config, rules and session files are left out so
     /// nothing ambient (MCP servers, hooks, providers) joins the run, and request compression is
     /// disabled so the relay can read the body (an encoded body is refused, never forwarded).
+    ///
+    /// The relay withholds the response until the whole upstream answer is inspected. Codex 0.163
+    /// would otherwise retry a stalled stream five times (six billed requests, observed against a
+    /// stalling loopback server) and retry failed requests, so both retry counts are zero and the
+    /// stream idle timeout is pushed past the call's own timeout. The idle timer only runs once
+    /// response headers arrive (a header-less stall did not trip a 3 s idle timeout), so the
+    /// call timeout, enforced by RedCompute killing the process, is the bound that applies.
     /// </summary>
-    internal static List<string> ToolFreeExecArgs(Uri relayBaseUrl) =>
+    internal static List<string> ToolFreeExecArgs(Uri relayBaseUrl, int timeoutSeconds) =>
     [
         "--ephemeral",
         "--ignore-user-config",
@@ -225,31 +294,68 @@ public class CodexSessionService
         "-c", $"model_providers.{ToolFreeProviderId}.base_url=\"{relayBaseUrl}\"",
         "-c", $"model_providers.{ToolFreeProviderId}.wire_api=\"responses\"",
         "-c", $"model_providers.{ToolFreeProviderId}.requires_openai_auth=true",
+        "-c", $"model_providers.{ToolFreeProviderId}.request_max_retries=0",
+        "-c", $"model_providers.{ToolFreeProviderId}.stream_max_retries=0",
+        "-c", $"model_providers.{ToolFreeProviderId}.stream_idle_timeout_ms={ToolFreeStreamIdleTimeoutMs(timeoutSeconds)}",
     ];
+
+    internal static long ToolFreeStreamIdleTimeoutMs(int timeoutSeconds)
+        => (Math.Max(timeoutSeconds, 1) + 60L) * 1000;
 
     private static readonly HashSet<string> NonToolExecItems = ["agentMessage", "reasoning", "error"];
 
-    /// <summary>Codex exec item types in a JSONL stream that are not plain messages or reasoning.</summary>
+    /// <summary>
+    /// Codex exec item types in a JSONL stream that are not plain messages or reasoning. This is a
+    /// security check, so it fails closed: an item it cannot read is reported as a tool item, never
+    /// skipped, and nothing in a line can make it throw.
+    /// </summary>
     internal static List<string> ExecToolItemTypes(string? stdout)
     {
         var found = new List<string>();
         if (string.IsNullOrEmpty(stdout)) return found;
-        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+
+        void Add(string itemType)
         {
+            if (!NonToolExecItems.Contains(itemType) && !found.Contains(itemType))
+                found.Add(itemType);
+        }
+
+        foreach (var rawLine in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0) continue;
             try
             {
                 using var doc = JsonDocument.Parse(line);
                 var root = doc.RootElement;
-                var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
-                if (type is not ("item.started" or "item.updated" or "item.completed")
-                    || !root.TryGetProperty("item", out var item))
+                if (root.ValueKind != JsonValueKind.Object) continue;
+                var hasItem = root.TryGetProperty("item", out var item);
+                if (!root.TryGetProperty("type", out var t) || t.ValueKind != JsonValueKind.String)
+                {
+                    if (hasItem) Add("(uninspectable)");
                     continue;
-                var itemType = CodexEventMapper.NormaliseItemType(
-                    item.TryGetProperty("type", out var it) ? it.GetString() : null) ?? "(untyped)";
-                if (!NonToolExecItems.Contains(itemType) && !found.Contains(itemType))
-                    found.Add(itemType);
+                }
+                if (t.GetString() is not ("item.started" or "item.updated" or "item.completed") || !hasItem)
+                    continue;
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    Add("(uninspectable)");
+                    continue;
+                }
+                var itemType = item.TryGetProperty("type", out var it) && it.ValueKind == JsonValueKind.String
+                    ? CodexEventMapper.NormaliseItemType(it.GetString()) ?? "(untyped)"
+                    : "(untyped)";
+                Add(itemType);
             }
-            catch (JsonException) { }
+            catch (JsonException)
+            {
+                // Codex writes one JSON object per line; a broken object line could hide an item.
+                if (line.StartsWith('{')) Add("(unparseable)");
+            }
+            catch (InvalidOperationException)
+            {
+                Add("(uninspectable)");
+            }
         }
         return found;
     }
@@ -662,7 +768,8 @@ public class CodexSessionService
                         actualModel = m.GetString() ?? requestedModel;
                 }
             }
-            catch (JsonException) { }
+            // A line whose fields have unexpected kinds or undecodable text is skipped, not fatal.
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { }
         }
 
         var success = !string.IsNullOrEmpty(lastText) || hadToolUse;

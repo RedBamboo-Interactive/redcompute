@@ -329,8 +329,12 @@ public sealed class CodexToolFreeGenerateTests : IAsyncLifetime
         Assert.Contains("function_call", result.Error);
     }
 
+    private const string StrictSchema =
+        "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\"," +
+        "\"properties\":{\"v\":{\"type\":\"string\"}},\"required\":[\"v\"],\"additionalProperties\":false}";
+
     [Fact]
-    public async Task Generate_passes_a_native_output_schema_from_outside_the_empty_working_directory()
+    public async Task Generate_passes_only_the_strict_schema_without_root_schema_keyword_from_outside_the_working_directory()
     {
         string? schemaText = null;
         string? schemaPath = null;
@@ -344,15 +348,197 @@ public sealed class CodexToolFreeGenerateTests : IAsyncLifetime
         });
 
         var result = await service.ExecuteGenerateAsync("hello", null, 10, CancellationToken.None,
-            outputSchemaJson: "{\"type\":\"object\"}");
+            responseSchema: Schema(StrictSchema));
 
         Assert.True(result.Success, result.Error);
-        Assert.Equal("{\"type\":\"object\"}", schemaText);
+        Assert.True(result.NativeResponseSchema);
+        Assert.Equal("{\"type\":\"object\",\"properties\":{\"v\":{\"type\":\"string\"}},\"required\":[\"v\"],\"additionalProperties\":false}", schemaText);
         Assert.False(File.Exists(schemaPath));
         Assert.Single(launches);
     }
 
+    [Theory]
+    [InlineData("{\"type\":\"object\"}")]
+    [InlineData("{\"type\":\"object\",\"properties\":{\"v\":{\"type\":\"string\",\"pattern\":\"^a$\"}},\"required\":[\"v\"],\"additionalProperties\":false}")]
+    public async Task Generate_never_passes_a_non_strict_schema_on_either_path(string schema)
+    {
+        _upstream.Respond(MessageSse);
+        var service = CreateService(out var launches, startInfo =>
+        {
+            if (startInfo.ArgumentList.Any(arg => arg.StartsWith("model_providers.redcompute_tool_free.base_url=")))
+                SimulateCodexModelCall(startInfo);
+            return CodexGenerateIsolationTests.StartOutputProcess(AgentMessageJsonl);
+        });
+
+        var plain = await service.ExecuteGenerateAsync("hello", null, 10, CancellationToken.None, responseSchema: Schema(schema));
+        var toolFree = await service.ExecuteToolFreeGenerateAsync("hello", null, 10, CancellationToken.None, responseSchema: Schema(schema));
+
+        Assert.True(plain.Success && toolFree.Success, plain.Error ?? toolFree.Error);
+        Assert.False(plain.NativeResponseSchema || toolFree.NativeResponseSchema);
+        Assert.All(launches, launch => Assert.DoesNotContain("--output-schema", launch.ArgumentList));
+    }
+
+    [Fact]
+    public async Task A_schema_the_model_api_rejects_falls_back_to_prompt_mode_once()
+    {
+        const string rejected =
+            "{\"type\":\"turn.failed\",\"error\":{\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"message\\\":\\\"Invalid schema\\\"," +
+            "\\\"type\\\":\\\"invalid_request_error\\\",\\\"param\\\":\\\"text.format.schema\\\",\\\"code\\\":\\\"invalid_json_schema\\\"},\\\"status\\\":400}\"}}\n";
+        var service = CreateService(out var launches, startInfo =>
+            CodexGenerateIsolationTests.StartOutputProcess(
+                startInfo.ArgumentList.Contains("--output-schema") ? rejected : AgentMessageJsonl));
+
+        var result = await service.ExecuteGenerateAsync("hello", null, 10, CancellationToken.None,
+            responseSchema: Schema(StrictSchema));
+
+        Assert.True(result.Success, result.Error);
+        Assert.False(result.NativeResponseSchema);
+        Assert.Equal(2, launches.Count);
+        Assert.Contains("--output-schema", launches[0].ArgumentList);
+        Assert.DoesNotContain("--output-schema", launches[1].ArgumentList);
+    }
+
+    [Fact]
+    public void Only_codexs_own_turn_failure_counts_as_a_schema_rejection()
+    {
+        static CodexSessionService.ExecuteResult Failed(string stream)
+            => new(false, null, stream, null, 0, 0, null, "failed");
+
+        // The model can put the words in a message, but a message is an item, not a turn error.
+        Assert.False(CodexSessionService.IsSchemaRejection(Failed(
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"\\\"invalid_json_schema\\\" \\\"text.format.schema\\\"\"}}\n" +
+            "{\"type\":\"turn.failed\",\"error\":{\"message\":\"withheld\"}}\n")));
+        Assert.False(CodexSessionService.IsSchemaRejection(
+            new CodexSessionService.ExecuteResult(true, "ok", "{\"type\":\"turn.failed\",\"error\":{\"message\":\"\\\"invalid_json_schema\\\" \\\"text.format.schema\\\"\"}}", null, 0, 0, null, null)));
+        Assert.True(CodexSessionService.IsSchemaRejection(Failed(
+            "{\"type\":\"turn.failed\",\"error\":{\"message\":\"\\\"param\\\":\\\"text.format.schema\\\",\\\"code\\\":\\\"invalid_json_schema\\\"\"}}")));
+    }
+
+    [Fact]
+    public void Tool_free_exec_disables_codex_retries_and_outlasts_the_call_timeout_with_its_idle_timeout()
+    {
+        var args = CodexSessionService.ToolFreeExecArgs(new Uri("http://127.0.0.1:1/n/v1"), 300);
+
+        Assert.Contains("model_providers.redcompute_tool_free.request_max_retries=0", args);
+        Assert.Contains("model_providers.redcompute_tool_free.stream_max_retries=0", args);
+        Assert.Contains("model_providers.redcompute_tool_free.stream_idle_timeout_ms=360000", args);
+        Assert.True(CodexSessionService.ToolFreeStreamIdleTimeoutMs(600) > 600_000);
+    }
+
+    [Fact]
+    public async Task Tool_free_generate_never_reruns_codex_after_a_failure()
+    {
+        var service = CreateService(out var launches, _ => CodexGenerateIsolationTests.StartOutputProcess(
+            "{\"type\":\"turn.failed\",\"error\":{\"message\":\"The process cannot access the file because it is being used by another process\"}}\n"));
+
+        var result = await service.ExecuteToolFreeGenerateAsync("hello", null, 10, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Single(launches);
+    }
+
+    // --- Codex JSONL inspection never throws and fails closed ---
+
+    [Theory]
+    [InlineData("{\"type\":7,\"item\":{\"type\":\"agent_message\"}}", "(uninspectable)")]
+    [InlineData("{\"type\":\"item.completed\",\"item\":{\"type\":7}}", "(untyped)")]
+    [InlineData("{\"type\":\"item.completed\",\"item\":\"command\"}", "(uninspectable)")]
+    [InlineData("{\"type\":\"item.completed\",\"item\":{\"type\":\"command_exec", "(unparseable)")]
+    public void Exec_item_inspection_reports_what_it_cannot_read(string line, string expected)
+        => Assert.Equal([expected], CodexSessionService.ExecToolItemTypes(line + "\n"));
+
+    [Fact]
+    public void Exec_item_inspection_survives_undecodable_names()
+    {
+        Assert.Empty(CodexSessionService.ExecToolItemTypes(
+            "{\"\\udc00\":1,\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\"}}\n"));
+        Assert.Equal(["commandExecution"], CodexSessionService.ExecToolItemTypes(
+            "{\"\\udc00\":1,\"type\":\"item.completed\",\"item\":{\"\\ud800x\":2,\"type\":\"command_execution\"}}\n"));
+    }
+
+    [Fact]
+    public void Exec_item_inspection_ignores_non_json_noise_and_plain_items()
+        => Assert.Empty(CodexSessionService.ExecToolItemTypes("warning: something\n[]\n" + AgentMessageJsonl));
+
+    // --- Relay hardening ---
+
+    [Fact]
+    public void Upstream_redirects_are_never_followed()
+        => Assert.False(CodexToolFreeRelay.CreateUpstreamHandler().AllowAutoRedirect);
+
+    [Fact]
+    public async Task Relay_refuses_an_upstream_redirect_instead_of_passing_it_to_codex()
+    {
+        _upstream.Redirect("https://elsewhere.test/steal");
+        using var lease = await _relay.OpenAsync(CancellationToken.None);
+
+        var response = await PostResponsesAsync(lease.BaseUrl, chatGpt: true);
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.Status);
+        Assert.DoesNotContain("elsewhere", response.Body);
+        Assert.Contains("redirect 302", lease.Evidence.VerificationError);
+    }
+
+    [Theory]
+    [InlineData("localhost", null)]
+    [InlineData("attacker.example", null)]
+    [InlineData(null, "https://attacker.example")]
+    [InlineData(null, "null")]
+    public async Task Relay_serves_only_its_own_loopback_authority_without_an_origin(string? host, string? origin)
+    {
+        _upstream.Respond(MessageSse);
+        using var lease = await _relay.OpenAsync(CancellationToken.None);
+        using var client = new HttpClient();
+        using var request = ResponsesRequest(lease.BaseUrl, chatGpt: true);
+        if (host != null) request.Headers.Host = $"{host}:{lease.BaseUrl.Port}";
+        if (origin != null) request.Headers.TryAddWithoutValidation("Origin", origin);
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(_upstream.Requests);
+        Assert.NotNull(lease.Evidence.VerificationError);
+    }
+
+    [Fact]
+    public async Task Relay_evidence_names_what_crossed_the_boundary_without_values()
+    {
+        _upstream.Respond(MessageSse);
+        using var lease = await _relay.OpenAsync(CancellationToken.None);
+        using var client = new HttpClient();
+        using var request = ResponsesRequest(lease.BaseUrl, chatGpt: true, extraField: true);
+
+        await client.SendAsync(request);
+
+        var evidence = lease.Evidence;
+        Assert.Contains("chatgpt-account-id", evidence.ForwardedHeaders, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("Authorization", evidence.ForwardedHeaders, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Host", evidence.ForwardedHeaders, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(["prompt"], evidence.DroppedFields);
+        Assert.Equal(["https://chatgpt.test/backend-api/codex/responses"], evidence.Upstreams);
+        Assert.Equal([200], evidence.UpstreamStatuses);
+        Assert.DoesNotContain("fixture-token", string.Join(",", evidence.ForwardedHeaders));
+    }
+
+    [Fact]
+    public void Undecodable_text_is_refused_by_the_sanitizer_and_the_inspector_without_throwing()
+    {
+        var request = Encoding.UTF8.GetBytes("{\"input\":[{\"type\":\"\\ud800\"}]}");
+        Assert.NotNull(CodexToolFreeRelay.SanitizeRequest(request).Error);
+
+        var sse = Encoding.UTF8.GetBytes("data: {\"\\udc00\":1,\"type\":\"response.output_item.done\",\"item\":{\"type\":\"\\ud800\"}}\n\n");
+        Assert.NotNull(CodexToolFreeRelay.InspectResponse(sse, "text/event-stream").Violation);
+    }
+
     // --- Helpers ---
+
+    private static RedCompute.Core.Sessions.ResponseSchema Schema(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        Assert.True(RedCompute.Core.Sessions.ResponseSchema.TryParse(document.RootElement, out var schema, out var errors),
+            string.Join("; ", errors));
+        return schema!;
+    }
 
     private CodexSessionService CreateService(out List<ProcessStartInfo> launches, Func<ProcessStartInfo, Process?> launch)
     {
@@ -399,10 +585,11 @@ public sealed class CodexToolFreeGenerateTests : IAsyncLifetime
         return (response.StatusCode, await response.Content.ReadAsStringAsync());
     }
 
-    private static HttpRequestMessage ResponsesRequest(Uri baseUrl, bool chatGpt)
+    private static HttpRequestMessage ResponsesRequest(Uri baseUrl, bool chatGpt, bool extraField = false)
     {
         var body = JsonSerializer.Serialize(new
         {
+            prompt = extraField ? new { id = "pmpt_1" } : null,
             model = "gpt-test",
             stream = true,
             tool_choice = "auto",
@@ -425,16 +612,25 @@ public sealed class CodexToolFreeGenerateTests : IAsyncLifetime
     private sealed class FakeUpstream : HttpMessageHandler
     {
         private string _sse = MessageSse;
+        private string? _location;
 
         public List<(Uri Uri, Dictionary<string, string> Headers, string Body)> Requests { get; } = [];
 
         public void Respond(string sse) => _sse = sse;
+
+        public void Redirect(string location) => _location = location;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var headers = request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value), StringComparer.OrdinalIgnoreCase);
             var body = request.Content == null ? "" : await request.Content.ReadAsStringAsync(ct);
             lock (Requests) Requests.Add((request.RequestUri!, headers, body));
+            if (_location != null)
+                return new HttpResponseMessage(HttpStatusCode.Found)
+                {
+                    Headers = { Location = new Uri(_location) },
+                    Content = new StringContent(_location),
+                };
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(_sse, Encoding.UTF8, "text/event-stream"),

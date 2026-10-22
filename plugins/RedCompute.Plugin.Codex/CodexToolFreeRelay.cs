@@ -62,22 +62,27 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
     private readonly Action<string, Guid?> _log;
     private WebApplication? _app;
     private Uri? _origin;
+    private string? _authority;
 
     public CodexToolFreeRelay(Action<string, Guid?> log, HttpMessageHandler? upstreamHandler = null,
         Uri? chatGptUpstream = null, Uri? apiKeyUpstream = null)
     {
         _log = log;
-        _upstream = new HttpClient(upstreamHandler ?? new SocketsHttpHandler
-        {
-            AutomaticDecompression = DecompressionMethods.All,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        })
+        _upstream = new HttpClient(upstreamHandler ?? CreateUpstreamHandler())
         {
             Timeout = TimeSpan.FromMinutes(11),
         };
         _chatGptUpstream = chatGptUpstream ?? ChatGptUpstream;
         _apiKeyUpstream = apiKeyUpstream ?? ApiKeyUpstream;
     }
+
+    internal static SocketsHttpHandler CreateUpstreamHandler() => new()
+    {
+        AutomaticDecompression = DecompressionMethods.All,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        // Credentials go to the fixed upstream only; a redirect is refused, never followed.
+        AllowAutoRedirect = false,
+    };
 
     /// <summary>Registers one tool-free call and returns its private model-provider base URL.</summary>
     public async Task<Lease> OpenAsync(CancellationToken ct)
@@ -111,6 +116,7 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
                 .Get<IServerAddressesFeature>()!.Addresses.First();
             _app = app;
             _origin = new Uri(address.TrimEnd('/') + "/");
+            _authority = _origin.Authority;
             _log($"[Codex] Tool-free relay listening on {_origin}", null);
             return _origin;
         }
@@ -130,13 +136,24 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
             return;
         }
 
+        // Codex dials 127.0.0.1:<port> directly. Any other Host (DNS rebinding) or any Origin (a
+        // browser page) is not Codex, even when it somehow holds the nonce, and fails the call.
+        if (RejectedCaller(context) is { } rejected)
+        {
+            evidence.Refuse(rejected);
+            await WriteErrorAsync(context, StatusCodes.Status403Forbidden,
+                "RedCompute tool-free relay only serves the Codex process it launched");
+            return;
+        }
+
         try
         {
             if (HttpMethods.IsGet(context.Request.Method) && path == "models")
             {
                 // The model catalog carries no tool definitions and grants no authority.
-                using var request = CreateUpstreamRequest(context, HttpMethod.Get, path);
+                using var request = CreateUpstreamRequest(context, HttpMethod.Get, path, evidence);
                 using var response = await _upstream.SendAsync(request, context.RequestAborted);
+                if (await RefusedRedirectAsync(context, response, evidence)) return;
                 await WriteAsync(context, (int)response.StatusCode,
                     response.Content.Headers.ContentType?.ToString(),
                     await response.Content.ReadAsByteArrayAsync(context.RequestAborted));
@@ -185,14 +202,16 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
             await WriteErrorAsync(context, StatusCodes.Status400BadRequest, sanitized.Error);
             return;
         }
-        evidence.RecordRequest(sanitized.StrippedToolDefinitions, sanitized.DroppedInputItems);
+        evidence.RecordRequest(sanitized.StrippedToolDefinitions, sanitized.DroppedInputItems, sanitized.DroppedFields);
 
-        using var request = CreateUpstreamRequest(context, HttpMethod.Post, "responses");
+        using var request = CreateUpstreamRequest(context, HttpMethod.Post, "responses", evidence);
         request.Content = new ByteArrayContent(sanitized.Body!);
         request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
         using var response = await _upstream.SendAsync(request, context.RequestAborted);
+        if (await RefusedRedirectAsync(context, response, evidence)) return;
         var body = await response.Content.ReadAsByteArrayAsync(context.RequestAborted);
         var contentType = response.Content.Headers.ContentType?.ToString();
+        evidence.RecordUpstreamStatus((int)response.StatusCode);
 
         if (response.IsSuccessStatusCode)
         {
@@ -212,17 +231,42 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
         await WriteAsync(context, (int)response.StatusCode, contentType, body);
     }
 
-    private HttpRequestMessage CreateUpstreamRequest(HttpContext context, HttpMethod method, string path)
+    private string? RejectedCaller(HttpContext context)
+    {
+        var host = context.Request.Headers.Host.ToString();
+        if (!string.Equals(host, _authority, StringComparison.OrdinalIgnoreCase))
+            return $"request Host '{host}' is not {_authority}";
+        if (context.Request.Headers.ContainsKey("Origin"))
+            return "request carried an Origin header";
+        return null;
+    }
+
+    private static async Task<bool> RefusedRedirectAsync(HttpContext context, HttpResponseMessage response,
+        ToolFreeEvidence evidence)
+    {
+        var status = (int)response.StatusCode;
+        if (status is < 300 or >= 400) return false;
+        evidence.Refuse($"upstream answered with redirect {status}");
+        await WriteErrorAsync(context, StatusCodes.Status502BadGateway,
+            $"RedCompute tool-free relay refused an upstream redirect ({status})");
+        return true;
+    }
+
+    private HttpRequestMessage CreateUpstreamRequest(HttpContext context, HttpMethod method, string path,
+        ToolFreeEvidence evidence)
     {
         // ChatGPT sign-in sends its account header; an API key does not. The upstream is fixed by
         // the credential type and never taken from the request.
         var upstream = context.Request.Headers.ContainsKey("chatgpt-account-id") ? _chatGptUpstream : _apiKeyUpstream;
         var request = new HttpRequestMessage(method, new Uri(upstream, path + context.Request.QueryString));
+        var forwarded = new List<string>();
         foreach (var (name, values) in context.Request.Headers)
         {
             if (DroppedRequestHeaders.Contains(name)) continue;
-            request.Headers.TryAddWithoutValidation(name, values.ToArray());
+            if (request.Headers.TryAddWithoutValidation(name, values.ToArray()))
+                forwarded.Add(name);
         }
+        evidence.RecordUpstream(request.RequestUri!, forwarded);
         return request;
     }
 
@@ -252,6 +296,18 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
     /// forwarded, so a tool family Codex adds later is removed without a code change here.
     /// </summary>
     internal static SanitizedRequest SanitizeRequest(byte[] body)
+    {
+        try
+        {
+            return SanitizeRequestCore(body);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or JsonException or ArgumentException)
+        {
+            return new SanitizedRequest(null, 0, 0, [], $"request body could not be sanitized: {ex.Message}");
+        }
+    }
+
+    private static SanitizedRequest SanitizeRequestCore(byte[] body)
     {
         JsonObject root;
         try
@@ -328,6 +384,19 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
     /// tool call, hosted tool activity or unknown output item it contains.
     /// </summary>
     internal static ResponseInspection InspectResponse(byte[] body, string? contentType)
+    {
+        try
+        {
+            return InspectResponseCore(body, contentType);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Undecodable text or an unexpected value kind: withhold rather than guess.
+            return new ResponseInspection([], $"upstream response could not be inspected: {ex.Message}");
+        }
+    }
+
+    private static ResponseInspection InspectResponseCore(byte[] body, string? contentType)
     {
         var items = new List<string>();
         var text = Encoding.UTF8.GetString(body);
@@ -448,6 +517,10 @@ public sealed class ToolFreeEvidence
     private readonly object _gate = new();
     private readonly List<string> _refusals = [];
     private readonly HashSet<string> _outputItemTypes = [];
+    private readonly HashSet<string> _droppedFields = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _forwardedHeaders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _upstreams = new(StringComparer.Ordinal);
+    private readonly List<int> _upstreamStatuses = [];
 
     public int Requests { get; private set; }
     public int Responses { get; private set; }
@@ -456,6 +529,13 @@ public sealed class ToolFreeEvidence
 
     public IReadOnlyList<string> Refusals { get { lock (_gate) return _refusals.ToList(); } }
     public IReadOnlyCollection<string> OutputItemTypes { get { lock (_gate) return _outputItemTypes.ToList(); } }
+    /// <summary>Top-level request fields removed by the allowlist.</summary>
+    public IReadOnlyCollection<string> DroppedFields { get { lock (_gate) return _droppedFields.ToList(); } }
+    /// <summary>Names (never values) of the headers forwarded upstream.</summary>
+    public IReadOnlyCollection<string> ForwardedHeaders { get { lock (_gate) return _forwardedHeaders.ToList(); } }
+    /// <summary>Upstream URLs contacted, without query strings.</summary>
+    public IReadOnlyCollection<string> Upstreams { get { lock (_gate) return _upstreams.ToList(); } }
+    public IReadOnlyList<int> UpstreamStatuses { get { lock (_gate) return _upstreamStatuses.ToList(); } }
 
     /// <summary>Why the call is not verified, or null when it is.</summary>
     public string? VerificationError
@@ -471,14 +551,29 @@ public sealed class ToolFreeEvidence
         }
     }
 
-    internal void RecordRequest(int strippedToolDefinitions, int droppedInputItems)
+    internal void RecordRequest(int strippedToolDefinitions, int droppedInputItems, IEnumerable<string> droppedFields)
     {
         lock (_gate)
         {
             Requests++;
             StrippedToolDefinitions += strippedToolDefinitions;
             DroppedInputItems += droppedInputItems;
+            _droppedFields.UnionWith(droppedFields);
         }
+    }
+
+    internal void RecordUpstream(Uri uri, IEnumerable<string> forwardedHeaders)
+    {
+        lock (_gate)
+        {
+            _upstreams.Add(uri.GetLeftPart(UriPartial.Path));
+            _forwardedHeaders.UnionWith(forwardedHeaders);
+        }
+    }
+
+    internal void RecordUpstreamStatus(int status)
+    {
+        lock (_gate) _upstreamStatuses.Add(status);
     }
 
     internal void RecordResponse(IEnumerable<string> outputItemTypes)
