@@ -997,6 +997,9 @@ public class ClaudeSessionService
             UserId = userId,
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
+            // Persist the requested model so a relaunch after a restart keeps it instead of
+            // falling back to the provider default.
+            Model = string.IsNullOrWhiteSpace(model) ? null : model.Trim(),
             Effort = effort,
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
@@ -2089,7 +2092,9 @@ public class ClaudeSessionService
             "--thinking-display", "summarized" })
             startInfo.ArgumentList.Add(arg);
 
-        var m = model ?? _config.Model;
+        // Blank means unset: the provider config ships "Model": "", and a "--model ''" launch
+        // fails every turn with "model: String should have at least 1 character".
+        var m = LaunchModel(model, _config.Model);
         if (m != null)
         {
             startInfo.ArgumentList.Add("--model");
@@ -2122,6 +2127,11 @@ public class ClaudeSessionService
     /// instructions. A session that did complete turns but lost its id must not silently
     /// restart without its history.
     /// </summary>
+    internal static string? LaunchModel(string? requested, string? configured)
+        => !string.IsNullOrWhiteSpace(requested) ? requested.Trim()
+            : !string.IsNullOrWhiteSpace(configured) ? configured.Trim()
+            : null;
+
     internal static string? ResumeLaunchError(string? claudeSessionId, int messageCount)
         => string.IsNullOrEmpty(claudeSessionId) && messageCount > 0
             ? "Session has no Claude session ID to resume"
@@ -2581,7 +2591,9 @@ public class ClaudeSessionService
             {
                 if (root.TryGetProperty("session_id", out var sid))
                     session.Info.ClaudeSessionId = sid.GetString();
-                if (root.TryGetProperty("model", out var model))
+                if (root.TryGetProperty("model", out var model)
+                    && model.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(model.GetString()))
                     session.Info.Model = model.GetString();
                 if (root.TryGetProperty("permissionMode", out var pm))
                     session.Info.PermissionMode = pm.GetString() ?? "bypassPermissions";
