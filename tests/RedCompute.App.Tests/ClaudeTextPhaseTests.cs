@@ -17,6 +17,7 @@ namespace RedCompute.App.Tests;
 // both text and thinking deltas remain live-only.
 // The stream shapes below follow the Agent SDK 2.1.300 contract: one `assistant` message per
 // completed block with a null stop_reason, the real stop reason only on `message_delta`.
+[Collection(nameof(ClaudeTextPhaseCollection))]
 public sealed class ClaudeTextPhaseTests : IDisposable
 {
     private readonly string _root = Path.Combine(
@@ -215,7 +216,9 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     public async Task BoundaryWatchdogResetsWhileStdoutKeepsFlowing()
     {
         var (service, store, live, id, capturePath) = StartCapturingSession();
-        service.SteerBoundarySilenceTimeout = TimeSpan.FromMilliseconds(180);
+        // Six feeds 200 ms apart span 1.2 s, twice the 600 ms silence timeout, so a watchdog that
+        // did not reset would fire; each gap leaves 400 ms of slack for a loaded machine.
+        service.SteerBoundarySilenceTimeout = TimeSpan.FromMilliseconds(600);
         Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("initial")], messageUid: "initial-uid"));
 
         var delivery = service.TrySteerInputAsync(id, [SessionInputPart.TextPart("active boundary")],
@@ -223,9 +226,9 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         var correlationId = await CapturedSteerUuid(capturePath);
         Feed(service, id, Result());
 
-        for (var i = 0; i < 4; i++)
+        for (var i = 0; i < 6; i++)
         {
-            await Task.Delay(90);
+            await Task.Delay(200);
             Feed(service, id, $$"""{"type":"system","subtype":"heartbeat","sequence":{{i}}}""");
         }
 
@@ -860,7 +863,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         await WaitUntil(() =>
         {
             if (!File.Exists(path)) return false;
-            foreach (var line in File.ReadAllLines(path))
+            foreach (var line in CapturedLines(path))
             {
                 using var document = JsonDocument.Parse(line);
                 if (document.RootElement.TryGetProperty("uuid", out var uuid))
@@ -872,7 +875,25 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     }
 
     private static int CountCapturedUuid(string path, string correlationId) =>
-        File.ReadAllLines(path).Count(line => line.Contains(correlationId, StringComparison.Ordinal));
+        CapturedLines(path).Count(line => line.Contains(correlationId, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Complete JSON lines the fake CLI has appended so far. The CLI keeps appending while the test
+    /// reads, so the file is opened with write sharing (File.ReadAllLines refuses it with a sharing
+    /// violation) and a line still being written is left for the next poll.
+    /// </summary>
+    private static IEnumerable<string> CapturedLines(string path)
+    {
+        var text = ReadShared(path);
+        var complete = text.EndsWith('\n') ? text : text[..(text.LastIndexOf('\n') + 1)];
+        foreach (var line in complete.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var isJson = true;
+            try { using var _ = JsonDocument.Parse(line); }
+            catch (JsonException) { isJson = false; }
+            if (isJson) yield return line;
+        }
+    }
 
     private ClaudeSessionService CreateService(RecordingStore store)
     {
@@ -1037,3 +1058,11 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         }
     }
 }
+
+/// <summary>
+/// ClaudeTextPhaseTests drive real fake-CLI processes and watchdog timers measured in milliseconds.
+/// Run alongside CPU-heavy classes (image decoding, large HTTP bodies) those timers stretched past
+/// their thresholds, so the class runs with parallelization off.
+/// </summary>
+[CollectionDefinition(nameof(ClaudeTextPhaseCollection), DisableParallelization = true)]
+public sealed class ClaudeTextPhaseCollection;

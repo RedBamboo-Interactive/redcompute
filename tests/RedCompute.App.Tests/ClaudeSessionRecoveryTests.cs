@@ -10,6 +10,7 @@ namespace RedCompute.App.Tests;
 // RedCompute only calls StartAsync on a capability's default provider. Claude is not the
 // ai-session default, so recovery must happen when the service is constructed or an Idle
 // session left by a restart stays "writable" and every send is rejected.
+[Collection(nameof(PlannedRestartCheckpointCollection))]
 public sealed class ClaudeSessionRecoveryTests
 {
     [Fact]

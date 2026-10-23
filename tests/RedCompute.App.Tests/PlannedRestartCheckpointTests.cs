@@ -3,6 +3,7 @@ using Xunit;
 
 namespace RedCompute.App.Tests;
 
+[Collection(nameof(PlannedRestartCheckpointCollection))]
 public sealed class PlannedRestartCheckpointTests
 {
     [Fact]
@@ -54,3 +55,11 @@ public sealed class PlannedRestartCheckpointTests
         }
     }
 }
+
+/// <summary>
+/// PlannedRestartCheckpoint.Current is process-wide. The classes that write it (this one and
+/// ClaudeSessionRecoveryTests) asserted on it while running in parallel with each other, so they
+/// share one collection that runs with parallelization off.
+/// </summary>
+[CollectionDefinition(nameof(PlannedRestartCheckpointCollection), DisableParallelization = true)]
+public sealed class PlannedRestartCheckpointCollection;
