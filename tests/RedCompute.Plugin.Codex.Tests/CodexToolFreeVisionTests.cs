@@ -211,6 +211,32 @@ public sealed class CodexToolFreeVisionTests : IAsyncLifetime
         Assert.Single(launches);
     }
 
+    [Fact]
+    public void A_failed_image_write_leaves_no_temporary_directory_behind()
+    {
+        static HashSet<string> ImageDirectories() => Directory
+            .EnumerateDirectories(Path.GetTempPath(), "redcompute-codex-images-*").ToHashSet();
+        var before = ImageDirectories();
+        var original = CodexSessionService.ImageFiles.WriteFile;
+        var writes = 0;
+        CodexSessionService.ImageFiles.WriteFile = (path, bytes) =>
+        {
+            if (++writes == 2) throw new IOException("disk full");
+            original(path, bytes);
+        };
+        try
+        {
+            Assert.Throws<IOException>(() => CodexSessionService.ImageFiles.Create([Orchid(), Orchid()]));
+        }
+        finally
+        {
+            CodexSessionService.ImageFiles.WriteFile = original;
+        }
+
+        Assert.Equal(2, writes);
+        Assert.Empty(ImageDirectories().Except(before));
+    }
+
     // --- helpers ---
 
     private CodexSessionService CreateService(out List<ProcessStartInfo> launches, Func<ProcessStartInfo, Process?> launch)

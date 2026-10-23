@@ -375,32 +375,44 @@ public class CodexSessionService
     /// Validated images for the non-tool-free path's --image flag, written to a private directory
     /// outside the empty working directory and deleted with the call.
     /// </summary>
-    private sealed class ImageFiles : IDisposable
+    internal sealed class ImageFiles : IDisposable
     {
         private readonly IsolatedWorkingDirectory _directory;
 
         private ImageFiles(IReadOnlyList<GenerateImage> images)
         {
             _directory = IsolatedWorkingDirectory.Create("redcompute-codex-images");
-            var args = new List<string>();
-            for (var i = 0; i < images.Count; i++)
+            try
             {
-                var extension = images[i].MediaType switch
+                var args = new List<string>();
+                for (var i = 0; i < images.Count; i++)
                 {
-                    "image/jpeg" => ".jpg",
-                    "image/webp" => ".webp",
-                    _ => ".png",
-                };
-                var path = Path.Combine(_directory.Path, $"image-{i + 1}{extension}");
-                File.WriteAllBytes(path, images[i].Bytes);
-                // One "--image=" per file: the flag takes several values, so a bare "-i" could
-                // swallow whatever argument follows it.
-                args.Add($"--image={path}");
+                    var extension = images[i].MediaType switch
+                    {
+                        "image/jpeg" => ".jpg",
+                        "image/webp" => ".webp",
+                        _ => ".png",
+                    };
+                    var path = Path.Combine(_directory.Path, $"image-{i + 1}{extension}");
+                    WriteFile(path, images[i].Bytes);
+                    // One "--image=" per file: the flag takes several values, so a bare "-i" could
+                    // swallow whatever argument follows it.
+                    args.Add($"--image={path}");
+                }
+                Args = args;
             }
-            Args = args;
+            catch
+            {
+                // A partial write must not leave earlier images behind in the temp directory.
+                _directory.Dispose();
+                throw;
+            }
         }
 
         public IReadOnlyList<string> Args { get; }
+
+        /// <summary>Test seam for the per-image write.</summary>
+        internal static Action<string, byte[]> WriteFile { get; set; } = File.WriteAllBytes;
 
         public static ImageFiles? Create(IReadOnlyList<GenerateImage>? images)
             => images is { Count: > 0 } ? new ImageFiles(images) : null;
