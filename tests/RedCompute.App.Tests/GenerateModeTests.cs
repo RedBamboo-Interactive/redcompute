@@ -238,23 +238,146 @@ public sealed class GenerateModeTests
         var parameter = Assert.Single(generate.Parameters!, item => item.Name == "requireToolFree");
         Assert.Equal("boolean", parameter.Type);
         Assert.False(parameter.Required);
+        var images = Assert.Single(generate.Parameters!, item => item.Name == "images");
+        Assert.Equal("array", images.Type);
+        Assert.False(images.Required);
+        Assert.Contains("vision_unavailable", images.Description);
         var schema = Assert.Single(generate.Parameters!, item => item.Name == "responseSchema");
         Assert.Equal("object", schema.Type);
         Assert.False(schema.Required);
     }
 
-    private static async Task<(int StatusCode, string Body, int GenerateCalls, GenerateProvider Provider)> InvokeGenerateAsync(
+    // --- Vision ---
+
+    private const SessionCapabilities Vision =
+        SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate | SessionCapabilities.GenerateVision;
+
+    private static object Base64Png(int width = 24, int height = 12) => new
+    {
+        mediaType = "image/png",
+        base64 = Convert.ToBase64String(GenerateImageValidatorTests.Encode(
+            new System.Windows.Media.Imaging.PngBitmapEncoder(), width, height)),
+    };
+
+    [Fact]
+    public async Task GenerateEndpoint_RefusesImagesForAProviderWithoutVisionBeforeDecoding()
+    {
+        var result = await InvokeGenerateAsync(SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate,
+            extra: new() { ["images"] = new object[] { new { mediaType = "image/png", base64 = "not even base64" } } });
+
+        Assert.Equal(422, result.StatusCode);
+        Assert.Equal(0, result.GenerateCalls);
+        using var response = JsonDocument.Parse(result.Body);
+        Assert.Equal("vision_unavailable", response.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task GenerateEndpoint_DeliversValidatedImagesAndReportsVision()
+    {
+        var result = await InvokeGenerateAsync(Vision,
+            extra: new() { ["images"] = new[] { Base64Png(), Base64Png(30, 10) } },
+            configure: provider => provider.Isolation = SessionIsolation.VerifiedToolFree);
+
+        Assert.True(result.StatusCode == 200, $"{result.StatusCode}: {result.Body}");
+        var images = result.Provider.LastRequest!.Images!;
+        Assert.Equal(2, images.Count);
+        Assert.Equal((24, 12), (images[0].Width, images[0].Height));
+        Assert.Equal((30, 10), (images[1].Width, images[1].Height));
+        Assert.True(result.Provider.LastRequest.RequireToolFree);
+        using var response = JsonDocument.Parse(result.Body);
+        Assert.True(response.RootElement.GetProperty("vision").GetBoolean());
+        Assert.Equal(2, response.RootElement.GetProperty("imageCount").GetInt32());
+        Assert.Equal(SessionIsolation.VerifiedToolFree, response.RootElement.GetProperty("isolation").GetString());
+
+        // The job keeps each image's identity, never its bytes.
+        var input = result.Jobs.LastSubmission!.InputJson;
+        Assert.Contains(images[0].Sha256, input);
+        Assert.DoesNotContain(images[0].Base64[..32], input);
+    }
+
+    [Fact]
+    public async Task GenerateEndpoint_ResolvesStagedImageAttachments()
+    {
+        var png = GenerateImageValidatorTests.Encode(new System.Windows.Media.Imaging.PngBitmapEncoder(), 16, 16);
+        var result = await InvokeGenerateAsync(Vision, requireToolFree: null,
+            stage: async (store, extra) =>
+            {
+                var staged = await store.UploadBytesAsync(png, "photo.png", "image/png", "local-user");
+                var other = await store.UploadBytesAsync(png, "theirs.png", "image/png", "someone-else");
+                extra["images"] = new object[] { new { attachmentId = staged.Id } };
+                extra["otherId"] = other.Id;
+            });
+
+        Assert.True(result.StatusCode == 200, $"{result.StatusCode}: {result.Body}");
+        Assert.Equal(png, Assert.Single(result.Provider.LastRequest!.Images!).Bytes);
+
+        var foreign = await InvokeGenerateAsync(Vision, requireToolFree: null,
+            stage: async (store, extra) =>
+            {
+                var other = await store.UploadBytesAsync(png, "theirs.png", "image/png", "someone-else");
+                extra["images"] = new object[] { new { attachmentId = other.Id } };
+            });
+        Assert.Equal(422, foreign.StatusCode);
+        Assert.Contains("images[0]: attachment is not available to this caller", foreign.Body);
+    }
+
+    public static TheoryData<object, string> RefusedImages => new()
+    {
+        { "not an array", "images must be an array" },
+        { Enumerable.Range(0, 5).Select(_ => Base64Png()).ToArray(), "at most 4 images" },
+        { new object[] { 7 }, "images[0]: must be an object" },
+        { new object[] { new { base64 = "AAAA" } }, "images[0]: base64 images require mediaType" },
+        { new object[] { new { mediaType = "image/bmp", base64 = "AAAA" } }, "is not one of" },
+        { new object[] { new { mediaType = "image/png", base64 = "@@@" } }, "base64 is not valid" },
+        { new object[] { new { mediaType = "image/png", base64 = "AAAA", attachmentId = "x" } }, "exactly one of" },
+        { new object[] { new { mediaType = "image/png", base64 = new string('A', GenerateImageValidator.MaxBase64Length + 4) } }, "exceeds" },
+        { new object[] { Base64Png(), new { mediaType = "image/png", base64 = Convert.ToBase64String(new byte[64]) } }, "images[1]: image is not PNG" },
+        { new object[] { new { mediaType = "image/jpeg", base64 = Convert.ToBase64String(GenerateImageValidatorTests.Encode(
+            new System.Windows.Media.Imaging.PngBitmapEncoder(), 4, 4)) } }, "does not match the image data" },
+    };
+
+    [Theory]
+    [MemberData(nameof(RefusedImages))]
+    public async Task GenerateEndpoint_RefusesInvalidImagesWithoutCallingTheProvider(object images, string expected)
+    {
+        var result = await InvokeGenerateAsync(Vision, extra: new() { ["images"] = images });
+
+        Assert.Equal(422, result.StatusCode);
+        Assert.Equal(0, result.GenerateCalls);
+        using var response = JsonDocument.Parse(result.Body);
+        Assert.Equal("invalid_images", response.RootElement.GetProperty("error").GetString());
+        Assert.Contains(response.RootElement.GetProperty("errors").EnumerateArray(), e => e.GetString()!.Contains(expected));
+    }
+
+    [Fact]
+    public async Task GenerateEndpoint_WithoutImagesReportsVisionCapabilityAndZeroImages()
+    {
+        var result = await InvokeGenerateAsync(Vision, configure: provider => provider.Isolation = SessionIsolation.VerifiedToolFree,
+            extra: new() { ["images"] = Array.Empty<object>() });
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Null(result.Provider.LastRequest!.Images);
+        using var response = JsonDocument.Parse(result.Body);
+        Assert.True(response.RootElement.GetProperty("vision").GetBoolean());
+        Assert.Equal(0, response.RootElement.GetProperty("imageCount").GetInt32());
+    }
+
+    private static async Task<(int StatusCode, string Body, int GenerateCalls, GenerateProvider Provider, MemoryJobTracker Jobs)> InvokeGenerateAsync(
         SessionCapabilities capabilities, bool? requireToolFree = true,
-        Dictionary<string, object?>? extra = null, Action<GenerateProvider>? configure = null)
+        Dictionary<string, object?>? extra = null, Action<GenerateProvider>? configure = null,
+        Func<InputAttachmentStore, Dictionary<string, object?>, Task>? stage = null)
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
         var provider = CreateProvider(capabilities);
         var proxy = (GenerateProvider)(object)provider;
         configure?.Invoke(proxy);
+        extra ??= [];
+        if (stage != null) await stage(f.Attachments, extra);
         var registry = Register(provider);
         var builder = WebApplication.CreateSlimBuilder();
         await using var app = builder.Build();
-        UnifiedSessionEndpoints.Map(new EndpointRegistry(app), registry, new MemoryJobTracker(),
+        var jobs = new MemoryJobTracker();
+        UnifiedSessionEndpoints.Map(new EndpointRegistry(app), registry, jobs,
             (_, _) => { }, f.Config, attachmentStore: f.Attachments, inputQueue: f.Service());
 
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints)
@@ -274,7 +397,7 @@ public sealed class GenerateModeTests
             ["system"] = "system-test",
         };
         if (requireToolFree.HasValue) request["requireToolFree"] = requireToolFree.Value;
-        foreach (var (key, value) in extra ?? []) request[key] = value;
+        foreach (var (key, value) in extra) request[key] = value;
         var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request));
         context.Request.Body = new MemoryStream(body);
         context.Request.ContentLength = body.Length;
@@ -284,7 +407,7 @@ public sealed class GenerateModeTests
         await endpoint.RequestDelegate!(context);
         context.Response.Body.Position = 0;
         var response = await new StreamReader(context.Response.Body).ReadToEndAsync();
-        return (context.Response.StatusCode, response, proxy.GenerateCalls, proxy);
+        return (context.Response.StatusCode, response, proxy.GenerateCalls, proxy, jobs);
     }
 
     private static ITestProvider CreateProvider(SessionCapabilities capabilities)
@@ -344,8 +467,13 @@ public sealed class GenerateModeTests
 
     private sealed class MemoryJobTracker : IJobTracker
     {
-        public JobRecord CreateJob(JobSubmission submission) => new()
-            { CapabilitySlug = submission.CapabilitySlug, ProviderName = submission.ProviderName };
+        public JobSubmission? LastSubmission { get; private set; }
+
+        public JobRecord CreateJob(JobSubmission submission)
+        {
+            LastSubmission = submission;
+            return new() { CapabilitySlug = submission.CapabilitySlug, ProviderName = submission.ProviderName };
+        }
         public void MarkRunning(Guid jobId) { }
         public void MarkCompleted(Guid jobId, string? outputLocation = null, long? outputSizeBytes = null,
             string? contentType = null, string? resultJson = null, double? costUsd = null) { }

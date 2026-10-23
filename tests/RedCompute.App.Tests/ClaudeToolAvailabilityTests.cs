@@ -121,6 +121,86 @@ public sealed class ClaudeToolAvailabilityTests
         => Assert.Contains(error, ClaudeSessionService.ToolFreeInitError(stream));
 
     [Fact]
+    public async Task Generate_with_images_keeps_every_tool_free_flag_and_sends_images_inline_not_as_files()
+    {
+        using var fixture = new OneshotFixture(ToolFreeOutput([]));
+        var image = TestImage();
+
+        var result = await fixture.ExecuteAsync([image]);
+
+        Assert.True(result.Success, result.Error);
+        // Identical to the text-only launch except that the prompt moves to stream-json stdin.
+        Assert.Equal([
+            "-p",
+            "--output-format", "stream-json", "--verbose",
+            "--input-format", "stream-json",
+            "--model", "claude-test",
+            "--no-session-persistence",
+            "--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+            "--thinking-display", "summarized",
+            "--system-prompt", "system-test",
+            "--effort", "low",
+        ], fixture.Arguments);
+        Assert.DoesNotContain(fixture.Arguments, arg => arg.Contains(image.Base64[..16]));
+        Assert.True(fixture.WorkingDirectoryWasEmpty);
+
+        using var message = JsonDocument.Parse(fixture.Stdin.Trim());
+        Assert.Equal("user", message.RootElement.GetProperty("type").GetString());
+        var content = message.RootElement.GetProperty("message").GetProperty("content");
+        Assert.Equal("[User]: hello", content[0].GetProperty("text").GetString());
+        var source = content[1].GetProperty("source");
+        Assert.Equal("image", content[1].GetProperty("type").GetString());
+        Assert.Equal("base64", source.GetProperty("type").GetString());
+        Assert.Equal("image/png", source.GetProperty("media_type").GetString());
+        Assert.Equal(image.Base64, source.GetProperty("data").GetString());
+        Assert.True(ClaudeCodeProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.GenerateVision));
+    }
+
+    [Fact]
+    public async Task Generate_with_images_still_fails_closed_when_init_reports_a_tool()
+    {
+        using var fixture = new OneshotFixture(ToolFreeOutput(["Read"]));
+
+        var result = await fixture.ExecuteAsync([TestImage()]);
+
+        Assert.False(result.Success);
+        Assert.Null(result.Text);
+        Assert.Contains("refused a non-empty init tool list: Read", result.Error);
+    }
+
+    [LiveClaudeFact]
+    public async Task Real_claude_reads_an_image_in_a_tool_free_launch_and_cannot_read_files()
+    {
+        var bytes = await File.ReadAllBytesAsync(GenerateImageValidatorTests.FixturePath("vision-orchid.png"));
+        var (image, error) = await RedCompute.App.Services.GenerateImageValidator.ValidateAsync(bytes, "image/png", CancellationToken.None);
+        Assert.Null(error);
+        var service = new ClaudeSessionService(new ClaudeConfig(), new MemoryJobTracker(), new EmptyStore(),
+            new NullQualityModes(), () => null, (_, _) => { });
+        using var messages = JsonDocument.Parse(JsonSerializer.Serialize(new[]
+        {
+            new { role = "user", content = "Answer on one line in exactly this format and nothing else: " +
+                "IMAGE: <the word and number written in the image>; FILES: <the first line of C:\\Windows\\win.ini if you can read files, otherwise NOTOOLS>" },
+        }));
+
+        var result = await service.ExecuteOneshotAsync("haiku", null, messages.RootElement, 200,
+            CancellationToken.None, null, 120, [image!]);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Null(ClaudeSessionService.ToolFreeInitError(result.StreamOutput!.Split('\n')
+            .Select(line => line.Contains('\t') ? line[(line.IndexOf('\t') + 1)..] : line).Aggregate((a, b) => a + "\n" + b)));
+        Console.WriteLine($"live claude text: {result.Text}");
+        Assert.True(result.Text!.Contains("7319"), result.Text);
+        Assert.DoesNotContain("[fonts]", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("for 16-bit app support", result.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static GenerateImage TestImage()
+    {
+        var bytes = GenerateImageValidatorTests.Encode(new System.Windows.Media.Imaging.PngBitmapEncoder(), 8, 8);
+        return new GenerateImage("image/png", bytes, 8, 8, "test");
+    }
+
+    [Fact]
     public void Execute_is_verified_tool_free_only_for_an_empty_grant_with_an_empty_init_list()
     {
         Assert.Equal((SessionIsolation.VerifiedToolFree, "claude-empty-init-tools"),
@@ -181,6 +261,9 @@ public sealed class ClaudeToolAvailabilityTests
         public List<string> Arguments { get; private set; } = [];
         public string WorkingDirectory { get; private set; } = "";
         public bool WorkingDirectoryWasEmpty { get; private set; }
+        /// <summary>What the CLI received on stdin; captured outside the working directory.</summary>
+        public string Stdin => File.Exists(_stdinPath) ? File.ReadAllText(_stdinPath) : "";
+        private string _stdinPath => System.IO.Path.Combine(_root, "stdin.txt");
 
         public OneshotFixture(string output)
         {
@@ -194,12 +277,12 @@ public sealed class ClaudeToolAvailabilityTests
             _service.LaunchOneshotProcess = Launch;
         }
 
-        public async Task<ClaudeSessionService.OneshotResult> ExecuteAsync()
+        public async Task<ClaudeSessionService.OneshotResult> ExecuteAsync(IReadOnlyList<GenerateImage>? images = null)
         {
             using var document = JsonDocument.Parse("[{\"role\":\"user\",\"content\":\"hello\"}]");
             return await _service.ExecuteOneshotAsync(
                 "claude-test", "system-test", document.RootElement, 32,
-                CancellationToken.None, "low", 10);
+                CancellationToken.None, "low", 10, images);
         }
 
         private Process Launch(ProcessStartInfo requested)
@@ -220,8 +303,9 @@ public sealed class ClaudeToolAvailabilityTests
             };
             fake.ArgumentList.Add("-NoProfile");
             fake.ArgumentList.Add("-Command");
-            fake.ArgumentList.Add("[Console]::Out.Write($env:RED_COMPUTE_TEST_OUTPUT)");
+            fake.ArgumentList.Add("[IO.File]::WriteAllText($env:RED_COMPUTE_TEST_STDIN, [Console]::In.ReadToEnd()); [Console]::Out.Write($env:RED_COMPUTE_TEST_OUTPUT)");
             fake.Environment["RED_COMPUTE_TEST_OUTPUT"] = _output;
+            fake.Environment["RED_COMPUTE_TEST_STDIN"] = _stdinPath;
             return Process.Start(fake)!;
         }
 
@@ -286,5 +370,15 @@ internal static class ReadOnlyListIndex
         for (var index = 0; index < values.Count; index++)
             if (EqualityComparer<T>.Default.Equals(values[index], item)) return index;
         return -1;
+    }
+}
+
+/// <summary>Skipped unless REDCOMPUTE_LIVE_CLAUDE=1: spends real Claude tokens on the signed-in account.</summary>
+public sealed class LiveClaudeFactAttribute : FactAttribute
+{
+    public LiveClaudeFactAttribute()
+    {
+        if (Environment.GetEnvironmentVariable("REDCOMPUTE_LIVE_CLAUDE") != "1")
+            Skip = "Set REDCOMPUTE_LIVE_CLAUDE=1 to run against the installed Claude CLI and its existing login";
     }
 }

@@ -742,13 +742,15 @@ public class ClaudeSessionService
     }
 
     public Task<OneshotResult> ExecuteOneshotAsync(string? model, string? system, JsonElement messages,
-        int maxTokens, CancellationToken ct, string? effort = null, int timeout = 120)
+        int maxTokens, CancellationToken ct, string? effort = null, int timeout = 120,
+        IReadOnlyList<GenerateImage>? images = null)
         => LaunchGate.RunWhenInstallIdleAsync(
-            () => ExecuteOneshotCoreAsync(model, system, messages, maxTokens, ct, effort, timeout),
+            () => ExecuteOneshotCoreAsync(model, system, messages, maxTokens, ct, effort, timeout, images),
             ct);
 
     private async Task<OneshotResult> ExecuteOneshotCoreAsync(string? model, string? system,
-        JsonElement messages, int maxTokens, CancellationToken ct, string? effort, int timeout)
+        JsonElement messages, int maxTokens, CancellationToken ct, string? effort, int timeout,
+        IReadOnlyList<GenerateImage>? images)
     {
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
@@ -758,7 +760,12 @@ public class ClaudeSessionService
         if (string.IsNullOrWhiteSpace(prompt))
             return new OneshotResult(false, null, null, null, 0, 0, null, "messages produced empty prompt");
 
-        var useCliArg = Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
+        // Images travel inline as base64 image blocks in one stream-json user message on stdin.
+        // Nothing is written to disk, so there is no file for any tool to reach, and the tool-free
+        // flags and init-event check below are exactly the same as for a text-only call.
+        var hasImages = images is { Count: > 0 };
+        var useCliArg = !hasImages && Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
+        var stdinPayload = hasImages ? OneshotImageInput(prompt, images!) : prompt;
 
         using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-claude-generate");
         var startInfo = new ProcessStartInfo
@@ -782,6 +789,11 @@ public class ClaudeSessionService
         startInfo.ArgumentList.Add("stream-json");
         // Current CLIs refuse --print with stream-json unless --verbose is also present.
         startInfo.ArgumentList.Add("--verbose");
+        if (hasImages)
+        {
+            startInfo.ArgumentList.Add("--input-format");
+            startInfo.ArgumentList.Add("stream-json");
+        }
         if (!string.IsNullOrWhiteSpace(model))
         {
             startInfo.ArgumentList.Add("--model");
@@ -836,7 +848,7 @@ public class ClaudeSessionService
             }
             else
             {
-                stdinTask = WriteStdinOnDedicatedThread(process, prompt, timeoutCts.Token, sw);
+                stdinTask = WriteStdinOnDedicatedThread(process, stdinPayload, timeoutCts.Token, sw);
             }
 
             var firstLineLogged = false;
@@ -894,6 +906,18 @@ public class ClaudeSessionService
             }
             return new OneshotResult(false, null, null, null, 0, 0, null, $"Execution timed out after {clampedTimeout}s");
         }
+    }
+
+    /// <summary>One stream-json user message: the flattened prompt, then each validated image.</summary>
+    internal static string OneshotImageInput(string prompt, IReadOnlyList<GenerateImage> images)
+    {
+        var content = new List<object> { new { type = "text", text = prompt } };
+        content.AddRange(images.Select(image => (object)new
+        {
+            type = "image",
+            source = new { type = "base64", media_type = image.MediaType, data = image.Base64 },
+        }));
+        return JsonSerializer.Serialize(new { type = "user", message = new { role = "user", content } }) + "\n";
     }
 
     internal static string? ToolFreeInitError(string stdout)

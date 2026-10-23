@@ -41,7 +41,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.Resume | SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
         SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
-        SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate |
+        SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate | SessionCapabilities.GenerateVision |
         SessionCapabilities.SupportsSteering | SessionCapabilities.SupportsBackgroundTaskStop;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
 
@@ -321,7 +321,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     {
         var messages = JsonDocument.Parse(request.MessagesJson).RootElement;
         var result = await _claude.ExecuteOneshotAsync(request.Model, request.System, messages,
-            request.MaxTokens, ct, request.Effort, request.Timeout ?? 120);
+            request.MaxTokens, ct, request.Effort, request.Timeout ?? 120, request.Images);
         return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput, result.Model,
             result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
             result.Success ? SessionIsolation.VerifiedToolFree : null,

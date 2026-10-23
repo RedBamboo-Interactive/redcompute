@@ -1581,6 +1581,7 @@ public static class UnifiedSessionEndpoints
                     runtimeProviderId = runtime?.ProviderId,
                     runtimeCapabilities = runtime?.Capabilities.ToString(),
                     toolFreeGenerate = runtime?.Capabilities.HasFlag(SessionCapabilities.ToolFreeGenerate) == true,
+                    vision = runtime?.Capabilities.HasFlag(SessionCapabilities.GenerateVision) == true,
                     runtimeError,
                     models = models.Select(model => new { model.Id, model.Name, model.Fast }),
                     p.Status,
@@ -1840,6 +1841,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("system", "string", description: "System prompt", location: ParamLocation.Body)
             .WithParam("maxTokens", "integer", description: "Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
             .WithParam("requireToolFree", "boolean", description: "Require a runtime that enforces and verifies an empty tool surface. The response reports isolation 'verified-tool-free' or the call fails (422 tool_free_unavailable before running, 502 tool_free_unverified after).", defaultValue: false, location: ParamLocation.Body)
+            .WithParam("images", "array", description: "Optional images for the final user message, at most 4: each { attachmentId } (staged via POST /ai-session/input-attachments) or { mediaType, base64 }. PNG, JPEG, still WebP or GIF (first frame), at most 5 MiB and 4096 px per side; every image is decoded and validated before forwarding. Providers without vision answer 422 vision_unavailable; refused images answer 422 invalid_images.", location: ParamLocation.Body)
             .WithParam("responseSchema", "object", description: "Optional JSON Schema (bounded subset: type, properties, required, additionalProperties, items, enum, const, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minItems, maxItems, title, description). Enforced natively where the provider supports strict structured output, otherwise by prompt; RedCompute always validates and returns json, schemaValid, errors and schemaMode.", location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
@@ -1928,6 +1930,9 @@ public static class UnifiedSessionEndpoints
         if (!body.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array || messages.GetArrayLength() == 0)
             return Error(422, "validation_failed", "messages is required and must be a non-empty array");
 
+        var (images, imageError) = await ReadGenerateImagesAsync(ctx, body, provider);
+        if (imageError != null) return imageError;
+
         var maxTokens = 1024;
         if (body.TryGetProperty("maxTokens", out var mt) && mt.ValueKind == JsonValueKind.Number && mt.TryGetInt32(out var mtv))
             maxTokens = Math.Clamp(mtv, 1, 8192);
@@ -1960,6 +1965,12 @@ public static class UnifiedSessionEndpoints
             model = model ?? "default", messageCount = messages.GetArrayLength(), maxTokens, effort, prompt, system,
             messages, provider = provider.ProviderId, requireToolFree = toolFreeRequired,
             responseSchema = responseSchema?.Json,
+            // Image bytes stay out of the job record; their identity does not.
+            images = images.Select(image => new
+            {
+                mediaType = image.MediaType, width = image.Width, height = image.Height,
+                bytes = image.Bytes.Length, sha256 = image.Sha256,
+            }),
         });
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
         if (string.IsNullOrEmpty(jobName) && !string.IsNullOrWhiteSpace(prompt))
@@ -1976,7 +1987,7 @@ public static class UnifiedSessionEndpoints
         {
             var result = await provider.GenerateAsync(new SessionGenerateRequest(
                 model, providerSystem, messages.GetRawText(), maxTokens, effort, timeout,
-                toolFreeRequired, responseSchema), ctx.RequestAborted);
+                toolFreeRequired, responseSchema, images.Count > 0 ? images : null), ctx.RequestAborted);
             if (!result.Success)
             {
                 jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
@@ -1993,7 +2004,8 @@ public static class UnifiedSessionEndpoints
                 return Error(502, "tool_free_unverified", message);
             }
 
-            var resultJson = GenerateResultJson(result, isolation, responseSchema);
+            var resultJson = GenerateResultJson(result, isolation, responseSchema,
+                provider.Capabilities.HasFlag(SessionCapabilities.GenerateVision), images.Count);
             jobTracker.MarkCompleted(job.Id, resultJson: resultJson, costUsd: result.CostUsd);
             ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
             return Results.Content(resultJson, "application/json");
@@ -2011,12 +2023,112 @@ public static class UnifiedSessionEndpoints
     }
 
     /// <summary>
+    /// Reads <c>images</c> for generate: up to <see cref="GenerateImageValidator.MaxImages"/> entries,
+    /// each either <c>{ attachmentId }</c> (an image staged through <c>/ai-session/input-attachments</c>
+    /// by the same caller) or <c>{ mediaType, base64 }</c>, the shapes session messages already use.
+    /// A provider without <see cref="SessionCapabilities.GenerateVision"/> is refused before any
+    /// image is decoded, so callers fail closed instead of having images silently dropped. Every
+    /// image is decoded and validated here; providers only ever receive validated bytes.
+    /// </summary>
+    private static async Task<(IReadOnlyList<GenerateImage> Images, IResult? Error)> ReadGenerateImagesAsync(
+        HttpContext ctx, JsonElement body, ISessionProvider provider)
+    {
+        if (!body.TryGetProperty("images", out var imagesValue) || imagesValue.ValueKind == JsonValueKind.Null)
+            return ([], null);
+        if (imagesValue.ValueKind != JsonValueKind.Array)
+            return ([], InvalidImages(["images must be an array"]));
+        if (imagesValue.GetArrayLength() == 0)
+            return ([], null);
+        if (!provider.Capabilities.HasFlag(SessionCapabilities.GenerateVision))
+            return ([], Error(422, "vision_unavailable",
+                $"Provider '{provider.ProviderId}' cannot receive image inputs on generate"));
+        if (imagesValue.GetArrayLength() > GenerateImageValidator.MaxImages)
+            return ([], InvalidImages([$"images: at most {GenerateImageValidator.MaxImages} images per call"]));
+
+        var userId = ResolveUserId(ctx) ?? "local-user";
+        var images = new List<GenerateImage>();
+        var errors = new List<string>();
+        var index = 0;
+        foreach (var entry in imagesValue.EnumerateArray())
+        {
+            var path = $"images[{index++}]";
+            var (bytes, declared, readError) = await ReadImageBytesAsync(entry, userId, ctx.RequestAborted);
+            if (readError != null)
+            {
+                errors.Add($"{path}: {readError}");
+                continue;
+            }
+
+            var (image, error) = await GenerateImageValidator.ValidateAsync(bytes!, declared, ctx.RequestAborted);
+            if (error != null) errors.Add($"{path}: {error}");
+            else images.Add(image!);
+        }
+
+        return errors.Count > 0 ? ([], InvalidImages(errors)) : (images, null);
+    }
+
+    private static async Task<(byte[]? Bytes, string? MediaType, string? Error)> ReadImageBytesAsync(
+        JsonElement entry, string userId, CancellationToken ct)
+    {
+        if (entry.ValueKind != JsonValueKind.Object)
+            return (null, null, "must be an object");
+        var hasAttachment = entry.TryGetProperty("attachmentId", out var idValue);
+        var hasBase64 = entry.TryGetProperty("base64", out var base64Value);
+        if (hasAttachment == hasBase64)
+            return (null, null, "give exactly one of attachmentId or base64");
+
+        if (hasAttachment)
+        {
+            if (idValue.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(idValue.GetString()))
+                return (null, null, "attachmentId must be a non-empty string");
+            StagedInputAttachment? attachment;
+            try
+            {
+                attachment = await _attachmentStore!.GetAuthorizedAsync(idValue.GetString()!, userId, ct);
+            }
+            catch (AttachmentStoreException)
+            {
+                // Another caller's attachment reads the same as a missing one.
+                attachment = null;
+            }
+            if (attachment == null) return (null, null, "attachment is not available to this caller");
+            if (attachment.Kind != "image") return (null, null, "attachment is not an image");
+            if (attachment.Size > GenerateImageValidator.MaxImageBytes)
+                return (null, null, $"image exceeds {GenerateImageValidator.MaxImageBytes} bytes");
+            return (await File.ReadAllBytesAsync(attachment.StoredPath, ct), attachment.MediaType, null);
+        }
+
+        if (!entry.TryGetProperty("mediaType", out var mediaTypeValue) || mediaTypeValue.ValueKind != JsonValueKind.String)
+            return (null, null, "base64 images require mediaType");
+        var mediaType = mediaTypeValue.GetString()!;
+        if (!GenerateImageValidator.AllowedMediaTypes.Contains(mediaType, StringComparer.OrdinalIgnoreCase))
+            return (null, null, $"media type '{mediaType}' is not one of {string.Join(", ", GenerateImageValidator.AllowedMediaTypes)}");
+        if (base64Value.ValueKind != JsonValueKind.String)
+            return (null, null, "base64 must be a string");
+        var base64 = base64Value.GetString()!;
+        if (base64.Length > GenerateImageValidator.MaxBase64Length)
+            return (null, null, $"image exceeds {GenerateImageValidator.MaxImageBytes} bytes");
+        try
+        {
+            return (Convert.FromBase64String(base64), mediaType, null);
+        }
+        catch (FormatException)
+        {
+            return (null, null, "base64 is not valid");
+        }
+    }
+
+    private static IResult InvalidImages(IReadOnlyList<string> errors)
+        => Results.Json(new { error = "invalid_images", message = "One or more images were refused", errors }, statusCode: 422);
+
+    /// <summary>
     /// The generate result document. With a response schema it adds <c>json</c> (the extracted
     /// value or null), <c>schemaValid</c>, <c>errors</c> and <c>schemaMode</c> (<c>native</c> when
     /// the provider enforced the schema itself, else <c>prompt</c>). Validation is RedCompute's
     /// own and is never delegated to the model or provider.
     /// </summary>
-    internal static string GenerateResultJson(SessionGenerateResult result, string isolation, ResponseSchema? schema)
+    internal static string GenerateResultJson(SessionGenerateResult result, string isolation, ResponseSchema? schema,
+        bool vision = false, int imageCount = 0)
     {
         var document = new Dictionary<string, object?>
         {
@@ -2029,6 +2141,8 @@ public static class UnifiedSessionEndpoints
             ["costUsd"] = result.CostUsd,
             ["isolation"] = isolation,
             ["isolationMechanism"] = result.IsolationMechanism,
+            ["vision"] = vision,
+            ["imageCount"] = imageCount,
         };
 
         if (schema != null)

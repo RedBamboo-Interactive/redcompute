@@ -43,10 +43,22 @@ public record SessionGenerateResult(
 /// <param name="System">System prompt. When a schema is present it already carries the schema instruction.</param>
 /// <param name="RequireToolFree">The caller requires <see cref="SessionIsolation.VerifiedToolFree"/> for this call.</param>
 /// <param name="ResponseSchema">Optional parsed response schema. Providers may enforce it natively; RedCompute validates regardless.</param>
+/// <param name="Images">Images attached to the final user message, already decoded and validated by RedCompute.</param>
 public record SessionGenerateRequest(
     string? Model, string? System, string MessagesJson, int MaxTokens,
     string? Effort = null, int? Timeout = null, bool RequireToolFree = false,
-    ResponseSchema? ResponseSchema = null);
+    ResponseSchema? ResponseSchema = null, IReadOnlyList<GenerateImage>? Images = null);
+
+/// <summary>
+/// One generate image input after RedCompute decoded and validated it. <see cref="Bytes"/> are exactly
+/// what a provider forwards: the caller's PNG, JPEG or WebP unchanged, or the first frame of a GIF
+/// re-encoded as PNG. Providers never receive the caller's raw input.
+/// </summary>
+public sealed record GenerateImage(string MediaType, byte[] Bytes, int Width, int Height, string Sha256)
+{
+    public string Base64 => Convert.ToBase64String(Bytes);
+    public string DataUrl => $"data:{MediaType};base64,{Base64}";
+}
 
 public enum InterruptResult { Interrupted, NotActive, NotFound, Error }
 

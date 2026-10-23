@@ -24,4 +24,9 @@ public enum SessionCapabilities
     SupportsSteering = 1 << 13,
     /// <summary>Stops one running background task (subagent or background shell) without interrupting the session.</summary>
     SupportsBackgroundTaskStop = 1 << 14,
+    /// <summary>
+    /// Stateless generation accepts validated image inputs (<see cref="SessionGenerateRequest.Images"/>)
+    /// and delivers them to the model, including on a verified tool-free call.
+    /// </summary>
+    GenerateVision = 1 << 15,
 }
