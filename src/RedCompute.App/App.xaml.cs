@@ -282,13 +282,15 @@ public partial class App : Application
         foreach (var (slug, entry) in Registry.Capabilities)
         {
             if (entry.ActiveProvider == null) continue;
+            if (!ShouldStartAtBoot(slug)) continue;
             tasks.Add(StartCapability(slug, entry));
         }
         await Task.WhenAll(tasks);
         PlannedRestartCheckpoint.Consume();
-
-        _ = RetryFailedBackends();
     }
+
+    internal static bool ShouldStartAtBoot(string capabilitySlug)
+        => string.Equals(capabilitySlug, "ai-session", StringComparison.OrdinalIgnoreCase);
 
     private async Task StartCapability(string slug, CapabilityEntry entry)
     {
@@ -301,27 +303,6 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log($"[App] Start failed for {slug}: {ex.Message}");
-        }
-    }
-
-    private async Task RetryFailedBackends()
-    {
-        var retryInterval = TimeSpan.FromSeconds(60);
-        while (true)
-        {
-            await Task.Delay(retryInterval);
-
-            foreach (var (slug, entry) in Registry.Capabilities)
-            {
-                if (entry.ActiveProvider == null) continue;
-                if (entry.IsManuallyDisabled) continue;
-
-                var status = await entry.ActiveProvider.GetStatusAsync();
-                if (status is not (BackendStatus.Error or BackendStatus.Stopped)) continue;
-
-                Log($"[App] Retrying failed backend: {slug}");
-                await StartCapability(slug, entry);
-            }
         }
     }
 

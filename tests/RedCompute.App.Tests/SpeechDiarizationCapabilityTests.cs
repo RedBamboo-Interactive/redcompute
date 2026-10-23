@@ -17,12 +17,14 @@ public sealed class SpeechDiarizationCapabilityTests
         var capability = config.Capabilities["diarization"];
         var provider = capability.Providers["local-wsl"];
 
-        Assert.Equal("local-wsl", capability.ActiveProvider);
+        Assert.Null(capability.ActiveProvider);
         Assert.Equal("DiarizationLocal", provider.Type);
         Assert.Equal("nvidia/Nemotron-3-Diarization", provider.Model);
         Assert.Equal("f667ed73aee57d40cc39428eb768b4fd87a0a29e", provider.ModelRevision);
         Assert.Equal(8768, provider.BackendPort);
         Assert.EndsWith(Path.Combine("backends", "diarization-local"), provider.ServerPath);
+        Assert.Null(provider.WslDistro);
+        Assert.Null(provider.VenvPath);
     }
 
     [Fact]

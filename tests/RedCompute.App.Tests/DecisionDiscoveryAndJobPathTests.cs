@@ -72,7 +72,7 @@ public sealed class DecisionDiscoveryAndJobPathTests
         var decision = config.Capabilities["decision"];
         var kev = decision.Providers["kev-local-quality"];
 
-        Assert.Equal("kev-local-quality", decision.ActiveProvider);
+        Assert.Null(decision.ActiveProvider);
         Assert.Equal("KevLocalQuality", kev.Type);
         Assert.Equal("http://127.0.0.1:8008", kev.Endpoint);
         Assert.Equal("kev-latest", kev.Model);

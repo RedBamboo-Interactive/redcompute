@@ -20,6 +20,46 @@ public sealed class ComfyUIProviderTests
 
         Assert.Null(config.Capabilities["image-gen"].Providers["comfyui"].ServerPath);
         Assert.Null(config.Capabilities["music-gen"].Providers["comfyui"].ServerPath);
+        Assert.Null(config.Capabilities["image-gen"].ActiveProvider);
+    }
+
+    [Fact]
+    public void Portable_install_uses_its_embedded_python_when_no_venv_is_configured()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "redcompute-comfy-portable-" + Guid.NewGuid());
+        var server = Path.Combine(root, "ComfyUI");
+        var python = Path.Combine(root, "python_embeded", "python.exe");
+        Directory.CreateDirectory(server);
+        Directory.CreateDirectory(Path.GetDirectoryName(python)!);
+        File.WriteAllText(python, "test");
+        try
+        {
+            var resolved = ComfyUIProvider.ResolveNativePythonExecutable(new ProviderConfig
+            {
+                Type = "ComfyUI",
+                ServerPath = server,
+            });
+
+            Assert.Equal(python, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Explicit_venv_wins_over_portable_embedded_python()
+    {
+        var config = new ProviderConfig
+        {
+            Type = "ComfyUI",
+            ServerPath = @"C:\ComfyUI_windows_portable\ComfyUI",
+            VenvPath = @"D:\Environments\comfy",
+        };
+
+        Assert.Equal(@"D:\Environments\comfy\Scripts\python.exe",
+            ComfyUIProvider.ResolveNativePythonExecutable(config));
     }
 
     [Fact]

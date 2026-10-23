@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
+using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
@@ -32,6 +33,10 @@ public static class VoiceSessionEndpoints
             var backend = capability?.ResolveProvider(requestedProvider);
             if (backend is not IVoiceSessionProvider provider)
                 return Error(503, "provider_not_configured", "No voice-session provider is configured");
+            if (capability!.IsManuallyDisabled)
+                return Error(503, "capability_disabled", "Voice sessions were stopped manually");
+            if (await ProviderStartup.EnsureRunningAsync(backend, ctx.RequestAborted) != BackendStatus.Running)
+                return Error(503, "provider_not_running", "The voice-session provider could not start");
             var provenance = JobProvenanceHttp.Resolve(ctx, "/voice-session/sessions");
             var callbackAccessToken = SessionExecutionToken.Issue(
                 ctx, provider.VoiceProviderId, provider.VoiceProviderId, CallbackTokenLifetime);

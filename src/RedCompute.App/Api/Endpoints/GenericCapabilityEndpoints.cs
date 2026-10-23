@@ -51,6 +51,8 @@ public static class GenericCapabilityEndpoints
 
                 if (entry.IsSleeping)
                     return Error(503, "capability_sleeping", $"'{slug}' is sleeping. Wake it via POST /control/wake/{slug}");
+                if (entry.IsManuallyDisabled)
+                    return Error(503, "capability_disabled", $"'{slug}' was stopped manually. Start it via POST /control/start/{slug}");
 
                 var (body, bodyError) = await ReadJsonBody(ctx);
                 if (bodyError is not null)
@@ -88,9 +90,9 @@ public static class GenericCapabilityEndpoints
                         }, statusCode: 422);
                 }
 
-                var status = await provider.GetStatusAsync();
+                var status = await ProviderStartup.EnsureRunningAsync(provider, ctx.RequestAborted);
                 if (status != BackendStatus.Running)
-                    return Error(503, "provider_not_running", $"Backend for '{slug}' is {status}. Start via POST /control/start/{slug}");
+                    return Error(503, "provider_not_running", $"Backend for '{slug}' could not start and is {status}");
 
                 var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
 
@@ -510,9 +512,9 @@ public static class GenericCapabilityEndpoints
         if (provider is not IProviderSelfValidator validator)
             return Error(501, "validation_not_supported",
                 $"Provider '{provider?.Name}' does not expose bounded validation");
-        if (await provider.GetStatusAsync(ctx.RequestAborted) != BackendStatus.Running)
+        if (await ProviderStartup.EnsureRunningAsync(provider, ctx.RequestAborted) != BackendStatus.Running)
             return Error(503, "provider_not_running",
-                $"Backend for '{slug}' is not running");
+                $"Backend for '{slug}' could not start");
 
         JobProvenance provenance;
         try

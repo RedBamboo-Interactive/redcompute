@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
@@ -29,6 +30,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly IDisposable? _acceleratorRegistration;
     private readonly string _acceleratorId;
     private Process? _process;
+    private readonly ConcurrentQueue<string> _startupErrors = new();
     private BackendStatus _status = BackendStatus.Stopped;
     private DateTime _lastHealthCheck;
 
@@ -117,6 +119,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
         try
         {
+            while (_startupErrors.TryDequeue(out _)) { }
             EnsureConfiguredDirectories();
             var startInfo = BuildStartInfo();
             _process = Process.Start(startInfo);
@@ -127,16 +130,31 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                 return false;
             }
 
+            _process.OutputDataReceived += (_, e) => { if (e.Data != null) _log($"[ComfyUI] {e.Data}"); };
+            _process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data == null) return;
+                _startupErrors.Enqueue(e.Data);
+                while (_startupErrors.Count > 12) _startupErrors.TryDequeue(out var _discarded);
+                _log($"[ComfyUI:err] {e.Data}");
+            };
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
-            _process.OutputDataReceived += (_, e) => { if (e.Data != null) _log($"[ComfyUI] {e.Data}"); };
-            _process.ErrorDataReceived += (_, e) => { if (e.Data != null) _log($"[ComfyUI:err] {e.Data}"); };
 
             var timeout = TimeSpan.FromSeconds(_config.StartupTimeoutSeconds);
             var deadline = DateTime.UtcNow + timeout;
 
             while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
             {
+                if (_process.HasExited)
+                {
+                    _status = BackendStatus.Error;
+                    var detail = string.Join(" | ", _startupErrors);
+                    _log(detail.Length == 0
+                        ? $"[ComfyUI] Process exited with code {_process.ExitCode} before becoming healthy"
+                        : $"[ComfyUI] Process exited with code {_process.ExitCode}: {detail}");
+                    return false;
+                }
                 if (await CheckHealthAsync())
                 {
                     _status = BackendStatus.Running;
@@ -372,10 +390,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             return startInfo;
         }
 
-        // Native Windows — use venv python if configured, otherwise system python
-        var pythonExe = _config.VenvPath != null
-            ? Path.Combine(_config.VenvPath, "Scripts", "python.exe")
-            : "python";
+        var pythonExe = ResolveNativePythonExecutable(_config);
 
         return new ProcessStartInfo
         {
@@ -388,6 +403,21 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+    }
+
+    internal static string ResolveNativePythonExecutable(ProviderConfig config)
+    {
+        if (!string.IsNullOrWhiteSpace(config.VenvPath))
+            return Path.Combine(config.VenvPath, "Scripts", "python.exe");
+
+        if (!string.IsNullOrWhiteSpace(config.ServerPath))
+        {
+            var portablePython = Path.GetFullPath(Path.Combine(
+                config.ServerPath, "..", "python_embeded", "python.exe"));
+            if (File.Exists(portablePython)) return portablePython;
+        }
+
+        return "python";
     }
 
     private List<string> BuildComfyArguments(bool forWsl)

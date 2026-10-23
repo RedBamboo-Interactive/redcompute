@@ -233,6 +233,8 @@ public class ConfigManager
                 dirty = true;
         }
 
+        dirty |= RemoveLegacyMachineSpecificSettings(Config);
+
         if (Config.Capabilities.TryGetValue("stt", out var stt))
         {
             var bundledStt = BundledBackendPath("stt-local");
@@ -249,6 +251,58 @@ public class ConfigManager
         if (dirty) Save();
     }
 
+    internal static bool RemoveLegacyMachineSpecificSettings(RedComputeConfig config)
+    {
+        var dirty = false;
+
+        if (config.Capabilities.TryGetValue("tts", out var tts))
+        {
+            foreach (var provider in tts.Providers.Values)
+            {
+                if (MatchesLegacyPath(provider.ServerPath,
+                        @"T:\Projects\Qwen3-TTS\qwen3-tts-server"))
+                {
+                    provider.ServerPath = null;
+                    dirty = true;
+                }
+                if (MatchesLegacyPath(provider.VoicesBasePath, @"T:\Projects\Qwen3-TTS"))
+                {
+                    provider.VoicesBasePath = null;
+                    dirty = true;
+                }
+            }
+        }
+
+        foreach (var capabilitySlug in new[] { "image-gen", "music-gen" })
+        {
+            if (!config.Capabilities.TryGetValue(capabilitySlug, out var capability)) continue;
+            foreach (var provider in capability.Providers.Values)
+            {
+                if (MatchesLegacyPath(provider.ServerPath, @"T:\Projects\ComfyUI"))
+                {
+                    provider.ServerPath = null;
+                    dirty = true;
+                }
+
+                if (provider.Extra == null) continue;
+                foreach (var key in provider.Extra.Keys.ToArray())
+                {
+                    if (provider.Extra[key] is not string value) continue;
+                    if (!MatchesLegacyPath(value,
+                            @"T:\Projects\Roaster\Roaster.GuildBot\axl-workspace\workflows")) continue;
+                    provider.Extra.Remove(key);
+                    dirty = true;
+                }
+            }
+        }
+
+        return dirty;
+    }
+
+    private static bool MatchesLegacyPath(string? value, string expected)
+        => string.Equals(value?.Replace('/', '\\').TrimEnd('\\'),
+            expected.Replace('/', '\\').TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+
     internal static RedComputeConfig CreateDefault()
     {
         return new RedComputeConfig
@@ -258,7 +312,7 @@ public class ConfigManager
             {
                 ["voice-session"] = new()
                 {
-                    ActiveProvider = "openai-live",
+                    ActiveProvider = null,
                     Providers = new Dictionary<string, ProviderConfig>
                     {
                         ["openai-live"] = new()
@@ -272,19 +326,19 @@ public class ConfigManager
                 },
                 ["tts"] = new()
                 {
-                    ActiveProvider = "local-wsl",
+                    ActiveProvider = null,
                     Providers = new Dictionary<string, ProviderConfig>
                     {
                         ["local-wsl"] = new()
                         {
                             Type = "TtsLocal",
-                            WslDistro = "Ubuntu-24.04",
-                            VenvPath = "~/tts-env",
-                            ServerPath = @"T:\Projects\Qwen3-TTS\qwen3-tts-server",
+                            WslDistro = null,
+                            VenvPath = null,
+                            ServerPath = null,
                             BackendPort = 8765,
                             HealthEndpoint = "/health",
                             Model = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-                            VoicesBasePath = @"T:\Projects\Qwen3-TTS",
+                            VoicesBasePath = null,
                             StartupTimeoutSeconds = 180
                         },
                         ["elevenlabs"] = new()
@@ -297,7 +351,7 @@ public class ConfigManager
                 },
                 ["stt"] = new()
                 {
-                    ActiveProvider = "local-wsl",
+                    ActiveProvider = null,
                     Providers = new Dictionary<string, ProviderConfig>
                     {
                         ["local-wsl"] = new()
@@ -326,14 +380,14 @@ public class ConfigManager
                 },
                 ["diarization"] = new()
                 {
-                    ActiveProvider = "local-wsl",
+                    ActiveProvider = null,
                     Providers = new Dictionary<string, ProviderConfig>
                     {
                         ["local-wsl"] = new()
                         {
                             Type = "DiarizationLocal",
-                            WslDistro = "Ubuntu-24.04",
-                            VenvPath = "~/diarization-env",
+                            WslDistro = null,
+                            VenvPath = null,
                             ServerPath = BundledBackendPath("diarization-local"),
                             BackendPort = 8768,
                             HealthEndpoint = "/health",
@@ -373,7 +427,7 @@ public class ConfigManager
                 },
                 ["image-gen"] = new()
                 {
-                    ActiveProvider = "comfyui",
+                    ActiveProvider = null,
                     Providers = new Dictionary<string, ProviderConfig>
                     {
                         ["comfyui"] = new()
@@ -391,7 +445,7 @@ public class ConfigManager
                 },
                 ["decision"] = new()
                 {
-                    ActiveProvider = "kev-local-quality",
+                    ActiveProvider = null,
                     Providers = new Dictionary<string, ProviderConfig>
                     {
                         ["kev-local-quality"] = new()
