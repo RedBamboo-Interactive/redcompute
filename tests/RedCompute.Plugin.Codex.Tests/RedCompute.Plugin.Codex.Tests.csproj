@@ -15,4 +15,9 @@
     </PackageReference>
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Codex\RedCompute.Plugin.Codex.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\Fixtures\vision\*" LinkBase="Fixtures\vision">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

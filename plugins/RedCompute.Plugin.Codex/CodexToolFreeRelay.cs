@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using RedCompute.Core.Sessions;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -54,7 +55,20 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
         "Transfer-Encoding", "TE", "Upgrade", "Accept-Encoding", "Proxy-Authorization", "Proxy-Connection",
     };
 
-    private readonly ConcurrentDictionary<string, ToolFreeEvidence> _calls = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RelayCall> _calls = new(StringComparer.Ordinal);
+
+    /// <summary>One registered call: its evidence and the validated images the relay itself injects.</summary>
+    private sealed record RelayCall(ToolFreeEvidence Evidence, IReadOnlyList<GenerateImage> Images);
+
+    // The rebuilt body goes upstream as JSON and is never embedded in HTML, so the default encoder's
+    // escaping of '+' and '/' (which would inflate base64 image data) is unnecessary.
+    private static readonly JsonSerializerOptions UpstreamJson = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    /// <summary>Message content part types that reach the model. Everything else is removed.</summary>
+    private static readonly HashSet<string> AllowedContentParts = ["input_text", "output_text"];
     private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly HttpClient _upstream;
     private readonly Uri _chatGptUpstream;
@@ -85,12 +99,17 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
     };
 
     /// <summary>Registers one tool-free call and returns its private model-provider base URL.</summary>
-    public async Task<Lease> OpenAsync(CancellationToken ct)
+    /// <summary>
+    /// Registers one tool-free call. <paramref name="images"/> are the only images that can reach the
+    /// model on this call: the relay removes every image part Codex sends and appends exactly these,
+    /// as data URLs, to the final user message of each model request.
+    /// </summary>
+    public async Task<Lease> OpenAsync(CancellationToken ct, IReadOnlyList<GenerateImage>? images = null)
     {
         var origin = await EnsureStartedAsync(ct);
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-        var evidence = new ToolFreeEvidence();
-        _calls[nonce] = evidence;
+        var evidence = new ToolFreeEvidence { ExpectedImages = images?.Count ?? 0 };
+        _calls[nonce] = new RelayCall(evidence, images ?? []);
         return new Lease(this, nonce, new Uri(origin, $"{nonce}/v1"), evidence);
     }
 
@@ -130,11 +149,13 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
     {
         var nonce = context.Request.RouteValues["nonce"] as string ?? "";
         var path = context.Request.RouteValues["path"] as string ?? "";
-        if (!_calls.TryGetValue(nonce, out var evidence))
+        if (!_calls.TryGetValue(nonce, out var call))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
+
+        var evidence = call.Evidence;
 
         // Codex dials 127.0.0.1:<port> directly. Any other Host (DNS rebinding) or any Origin (a
         // browser page) is not Codex, even when it somehow holds the nonce, and fails the call.
@@ -162,7 +183,7 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
 
             if (HttpMethods.IsPost(context.Request.Method) && path == "responses")
             {
-                await RelayResponsesAsync(context, evidence);
+                await RelayResponsesAsync(context, evidence, call.Images);
                 return;
             }
 
@@ -182,7 +203,8 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
         }
     }
 
-    private async Task RelayResponsesAsync(HttpContext context, ToolFreeEvidence evidence)
+    private async Task RelayResponsesAsync(HttpContext context, ToolFreeEvidence evidence,
+        IReadOnlyList<GenerateImage> images)
     {
         var encoding = context.Request.Headers.ContentEncoding.ToString();
         if (!string.IsNullOrEmpty(encoding) && !encoding.Equals("identity", StringComparison.OrdinalIgnoreCase))
@@ -195,14 +217,15 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
 
         using var buffer = new MemoryStream();
         await context.Request.Body.CopyToAsync(buffer, context.RequestAborted);
-        var sanitized = SanitizeRequest(buffer.ToArray());
+        var sanitized = SanitizeRequest(buffer.ToArray(), images);
         if (sanitized.Error != null)
         {
             evidence.Refuse(sanitized.Error);
             await WriteErrorAsync(context, StatusCodes.Status400BadRequest, sanitized.Error);
             return;
         }
-        evidence.RecordRequest(sanitized.StrippedToolDefinitions, sanitized.DroppedInputItems, sanitized.DroppedFields);
+        evidence.RecordRequest(sanitized.StrippedToolDefinitions, sanitized.DroppedInputItems, sanitized.DroppedFields,
+            sanitized.DroppedContentParts, sanitized.InjectedImageHashes);
 
         using var request = CreateUpstreamRequest(context, HttpMethod.Post, "responses", evidence);
         request.Content = new ByteArrayContent(sanitized.Body!);
@@ -288,18 +311,19 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
     }
 
     internal sealed record SanitizedRequest(byte[]? Body, int StrippedToolDefinitions,
-        int DroppedInputItems, IReadOnlyList<string> DroppedFields, string? Error);
+        int DroppedInputItems, IReadOnlyList<string> DroppedFields, string? Error,
+        int DroppedContentParts = 0, IReadOnlyList<string>? InjectedImageHashes = null);
 
     /// <summary>
     /// Rebuilds a Responses request so that no tool definition can reach the model. This is an
     /// allowlist: input items other than messages and unknown top-level fields are dropped, not
     /// forwarded, so a tool family Codex adds later is removed without a code change here.
     /// </summary>
-    internal static SanitizedRequest SanitizeRequest(byte[] body)
+    internal static SanitizedRequest SanitizeRequest(byte[] body, IReadOnlyList<GenerateImage>? images = null)
     {
         try
         {
-            return SanitizeRequestCore(body);
+            return SanitizeRequestCore(body, images ?? []);
         }
         catch (Exception ex) when (ex is InvalidOperationException or JsonException or ArgumentException)
         {
@@ -307,7 +331,7 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
         }
     }
 
-    private static SanitizedRequest SanitizeRequestCore(byte[] body)
+    private static SanitizedRequest SanitizeRequestCore(byte[] body, IReadOnlyList<GenerateImage> images)
     {
         JsonObject root;
         try
@@ -337,6 +361,8 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
         root["parallel_tool_calls"] = false;
 
         var droppedItems = 0;
+        var droppedParts = 0;
+        JsonObject? lastUser = null;
         if (root["input"] is JsonArray input)
         {
             var kept = new JsonArray();
@@ -345,7 +371,10 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
                 if (item is JsonObject message && IsMessage(message))
                 {
                     input.Remove(item);
+                    droppedParts += KeepTextParts(message);
                     kept.Add(item);
+                    if (message["role"] is JsonValue role && role.TryGetValue<string>(out var name) && name == "user")
+                        lastUser = message;
                 }
                 else
                 {
@@ -360,7 +389,49 @@ public sealed class CodexToolFreeRelay : IAsyncDisposable
             return new SanitizedRequest(null, stripped, 0, droppedFields, "request input has an unexpected shape");
         }
 
-        return new SanitizedRequest(JsonSerializer.SerializeToUtf8Bytes(root), stripped, droppedItems, droppedFields, null);
+        var injected = new List<string>();
+        if (images.Count > 0)
+        {
+            if (lastUser == null)
+                return new SanitizedRequest(null, stripped, droppedItems, droppedFields,
+                    "request has no user message to carry the images", droppedParts);
+            if (lastUser["content"] is not JsonArray content)
+            {
+                // A bare string becomes one text part so the images can follow it.
+                var text = lastUser["content"] is JsonValue value && value.TryGetValue<string>(out var bare) ? bare : "";
+                content = [new JsonObject { ["type"] = "input_text", ["text"] = text }];
+                lastUser["content"] = content;
+            }
+            foreach (var image in images)
+            {
+                content.Add(new JsonObject { ["type"] = "input_image", ["image_url"] = image.DataUrl });
+                injected.Add(image.Sha256);
+            }
+        }
+
+        return new SanitizedRequest(JsonSerializer.SerializeToUtf8Bytes(root, UpstreamJson), stripped, droppedItems, droppedFields,
+            null, droppedParts, injected);
+    }
+
+    /// <summary>
+    /// Keeps only text parts in a message's content array and returns how many were removed. Images,
+    /// files and anything unknown that Codex (or anything upstream of it) put in a message never reach
+    /// the model; the only images are the ones the relay appends from the validated set.
+    /// </summary>
+    private static int KeepTextParts(JsonObject message)
+    {
+        if (message["content"] is not JsonArray content) return 0;
+        var removed = 0;
+        foreach (var part in content.ToList())
+        {
+            var type = part is JsonObject obj && obj["type"] is JsonValue value && value.TryGetValue<string>(out var name)
+                ? name
+                : null;
+            if (type != null && AllowedContentParts.Contains(type)) continue;
+            content.Remove(part);
+            removed++;
+        }
+        return removed;
     }
 
     private static bool IsMessage(JsonObject item)
@@ -521,8 +592,13 @@ public sealed class ToolFreeEvidence
     private readonly HashSet<string> _forwardedHeaders = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _upstreams = new(StringComparer.Ordinal);
     private readonly List<int> _upstreamStatuses = [];
+    private readonly List<IReadOnlyList<string>> _injectedImages = [];
 
     public int Requests { get; private set; }
+    /// <summary>Validated images registered for this call; every model request must carry all of them.</summary>
+    public int ExpectedImages { get; init; }
+    /// <summary>Content parts other than text that the relay removed from messages.</summary>
+    public int DroppedContentParts { get; private set; }
     public int Responses { get; private set; }
     public int StrippedToolDefinitions { get; private set; }
     public int DroppedInputItems { get; private set; }
@@ -536,6 +612,8 @@ public sealed class ToolFreeEvidence
     /// <summary>Upstream URLs contacted, without query strings.</summary>
     public IReadOnlyCollection<string> Upstreams { get { lock (_gate) return _upstreams.ToList(); } }
     public IReadOnlyList<int> UpstreamStatuses { get { lock (_gate) return _upstreamStatuses.ToList(); } }
+    /// <summary>SHA-256 of each image the relay injected, per request, in order.</summary>
+    public IReadOnlyList<IReadOnlyList<string>> InjectedImages { get { lock (_gate) return _injectedImages.ToList(); } }
 
     /// <summary>Why the call is not verified, or null when it is.</summary>
     public string? VerificationError
@@ -546,19 +624,24 @@ public sealed class ToolFreeEvidence
             {
                 if (_refusals.Count > 0) return $"tool-free relay refused: {string.Join("; ", _refusals)}";
                 if (Responses == 0) return "no model response passed through the tool-free relay";
+                if (_injectedImages.Any(hashes => hashes.Count != ExpectedImages))
+                    return $"a model request did not carry all {ExpectedImages} validated image(s)";
                 return null;
             }
         }
     }
 
-    internal void RecordRequest(int strippedToolDefinitions, int droppedInputItems, IEnumerable<string> droppedFields)
+    internal void RecordRequest(int strippedToolDefinitions, int droppedInputItems, IEnumerable<string> droppedFields,
+        int droppedContentParts = 0, IReadOnlyList<string>? injectedImages = null)
     {
         lock (_gate)
         {
             Requests++;
             StrippedToolDefinitions += strippedToolDefinitions;
             DroppedInputItems += droppedInputItems;
+            DroppedContentParts += droppedContentParts;
             _droppedFields.UnionWith(droppedFields);
+            _injectedImages.Add(injectedImages ?? []);
         }
     }
 

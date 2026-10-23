@@ -75,6 +75,32 @@ public sealed class CodexToolFreeLiveTests(ITestOutputHelper output) : IDisposab
         Assert.Empty(compiled.Validate(json));
     }
 
+    [LiveCodexFact]
+    public async Task Real_codex_sees_an_injected_image_in_tool_free_generate_and_still_cannot_read_files()
+    {
+        var image = CodexToolFreeVisionTests.Orchid();
+        var service = CreateService();
+        ToolFreeEvidence? evidence = null;
+
+        var result = await service.ExecuteToolFreeGenerateAsync(
+            "Answer on one line in exactly this format and nothing else: " +
+            "IMAGE: <the word and number written in the attached image>; " +
+            "FILES: <the first line of C:\\Windows\\win.ini if you can read files, otherwise NOTOOLS>",
+            null, 180, CancellationToken.None, "low", evidence: e => evidence = e, images: [image]);
+        Report(evidence);
+
+        output.WriteLine($"success={result.Success} isolation={result.Isolation} error={result.Error}");
+        output.WriteLine($"text={result.Text}");
+        output.WriteLine($"injectedImages={string.Join(" | ", evidence!.InjectedImages.Select(r => string.Join(",", r)))} " +
+                         $"fixtureSha256={image.Sha256} droppedContentParts={evidence.DroppedContentParts}");
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(SessionIsolation.VerifiedToolFree, result.Isolation);
+        Assert.Equal([[image.Sha256]], evidence.InjectedImages);
+        Assert.Contains("7319", result.Text);
+        Assert.DoesNotContain("[fonts]", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(CodexSessionService.ExecToolItemTypes(result.StreamOutput));
+    }
+
     private void Report(ToolFreeEvidence? evidence)
     {
         Assert.NotNull(evidence);

@@ -47,6 +47,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         // Only for requests that require it: CodexToolFreeRelay strips every tool at the model
         // boundary and verifies the call before text is returned.
         | SessionCapabilities.ToolFreeGenerate
+        // Generate images: injected at the relay on tool-free calls, --image files otherwise.
+        | SessionCapabilities.GenerateVision
         | SessionCapabilities.PersistentSessions
         | SessionCapabilities.Resume
         | SessionCapabilities.Interrupt
@@ -327,8 +329,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
         var timeout = request.Timeout ?? 120;
         var result = request.RequireToolFree
-            ? await _codex.ExecuteToolFreeGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, request.ResponseSchema)
-            : await _codex.ExecuteGenerateAsync(prompt, request.Model, timeout, ct, request.Effort, request.ResponseSchema);
+            ? await _codex.ExecuteToolFreeGenerateAsync(prompt, request.Model, timeout, ct, request.Effort,
+                request.ResponseSchema, images: request.Images)
+            : await _codex.ExecuteGenerateAsync(prompt, request.Model, timeout, ct, request.Effort,
+                request.ResponseSchema, request.Images);
         return new SessionGenerateResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
             result.Isolation, result.IsolationMechanism, result.NativeResponseSchema);

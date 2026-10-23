@@ -1,4 +1,4 @@
-# Tool-free `/ai-session/generate`, isolation reporting, and response schemas
+# Tool-free `/ai-session/generate`, isolation reporting, response schemas, and images
 
 `POST /ai-session/generate` has two separate runtime capabilities:
 
@@ -21,6 +21,7 @@ Request fields added to `POST /ai-session/generate` (all optional):
 |---|---|
 | `requireToolFree` | boolean. Require verified tool-free isolation for this call. |
 | `responseSchema` | JSON Schema object from the bounded subset below. |
+| `images` | Up to 4 images for the final user message, each `{ "attachmentId": "..." }` (staged by the same caller through `POST /ai-session/input-attachments`) or `{ "mediaType": "image/png", "base64": "..." }`, the shapes session messages already use. See [Images](#images-vision). |
 
 Response fields added (also stored in the job `resultJson`):
 
@@ -32,6 +33,8 @@ Response fields added (also stored in the job `resultJson`):
 | `schemaValid` | Only with `responseSchema`: `true` when `json` was found and validated with no errors. |
 | `errors` | Only with `responseSchema`: validation errors with JSON paths, e.g. `$.verdict: must be one of "allow", "block"` (at most 50). |
 | `schemaMode` | Only with `responseSchema`: `native` when the provider also enforced the schema with its own structured output, else `prompt`. |
+| `vision` | `true` when the resolved provider accepts generate images (`GenerateVision`). Also reported per provider by `GET /ai-session/providers/configured`. |
+| `imageCount` | Number of validated images forwarded with this call. |
 
 `POST /ai-session/execute` responses (sync body and async job result) now also carry `isolation` and
 `isolationMechanism`. Nothing else in either response changed.
@@ -79,6 +82,51 @@ required; no `const`, `pattern`, `minLength` or `maxLength`; enum values matchin
 than 250 values). The root `$schema` keyword is stripped. Anything else is prompt-only rather than
 risking a 400, and if the API still rejects the schema (`invalid_json_schema` on
 `text.format.schema`, refused before generation and not billed), Codex reruns once in prompt mode.
+
+## Images (vision)
+
+Image inputs exist so a reviewer can see what a user saw, including text injected into an image.
+They never weaken the tool-free boundary: the tool surface of a vision call is exactly that of a
+text call, and providers only receive bytes RedCompute has validated.
+
+- A provider without `GenerateVision` answers HTTP 422 `vision_unavailable` before any image is
+  decoded. Callers fail closed; images are never silently dropped.
+- Refused images answer HTTP 422 `invalid_images` with an `errors` array (`images[1]: ...`).
+- Limits: at most 4 images, 5 MiB each (checked before base64 decoding or reading a staged file),
+  at most 4096 px per side (and 4096 x 4096 pixels). PNG, JPEG, still WebP, GIF.
+- Validation (`GenerateImageValidator`): the format sniff must match the declared media type; the
+  container is walked structurally (PNG chunk CRCs through `IEND` with nothing after it, JPEG
+  markers to a scan with the data ending in `EOI`, GIF trailer, WebP RIFF size), because the Windows
+  decoder (WIC) silently fills in truncated PNG and JPEG data; dimensions come from the header and
+  are checked before any pixel buffer exists, so a decompression bomb is refused without decoding;
+  then WIC fully decodes the first frame (one decode at a time) and its size must match the header.
+- PNG, JPEG and still WebP bytes are forwarded unchanged. A GIF or an animated PNG becomes its
+  first frame, re-encoded as PNG from the decoded pixels (no metadata is carried over). Animated
+  WebP is refused: WIC cannot decode it.
+- An attachment owned by another caller reads the same as a missing one. Jobs record each image's
+  media type, size, dimensions and SHA-256, never its bytes.
+- Large images are best sent by `attachmentId`: four 5 MiB images as base64 approach the 30 MB
+  default request body limit.
+
+Claude Code: images travel inline as base64 `image` blocks in one stream-json user message on stdin
+(`--input-format stream-json`); nothing is written to disk. The launch keeps `--tools ""`,
+`--strict-mcp-config` and the empty MCP config, and the init event must still list zero tools.
+Verified live with 2.1.308 (haiku): init `tools=[]`, `mcp_servers=[]`, answer
+`IMAGE: ORCHID 7319; FILES: NOTOOLS` for the fixture image plus a request to read `C:\Windows\win.ini`.
+
+Codex, tool-free: images are not given to Codex at all. Codex 0.163's `--image` flag re-encodes
+large images (a 3000x2000 PNG reached the wire as 1920x1280) and adds text parts announcing the file
+path, so the relay could not prove which bytes reached the model. Instead the relay keeps only
+`input_text`/`output_text` parts in every message (removing any image, file or unknown part Codex
+sends) and appends the validated images as `input_image` data URLs to the final user message of
+each model request. The call is verified only if every request carried every image; the evidence
+records each injected image's SHA-256. Verified live (ChatGPT sign-in): answer
+`IMAGE: ORCHID 7319; FILES: NOTOOLS`, injected SHA-256 equal to the fixture's, 11 tool definitions
+removed, no refusals.
+
+Codex without `requireToolFree` passes images with one `--image=<file>` per image from a private
+temporary directory outside the empty working directory, deleted after the call (this path keeps
+Codex's tools, as before, and reports `sandboxed-best-effort`).
 
 ## Runtime status
 

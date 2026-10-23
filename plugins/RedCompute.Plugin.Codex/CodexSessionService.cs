@@ -154,13 +154,17 @@ public class CodexSessionService
     /// </summary>
     public Task<ExecuteResult> ExecuteGenerateAsync(
         string prompt, string? model, int timeout, CancellationToken ct, string? effort = null,
-        ResponseSchema? responseSchema = null)
+        ResponseSchema? responseSchema = null, IReadOnlyList<GenerateImage>? images = null)
         => WithSchemaFallbackAsync(responseSchema, async strictSchema =>
         {
             using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
             using var schema = OutputSchemaFile.Create(strictSchema);
+            using var imageFiles = ImageFiles.Create(images);
+            var args = new List<string>();
+            if (schema != null) args.AddRange(schema.Args);
+            if (imageFiles != null) args.AddRange(imageFiles.Args);
             var result = await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
-                timeout, ct, effort: effort, extraArgs: schema?.Args);
+                timeout, ct, effort: effort, extraArgs: args);
             return result with
             {
                 Isolation = SessionIsolation.SandboxedBestEffort,
@@ -176,19 +180,26 @@ public class CodexSessionService
     /// shows no tool item; otherwise the call fails closed without model text. Nothing is retried
     /// behind the caller's back (see <see cref="ToolFreeExecArgs"/>), so one call is billed once.
     /// </summary>
+    /// <remarks>
+    /// Images are not handed to Codex at all. Codex's own <c>--image</c> flag re-encodes large images
+    /// (0.163 sent a 3000x2000 PNG as 1920x1280) and announces the file path to the model, so the
+    /// relay could not prove which bytes reached it. Instead the relay injects the validated bytes
+    /// into each model request itself and the call is verified only if every request carried them.
+    /// </remarks>
     public Task<ExecuteResult> ExecuteToolFreeGenerateAsync(
         string prompt, string? model, int timeout, CancellationToken ct, string? effort = null,
-        ResponseSchema? responseSchema = null, Action<ToolFreeEvidence>? evidence = null)
+        ResponseSchema? responseSchema = null, Action<ToolFreeEvidence>? evidence = null,
+        IReadOnlyList<GenerateImage>? images = null)
         => WithSchemaFallbackAsync(responseSchema, strictSchema =>
-            ExecuteToolFreeGenerateOnceAsync(prompt, model, timeout, ct, effort, strictSchema, evidence));
+            ExecuteToolFreeGenerateOnceAsync(prompt, model, timeout, ct, effort, strictSchema, evidence, images));
 
     private async Task<ExecuteResult> ExecuteToolFreeGenerateOnceAsync(
         string prompt, string? model, int timeout, CancellationToken ct, string? effort,
-        string? strictSchema, Action<ToolFreeEvidence>? evidence)
+        string? strictSchema, Action<ToolFreeEvidence>? evidence, IReadOnlyList<GenerateImage>? images)
     {
         using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
         using var schema = OutputSchemaFile.Create(strictSchema);
-        using var lease = await ToolFreeRelay.OpenAsync(ct);
+        using var lease = await ToolFreeRelay.OpenAsync(ct, images);
 
         var args = ToolFreeExecArgs(lease.BaseUrl, timeout);
         if (schema != null) args.AddRange(schema.Args);
@@ -358,6 +369,43 @@ public class CodexSessionService
             }
         }
         return found;
+    }
+
+    /// <summary>
+    /// Validated images for the non-tool-free path's --image flag, written to a private directory
+    /// outside the empty working directory and deleted with the call.
+    /// </summary>
+    private sealed class ImageFiles : IDisposable
+    {
+        private readonly IsolatedWorkingDirectory _directory;
+
+        private ImageFiles(IReadOnlyList<GenerateImage> images)
+        {
+            _directory = IsolatedWorkingDirectory.Create("redcompute-codex-images");
+            var args = new List<string>();
+            for (var i = 0; i < images.Count; i++)
+            {
+                var extension = images[i].MediaType switch
+                {
+                    "image/jpeg" => ".jpg",
+                    "image/webp" => ".webp",
+                    _ => ".png",
+                };
+                var path = Path.Combine(_directory.Path, $"image-{i + 1}{extension}");
+                File.WriteAllBytes(path, images[i].Bytes);
+                // One "--image=" per file: the flag takes several values, so a bare "-i" could
+                // swallow whatever argument follows it.
+                args.Add($"--image={path}");
+            }
+            Args = args;
+        }
+
+        public IReadOnlyList<string> Args { get; }
+
+        public static ImageFiles? Create(IReadOnlyList<GenerateImage>? images)
+            => images is { Count: > 0 } ? new ImageFiles(images) : null;
+
+        public void Dispose() => _directory.Dispose();
     }
 
     /// <summary>A response schema written where only Codex reads it, outside the empty working directory.</summary>
