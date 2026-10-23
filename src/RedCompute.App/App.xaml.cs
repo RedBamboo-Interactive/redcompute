@@ -282,15 +282,11 @@ public partial class App : Application
         foreach (var (slug, entry) in Registry.Capabilities)
         {
             if (entry.ActiveProvider == null) continue;
-            if (!ShouldStartAtBoot(slug)) continue;
             tasks.Add(StartCapability(slug, entry));
         }
         await Task.WhenAll(tasks);
         PlannedRestartCheckpoint.Consume();
     }
-
-    internal static bool ShouldStartAtBoot(string capabilitySlug)
-        => string.Equals(capabilitySlug, "ai-session", StringComparison.OrdinalIgnoreCase);
 
     private async Task StartCapability(string slug, CapabilityEntry entry)
     {

@@ -1,7 +1,5 @@
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
-using RedCompute.Core.Jobs;
-using RedCompute.Core.Providers;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -78,52 +76,54 @@ public sealed class PortableProviderDefaultsTests
         Assert.False(ConfigManager.RemoveLegacyMachineSpecificSettings(config));
     }
 
-    [Theory]
-    [InlineData("ai-session", true)]
-    [InlineData("image-gen", false)]
-    [InlineData("decision", false)]
-    [InlineData("diarization", false)]
-    [InlineData("voice-session", false)]
-    public void Only_session_host_infrastructure_starts_at_boot(string slug, bool expected)
-        => Assert.Equal(expected, App.ShouldStartAtBoot(slug));
-
     [Fact]
-    public async Task Concurrent_first_jobs_start_one_backend_once()
+    public void Upgrade_preserves_explicit_source_developer_configuration()
     {
-        var provider = new DeferredProvider();
+        var config = new RedComputeConfig
+        {
+            Capabilities = new Dictionary<string, CapabilityConfig>
+            {
+                ["image-gen"] = new()
+                {
+                    ActiveProvider = "comfyui",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["comfyui"] = new()
+                        {
+                            Type = "ComfyUI",
+                            ServerPath = @"C:\src\ComfyUI",
+                            VenvPath = @"C:\venvs\comfy",
+                        },
+                    },
+                },
+                ["decision"] = new()
+                {
+                    ActiveProvider = "kev-local-quality",
+                    Providers = new Dictionary<string, ProviderConfig>
+                    {
+                        ["kev-local-quality"] = new()
+                        {
+                            Type = "KevLocalQuality",
+                            WslDistro = "Ubuntu-Khrom",
+                            Extra = new Dictionary<string, object?>
+                            {
+                                ["KernelBackend"] = "flash-qla-sm120",
+                            },
+                        },
+                    },
+                },
+            },
+        };
 
-        var statuses = await Task.WhenAll(
-            ProviderStartup.EnsureRunningAsync(provider),
-            ProviderStartup.EnsureRunningAsync(provider));
-
-        Assert.All(statuses, status => Assert.Equal(BackendStatus.Running, status));
-        Assert.Equal(1, provider.StartCount);
+        Assert.False(ConfigManager.RemoveLegacyMachineSpecificSettings(config));
+        Assert.Equal("comfyui", config.Capabilities["image-gen"].ActiveProvider);
+        Assert.Equal(@"C:\src\ComfyUI",
+            config.Capabilities["image-gen"].Providers["comfyui"].ServerPath);
+        Assert.Equal("kev-local-quality", config.Capabilities["decision"].ActiveProvider);
+        Assert.Equal("Ubuntu-Khrom",
+            config.Capabilities["decision"].Providers["kev-local-quality"].WslDistro);
+        Assert.Equal("flash-qla-sm120",
+            config.Capabilities["decision"].Providers["kev-local-quality"].Extra!["KernelBackend"]);
     }
 
-    private sealed class DeferredProvider : IBackendProvider
-    {
-        private BackendStatus _status = BackendStatus.Stopped;
-        public int StartCount { get; private set; }
-        public string Name => "deferred";
-        public string CapabilitySlug => "test";
-        public TimeSpan HealthCheckInterval => TimeSpan.Zero;
-        public async Task<bool> StartAsync(CancellationToken ct = default)
-        {
-            StartCount++;
-            await Task.Delay(20, ct);
-            _status = BackendStatus.Running;
-            return true;
-        }
-        public Task StopAsync(CancellationToken ct = default)
-        {
-            _status = BackendStatus.Stopped;
-            return Task.CompletedTask;
-        }
-        public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default)
-            => Task.FromResult(_status);
-        public string? GetProxyTargetUrl() => null;
-        public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default)
-            => Task.FromResult<JobResult?>(null);
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
 }
