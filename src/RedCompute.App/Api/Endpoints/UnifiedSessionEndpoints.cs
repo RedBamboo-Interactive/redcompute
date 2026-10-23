@@ -1819,9 +1819,8 @@ public static class UnifiedSessionEndpoints
         {
             ctx.Items["Telemetry.Kind"] = "job";
 
-            JsonElement body;
-            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
-            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            var (body, bodyError) = await ReadGenerateBodyAsync(ctx);
+            if (bodyError != null) return bodyError;
 
             var (q, qualityError) = ResolveQuality(ctx, body);
             if (qualityError != null) return qualityError;
@@ -1841,7 +1840,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("system", "string", description: "System prompt", location: ParamLocation.Body)
             .WithParam("maxTokens", "integer", description: "Maximum tokens to generate, clamped to 1-8192", defaultValue: 1024, location: ParamLocation.Body)
             .WithParam("requireToolFree", "boolean", description: "Require a runtime that enforces and verifies an empty tool surface. The response reports isolation 'verified-tool-free' or the call fails (422 tool_free_unavailable before running, 502 tool_free_unverified after).", defaultValue: false, location: ParamLocation.Body)
-            .WithParam("images", "array", description: "Optional images for the final user message, at most 4: each { attachmentId } (staged via POST /ai-session/input-attachments) or { mediaType, base64 }. PNG, JPEG, still WebP or GIF (first frame), at most 5 MiB and 4096 px per side; every image is decoded and validated before forwarding. Providers without vision answer 422 vision_unavailable; refused images answer 422 invalid_images.", location: ParamLocation.Body)
+            .WithParam("images", "array", description: "Optional images for the final user message, at most 4: each { attachmentId } (staged via POST /ai-session/input-attachments) or { mediaType, base64 }. PNG, JPEG, still WebP or GIF (first frame), at most 5 MiB and 4096 px per side; every image is decoded, validated and re-encoded as PNG before forwarding. Bodies over 32 MiB answer 413 request_too_large. Providers without vision answer 422 vision_unavailable; refused images answer 422 invalid_images.", location: ParamLocation.Body)
             .WithParam("responseSchema", "object", description: "Optional JSON Schema (bounded subset: type, properties, required, additionalProperties, items, enum, const, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minItems, maxItems, title, description). Enforced natively where the provider supports strict structured output, otherwise by prompt; RedCompute always validates and returns json, schemaValid, errors and schemaMode.", location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Session provider to use (defaults to active provider)", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Reasoning effort level (provider-specific)", location: ParamLocation.Body)
@@ -1969,7 +1968,7 @@ public static class UnifiedSessionEndpoints
             images = images.Select(image => new
             {
                 mediaType = image.MediaType, width = image.Width, height = image.Height,
-                bytes = image.Bytes.Length, sha256 = image.Sha256,
+                bytes = image.Bytes.Length, sha256 = image.Sha256, sourceSha256 = image.SourceSha256,
             }),
         });
         var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) ? jn.ToString() : null;
@@ -2023,6 +2022,40 @@ public static class UnifiedSessionEndpoints
     }
 
     /// <summary>
+    /// Generate's request body limit. Kestrel's 30,000,000-byte default cannot hold four images at
+    /// the base64 cap (4 x <see cref="GenerateImageValidator.MaxBase64Length"/> is about 28 MB) plus a
+    /// prompt, so this route alone allows 32 MiB; other routes keep the default.
+    /// </summary>
+    internal const long MaxGenerateBodyBytes = 32L * 1024 * 1024;
+
+    internal static async Task<(JsonElement Body, IResult? Error)> ReadGenerateBodyAsync(HttpContext ctx)
+    {
+        var limit = ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+        if (limit is { IsReadOnly: false })
+            limit.MaxRequestBodySize = MaxGenerateBodyBytes;
+        if (ctx.Request.ContentLength > MaxGenerateBodyBytes)
+            return (default, GenerateBodyTooLarge());
+
+        try
+        {
+            return (await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted), null);
+        }
+        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        {
+            return (default, GenerateBodyTooLarge());
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return (default, Error(400, "invalid_body", "Request body must be valid JSON"));
+        }
+    }
+
+    private static IResult GenerateBodyTooLarge()
+        => Error(413, "request_too_large",
+            $"Generate request bodies are limited to {MaxGenerateBodyBytes} bytes; send large images by attachmentId " +
+            "(POST /ai-session/input-attachments) instead of base64");
+
+    /// <summary>
     /// Reads <c>images</c> for generate: up to <see cref="GenerateImageValidator.MaxImages"/> entries,
     /// each either <c>{ attachmentId }</c> (an image staged through <c>/ai-session/input-attachments</c>
     /// by the same caller) or <c>{ mediaType, base64 }</c>, the shapes session messages already use.
@@ -2052,16 +2085,24 @@ public static class UnifiedSessionEndpoints
         foreach (var entry in imagesValue.EnumerateArray())
         {
             var path = $"images[{index++}]";
-            var (bytes, declared, readError) = await ReadImageBytesAsync(entry, userId, ctx.RequestAborted);
-            if (readError != null)
+            try
             {
-                errors.Add($"{path}: {readError}");
-                continue;
-            }
+                var (bytes, declared, readError) = await ReadImageBytesAsync(entry, userId, ctx.RequestAborted);
+                if (readError != null)
+                {
+                    errors.Add($"{path}: {readError}");
+                    continue;
+                }
 
-            var (image, error) = await GenerateImageValidator.ValidateAsync(bytes!, declared, ctx.RequestAborted);
-            if (error != null) errors.Add($"{path}: {error}");
-            else images.Add(image!);
+                var (image, error) = await GenerateImageValidator.ValidateAsync(bytes!, declared, ctx.RequestAborted);
+                if (error != null) errors.Add($"{path}: {error}");
+                else images.Add(image!);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Hostile images must never become a 500: anything unexpected is a refusal.
+                errors.Add($"{path}: image could not be read ({ex.GetType().Name})");
+            }
         }
 
         return errors.Count > 0 ? ([], InvalidImages(errors)) : (images, null);

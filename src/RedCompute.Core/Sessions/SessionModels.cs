@@ -50,11 +50,14 @@ public record SessionGenerateRequest(
     ResponseSchema? ResponseSchema = null, IReadOnlyList<GenerateImage>? Images = null);
 
 /// <summary>
-/// One generate image input after RedCompute decoded and validated it. <see cref="Bytes"/> are exactly
-/// what a provider forwards: the caller's PNG, JPEG or WebP unchanged, or the first frame of a GIF
-/// re-encoded as PNG. Providers never receive the caller's raw input.
+/// One generate image input after RedCompute decoded and validated it. <see cref="Bytes"/> are what a
+/// provider forwards: always a fresh PNG re-encoded from the decoded pixels (first frame, EXIF
+/// orientation applied, downscaled if needed to stay within the size limit), never the caller's
+/// bytes. <see cref="Sha256"/> identifies those forwarded bytes; <see cref="SourceSha256"/> the
+/// caller's original, for audit.
 /// </summary>
-public sealed record GenerateImage(string MediaType, byte[] Bytes, int Width, int Height, string Sha256)
+public sealed record GenerateImage(string MediaType, byte[] Bytes, int Width, int Height, string Sha256,
+    string? SourceSha256 = null)
 {
     public string Base64 => Convert.ToBase64String(Bytes);
     public string DataUrl => $"data:{MediaType};base64,{Base64}";

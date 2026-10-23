@@ -349,6 +349,164 @@ public sealed class GenerateModeTests
         Assert.Contains(response.RootElement.GetProperty("errors").EnumerateArray(), e => e.GetString()!.Contains(expected));
     }
 
+    [Theory]
+    [InlineData(20_000)]
+    [InlineData(40_000)]
+    public async Task GenerateEndpoint_RefusesAGifBombAsInvalidImagesNotA500(int side)
+    {
+        var gif = GifWithHugeFrame(side);
+
+        var result = await InvokeGenerateAsync(Vision,
+            extra: new() { ["images"] = new[] { new { mediaType = "image/gif", base64 = Convert.ToBase64String(gif) } } });
+
+        Assert.Equal(422, result.StatusCode);
+        Assert.Equal(0, result.GenerateCalls);
+        Assert.Contains($"images[0]: GIF frame is {side}x{side}", result.Body);
+    }
+
+    [Fact]
+    public async Task GenerateEndpoint_TurnsAnUnexpectedImageReadFailureIntoInvalidImages()
+    {
+        var png = GenerateImageValidatorTests.Encode(new System.Windows.Media.Imaging.PngBitmapEncoder(), 8, 8);
+        var result = await InvokeGenerateAsync(Vision,
+            stage: async (store, extra) =>
+            {
+                var staged = await store.UploadBytesAsync(png, "gone.png", "image/png", "local-user");
+                // The staged file vanishes between staging and use (cleanup, disk error, ...).
+                File.SetAttributes(staged.StoredPath, FileAttributes.Normal);
+                File.Delete(staged.StoredPath);
+                extra["images"] = new object[] { new { attachmentId = staged.Id } };
+            });
+
+        Assert.Equal(422, result.StatusCode);
+        Assert.Contains("images[0]: image could not be read (FileNotFoundException)", result.Body);
+    }
+
+    [Fact]
+    public async Task GenerateBody_RaisesOnlyItsOwnLimitAndAnswers413WhenExceeded()
+    {
+        var limit = new BodySizeFeature();
+        var allowed = new DefaultHttpContext();
+        allowed.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>(limit);
+        allowed.Request.ContentType = "application/json";
+        allowed.Request.Body = new MemoryStream("{}"u8.ToArray());
+        var (_, error) = await UnifiedSessionEndpoints.ReadGenerateBodyAsync(allowed);
+        Assert.Null(error);
+        Assert.Equal(UnifiedSessionEndpoints.MaxGenerateBodyBytes, limit.MaxRequestBodySize);
+        Assert.True(UnifiedSessionEndpoints.MaxGenerateBodyBytes >
+            GenerateImageValidator.MaxImages * (long)GenerateImageValidator.MaxBase64Length + 1_000_000);
+
+        var declared = new DefaultHttpContext();
+        declared.Request.ContentType = "application/json";
+        declared.Request.ContentLength = UnifiedSessionEndpoints.MaxGenerateBodyBytes + 1;
+        Assert.Equal(413, await StatusOf(declared));
+
+        var streamed = new DefaultHttpContext();
+        streamed.Request.ContentType = "application/json";
+        streamed.Request.Body = new ThrowingBody(new BadHttpRequestException("too large", 413));
+        Assert.Equal(413, await StatusOf(streamed));
+
+        var malformed = new DefaultHttpContext();
+        malformed.Request.ContentType = "application/json";
+        malformed.Request.Body = new MemoryStream("{not json"u8.ToArray());
+        Assert.Equal(400, await StatusOf(malformed));
+    }
+
+    [Fact]
+    public async Task GenerateOverKestrel_AcceptsABodyAboveTheServerDefaultAndRefusesOneAboveItsLimit()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var provider = CreateProvider(Vision);
+        var builder = WebApplication.CreateSlimBuilder();
+        Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(builder.WebHost, "http://127.0.0.1:0");
+        await using var app = builder.Build();
+        UnifiedSessionEndpoints.Map(new EndpointRegistry(app), Register(provider), new MemoryJobTracker(),
+            (_, _) => { }, f.Config, attachmentStore: f.Attachments, inputQueue: f.Service());
+        await app.StartAsync();
+        var address = app.Urls.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+
+        async Task<int> PostAsync(int padding, bool chunked, bool expectContinue = false)
+        {
+            var json = JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+            {
+                ["provider"] = "test",
+                ["messages"] = new[] { new { role = "user", content = "hello" } },
+                ["padding"] = new string('x', padding),
+            });
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/ai-session/generate");
+            request.Headers.Add("X-System-Reason", "body limit contract test");
+            request.Headers.ExpectContinue = expectContinue;
+            request.Content = chunked
+                ? new StreamContent(new NonSeekable(json))
+                : new ByteArrayContent(json);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            using var response = await client.SendAsync(request);
+            return (int)response.StatusCode;
+        }
+
+        // Kestrel's own default (30,000,000 bytes) would refuse this one.
+        Assert.Equal(200, await PostAsync(31_000_000, chunked: false));
+        Assert.Equal(200, await PostAsync(31_000_000, chunked: true));
+        // A refused upload is answered before the client finishes sending. Only a client that
+        // waits for 100-continue reliably reads that 413 instead of a reset connection; the
+        // streamed-over-limit path is covered by GenerateBody_RaisesOnlyItsOwnLimitAndAnswers413WhenExceeded.
+        Assert.Equal(413, await PostAsync(34_000_000, chunked: false, expectContinue: true));
+        await app.StopAsync();
+    }
+
+    private static async Task<int> StatusOf(HttpContext context)
+    {
+        var (_, error) = await UnifiedSessionEndpoints.ReadGenerateBodyAsync(context);
+        Assert.NotNull(error);
+        context.RequestServices = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(
+            Microsoft.Extensions.DependencyInjection.LoggingServiceCollectionExtensions.AddLogging(
+                new Microsoft.Extensions.DependencyInjection.ServiceCollection()));
+        context.Response.Body = new MemoryStream();
+        await error.ExecuteAsync(context);
+        return context.Response.StatusCode;
+    }
+
+    private static byte[] GifWithHugeFrame(int side)
+    {
+        var encoder = new System.Windows.Media.Imaging.GifBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(System.Windows.Media.Imaging.BitmapSource.Create(
+            2, 2, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, new byte[16], 8)));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        var gif = stream.ToArray();
+        var offset = 13 + ((gif[10] & 0x80) != 0 ? 3 << ((gif[10] & 7) + 1) : 0);
+        while (gif[offset] == 0x21)
+        {
+            offset += 2;
+            while (gif[offset] != 0) offset += gif[offset] + 1;
+            offset++;
+        }
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(gif.AsSpan(offset + 5), (ushort)side);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(gif.AsSpan(offset + 7), (ushort)side);
+        return gif;
+    }
+
+    private sealed class BodySizeFeature : Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature
+    {
+        public bool IsReadOnly => false;
+        public long? MaxRequestBodySize { get; set; } = 30_000_000;
+    }
+
+    private sealed class ThrowingBody(Exception error) : MemoryStream
+    {
+        public override int Read(byte[] buffer, int offset, int count) => throw error;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => throw error;
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => throw error;
+    }
+
+    /// <summary>Forces chunked transfer: HttpClient cannot learn its length.</summary>
+    private sealed class NonSeekable(byte[] data) : MemoryStream(data)
+    {
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+    }
+
     [Fact]
     public async Task GenerateEndpoint_WithoutImagesReportsVisionCapabilityAndZeroImages()
     {
