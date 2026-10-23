@@ -80,7 +80,7 @@ public sealed class KevLocalQualityProvider :
         _requestTimeout = TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSeconds ?? 120, 1, 600));
         _mergeLora = ExtraBool(config, "MergeLora", false);
         _dtype = ExtraString(config, "Dtype") ?? "bfloat16";
-        _kernelBackend = ExtraString(config, "KernelBackend") ?? "flash-qla-sm120";
+        _kernelBackend = ExtraString(config, "KernelBackend") ?? "sidecar-default";
 
         if (!Uri.TryCreate(config.Endpoint, UriKind.Absolute, out var endpoint) ||
             endpoint.Scheme is not ("http" or "https") ||

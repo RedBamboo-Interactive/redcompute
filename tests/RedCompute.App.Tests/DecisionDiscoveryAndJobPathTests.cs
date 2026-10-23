@@ -86,7 +86,8 @@ public sealed class DecisionDiscoveryAndJobPathTests
         Assert.Null(kev.LaunchCommand);
         Assert.False(Assert.IsType<bool>(kev.Extra!["MergeLora"]));
         Assert.Equal("bfloat16", kev.Extra["Dtype"]);
-        Assert.Equal("flash-qla-sm120", kev.Extra["KernelBackend"]);
+        Assert.False(kev.Extra.ContainsKey("KernelBackend"));
+        Assert.Null(kev.WslDistro);
     }
 
     [Fact]

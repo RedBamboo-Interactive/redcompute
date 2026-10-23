@@ -26,6 +26,7 @@ public sealed class PortableProviderDefaultsTests
         var json = System.Text.Json.JsonSerializer.Serialize(ConfigManager.CreateDefault());
 
         Assert.DoesNotContain(@"T:\Projects", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("flash-qla-sm120", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

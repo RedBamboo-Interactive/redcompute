@@ -357,8 +357,8 @@ public class ConfigManager
                         ["local-wsl"] = new()
                         {
                             Type = "SttLocal",
-                            WslDistro = "Ubuntu-24.04",
-                            VenvPath = "~/stt-env",
+                            WslDistro = null,
+                            VenvPath = null,
                             ServerPath = BundledBackendPath("stt-local"),
                             BackendPort = 8766,
                             HealthEndpoint = "/health",
@@ -368,8 +368,8 @@ public class ConfigManager
                         ["local-wsl-turbo"] = new()
                         {
                             Type = "SttLocal",
-                            WslDistro = "Ubuntu-24.04",
-                            VenvPath = "~/stt-env",
+                            WslDistro = null,
+                            VenvPath = null,
                             ServerPath = BundledBackendPath("stt-local"),
                             BackendPort = 8767,
                             HealthEndpoint = "/health",
@@ -457,13 +457,12 @@ public class ConfigManager
                             CalibrationRevision = "temperature-2.2973967099940698",
                             TimeoutSeconds = 120,
                             StartupTimeoutSeconds = 180,
-                            WslDistro = "Ubuntu-24.04",
+                            WslDistro = null,
                             Extra = new Dictionary<string, object?>
                             {
                                 ["MergeLora"] = false,
                                 ["BaseModelRevision"] = "68c46c4b3498877f3ef123c856ecfde50c39f404",
                                 ["Dtype"] = "bfloat16",
-                                ["KernelBackend"] = "flash-qla-sm120",
                             }
                         }
                     }
