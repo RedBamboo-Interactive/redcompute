@@ -135,7 +135,7 @@ public interface ISessionProvider
     }
 
     private static SessionInputDeliveryResult NotWritable(string sessionId, UnifiedSessionInfo info)
-        => info.Status == SessionStatus.Stopped && SessionStopReasons.IsRestartRecoverable(info.StopReason)
+        => info.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(info.StopReason)
             ? SessionInputDeliveryResult.Unavailable("session_restarting",
                 $"Session '{sessionId}' lost its process and will resume", retryable: true)
             : SessionInputDeliveryResult.Unavailable("session_not_writable",
@@ -241,3 +241,21 @@ public interface IImageAttachmentSupportProvider
 }
 
 public sealed record ImageAttachmentSupport(bool Supported, string? Reason = null);
+
+/// <summary>
+/// Optional contract for providers whose persistent sessions own resident processes that can be
+/// released without ending the logical session or completing its compute job.
+/// </summary>
+public interface IIdleSessionParkingProvider
+{
+    string ProviderId { get; }
+
+    /// <summary>Only live, provider-owned processes whose main session loop is currently idle.</summary>
+    IReadOnlyList<UnifiedSessionInfo> GetResidentIdleSessions();
+
+    /// <summary>
+    /// Atomically rechecks provider-local eligibility and parks the process. A successful park
+    /// persists a resumable stopped shell and publishes session.updated, never session.ended.
+    /// </summary>
+    Task<bool> TryParkIdleSessionAsync(string sessionId, string stopReason, CancellationToken ct = default);
+}

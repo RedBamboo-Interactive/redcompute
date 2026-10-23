@@ -717,6 +717,29 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     }
 
     [Fact]
+    public async Task Idle_parking_updates_without_terminal_event_and_explicit_stop_reclassifies_it()
+    {
+        var (service, store, _, id) = StartSession();
+        var updates = new List<ClaudeSessionInfo>();
+        var ended = new List<(string Reason, string? StopReason)>();
+        service.SessionUpdated += info => updates.Add(info);
+        service.SessionEnded += (_, reason, stopReason) => ended.Add((reason, stopReason));
+        Feed(service, id, SystemInit(), Result());
+        updates.Clear();
+
+        Assert.True(await service.TryParkIdleSessionAsync(id, SessionStopReasons.IdleTimeout));
+        var parked = store.FindSession(id)!;
+        Assert.Equal("Stopped", parked.Status);
+        Assert.Equal(SessionStopReasons.IdleTimeout, parked.StopReason);
+        Assert.Single(updates);
+        Assert.Empty(ended);
+
+        await service.StopSession(id);
+        Assert.Equal(SessionStopReasons.UserStopped, store.FindSession(id)!.StopReason);
+        Assert.Single(ended);
+    }
+
+    [Fact]
     public async Task Process_exit_mid_thinking_persists_the_partial_block_once()
     {
         Process? cli = null;

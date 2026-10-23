@@ -105,7 +105,7 @@ internal sealed class SessionPromptCallbacks
                 if (!cancelled && executionObserved) { Save(entry with { ActiveSeen = true, PauseReason = null }); continue; }
                 if (!cancelled && (observedActive || session!.Status == SessionStatus.Active)) continue;
                 var restartPaused = !cancelled && session!.Status == SessionStatus.Stopped
-                    && session.StopReason is "maintenance_restart" or "orphaned_on_restart";
+                    && SessionStopReasons.IsAutoResumable(session.StopReason);
                 var paused = restartPaused || !cancelled && session!.Status == SessionStatus.Stopped
                     && session.StopReason == "usage_limit";
                 // A recoverable stop which durably predates this exact prompt did not interrupt it.
@@ -176,7 +176,7 @@ internal sealed class SessionPromptCallbacks
             using var doc = JsonDocument.Parse(entry.Payload!);
             var pauseReason = doc.RootElement.GetProperty("stopReason").GetString();
             var paused = doc.RootElement.GetProperty("status").GetString() == "Stopped"
-                && pauseReason is "maintenance_restart" or "orphaned_on_restart" or "usage_limit";
+                && (SessionStopReasons.IsAutoResumable(pauseReason) || pauseReason == "usage_limit");
             if (paused) Save(latest with { Payload = null, PauseReason = latest.ActiveSeen ? null : pauseReason, Attempts = 0, NextAttemptAt = null });
             else { _entries.Remove(key); _store.Remove(entry.SessionId, entry.CallbackId); }
         }

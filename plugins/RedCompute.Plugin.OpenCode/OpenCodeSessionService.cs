@@ -87,9 +87,6 @@ public class OpenCodeSessionService
         RecoverSessions();
     }
 
-    private static readonly TimeSpan IdleTtl = TimeSpan.FromHours(48);
-    private Timer? _reaperTimer;
-
     private void RecoverSessions()
     {
         try
@@ -113,44 +110,6 @@ public class OpenCodeSessionService
             _log($"[OpenCode] Failed to recover sessions: {ex.Message}", null);
         }
 
-        _reaperTimer = new Timer(_ => ReapExpiredSessions(), null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(24));
-    }
-
-    private void ReapExpiredSessions()
-    {
-        try
-        {
-            var cutoff = DateTimeOffset.UtcNow - IdleTtl;
-            foreach (var (id, session) in _sessions)
-            {
-                var lastActivity = session.Info.StartedAt;
-                if (lastActivity >= cutoff) continue;
-
-                _log($"[OpenCode] Reaping expired session {id} ({session.Info.ProjectName}, idle since {lastActivity:u})", null);
-                _ = StopSession(id, reason: "idle_ttl_expired");
-            }
-
-            var dbActive = _store.GetActiveSessions();
-            foreach (var s in dbActive)
-            {
-                if (_sessions.ContainsKey(s.Id)) continue;
-
-                var lastActivity = s.LastActivity ?? s.StartedAt;
-                if (lastActivity >= cutoff) continue;
-
-                _log($"[OpenCode] Reaping stale DB session {s.Id} ({s.ProjectName}, last activity {lastActivity:u})", null);
-                TryKillByPid(s.ProcessId);
-                s.Status = "Stopped";
-                s.StoppedAt = DateTimeOffset.UtcNow;
-                s.ProcessId = null;
-                _store.SaveSession(s);
-                SessionEnded?.Invoke(s.Id, "stopped");
-            }
-        }
-        catch (Exception ex)
-        {
-            _log($"[OpenCode] Reaper error: {ex.Message}", null);
-        }
     }
 
     // ===== ACP Interactive Session Methods =====
@@ -774,14 +733,17 @@ public class OpenCodeSessionService
 
         var record = _store.FindSession(sessionId);
         if (record == null) return;
-        if (record.Status is "Stopped" or "Error") return;
+        var requestedReason = reason ?? SessionStopReasons.UserStopped;
+        var explicitStopOfParked = requestedReason == SessionStopReasons.UserStopped
+            && SessionStopReasons.IsAutoResumable(record.StopReason);
+        if ((record.Status is "Stopped" or "Error") && !explicitStopOfParked) return;
 
         _log($"[OpenCode] Stopping unloaded session {sessionId} (PID {record.ProcessId})", null);
 
         TryKillByPid(record.ProcessId);
 
         record.Status = "Stopped";
-        record.StopReason = reason ?? "user_stopped";
+        record.StopReason = requestedReason;
         record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _store.SaveSession(record);
@@ -807,7 +769,7 @@ public class OpenCodeSessionService
 
             CleanupSessionResources(session);
 
-            if (!SessionStopReasons.IsRestartRecoverable(reason))
+            if (!SessionStopReasons.IsAutoResumable(reason))
                 CompleteSessionJob(session);
             PersistSessionRecord(session.Info);
 
@@ -819,20 +781,58 @@ public class OpenCodeSessionService
 
         var record = _store.FindSession(sessionId);
         if (record == null) return;
-        if ((record.Status is "Stopped" or "Error") && !SessionStopReasons.IsRestartRecoverable(reason)) return;
+        var requestedReason = reason ?? SessionStopReasons.UserStopped;
+        var explicitStopOfParked = requestedReason == SessionStopReasons.UserStopped
+            && SessionStopReasons.IsAutoResumable(record.StopReason);
+        if ((record.Status is "Stopped" or "Error")
+            && !SessionStopReasons.IsAutoResumable(requestedReason)
+            && !explicitStopOfParked) return;
 
         TryKillByPid(record.ProcessId);
 
         record.Status = "Stopped";
-        record.StopReason = reason ?? "user_stopped";
+        record.StopReason = requestedReason;
         record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _store.SaveSession(record);
 
-        if (!SessionStopReasons.IsRestartRecoverable(reason) && record.JobId.HasValue)
+        if (!SessionStopReasons.IsAutoResumable(requestedReason) && record.JobId.HasValue)
             _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "force_killed");
+    }
+
+    public IReadOnlyList<OpenCodeSessionInfo> GetResidentIdleSessions()
+        => _sessions.Values
+            .Where(session => session.Info.Status == "Idle")
+            .Select(session => session.Info)
+            .ToArray();
+
+    public Task<bool> TryParkIdleSessionAsync(
+        string sessionId, string stopReason, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!_sessions.TryGetValue(sessionId, out var session) || session.Info.Status != "Idle")
+            return Task.FromResult(false);
+        if (!_sessions.TryRemove(sessionId, out var removed) || !ReferenceEquals(session, removed))
+            return Task.FromResult(false);
+        if (session.Info.Status != "Idle")
+        {
+            _sessions.TryAdd(sessionId, session);
+            return Task.FromResult(false);
+        }
+
+        foreach (var (_, request) in session.PendingRequests)
+            request.TrySetCanceled();
+        session.PendingRequests.Clear();
+        CleanupSessionResources(session);
+        session.Info.Status = "Stopped";
+        session.Info.StopReason = stopReason;
+        session.Info.StoppedAt = DateTimeOffset.UtcNow;
+        session.Info.ProcessId = null;
+        PersistSessionRecord(session.Info);
+        SessionUpdated?.Invoke(session.Info);
+        return Task.FromResult(true);
     }
 
     // ===== JSON-RPC over NDJSON =====

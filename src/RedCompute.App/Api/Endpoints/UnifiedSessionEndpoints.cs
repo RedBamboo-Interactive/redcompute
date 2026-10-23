@@ -880,7 +880,7 @@ public static class UnifiedSessionEndpoints
                     messageUid,
                     attachmentIds,
                     idempotencyKey);
-                var resumeAttempted = IsRestartRecoverable(provider, info);
+                var resumeAttempted = IsAutoResumable(provider, info);
                 var admitted = await AdmitWithCurrentCallerAsync(ctx, provider, info, submission, _inputQueue!, ctx.RequestAborted);
                 var (_, currentInfo, _) = FindSessionAcrossProviders(registry, id);
                 var resumed = resumeAttempted && currentInfo?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
@@ -2335,14 +2335,14 @@ public static class UnifiedSessionEndpoints
         return (null, null, null);
     }
 
-    private static bool IsRestartRecoverable(ISessionProvider provider, UnifiedSessionInfo info)
+    private static bool IsAutoResumable(ISessionProvider provider, UnifiedSessionInfo info)
     {
         if (!provider.Capabilities.HasFlag(SessionCapabilities.Resume)
             || info.Status is not (SessionStatus.Stopped or SessionStatus.Error)
             || string.IsNullOrWhiteSpace(info.ProviderSessionId))
             return false;
 
-        if (info.StopReason is "maintenance_restart" or "orphaned_on_restart")
+        if (SessionStopReasons.IsAutoResumable(info.StopReason))
             return true;
 
         // OpenCode did not persist stop reasons before planned-restart recovery existed.

@@ -9,7 +9,8 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.OpenCode;
 
-public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider
+public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
+    IIdleSessionParkingProvider
 {
     private readonly string _capabilitySlug;
     private readonly OpenCodeSessionService _opencode;
@@ -134,6 +135,13 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         _opencode.ForceKill(sessionId, stopReason);
         return Task.CompletedTask;
     }
+
+    public IReadOnlyList<UnifiedSessionInfo> GetResidentIdleSessions()
+        => _opencode.GetResidentIdleSessions().Select(ToUnified).ToArray();
+
+    public Task<bool> TryParkIdleSessionAsync(
+        string sessionId, string stopReason, CancellationToken ct = default)
+        => _opencode.TryParkIdleSessionAsync(sessionId, stopReason, ct);
 
     public void DismissSession(string sessionId) => _opencode.DismissSession(sessionId);
 

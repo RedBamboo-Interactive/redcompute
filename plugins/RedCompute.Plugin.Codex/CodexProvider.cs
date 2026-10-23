@@ -10,7 +10,8 @@ using RedCompute.PluginSdk;
 namespace RedCompute.Plugin.Codex;
 
 public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider,
-    ISessionProvider, IImageAttachmentSupportProvider, IProviderUsageSource, ICliVersionManagedProvider
+    ISessionProvider, IIdleSessionParkingProvider, IImageAttachmentSupportProvider, IProviderUsageSource,
+    ICliVersionManagedProvider
 {
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
@@ -222,6 +223,13 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _codex.CancelExecution(sessionId);
         return _interactive.ForceKillAsync(sessionId, stopReason);
     }
+
+    public IReadOnlyList<UnifiedSessionInfo> GetResidentIdleSessions()
+        => _interactive.GetResidentIdleSessions().Select(ToUnified).ToArray();
+
+    public Task<bool> TryParkIdleSessionAsync(
+        string sessionId, string stopReason, CancellationToken ct = default)
+        => _interactive.TryParkIdleSessionAsync(sessionId, stopReason, ct);
 
     public void DismissSession(string sessionId) => _codex.DismissSession(sessionId);
 

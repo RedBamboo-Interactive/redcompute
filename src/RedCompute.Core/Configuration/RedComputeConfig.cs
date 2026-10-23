@@ -20,6 +20,12 @@ public class RedComputeConfig
     public int InputAttachmentMaxCount { get; set; } = 10;
     public long InputAttachmentMaxTurnSizeBytes { get; set; } = 50 * 1024 * 1024;
     public int InputAttachmentTtlMinutes { get; set; } = 24 * 60;
+    /// <summary>
+    /// How long an eligible idle AI session may retain its provider process. Zero disables
+    /// automatic parking. Eligibility is tracked by RedCompute and excludes queued input and
+    /// live background work.
+    /// </summary>
+    public int AiSessionIdleTimeoutMinutes { get; set; } = 60;
     public Dictionary<string, CapabilityConfig> Capabilities { get; set; } = new();
 }
 

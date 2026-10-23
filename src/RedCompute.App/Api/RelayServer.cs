@@ -370,6 +370,14 @@ public class RelayServer
 
         RegisterWsEvents(broadcaster, transcriptPipeline);
         _ = inputQueue.RunAsync(ct);
+        if (_config.AiSessionIdleTimeoutMinutes > 0)
+        {
+            var idleParking = new IdleSessionParkingCoordinator(
+                _registry, inputQueue,
+                TimeSpan.FromMinutes(_config.AiSessionIdleTimeoutMinutes),
+                _log);
+            _ = idleParking.RunAsync(ct);
+        }
 
         // Tunnel and autostart endpoints are skipped: the Leaf kernel owns the one tunnel
         // and the one autostart entry. The dormant tunnel service only satisfies the

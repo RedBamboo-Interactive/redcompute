@@ -22,6 +22,8 @@ public sealed class SessionRecoveryTests
     [Theory]
     [InlineData("maintenance_restart")]
     [InlineData("orphaned_on_restart")]
+    [InlineData("idle_timeout")]
+    [InlineData("idle_ttl_expired")]
     public async Task Accepted_pending_input_survives_reopen_and_delivers_once_without_second_message(string reason)
     {
         using var f = new Fixture(reason);

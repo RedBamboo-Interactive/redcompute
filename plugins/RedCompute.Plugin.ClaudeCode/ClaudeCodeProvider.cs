@@ -10,6 +10,7 @@ using RedCompute.PluginSdk;
 namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
+    IIdleSessionParkingProvider,
     IProviderUsageSource, ICliVersionManagedProvider
 {
     private readonly string _capabilitySlug;
@@ -187,6 +188,13 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public Task StopSessionAsync(string sessionId) => _claude.StopSession(sessionId);
     public Task ForceKillAsync(string sessionId) => _claude.ForceKill(sessionId);
     public Task ForceKillAsync(string sessionId, string stopReason) => _claude.ForceKill(sessionId, stopReason);
+
+    public IReadOnlyList<UnifiedSessionInfo> GetResidentIdleSessions()
+        => _claude.GetResidentIdleSessions().Select(ToUnified).ToArray();
+
+    public Task<bool> TryParkIdleSessionAsync(
+        string sessionId, string stopReason, CancellationToken ct = default)
+        => _claude.TryParkIdleSessionAsync(sessionId, stopReason, ct);
     public void DismissSession(string sessionId) => _claude.DismissSession(sessionId);
 
     // --- ISessionProvider: Messaging ---

@@ -412,6 +412,39 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
     public Task StopSessionAsync(string sessionId) => StopSessionAsync(sessionId, "user_stopped");
 
+    public IReadOnlyList<CodexSessionInfo> GetResidentIdleSessions()
+        => _sessions.Values
+            .Where(session => session.Info.Status == "Idle")
+            .Select(session => session.Info)
+            .ToArray();
+
+    public async Task<bool> TryParkIdleSessionAsync(
+        string sessionId, string stopReason, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!_sessions.TryGetValue(sessionId, out var session) || session.Info.Status != "Idle")
+            return false;
+        if (!_sessions.TryRemove(sessionId, out var removed) || !ReferenceEquals(session, removed))
+            return false;
+        if (session.Info.Status != "Idle")
+        {
+            _sessions.TryAdd(sessionId, session);
+            return false;
+        }
+
+        FinishPendingSteer(session);
+        session.Questions.Clear();
+        await session.Connection.DisposeAsync();
+        session.Info.Status = "Stopped";
+        session.Info.StopReason = stopReason;
+        session.Info.StoppedAt = DateTimeOffset.UtcNow;
+        session.Info.ProcessId = null;
+        session.Info.LastActivity = DateTimeOffset.UtcNow;
+        Persist(session.Info);
+        SessionUpdated?.Invoke(session.Info);
+        return true;
+    }
+
     private async Task StopSessionAsync(string sessionId, string stopReason)
     {
         if (_sessions.TryRemove(sessionId, out var session))
@@ -423,7 +456,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             session.Info.StoppedAt = DateTimeOffset.UtcNow;
             session.Info.ProcessId = null;
             session.Info.LastActivity = DateTimeOffset.UtcNow;
-            if (!SessionStopReasons.IsRestartRecoverable(stopReason))
+            if (!SessionStopReasons.IsAutoResumable(stopReason))
                 _jobLifecycle.Complete(session.Info);
             Persist(session.Info);
             SessionEnded?.Invoke(sessionId, "stopped");
@@ -431,8 +464,11 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
 
         var stored = _store.FindSession(sessionId);
-        if (stored == null
-            || (stored.Status is "Stopped" or "Error") && !SessionStopReasons.IsRestartRecoverable(stopReason)) return;
+        if (stored == null) return;
+        var terminal = stored.Status is "Stopped" or "Error";
+        var explicitStopOfParked = stopReason == SessionStopReasons.UserStopped
+            && SessionStopReasons.IsAutoResumable(stored.StopReason);
+        if (terminal && !SessionStopReasons.IsAutoResumable(stopReason) && !explicitStopOfParked) return;
 
         if (stored.ProcessId is { } pid) TryKillByPid(pid);
         stored.Status = "Stopped";
@@ -444,7 +480,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (stored.JobId != null)
         {
             var info = ToInfo(stored);
-            if (!SessionStopReasons.IsRestartRecoverable(stopReason))
+            if (!SessionStopReasons.IsAutoResumable(stopReason))
                 _jobLifecycle.Complete(info);
         }
         else

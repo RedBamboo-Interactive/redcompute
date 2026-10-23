@@ -81,9 +81,6 @@ public class ClaudeSessionService
         RecoverSessions();
     }
 
-    private static readonly TimeSpan IdleTtl = TimeSpan.FromHours(48);
-    private Timer? _reaperTimer;
-
     internal Task<ProviderUsageSnapshot?> GetProviderUsageAsync(bool forceRefresh, CancellationToken ct)
         => _accountUsage.GetAsync(forceRefresh, ct);
 
@@ -147,7 +144,6 @@ public class ClaudeSessionService
             _log($"[Claude] Failed to recover sessions: {ex.Message}", null);
         }
 
-        _reaperTimer = new Timer(_ => ReapExpiredSessions(), null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(24));
     }
 
     internal static IReadOnlyList<BackgroundTaskInfo> ReadBackgroundTasks(string? json)
@@ -182,45 +178,6 @@ public class ClaudeSessionService
         record.BackgroundTasksJson = null;
         _sessionStore.SaveSession(record);
         _log($"[Claude] Session {sessionId}: {tasks.Count} background task(s) lost with the previous process", null);
-    }
-
-    private void ReapExpiredSessions()
-    {
-        try
-        {
-            var cutoff = DateTimeOffset.UtcNow - IdleTtl;
-            foreach (var (id, session) in _sessions)
-            {
-                var lastActivity = _sessionStore.GetLastMessageTimestamp(id);
-                if (lastActivity == default) lastActivity = session.Info.StartedAt;
-                if (lastActivity >= cutoff) continue;
-
-                _log($"[Claude] Reaping expired session {id} ({session.Info.ProjectName}, idle since {lastActivity:u})", null);
-                _ = StopSession(id, reason: "idle_ttl_expired");
-            }
-
-            var dbActive = _sessionStore.GetActiveSessions();
-            foreach (var s in dbActive)
-            {
-                if (_sessions.ContainsKey(s.Id)) continue;
-
-                var lastActivity = s.LastActivity ?? s.StartedAt;
-                if (lastActivity >= cutoff) continue;
-
-                _log($"[Claude] Reaping stale DB session {s.Id} ({s.ProjectName}, last activity {lastActivity:u})", null);
-                TryKillByPid(s.ProcessId);
-                s.Status = "Stopped";
-                s.StopReason = "idle_ttl_expired";
-                s.StoppedAt = DateTimeOffset.UtcNow;
-                s.ProcessId = null;
-                _sessionStore.SaveSession(s);
-                SessionEnded?.Invoke(s.Id, "stopped", s.StopReason);
-            }
-        }
-        catch (Exception ex)
-        {
-            _log($"[Claude] Reaper error: {ex.Message}", null);
-        }
     }
 
     private void TryKillByPid(int? pid)
@@ -1835,14 +1792,17 @@ public class ClaudeSessionService
 
         var record = _sessionStore.FindSession(sessionId);
         if (record == null) return;
-        if (record.Status is "Stopped" or "Error") return;
+        var requestedReason = reason ?? SessionStopReasons.UserStopped;
+        var explicitStopOfParked = requestedReason == SessionStopReasons.UserStopped
+            && SessionStopReasons.IsAutoResumable(record.StopReason);
+        if ((record.Status is "Stopped" or "Error") && !explicitStopOfParked) return;
 
         _log($"[Claude] Stopping unloaded session {sessionId} (PID {record.ProcessId})", null);
 
         TryKillByPid(record.ProcessId);
 
         record.Status = "Stopped";
-        record.StopReason = reason ?? "user_stopped";
+        record.StopReason = requestedReason;
         record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _sessionStore.SaveSession(record);
@@ -1869,7 +1829,7 @@ public class ClaudeSessionService
             session.Info.ProcessId = null;
             PersistSessionRecord(session.Info);
 
-            if (!SessionStopReasons.IsRestartRecoverable(reason) && session.Info.JobId.HasValue)
+            if (!SessionStopReasons.IsAutoResumable(reason) && session.Info.JobId.HasValue)
                 _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: $"{{\"messages\":{session.Info.MessageCount}}}", costUsd: session.Info.CostUsd);
 
             SessionEnded?.Invoke(sessionId, "killed", session.Info.StopReason);
@@ -1878,21 +1838,64 @@ public class ClaudeSessionService
 
         var record = _sessionStore.FindSession(sessionId);
         if (record == null) return;
-        if ((record.Status is "Stopped" or "Error") && !SessionStopReasons.IsRestartRecoverable(reason)) return;
+        var requestedReason = reason ?? SessionStopReasons.UserStopped;
+        var explicitStopOfParked = requestedReason == SessionStopReasons.UserStopped
+            && SessionStopReasons.IsAutoResumable(record.StopReason);
+        if ((record.Status is "Stopped" or "Error")
+            && !SessionStopReasons.IsAutoResumable(requestedReason)
+            && !explicitStopOfParked) return;
 
         TryKillByPid(record.ProcessId);
 
         record.Status = "Stopped";
-        record.StopReason = reason ?? "user_stopped";
+        record.StopReason = requestedReason;
         record.StoppedAt = DateTimeOffset.UtcNow;
         record.ProcessId = null;
         _sessionStore.SaveSession(record);
 
-        if (!SessionStopReasons.IsRestartRecoverable(reason) && record.JobId.HasValue)
+        if (!SessionStopReasons.IsAutoResumable(requestedReason) && record.JobId.HasValue)
             _jobTracker.MarkCompleted(record.JobId.Value, resultJson: $"{{\"messages\":{record.MessageCount}}}", costUsd: record.CostUsd);
 
         SessionEnded?.Invoke(sessionId, "killed", record.StopReason);
         await Task.CompletedTask;
+    }
+
+    public IReadOnlyList<ClaudeSessionInfo> GetResidentIdleSessions()
+        => _sessions.Values
+            .Where(session => session.Info.Status == SessionStatus.Idle)
+            .Select(session => session.Info)
+            .ToArray();
+
+    public Task<bool> TryParkIdleSessionAsync(
+        string sessionId, string stopReason, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!_sessions.TryGetValue(sessionId, out var session)
+            || session.Info.Status != SessionStatus.Idle
+            || session.Info.BackgroundTasks.Any(task => !BackgroundTaskStatuses.IsTerminal(task.Status)))
+            return Task.FromResult(false);
+        if (!_sessions.TryRemove(sessionId, out var removed) || !ReferenceEquals(session, removed))
+            return Task.FromResult(false);
+        if (session.Info.Status != SessionStatus.Idle
+            || session.Info.BackgroundTasks.Any(task => !BackgroundTaskStatuses.IsTerminal(task.Status)))
+        {
+            _sessions.TryAdd(sessionId, session);
+            return Task.FromResult(false);
+        }
+
+        try { session.Process.Kill(entireProcessTree: true); } catch { }
+        DiscardPendingQuestions(session, "session_parked");
+        DiscardPendingSteers(session);
+        session.Cts.Cancel();
+        SettleTurnContent(session);
+        SettleLostBackgroundTasks(session);
+        session.Info.Status = SessionStatus.Stopped;
+        session.Info.StopReason = stopReason;
+        session.Info.StoppedAt = DateTimeOffset.UtcNow;
+        session.Info.ProcessId = null;
+        PersistSessionRecord(session.Info);
+        SessionUpdated?.Invoke(session.Info);
+        return Task.FromResult(true);
     }
 
     public void DismissSession(string sessionId)

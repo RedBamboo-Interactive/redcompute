@@ -12,6 +12,7 @@ public sealed class SessionPromptCallbackTests
     [Theory]
     [InlineData("maintenance_restart")]
     [InlineData("orphaned_on_restart")]
+    [InlineData("idle_timeout")]
     public async Task Restart_pause_retains_subscription_and_transient_idle_cannot_complete_pending_prompt(string stopReason)
     {
         using var f = new SessionRecoveryTests.Fixture(stopReason);

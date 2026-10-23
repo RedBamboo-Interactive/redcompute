@@ -13,6 +13,49 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Path.GetTempPath(), $"redcompute-codex-launch-gate-{Guid.NewGuid():N}");
 
     [Fact]
+    public async Task Idle_parking_releases_app_server_without_terminal_event()
+    {
+        Directory.CreateDirectory(_root);
+        var codexPath = Path.Combine(_root, "codex.exe");
+        File.WriteAllText(codexPath, "test seam only");
+        var job = new JobRecord
+        {
+            Id = Guid.NewGuid(), CapabilitySlug = "ai-session", ProviderName = "Codex",
+            CreationProvenance = Provenance(),
+        };
+        var store = new TestStore(new CodexSessionRecord
+        {
+            Id = "placeholder", ProjectName = "placeholder", ProjectPath = _root,
+            Status = "Stopped", StartedAt = DateTimeOffset.UtcNow,
+        });
+        var config = new CodexConfig { CodexPath = codexPath };
+        var jobs = new TestJobTracker(job);
+        await using var interactive = new CodexInteractiveService(
+            config, store, new CodexModelCatalog(config, (_, _) => { }),
+            new CodexSessionService(config, jobs, store, (_, _) => { }), jobs,
+            new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
+            () => null, (_, _) => { });
+        interactive.LaunchAppServerProcess = _ => StartSteeringFakeAppServer("item");
+        var updates = new List<CodexSessionInfo>();
+        var ended = new List<string>();
+        interactive.SessionUpdated += updates.Add;
+        interactive.SessionEnded += (_, reason) => ended.Add(reason);
+        var session = await interactive.StartSessionAsync(
+            _root, null, "owner", null, null, null, null, null, null, Provenance());
+        Assert.NotNull(session);
+        Assert.Equal("Idle", session!.Status);
+        updates.Clear();
+
+        Assert.True(await interactive.TryParkIdleSessionAsync(
+            session.Id, SessionStopReasons.IdleTimeout));
+        Assert.Equal("Stopped", session.Status);
+        Assert.Equal(SessionStopReasons.IdleTimeout, session.StopReason);
+        Assert.Single(updates);
+        Assert.Empty(ended);
+        Assert.Empty(interactive.GetResidentIdleSessions());
+    }
+
+    [Fact]
     public async Task SendInput_on_parked_session_waits_for_install_before_spawning_app_server()
     {
         Directory.CreateDirectory(_root);

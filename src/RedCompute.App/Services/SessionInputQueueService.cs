@@ -58,6 +58,7 @@ public sealed class SessionInputQueueService
     private readonly ConcurrentDictionary<string, byte> _manualStops = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, int> _pendingStops = new(StringComparer.Ordinal);
     private bool HasStopIntent(string id) => _manualStops.ContainsKey(id) || _pendingStops.GetValueOrDefault(id) > 0;
+    internal bool IsDeliveryPaused => _deliveryPaused();
     private sealed record CallerRecovery(string Token, string Owner, string Scope)
     {
         public override string ToString() => "CallerRecovery { token = [redacted] }";
@@ -267,7 +268,7 @@ public sealed class SessionInputQueueService
         var resumed = false;
         await WithSessionLockAsync(sessionId, async () => {
             var (_, info) = FindSession(sessionId);
-            if (info?.Status == SessionStatus.Stopped && info.StopReason is "maintenance_restart" or "orphaned_on_restart")
+            if (info?.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(info.StopReason))
                 await _store.RequireSessionRecoveryAsync(sessionId, ct);
             resumed = await resume();
             if (resumed) _manualStops.TryRemove(sessionId, out _);
@@ -281,6 +282,9 @@ public sealed class SessionInputQueueService
         await gate.WaitAsync(ct);
         try { await action(); } finally { gate.Release(); }
     }
+
+    internal async Task<bool> HasQueuedInputAsync(string sessionId, CancellationToken ct = default)
+        => await _store.GetHeadAsync(sessionId, ct) is not null;
 
     public async Task<SessionInputQueueItem?> SupersedeVerificationAsync(string sessionId, string itemId,
         string ownerUserId, DeploymentVerificationTarget target, DeploymentVerificationTarget replacement,
@@ -448,7 +452,8 @@ public sealed class SessionInputQueueService
                 return;
             }
 
-            var restart = info.Status == SessionStatus.Stopped && info.StopReason is "maintenance_restart" or "orphaned_on_restart";
+            var restart = info.Status == SessionStatus.Stopped
+                && SessionStopReasons.IsAutoResumable(info.StopReason);
             if (info.Status != SessionStatus.Idle && !restart) return;
             // Every pre-restart accepted authority must be revalidated, including later FIFO scopes.
             if (restart) await _store.RequireSessionRecoveryAsync(sessionId, ct);
@@ -484,7 +489,7 @@ public sealed class SessionInputQueueService
             if (restart)
             {
                 if (current?.Status != SessionStatus.Stopped
-                    || current.StopReason is not ("maintenance_restart" or "orphaned_on_restart")
+                    || !SessionStopReasons.IsAutoResumable(current.StopReason)
                     || !provider.Capabilities.HasFlag(SessionCapabilities.Resume)) return;
                 try
                 {
