@@ -55,8 +55,10 @@ The shipped default is deliberately attach-only: it probes a private-local endpo
       "WslDistro": "Ubuntu-24.04",
       "MergeLora": false,
       "Dtype": "bfloat16",
-      "KernelBackend": "flash-qla-sm120"
+      "KernelBackend": "sidecar-default"
     }
+
+When KernelBackend is omitted, the provider uses sidecar-default and leaves backend selection to the externally managed service. The measured RTX 5090 profile below explicitly used flash-qla-sm120; that hardware-specific optimization is not a shipped RedCompute prerequisite.
 
 On the measured RTX 5090 configuration, MergeLora=false is a production requirement. Kev's default merge path merges LoRA in fp32 before casting and OOMs on the 32 GB card. When an explicit LaunchCommand is configured, RedCompute forces KEV_MERGE=0 and KEV_DTYPE=bfloat16 into the owned process environment. Status reports configured merge, dtype, and kernel settings separately from sidecar-observed run, device, dtype, and temperature so attach-only status does not pretend RedCompute controls an external process.
 

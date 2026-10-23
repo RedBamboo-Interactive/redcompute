@@ -99,6 +99,8 @@ public sealed class ReleaseToolTests
         Assert.Equal(12, graph.Providers.Count);
         Assert.Contains(graph.Providers, x => x.Id == "opencode" && x.RuntimeIdentity == "opencode" && x.IdentitySource == "providerId");
         Assert.Contains(graph.Providers, x => x.Id == "openailive" && x.RuntimeIdentity == "OpenAILive" && x.IdentitySource == "providerType");
+        var kev = Assert.Single(graph.Providers, x => x.Id == "kev-local-quality");
+        Assert.DoesNotContain(kev.RuntimeDependencies, x => x.Id == "flash-qla-kernels");
         Assert.All(graph.Providers, x => Assert.NotEmpty(x.RuntimeDependencies));
         Assert.Equal(["managedByRedCompute", "systemPrerequisite", "userExternalService"], graph.Providers.SelectMany(x => x.RuntimeDependencies).Select(x => x.Management).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
         Assert.Contains(graph.Providers.SelectMany(x => x.RuntimeDependencies), x => x.VersionConstraint.StartsWith("unresolved", StringComparison.Ordinal));

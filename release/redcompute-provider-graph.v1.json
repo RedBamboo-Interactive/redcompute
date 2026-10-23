@@ -140,14 +140,6 @@
           "sourceMarkers": ["ModelRevision", "BaseModelRevision", "MergeLora"]
         },
         {
-          "id": "flash-qla-kernels",
-          "management": "systemPrerequisite",
-          "requirement": "optionalCapability",
-          "versionConstraint": "flash-linear-attention 0.5.2 and flash-qla 0.1.2 measured on SM120; fallback is supported",
-          "interface": "optimized SM120 GDN backend for warmed inference",
-          "sourceMarkers": ["flash-qla-sm120"]
-        },
-        {
           "id": "kev-owned-process",
           "management": "managedByRedCompute",
           "requirement": "optionalCapability",
