@@ -29,7 +29,11 @@ public class SessionCallbackRegistry
         Func<string, UnifiedSessionInfo?> currentSession)
     {
         _queue = queue;
-        _durable = new(databasePath, queue, currentSession, _http, _log) { PendingQuestions = id => _pendingQuestions(id) };
+        _durable = new(databasePath, queue, currentSession, _http, _log)
+        {
+            PendingQuestions = id => _pendingQuestions(id),
+            HasLiveRegistration = id => _callbacks.ContainsKey(id),
+        };
     }
 
     /// <summary>Where parked questions are read from: the live session providers.</summary>
@@ -68,9 +72,10 @@ public class SessionCallbackRegistry
             _durable.RegisterAsync(sessionId, callbackId, callbackUrl, userId, promptMessageUid, questionUrl).GetAwaiter().GetResult();
             return;
         }
-        _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, callbackId ?? Guid.NewGuid().ToString("N"), questionUrl);
+        // With the durable store attached the session-scoped subscription owns question notifications.
+        _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, callbackId ?? Guid.NewGuid().ToString("N"), _durable is null ? questionUrl : null);
         _log($"[Callbacks] Registered callback for session {sessionId}", null);
-        if (questionUrl is not null) NotifyLegacyQuestions(sessionId);
+        if (questionUrl is not null) Subscribe(sessionId, callbackUrl, userId, questionUrl);
     }
 
     public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus,
@@ -92,12 +97,16 @@ public class SessionCallbackRegistry
             {
                 // Already Idle with background work running: report this turn now and stay armed
                 // for the turn that work wakes, exactly as a live registration would.
-                _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, identity, questionUrl, BackgroundDeliveries: 1, AwaitingTurn: true);
+                _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, identity, _durable is null ? questionUrl : null,
+                    BackgroundDeliveries: 1, AwaitingTurn: true);
+                if (questionUrl is not null && _durable is not null) Subscribe(sessionId, callbackUrl, userId, questionUrl);
                 _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), identity, userId: userId, stopReason: stopReason,
                     workState: workState, backgroundTasksRunning: running, deliverySequence: 1);
                 return true;
             }
             _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), identity, userId: userId, stopReason: stopReason, workState: workState);
+            // The question opt-in is session-scoped: it outlives this already-finished completion.
+            if (questionUrl is not null) Subscribe(sessionId, callbackUrl, userId, questionUrl);
             return false;
         }
 
@@ -120,6 +129,16 @@ public class SessionCallbackRegistry
             }
             catch (Exception ex) { _log($"[Callbacks] Question notification for session {sessionId} failed: {ex.Message}", null); }
         });
+    }
+
+    // A question opt-in becomes a session-scoped subscription, durable when the store is attached.
+    // Without it (no durable store) the in-memory registration keeps its own question opt-in.
+    private void Subscribe(string sessionId, string callbackUrl, string? userId, string questionUrl)
+    {
+        if (_durable is not null)
+            _durable.SubscribeSessionAsync(sessionId, callbackUrl, userId, questionUrl).GetAwaiter().GetResult();
+        else
+            NotifyLegacyQuestions(sessionId);
     }
 
     /// <summary>Routes the provider stream events that open or close a parked question.</summary>
@@ -218,7 +237,9 @@ public class SessionCallbackRegistry
             if (ended.TryGetProperty("id", out var endedId) && endedId.ValueKind == JsonValueKind.String)
                 _ = ObserveSafelyAsync(endedId.GetString()!, endedReason:
                     ended.TryGetProperty("reason", out var endedReason) && endedReason.ValueKind == JsonValueKind.String
-                        ? endedReason.GetString() : "unknown");
+                        ? endedReason.GetString() : "unknown",
+                    endedStopReason: ended.TryGetProperty("stopReason", out var endedStop) && endedStop.ValueKind == JsonValueKind.String
+                        ? endedStop.GetString() : null);
         }
         if (eventType == "session.updated" && data is UnifiedSessionInfo session)
         {
@@ -280,9 +301,10 @@ public class SessionCallbackRegistry
     internal Task<bool> RemoveUnacceptedAsync(string sessionId, string callbackId, string promptMessageUid, string owner, CancellationToken ct)
         => _durable?.RemoveUnacceptedAsync(sessionId, callbackId, promptMessageUid, owner, ct) ?? Task.FromResult(false);
     internal Task DrainAsync() => _durable?.DrainAsync() ?? Task.CompletedTask;
-    private async Task ObserveSafelyAsync(string id, bool observedActive = false, string? endedReason = null, bool settled = false)
+    private async Task ObserveSafelyAsync(string id, bool observedActive = false, string? endedReason = null, bool settled = false,
+        string? endedStopReason = null)
     {
-        try { await _durable!.ObserveAsync(id, observedActive: observedActive, endedReason: endedReason, settled: settled); }
+        try { await _durable!.ObserveAsync(id, observedActive: observedActive, endedReason: endedReason, settled: settled, endedStopReason: endedStopReason); }
         catch (Exception) { _log("[Callbacks] Observation failed; subscription retained for owning sweep", null); }
     }
 

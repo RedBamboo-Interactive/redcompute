@@ -148,6 +148,19 @@ public sealed class SessionInputQueueStore
     }
 
     /// <summary>Inputs of the session still waiting for, or in, delivery to the provider.</summary>
+    /// <summary>
+    /// The highest queue sequence ever handed to the provider for this session (Delivering or
+    /// Delivered). Sequences are global and never reused, so a turn that starts while this has not
+    /// moved since the session was last idle was not started by any queued input.
+    /// </summary>
+    internal async Task<long> LatestDeliverySequenceAsync(string sessionId, CancellationToken ct = default)
+    {
+        await using var connection = Open(); var command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(Sequence),0) FROM SessionQueuedInputs WHERE SessionId=$id AND State IN ('Delivering','Delivered')";
+        Add(command, "$id", sessionId);
+        return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
+    }
+
     internal async Task<int> CountPendingAsync(string sessionId, CancellationToken ct = default)
     {
         await using var connection = Open(); var command = connection.CreateCommand();

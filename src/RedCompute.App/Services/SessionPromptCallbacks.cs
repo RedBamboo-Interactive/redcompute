@@ -22,13 +22,27 @@ namespace RedCompute.App.Services;
 /// Every completion carries pendingInputs, the session's inputs still Pending or Delivering when the
 /// payload is built, so a receiver can tell "this turn completed" from "nothing is left to do". It is
 /// part of the persisted payload, so retries of one delivery repeat the same count.
+///
+/// A question opt-in is also a session-scoped subscription (Kind "session", keyed by session,
+/// questionUrl and owner), independent of prompt rows: it keeps receiving question notifications
+/// after every prompt row has completed, and it reports, once, the end of any turn the provider
+/// started without a queued input (peer messages, CLI self-wakes) while no live prompt
+/// registration covered it. Those reports are their own outbox rows (Kind "unprompted",
+/// trigger "unprompted", deliverySequence per turn). The subscription lives until the session
+/// ends for good; prompt-scoped completion semantics are unchanged.
 /// </remarks>
 internal sealed class SessionPromptCallbacks
 {
     private sealed record Entry(string SessionId, string CallbackId, string PromptMessageUid, string Url, string? UserId,
         bool ActiveSeen = false, string? PauseReason = null, string? Payload = null,
         int Attempts = 0, DateTimeOffset? NextAttemptAt = null,
-        string? QuestionUrl = null, string? QuestionRequestId = null, int BackgroundDeliveries = 0);
+        string? QuestionUrl = null, string? QuestionRequestId = null, int BackgroundDeliveries = 0,
+        // Session-scoped subscription state (Kind "session"): whether a turn is in progress, whether
+        // it began without a queued input, the queue sequence it began at, and the last one seen.
+        string? Kind = null, bool InTurn = false, bool UnpromptedOpen = false, int UnpromptedTurns = 0,
+        long LastDeliverySequence = 0, long OpenDeliverySequence = 0);
+    private const string KindSession = "session";
+    private const string KindUnprompted = "unprompted";
     private readonly SessionCallbackStore _store;
     private readonly SessionInputQueueStore _queue;
     private readonly Func<string, UnifiedSessionInfo?> _current;
@@ -45,6 +59,9 @@ internal sealed class SessionPromptCallbacks
 
     /// <summary>Live parked questions by session id. None until the host attaches its providers.</summary>
     internal Func<string, IReadOnlyList<PendingSessionQuestion>> PendingQuestions { get; set; } = _ => [];
+
+    /// <summary>An in-memory (non-durable) completion registration still covers this session's turn.</summary>
+    internal Func<string, bool> HasLiveRegistration { get; set; } = _ => false;
 
     internal SessionPromptCallbacks(string path, SessionInputQueueStore queue,
         Func<string, UnifiedSessionInfo?> current, HttpClient http,
@@ -66,7 +83,7 @@ internal sealed class SessionPromptCallbacks
         {
             if (_entries.TryGetValue((sessionId, callbackId), out var existing))
             {
-                if (existing.QuestionRequestId is not null || existing.PromptMessageUid != promptMessageUid
+                if (existing.QuestionRequestId is not null || existing.Kind is not null || existing.PromptMessageUid != promptMessageUid
                     || existing.UserId != userId || existing.Url != url)
                     throw new SessionInputQueueStoreException("callback_identity_conflict", "Callback identity already refers to a different prompt or owner");
                 // Opting in to questions is additive; it never changes the completion identity.
@@ -74,12 +91,45 @@ internal sealed class SessionPromptCallbacks
                     Save(existing with { QuestionUrl = questionUrl });
             }
             else Save(new(sessionId, callbackId, promptMessageUid, url, userId, QuestionUrl: questionUrl));
+            if (questionUrl is not null) await SubscribeLockedAsync(sessionId, url, userId, questionUrl);
         }
         finally { _gate.Release(); }
         await ObserveAsync(sessionId);
         // A registrant arriving while the session is already parked still has to hear about it.
         if (questionUrl is not null) await QuestionsChangedAsync(sessionId);
     }
+
+    /// <summary>
+    /// The session-scoped subscription of a question opt-in that has no exact prompt (an in-memory
+    /// registration). Same row and semantics as the one created with a prompt registration.
+    /// </summary>
+    internal async Task SubscribeSessionAsync(string sessionId, string completionUrl, string? owner, string questionUrl)
+    {
+        await _gate.WaitAsync();
+        try { await SubscribeLockedAsync(sessionId, completionUrl, owner, questionUrl); }
+        finally { _gate.Release(); }
+        await QuestionsChangedAsync(sessionId);
+    }
+
+    // Idempotent per (session, questionUrl, owner): re-registering keeps the row and its turn state,
+    // and only follows a changed completion URL.
+    private async Task SubscribeLockedAsync(string sessionId, string completionUrl, string? owner, string questionUrl)
+    {
+        var rowId = SessionRowId(questionUrl, owner);
+        if (_entries.TryGetValue((sessionId, rowId), out var existing))
+        {
+            if (existing.Url != completionUrl) Save(existing with { Url = completionUrl });
+            return;
+        }
+        // A turn already running when the subscription starts is someone else's turn: it is joined,
+        // never classified as unprompted.
+        Save(new(sessionId, rowId, "", completionUrl, owner, QuestionUrl: questionUrl, Kind: KindSession,
+            InTurn: _current(sessionId)?.Status == SessionStatus.Active,
+            LastDeliverySequence: await _queue.LatestDeliverySequenceAsync(sessionId)));
+    }
+
+    private static string SessionRowId(string questionUrl, string? owner)
+        => "session-subscription:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(questionUrl + "\n" + owner)))[..16];
 
     /// <summary>
     /// Enqueues one notification per parked question and distinct opted-in URL not enqueued yet,
@@ -182,29 +232,35 @@ internal sealed class SessionPromptCallbacks
     {
         string[] sessions;
         await _gate.WaitAsync(ct);
-        try { sessions = _entries.Values.Select(e => e.SessionId).Distinct().ToArray(); }
+        // Session subscriptions follow session events; sweeping them would read every subscribed
+        // session on each pass for nothing. Sessions with prompt or outbox rows are swept as before.
+        try { sessions = _entries.Values.Where(e => e.Kind != KindSession).Select(e => e.SessionId).Distinct().ToArray(); }
         finally { _gate.Release(); }
         foreach (var sessionId in sessions) await ObserveAsync(sessionId, ct);
     }
     /// <param name="settled">The session has been Idle with nothing running and nothing queued for
     /// the settle window: a subscription re-armed for a woken turn that never came reports now.</param>
+    /// <param name="endedStopReason">With endedReason: the stop reason the session ended with. Session
+    /// subscriptions outlive only a stop the session resumes from.</param>
     internal async Task ObserveAsync(string sessionId, CancellationToken ct = default, bool observedActive = false,
-        string? endedReason = null, bool settled = false)
+        string? endedReason = null, bool settled = false, string? endedStopReason = null)
     {
         var deliver = new List<Entry>();
         await _gate.WaitAsync(ct);
         try
         {
+            if (!_entries.Values.Any(e => e.SessionId == sessionId)) return;
             var session = _current(sessionId);
             var currentDeliveryUid = await _queue.CurrentDeliveryUidAsync(sessionId, ct);
             int? pendingInputs = null; // Read once per observation, only when a payload is built.
             foreach (var entry in _entries.Values.Where(e => e.SessionId == sessionId).ToArray())
             {
-                if (entry.QuestionRequestId is not null)
+                if (entry.QuestionRequestId is not null || entry.Kind == KindUnprompted)
                 {
                     if (entry.NextAttemptAt is null || entry.NextAttemptAt <= _now()) deliver.Add(entry);
                     continue;
                 }
+                if (entry.Kind == KindSession) continue;
                 var prompt = await _queue.FindPromptAsync(sessionId, entry.PromptMessageUid, ct);
                 if (prompt is null || prompt.OwnerUserId != entry.UserId) continue;
                 var executionObserved = (observedActive || session?.Status == SessionStatus.Active)
@@ -253,9 +309,87 @@ internal sealed class SessionPromptCallbacks
                 var pending = entry with { Payload = payload, ActiveSeen = paused ? false : entry.ActiveSeen, Attempts = 0, NextAttemptAt = null };
                 Save(pending); deliver.Add(pending);
             }
+            await ObserveSessionSubscriptionsAsync(sessionId, session, observedActive, endedReason, endedStopReason, deliver, ct);
         }
         finally { _gate.Release(); }
         foreach (var entry in deliver) Schedule(entry, ct);
+    }
+
+    /// <summary>
+    /// Follows the session's turns for its session-scoped subscriptions. A turn that starts while the
+    /// queue's delivery sequence has not moved since the session was last idle, and while no live
+    /// prompt registration covers it, began without a queued input: its end is reported once. A
+    /// queued input that joins the turn (steering) hands the report to that input's own registration.
+    /// </summary>
+    private async Task ObserveSessionSubscriptionsAsync(string sessionId, UnifiedSessionInfo? session, bool observedActive,
+        string? endedReason, string? endedStopReason, List<Entry> deliver, CancellationToken ct)
+    {
+        var rows = _entries.Values.Where(e => e.SessionId == sessionId && e.Kind == KindSession).ToArray();
+        if (rows.Length == 0) return;
+        var delivered = await _queue.LatestDeliverySequenceAsync(sessionId, ct);
+        var live = session?.Status == SessionStatus.Active;
+        var covered = HasLiveRegistration(sessionId) || await HasCoveringPromptAsync(sessionId, ct);
+        int? pendingInputs = null;
+        foreach (var row in rows)
+        {
+            var next = row;
+            if (endedReason is null && (observedActive || live) && !next.InTurn)
+            {
+                var unprompted = delivered <= next.LastDeliverySequence && !covered;
+                next = next with { InTurn = true, UnpromptedOpen = unprompted, OpenDeliverySequence = delivered,
+                    UnpromptedTurns = unprompted ? next.UnpromptedTurns + 1 : next.UnpromptedTurns,
+                    LastDeliverySequence = Math.Max(next.LastDeliverySequence, delivered) };
+            }
+            if (next.InTurn && (!live || endedReason is not null))
+            {
+                if (next.UnpromptedOpen && delivered <= next.OpenDeliverySequence && !covered)
+                {
+                    pendingInputs ??= await _queue.CountPendingAsync(sessionId, ct);
+                    var report = new Entry(sessionId, $"unprompted:{next.CallbackId}:{next.UnpromptedTurns}", "", next.Url, next.UserId,
+                        Payload: UnpromptedPayload(sessionId, next, session, endedReason, pendingInputs.Value), Kind: KindUnprompted);
+                    if (!_entries.ContainsKey((sessionId, report.CallbackId))) { Save(report); deliver.Add(report); }
+                }
+                next = next with { InTurn = false, UnpromptedOpen = false };
+            }
+            if (!next.InTurn) next = next with { LastDeliverySequence = Math.Max(next.LastDeliverySequence, delivered) };
+            if (next != row) Save(next);
+        }
+        // Gone for good: the subscription ends with the session. A stop the session resumes from
+        // (maintenance restart, idle parking) keeps it.
+        // Codex reports no stop reason on the ended event; the session record carries it.
+        if (endedReason is not null && !SessionStopReasons.IsAutoResumable(endedStopReason ?? session?.StopReason))
+            foreach (var row in rows)
+            {
+                _entries.Remove((sessionId, row.CallbackId)); _store.Remove(sessionId, row.CallbackId);
+            }
+    }
+
+    // A delivered prompt whose registration still waits to report its turn (or is re-armed for a
+    // woken one) covers the session's current turn; it will report it itself.
+    private async Task<bool> HasCoveringPromptAsync(string sessionId, CancellationToken ct)
+    {
+        foreach (var entry in _entries.Values.Where(e => e.SessionId == sessionId && e.Kind is null
+                     && e.QuestionRequestId is null && e.Payload is null).ToArray())
+            if (await _queue.FindPromptAsync(sessionId, entry.PromptMessageUid, ct) is { State: SessionInputQueueState.Delivered } prompt
+                && prompt.OwnerUserId == entry.UserId)
+                return true;
+        return false;
+    }
+
+    private string UnpromptedPayload(string sessionId, Entry subscription, UnifiedSessionInfo? session, string? endedReason, int pendingInputs)
+    {
+        var completion = new { sessionId, callbackId = subscription.CallbackId, promptMessageUid = (string?)null,
+            status = endedReason is not null && session?.Status != SessionStatus.Error ? "Ended" : session?.Status.ToString() ?? "Ended",
+            reason = endedReason, stopReason = session?.StopReason, userId = subscription.UserId,
+            deliveredMessageUid = (string?)null, executionObserved = true,
+            workState = endedReason is not null || session is null ? SessionWorkStates.Idle
+                : SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks),
+            pendingInputs, trigger = "unprompted" };
+        var node = JsonSerializer.SerializeToNode(completion)!.AsObject();
+        node["backgroundTasksRunning"] = endedReason is null && session?.Status == SessionStatus.Idle
+            ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
+        node["deliverySequence"] = subscription.UnpromptedTurns;
+        return node.ToJsonString();
     }
     private void Schedule(Entry entry, CancellationToken ct)
     {
@@ -318,6 +452,12 @@ internal sealed class SessionPromptCallbacks
             {
                 _entries.Remove(key); _store.Remove(entry.SessionId, entry.CallbackId);
                 _log($"[Callbacks] Question {question} notified for session {entry.SessionId}", null);
+                return;
+            }
+            if (latest.Kind == KindUnprompted)
+            {
+                _entries.Remove(key); _store.Remove(entry.SessionId, entry.CallbackId);
+                _log($"[Callbacks] Unprompted turn reported for session {entry.SessionId} ({entry.CallbackId})", null);
                 return;
             }
             using var doc = JsonDocument.Parse(entry.Payload!);

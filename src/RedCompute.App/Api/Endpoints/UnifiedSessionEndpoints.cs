@@ -1491,7 +1491,10 @@ public static class UnifiedSessionEndpoints
             .WithParam("promptMessageUid", "string", description: "Opt in to durable exact-prompt completion; separate from callbackId. May pre-register before admission.", location: ParamLocation.Body)
             .WithParam("questionUrl", "string", description: "Opt in to question notifications: POSTed once per requestId when the session parks on a question, with " +
                 "{event: session.question, sessionId, callbackId, title, provider, requestId, toolName, toolUseId, questions, input, askedAt, expiresAt, answer}. " +
-                "Delivered and retried like the completion callback; never consumes it. Omit to receive completions only.", location: ParamLocation.Body);
+                "Delivered and retried like the completion callback; never consumes it. The opt-in is session-scoped (session, questionUrl, owner), " +
+                "independent of prompts, and lasts until the session ends (a resumable stop keeps it; re-registering is idempotent). It also reports, once, " +
+                "the end of any turn the session started without a queued input (peer message, self-wake) while no prompt registration covered it: " +
+                "a completion payload to url with trigger \"unprompted\", deliverySequence per such turn, no deliveredMessageUid. Omit to receive completions only.", location: ParamLocation.Body);
 
         endpoints.MapDelete("/ai-session/sessions/{id}/callback/unaccepted",
             "Remove only an exact owner-authorized prompt preregistration after definitive admission rejection; accepted input is never removed.", async (HttpContext ctx, string id) =>

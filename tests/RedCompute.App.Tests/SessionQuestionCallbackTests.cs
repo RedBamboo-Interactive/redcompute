@@ -67,7 +67,7 @@ public sealed class SessionQuestionCallbackTests
             Assert.Equal("prompt", p.Body.GetProperty("deliveredMessageUid").GetString());
             Assert.False(p.Body.TryGetProperty("requestId", out _));
         });
-        Assert.Empty(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
+        Assert.Equal(new string?[] { "session" }, SubscriptionRows(f)); // only the session-scoped question subscription remains
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public sealed class SessionQuestionCallbackTests
         await callbacks.SweepAsync(default); await callbacks.DrainAsync();
         Assert.Equal(2, bodies.Count);
         // Only the completion subscription remains.
-        Assert.Single(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
+        Assert.Equal(2, new SessionCallbackStore(f.Attachments.DatabasePath).Load().Count); // completion + session subscription
     }
 
     [Fact]
@@ -116,14 +116,14 @@ public sealed class SessionQuestionCallbackTests
         await callbacks.RegisterAsync("session", "prompt", CompleteUrl, "owner", "prompt", QuestionUrl);
         await callbacks.DrainAsync();
         Assert.Single(bodies);
-        Assert.Equal(2, new SessionCallbackStore(f.Attachments.DatabasePath).Load().Count);
+        Assert.Equal(3, new SessionCallbackStore(f.Attachments.DatabasePath).Load().Count); // completion, question, session subscription
 
         // The question is answered (or the process restarted) before the retry is due.
         pending.Clear(); now = now.AddSeconds(31);
         callbacks = new(f.Attachments.DatabasePath, f.Store, _ => f.Runtime.Info, http, now: () => now) { PendingQuestions = _ => [] };
         await callbacks.SweepAsync(default); await callbacks.DrainAsync();
         Assert.Single(bodies);
-        Assert.Single(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
+        Assert.Equal(2, new SessionCallbackStore(f.Attachments.DatabasePath).Load().Count); // the question row was dropped
     }
 
     [Fact]
@@ -186,6 +186,12 @@ public sealed class SessionQuestionCallbackTests
         Assert.Equal("operation", completion.Body.GetProperty("callbackId").GetString());
         Assert.Equal("Idle", completion.Body.GetProperty("status").GetString());
     }
+
+    // Kinds of the durable rows left in the store ("session" for a session-scoped subscription).
+    private static string?[] SubscriptionRows(SessionRecoveryTests.Fixture f)
+        => new SessionCallbackStore(f.Attachments.DatabasePath).Load()
+            .Select(row => JsonDocument.Parse(row.Json).RootElement.TryGetProperty("Kind", out var kind) ? kind.GetString() : null)
+            .ToArray();
 
     internal static PendingSessionQuestion Question(string requestId)
     {
