@@ -101,6 +101,24 @@ public static class UnifiedSessionEndpoints
             return session;
         }
 
+        // Parked questions are live control state, like background tasks. They are a top-level
+        // overlay on the read, never transcript records, so message ordering and hydration are
+        // unaffected.
+        IReadOnlyList<PendingSessionQuestion> PendingQuestions(UnifiedSessionInfo session)
+        {
+            var provider = registry.FindProviders<ISessionProvider>().FirstOrDefault(candidate =>
+                string.Equals(candidate.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase));
+            try
+            {
+                return provider?.GetPendingQuestions(session.Id) ?? [];
+            }
+            catch (Exception ex)
+            {
+                log($"[Sessions] Pending questions unavailable for {session.Provider}/{session.Id}: {ex.Message}", null);
+                return [];
+            }
+        }
+
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
         var usageProviderReferences = providerIds
@@ -435,7 +453,9 @@ public static class UnifiedSessionEndpoints
 
 
         endpoints.MapGet("/ai-session/sessions/{id}",
-            "Get session details and message history", async (HttpContext ctx, string id) =>
+            "Get session details and message history. pendingQuestions lists the structured questions the live session is parked on " +
+            "(Claude AskUserQuestion, Codex requestUserInput) with requestId, options, askedAt and expiresAt; answer one with " +
+            "POST /ai-session/sessions/{id}/question. Empty when nothing is pending.", async (HttpContext ctx, string id) =>
         {
             int? tail = null;
             if (int.TryParse(ctx.Request.Query["tail"].FirstOrDefault(), out var requestedTail))
@@ -461,8 +481,10 @@ public static class UnifiedSessionEndpoints
 
             var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
             var transcript = TranscriptOrdering.Cursor(info.Provider, info.Id, history);
-            return Results.Json(new { session = WithLiveCapabilities(info), messages = history, inputQueue = queue, transcript });
+            return Results.Json(new { session = WithLiveCapabilities(info), messages = history, inputQueue = queue, transcript,
+                pendingQuestions = PendingQuestions(info) });
         })
+            .WithResponse(SessionDetailResponseSchema)
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("tail", "integer", description: "Legacy bounded newest-record read. Use transcript-page for complete keyset pagination; the backing stream clamps this compatibility read to 1000 records.", location: ParamLocation.Query);
 
@@ -1362,7 +1384,8 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/callback",
-            "Register a completion webhook: RedCompute POSTs the session result to the given URL when the session finishes. Preferred over polling for agents awaiting session completion.", async (HttpContext ctx, string id) =>
+            "Register a completion webhook: RedCompute POSTs the session result to the given URL when the session finishes. Preferred over polling for agents awaiting session completion. " +
+            "With questionUrl, RedCompute also POSTs once per parked question (sessionId, title, requestId, questions with options, askedAt, expiresAt); the completion callback is unaffected.", async (HttpContext ctx, string id) =>
         {
             if (_callbacks == null)
                 return Error(503, "not_configured", "Callback registry not available");
@@ -1398,15 +1421,27 @@ public static class UnifiedSessionEndpoints
                     return Error(422, "validation_failed", "promptMessageUid requires an exact nonempty prompt reference and callbackId");
                 promptMessageUid = prompt.GetString();
             }
+            string? questionUrl = null;
+            if (body.TryGetProperty("questionUrl", out var question) && question.ValueKind != JsonValueKind.Null)
+            {
+                if (question.ValueKind != JsonValueKind.String || question.GetString()!.Length > 2000
+                    || !Uri.TryCreate(question.GetString(), UriKind.Absolute, out var questionUri)
+                    || questionUri.Scheme is not ("http" or "https"))
+                    return Error(422, "validation_failed", "questionUrl must be an absolute http(s) URL of at most 2000 characters");
+                questionUrl = question.GetString();
+            }
             bool deferred;
-            try { deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId, promptMessageUid); }
+            try { deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId, promptMessageUid, questionUrl); }
             catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         })
             .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body)
             .WithParam("force", "boolean", description: "Register even if session is already idle (for pre-registering before sending a message)", location: ParamLocation.Body)
             .WithParam("callbackId", "string", description: "Optional logical completion operation identity, echoed unchanged across retries", location: ParamLocation.Body)
-            .WithParam("promptMessageUid", "string", description: "Opt in to durable exact-prompt completion; separate from callbackId. May pre-register before admission.", location: ParamLocation.Body);
+            .WithParam("promptMessageUid", "string", description: "Opt in to durable exact-prompt completion; separate from callbackId. May pre-register before admission.", location: ParamLocation.Body)
+            .WithParam("questionUrl", "string", description: "Opt in to question notifications: POSTed once per requestId when the session parks on a question, with " +
+                "{event: session.question, sessionId, callbackId, title, provider, requestId, toolName, toolUseId, questions, input, askedAt, expiresAt, answer}. " +
+                "Delivered and retried like the completion callback; never consumes it. Omit to receive completions only.", location: ParamLocation.Body);
 
         endpoints.MapDelete("/ai-session/sessions/{id}/callback/unaccepted",
             "Remove only an exact owner-authorized prompt preregistration after definitive admission rejection; accepted input is never removed.", async (HttpContext ctx, string id) =>
@@ -2625,6 +2660,41 @@ public static class UnifiedSessionEndpoints
                     throughSequence = new { type = new[] { "integer", "null" } },
                     boundaryComplete = new { type = "boolean" },
                 },
+            },
+        },
+    };
+
+    private static readonly object PendingQuestionSchema = new
+    {
+        type = "object",
+        required = new[] { "requestId", "toolName", "questions", "input", "askedAt" },
+        properties = new
+        {
+            requestId = new { type = "string", description = "Correlation id for POST /ai-session/sessions/{id}/question" },
+            toolName = new { type = "string", description = "AskUserQuestion (Claude) or requestUserInput (Codex)" },
+            toolUseId = new { type = new[] { "string", "null" }, description = "Transcript tool call or item carrying the question" },
+            questions = new { type = "array", items = new { type = "object" }, description = "Questions with their options, verbatim from the provider" },
+            input = new { type = "object", description = "The provider's original question input, verbatim" },
+            askedAt = new { type = "string", format = "date-time" },
+            expiresAt = new { type = new[] { "string", "null" }, format = "date-time", description = "When the provider stops waiting and proceeds without an answer; null when it waits indefinitely" },
+        },
+    };
+
+    private static readonly object SessionDetailResponseSchema = new
+    {
+        type = "object",
+        required = new[] { "session", "messages", "inputQueue", "transcript", "pendingQuestions" },
+        properties = new
+        {
+            session = new { type = "object" },
+            messages = new { type = "array", items = new { type = "object" } },
+            inputQueue = new { type = "object" },
+            transcript = new { type = "object" },
+            pendingQuestions = new
+            {
+                type = "array",
+                description = "Live control state, not transcript: questions the session is parked on now. Empty when none.",
+                items = PendingQuestionSchema,
             },
         },
     };

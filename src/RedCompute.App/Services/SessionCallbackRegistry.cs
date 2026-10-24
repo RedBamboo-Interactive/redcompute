@@ -9,16 +9,28 @@ namespace RedCompute.App.Services;
 
 public class SessionCallbackRegistry
 {
-    private record CallbackEntry(string Url, string? UserId, string CallbackId);
+    private record CallbackEntry(string Url, string? UserId, string CallbackId, string? QuestionUrl = null);
 
     private readonly ConcurrentDictionary<string, CallbackEntry> _callbacks = new();
+    // In-memory registrations' question notifications already sent, by session, request and URL.
+    private readonly ConcurrentDictionary<(string, string, string), byte> _questionsNotified = new();
     private readonly HttpClient _http;
     private readonly Action<string, Guid?> _log;
     private SessionPromptCallbacks? _durable;
+    private Func<string, IReadOnlyList<PendingSessionQuestion>> _pendingQuestions = _ => [];
+    private Func<string, UnifiedSessionInfo?> _currentSession = _ => null;
 
     internal void AttachDurableStore(string databasePath, SessionInputQueueStore queue,
         Func<string, UnifiedSessionInfo?> currentSession)
-        => _durable = new(databasePath, queue, currentSession, _http, _log);
+        => _durable = new(databasePath, queue, currentSession, _http, _log) { PendingQuestions = id => _pendingQuestions(id) };
+
+    /// <summary>Where parked questions are read from: the live session providers.</summary>
+    internal void AttachQuestionSource(Func<string, IReadOnlyList<PendingSessionQuestion>> pendingQuestions,
+        Func<string, UnifiedSessionInfo?> currentSession)
+    {
+        _pendingQuestions = pendingQuestions;
+        _currentSession = currentSession;
+    }
 
     internal Task ReconcileAsync(CancellationToken ct)
         => _durable?.SweepAsync(ct) ?? Task.CompletedTask;
@@ -38,23 +50,28 @@ public class SessionCallbackRegistry
 
     // One delivery identity per registration, shared by every HTTP retry. Callers
     // with an existing invocation identity (e.g. a delegated prompt UID) reuse it.
-    public void Register(string sessionId, string callbackUrl, string? userId = null, string? callbackId = null, string? promptMessageUid = null)
+    // questionUrl opts this registration in to one POST per question the session parks on;
+    // registrants that omit it never receive question payloads.
+    public void Register(string sessionId, string callbackUrl, string? userId = null, string? callbackId = null, string? promptMessageUid = null,
+        string? questionUrl = null)
     {
         if (_durable is not null && callbackId is not null && promptMessageUid is not null)
         {
-            _durable.RegisterAsync(sessionId, callbackId, callbackUrl, userId, promptMessageUid).GetAwaiter().GetResult();
+            _durable.RegisterAsync(sessionId, callbackId, callbackUrl, userId, promptMessageUid, questionUrl).GetAwaiter().GetResult();
             return;
         }
-        _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, callbackId ?? Guid.NewGuid().ToString("N"));
+        _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, callbackId ?? Guid.NewGuid().ToString("N"), questionUrl);
         _log($"[Callbacks] Registered callback for session {sessionId}", null);
+        if (questionUrl is not null) NotifyLegacyQuestions(sessionId);
     }
 
     public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus,
-        string? userId = null, string? stopReason = null, bool force = false, string? callbackId = null, string? promptMessageUid = null)
+        string? userId = null, string? stopReason = null, bool force = false, string? callbackId = null, string? promptMessageUid = null,
+        string? questionUrl = null)
     {
         if (_durable is not null && callbackId is not null && promptMessageUid is not null)
         {
-            Register(sessionId, callbackUrl, userId, callbackId, promptMessageUid);
+            Register(sessionId, callbackUrl, userId, callbackId, promptMessageUid, questionUrl);
             return true;
         }
         if (!force && currentStatus is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
@@ -63,8 +80,83 @@ public class SessionCallbackRegistry
             return false;
         }
 
-        Register(sessionId, callbackUrl, userId, callbackId, promptMessageUid);
+        Register(sessionId, callbackUrl, userId, callbackId, promptMessageUid, questionUrl);
         return true;
+    }
+
+    /// <summary>
+    /// A session parked on a question. Notifies opted-in registrants; never touches completion
+    /// subscriptions, and a failed notification is logged and never blocks the session.
+    /// </summary>
+    public void OnQuestionParked(string sessionId)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                NotifyLegacyQuestions(sessionId);
+                if (_durable is not null) await _durable.QuestionsChangedAsync(sessionId);
+            }
+            catch (Exception ex) { _log($"[Callbacks] Question notification for session {sessionId} failed: {ex.Message}", null); }
+        });
+    }
+
+    public void OnQuestionResolved(string sessionId, string requestId)
+    {
+        foreach (var key in _questionsNotified.Keys.Where(k => k.Item1 == sessionId && k.Item2 == requestId))
+            _questionsNotified.TryRemove(key, out _);
+        if (_durable is null) return;
+        _ = Task.Run(async () =>
+        {
+            try { await _durable.QuestionResolvedAsync(sessionId, requestId); }
+            catch (Exception ex) { _log($"[Callbacks] Question {requestId} cleanup for session {sessionId} failed: {ex.Message}", null); }
+        });
+    }
+
+    private void NotifyLegacyQuestions(string sessionId)
+    {
+        if (!_callbacks.TryGetValue(sessionId, out var entry) || entry.QuestionUrl is not { } url) return;
+        var pending = _pendingQuestions(sessionId);
+        if (pending.Count == 0) return;
+        var session = _currentSession(sessionId);
+        foreach (var question in pending)
+        {
+            if (!_questionsNotified.TryAdd((sessionId, question.RequestId, url), 0)) continue;
+            var payload = SessionPromptCallbacks.QuestionPayload(sessionId, entry.CallbackId, session, question);
+            _ = PostQuestionAsync(url, sessionId, question.RequestId, payload);
+        }
+    }
+
+    private async Task PostQuestionAsync(string url, string sessionId, string requestId, string payload)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            if (!_pendingQuestions(sessionId).Any(q => q.RequestId == requestId))
+            {
+                _log($"[Callbacks] Question {requestId} on session {sessionId} resolved before notification; dropped", null);
+                return;
+            }
+            try
+            {
+                using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+                using var response = await _http.PostAsync(url, content);
+                if (response.IsSuccessStatusCode)
+                {
+                    _log($"[Callbacks] Question {requestId} notified for session {sessionId}", null);
+                    return;
+                }
+                _log($"[Callbacks] Question {requestId} notification attempt {attempt + 1} failed for {sessionId}: HTTP {(int)response.StatusCode}", null);
+            }
+            catch (Exception ex)
+            {
+                _log($"[Callbacks] Question {requestId} notification attempt {attempt + 1} failed for {sessionId}: {ex.Message}", null);
+            }
+
+            if (attempt < 2)
+                await Task.Delay(500 * (attempt + 1));
+        }
+
+        _log($"[Callbacks] All 3 question notification attempts failed for session {sessionId} (request {requestId}), giving up", null);
     }
 
     public void OnSessionEvent(string eventType, object data)
@@ -99,6 +191,9 @@ public class SessionCallbackRegistry
                     var id = idEl.GetString()!;
                     var reason = doc.RootElement.TryGetProperty("reason", out var r) ? r.GetString() : "ended";
                     var stopReason = doc.RootElement.TryGetProperty("stopReason", out var sr) ? sr.GetString() : null;
+                    foreach (var key in _questionsNotified.Keys.Where(k => k.Item1 == id))
+                        _questionsNotified.TryRemove(key, out _);
+                    if (_durable is not null) _ = _durable.SessionEndedAsync(id);
                     if (_callbacks.TryRemove(id, out var entry))
                         _ = FireAsync(entry.Url, id, "Ended", entry.CallbackId, reason: reason, userId: entry.UserId, stopReason: stopReason);
                 }

@@ -67,7 +67,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         public PendingSteer? PendingSteer { get; set; }
     }
 
-    public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions);
+    public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions,
+        JsonElement Params = default, DateTimeOffset AskedAt = default);
     private sealed class PendingSteer
     {
         public required string ExpectedTurnId { get; init; }
@@ -1049,6 +1050,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 session.ActiveTurnId = null;
                 session.StreamedItems.Clear();
                 session.MessagePhases.Clear();
+                // A question belongs to its turn: once the turn ends (an interrupt, or the
+                // app-server abandoning the request) nothing is waiting for the answer. Control
+                // state only, so it is dropped without a transcript record.
+                session.Questions.Clear();
                 session.Info.Status = "Idle";
                 session.Info.LastActivity = DateTimeOffset.UtcNow;
                 Persist(session.Info);
@@ -1417,7 +1422,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         var itemId = @params.TryGetProperty("itemId", out var i) ? i.GetString() ?? "" : "";
         @params.TryGetProperty("questions", out var questions);
 
-        session.Questions[itemId] = new PendingQuestion(id.Clone(), itemId, questions.Clone());
+        session.Questions[itemId] = new PendingQuestion(id.Clone(), itemId, questions.Clone(),
+            @params.Clone(), DateTimeOffset.UtcNow);
 
         Emit(session, new CodexStreamEvent
         {
@@ -1431,6 +1437,30 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Persist(session.Info);
         SessionUpdated?.Invoke(session.Info);
     }
+
+    /// <summary>
+    /// Questions a live session is parked on. Codex waits for an answer without a deadline, so
+    /// <see cref="Core.Sessions.PendingSessionQuestion.ExpiresAt"/> is always null.
+    /// </summary>
+    public IReadOnlyList<Core.Sessions.PendingSessionQuestion> GetPendingQuestions(string sessionId)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return [];
+        return session.Questions.Values
+            .OrderBy(q => q.AskedAt)
+            .Select(q => new Core.Sessions.PendingSessionQuestion
+            {
+                RequestId = q.ItemId,
+                ToolName = "requestUserInput",
+                ToolUseId = q.ItemId,
+                Questions = q.Questions.ValueKind == JsonValueKind.Undefined ? EmptyJsonArray : q.Questions,
+                Input = q.Params.ValueKind == JsonValueKind.Undefined ? EmptyJsonObject : q.Params,
+                AskedAt = q.AskedAt,
+            })
+            .ToArray();
+    }
+
+    private static readonly JsonElement EmptyJsonArray = JsonDocument.Parse("[]").RootElement.Clone();
+    private static readonly JsonElement EmptyJsonObject = JsonDocument.Parse("{}").RootElement.Clone();
 
     /// <summary>
     /// Answers whatever single question is outstanding, for callers that only have free text and no

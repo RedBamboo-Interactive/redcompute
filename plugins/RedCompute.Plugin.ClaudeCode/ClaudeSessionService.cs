@@ -2026,6 +2026,33 @@ public class ClaudeSessionService
     public IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId)
         => _sessions.TryGetValue(sessionId, out var session) ? session.Info.BackgroundTasks : [];
 
+    /// <summary>
+    /// Questions a loaded session is parked on. Every resolution path (answer, decline, CLI
+    /// cancel, expiry, process end) removes the entry before it emits question_resolved, so this
+    /// never reports a question the session has stopped waiting for.
+    /// </summary>
+    public IReadOnlyList<Core.Sessions.PendingSessionQuestion> GetPendingQuestions(string sessionId)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return [];
+        return session.PendingQuestions.Values
+            .OrderBy(q => q.AskedAt)
+            .Select(q => new Core.Sessions.PendingSessionQuestion
+            {
+                RequestId = q.RequestId,
+                ToolName = AskUserQuestionTool,
+                ToolUseId = q.ToolUseId,
+                Questions = q.Input.ValueKind == JsonValueKind.Object
+                    && q.Input.TryGetProperty("questions", out var questions) ? questions : EmptyJsonArray,
+                Input = q.Input.ValueKind == JsonValueKind.Undefined ? EmptyJsonObject : q.Input,
+                AskedAt = q.AskedAt,
+                ExpiresAt = q.ExpiresAt,
+            })
+            .ToArray();
+    }
+
+    private static readonly JsonElement EmptyJsonArray = JsonDocument.Parse("[]").RootElement.Clone();
+    private static readonly JsonElement EmptyJsonObject = JsonDocument.Parse("{}").RootElement.Clone();
+
     public List<ClaudeMessageRecord> GetHistory(string sessionId, int limit = 50_000)
     {
         return _sessionStore.GetMessages(sessionId, limit);
@@ -2815,7 +2842,7 @@ public class ClaudeSessionService
     // not for "how long does answering take". On expiry we deny explicitly rather than
     // leaving the CLI blocked on a promise that never settles -- silence is what made the
     // original bug invisible.
-    private static readonly TimeSpan QuestionAnswerTimeout = TimeSpan.FromMinutes(30);
+    internal TimeSpan QuestionAnswerTimeout { get; set; } = TimeSpan.FromMinutes(30);
 
     private void HandleInboundControlRequest(JsonElement root, ManagedSession session)
     {
@@ -2861,11 +2888,14 @@ public class ClaudeSessionService
             : default;
         var toolUseId = request.TryGetProperty("tool_use_id", out var tui) ? tui.GetString() : null;
 
+        var askedAt = DateTimeOffset.UtcNow;
         var pending = new PendingQuestion
         {
             RequestId = requestId,
             ToolUseId = toolUseId,
             Input = input,
+            AskedAt = askedAt,
+            ExpiresAt = askedAt + QuestionAnswerTimeout,
         };
         pending.ExpiryTimer = new Timer(_ => ExpireQuestion(session, requestId), null,
             QuestionAnswerTimeout, Timeout.InfiniteTimeSpan);
@@ -3765,6 +3795,8 @@ public class ClaudeSessionService
         public required string? ToolUseId { get; init; }
         /// <summary>The tool input as the CLI sent it; echoed back inside updatedInput.</summary>
         public required JsonElement Input { get; init; }
+        public required DateTimeOffset AskedAt { get; init; }
+        public required DateTimeOffset ExpiresAt { get; init; }
         public Timer? ExpiryTimer { get; set; }
 
         public void Dispose() => ExpiryTimer?.Dispose();

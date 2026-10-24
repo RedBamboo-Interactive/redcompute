@@ -542,7 +542,7 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { }
     }
 
-    private sealed class RecordingStore : IClaudeSessionStore
+    internal sealed class RecordingStore : IClaudeSessionStore
     {
         private readonly Dictionary<string, ClaudeSessionRecord> _sessions = [];
         private readonly List<ClaudeMessageRecord> _messages = [];
@@ -565,7 +565,7 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         public Dictionary<Guid, string> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds) => [];
     }
 
-    private sealed class MemoryJobTracker : IJobTracker
+    internal sealed class MemoryJobTracker : IJobTracker
     {
         private readonly Dictionary<Guid, JobRecord> _jobs = [];
 
@@ -584,7 +584,7 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         public JobRecord? GetJob(Guid jobId) { lock (_jobs) return _jobs.GetValueOrDefault(jobId); }
     }
 
-    private sealed class NullQualityModes : IProviderQualityModeResolver
+    internal sealed class NullQualityModes : IProviderQualityModeResolver
     {
         public bool TryResolveRequested(string qualityTier, string? preferredProvider, out ProviderQualityMode? resolved)
         {

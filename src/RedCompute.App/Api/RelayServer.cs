@@ -339,6 +339,10 @@ public class RelayServer
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         _callbacks.AttachDurableStore(_inputAttachments.DatabasePath, inputQueueStore,
             sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSession(sessionId).Info).FirstOrDefault(i => i is not null));
+        _callbacks.AttachQuestionSource(
+            sessionId => _registry.FindProviders<ISessionProvider>()
+                .Select(p => p.GetPendingQuestions(sessionId)).FirstOrDefault(q => q.Count > 0) ?? [],
+            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSession(sessionId).Info).FirstOrDefault(i => i is not null));
         var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
             _jobTracker, broadcaster, _log,
             sessionId => _confidentialSessions.Any(pair =>
@@ -506,6 +510,13 @@ public class RelayServer
             var providerId = sp.ProviderId;
             sp.SessionStreamEvent += (sessionId, evt) =>
                 transcriptPipeline.HandleLiveEvent(providerId, sessionId, evt);
+            // Question notifications ride the callback registry, apart from the transcript.
+            sp.SessionStreamEvent += (sessionId, evt) =>
+            {
+                if (evt.Type == "question") _callbacks.OnQuestionParked(sessionId);
+                else if (evt.Type == "question_resolved" && evt.RequestId is { } requestId)
+                    _callbacks.OnQuestionResolved(sessionId, requestId);
+            };
         }
 
         _hardwareMonitor.SnapshotUpdated += snapshot => broadcaster.Broadcast("hardware.snapshot", snapshot);

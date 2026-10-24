@@ -169,6 +169,12 @@ public interface ISessionProvider
     QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)
         => QuestionAnswerResult.RequestNotFound;
 
+    /// <summary>
+    /// Questions the live session is parked on right now. Live control state, like background
+    /// tasks: the API overlays it on session reads and it is never written to the transcript.
+    /// </summary>
+    IReadOnlyList<PendingSessionQuestion> GetPendingQuestions(string sessionId) => [];
+
     // Interrupt
     InterruptResult InterruptSession(string sessionId);
 

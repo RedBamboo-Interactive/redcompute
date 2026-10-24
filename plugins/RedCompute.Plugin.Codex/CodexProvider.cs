@@ -294,6 +294,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public bool SendAnswer(string sessionId, string answer)
         => _interactive.SubmitSingleAnswer(sessionId, answer);
 
+    public IReadOnlyList<Core.Sessions.PendingSessionQuestion> GetPendingQuestions(string sessionId)
+        => _interactive.GetPendingQuestions(sessionId);
+
     public Core.Sessions.QuestionAnswerResult SubmitQuestionAnswer(string sessionId, Core.Sessions.SessionQuestionAnswer answer)
         => _interactive.SubmitQuestionAnswer(sessionId, answer)
             ? Core.Sessions.QuestionAnswerResult.Answered

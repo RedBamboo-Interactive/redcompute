@@ -236,6 +236,9 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId)
         => _claude.GetBackgroundTasks(sessionId);
 
+    public IReadOnlyList<PendingSessionQuestion> GetPendingQuestions(string sessionId)
+        => _claude.GetPendingQuestions(sessionId);
+
     // --- ISessionProvider: Configuration ---
 
     public bool SetPermissionMode(string sessionId, string mode) => _claude.SetPermissionMode(sessionId, mode);
