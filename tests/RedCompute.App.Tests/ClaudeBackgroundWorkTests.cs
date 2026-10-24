@@ -319,6 +319,85 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         Assert.DoesNotContain(resumedLive, e => e.TurnOrigin is not null);
     }
 
+    // Run6 (Claude Code 2.1.309, recorded 2026-10-24): a Bash with a 15 s timeout runs 40 s. The CLI
+    // announces it as foreground, then at the timeout lists it in a snapshot and patches
+    // `is_backgrounded: true`; the turn ends while it runs and a wake turn reports it. Before the
+    // promotion the tracker dropped it, so the session looked parkable with work still running.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Run6_a_foreground_shell_moved_to_the_background_is_tracked_until_it_finishes(bool patchBeforeSnapshot)
+    {
+        const string bashTool = "toolu_019nF9XiBrcabdVmH79M2pqR";
+        const string bashTask = "b275w01pt";
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("launch")], messageUid: "user-1"));
+
+        var lines = Load("run6-promoted-shell").Select(e => e.Line!.Value).ToList();
+        if (patchBeforeSnapshot)
+        {
+            var snapshot = lines.FindIndex(IsSubtype("background_tasks_changed"));
+            var patch = lines.FindIndex(IsSubtype("task_updated"));
+            Assert.Equal(snapshot + 1, patch);
+            (lines[snapshot], lines[patch]) = (lines[patch], lines[snapshot]);
+        }
+
+        var results = 0;
+        foreach (var line in lines)
+        {
+            h.Feed(line);
+            if (line.GetProperty("type").GetString() != "result" || ++results != 1) continue;
+
+            // The launching turn is over and the shell runs on: Idle, but not parkable.
+            Assert.Equal(ClaudeSessionStatus.Idle, h.Info.Status);
+            var running = Assert.Single(h.Service.GetBackgroundTasks(h.Id));
+            Assert.Equal(bashTask, running.TaskId);
+            Assert.Equal(BackgroundTaskKinds.Shell, running.Kind);
+            Assert.Equal(bashTool, running.ParentToolUseId);
+            Assert.False(await h.Service.TryParkIdleSessionAsync(h.Id, SessionStopReasons.IdleTimeout));
+            Assert.Equal(ClaudeSessionStatus.Idle, h.Info.Status);
+        }
+        Assert.Equal(2, results);
+
+        var records = h.Store.Messages;
+        var launchUid = Single(records, r => r is { EventType: "tool_use", MessageId: bashTool }).MessageUid;
+        Assert.NotNull(launchUid);
+        var tasks = TaskRecords(records);
+        Assert.Equal([(bashTask, "running"), (bashTask, "completed")], tasks.Select(t => (t.TaskId, t.Status)).ToList());
+        Assert.All(tasks, t =>
+        {
+            Assert.Equal(launchUid, t.Record.MessageUid);
+            Assert.Equal(bashTool, t.Record.ParentToolUseId);
+        });
+
+        // The CLI's wake turn names the shell that woke it.
+        var idles = h.Live.Where(e => e is { Type: "status", Content: "idle" }).ToList();
+        Assert.Equal(2, idles.Count);
+        Assert.Null(idles[0].TurnOrigin);
+        Assert.Equal(bashTask, idles[1].TurnOrigin?.TaskId);
+        Assert.Empty(h.Service.GetBackgroundTasks(h.Id));
+        Assert.Null(h.Store.FindSession(h.Id)!.BackgroundTasksJson);
+    }
+
+    [Fact]
+    public async Task A_shell_that_finishes_in_the_foreground_is_never_background_work()
+    {
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("launch")], messageUid: "user-1"));
+        h.Feed("""{"type":"system","subtype":"task_started","task_id":"bfg1","run_id":"r1","tool_use_id":"toolu_fg","description":"git status","is_backgrounded":false,"task_type":"local_bash"}""");
+        Assert.Empty(h.Service.GetBackgroundTasks(h.Id));
+        h.Feed("""{"type":"system","subtype":"task_updated","task_id":"bfg1","run_id":"r1","patch":{"status":"completed","end_time":1792859790196}}""");
+        h.Feed("""{"type":"system","subtype":"task_notification","task_id":"bfg1","run_id":"r1","tool_use_id":"toolu_fg","status":"completed","summary":"git status"}""");
+
+        Assert.Empty(h.Service.GetBackgroundTasks(h.Id));
+        Assert.Empty(TaskRecords(h.Store.Messages));
+        Assert.DoesNotContain(h.Live, e => e.Type == "task");
+    }
+
+    private static Predicate<JsonElement> IsSubtype(string subtype) => line =>
+        line.GetProperty("type").GetString() == "system"
+        && line.TryGetProperty("subtype", out var s) && s.GetString() == subtype;
+
     [Fact]
     public void Startup_recovery_records_tasks_left_running_as_lost_once_the_mirror_exists()
     {

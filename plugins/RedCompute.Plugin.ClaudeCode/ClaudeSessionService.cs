@@ -2700,6 +2700,7 @@ public class ClaudeSessionService
                 if (change.WakeTaskId is { } finished)
                     session.WakeTasks.Enqueue(finished);
                 else if (change.Kind == ClaudeBackgroundTaskTracker.ChangeKind.None
+                    && !change.FinishedInForeground
                     && root.TryGetProperty("task_id", out var unknown))
                     _log($"[Claude] Session {session.Info.Id}: ignoring notification for background task {unknown} from a previous process", null);
                 ApplyBackgroundChange(session, change);

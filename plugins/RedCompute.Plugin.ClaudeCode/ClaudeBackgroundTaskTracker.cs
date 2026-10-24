@@ -11,15 +11,18 @@ namespace RedCompute.Plugin.ClaudeCode;
 /// other events carry the details. A task gets exactly two durable records: one when it starts and
 /// one when it reaches a terminal state. Progress is live-only. Tasks the CLI reports as
 /// foreground (`is_backgrounded: false`, a subagent's own blocking shell) are not background work
-/// and are ignored. One tracker belongs to one CLI process: the tasks are in-process children of
-/// that process and die with it.
+/// and are ignored until the CLI moves one to the background (a Bash that outlived its timeout:
+/// `task_updated` patch `is_backgrounded: true` and its first appearance in a snapshot), when it
+/// is promoted and recorded like any other background task. One tracker belongs to one CLI
+/// process: the tasks are in-process children of that process and die with it.
 /// </summary>
 internal sealed class ClaudeBackgroundTaskTracker
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, TaskState> _tasks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _taskIdsByRunId = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _foreground = new(StringComparer.Ordinal);
+    /// <summary>Announced foreground tasks, kept so a promotion retains their launch attribution.</summary>
+    private readonly Dictionary<string, TaskState> _foreground = new(StringComparer.Ordinal);
     private readonly HashSet<string> _running = new(StringComparer.Ordinal);
 
     internal enum ChangeKind { None, Progress, Lifecycle }
@@ -29,6 +32,9 @@ internal sealed class ClaudeBackgroundTaskTracker
     internal sealed record Change(ChangeKind Kind, IReadOnlyList<BackgroundTaskInfo> Records, string? WakeTaskId = null)
     {
         public static readonly Change None = new(ChangeKind.None, []);
+        /// <summary>A notification for a task that finished in the foreground: nothing to record, nothing unknown.</summary>
+        public static readonly Change Foreground = new(ChangeKind.None, []) { FinishedInForeground = true };
+        public bool FinishedInForeground { get; init; }
     }
 
     private sealed class TaskState
@@ -108,19 +114,20 @@ internal sealed class ClaudeBackgroundTaskTracker
             if (root.TryGetProperty("is_backgrounded", out var backgrounded)
                 && backgrounded.ValueKind == JsonValueKind.False)
             {
-                _foreground.Add(taskId);
+                if (_tasks.ContainsKey(taskId)) return Change.None;
+                if (!_foreground.TryGetValue(taskId, out var foreground))
+                    _foreground[taskId] = foreground = new TaskState { TaskId = taskId, StartedAt = now };
+                Apply(foreground, root);
+                Attribute(foreground, root, resolveMessageUid);
                 return Change.None;
             }
 
+            if (_foreground.Remove(taskId, out var moved)) _tasks[taskId] = moved;
             var task = GetOrAdd(taskId, now);
             var previousRun = task.RunId;
             Apply(task, root);
             if (task.TerminalRecorded && Reopen(task, previousRun)) return new(ChangeKind.Lifecycle, []);
-            if (Str(root, "tool_use_id") is { } toolUseId)
-            {
-                task.ParentToolUseId = toolUseId;
-                task.MessageUid ??= resolveMessageUid(toolUseId);
-            }
+            Attribute(task, root, resolveMessageUid);
             if (task.StartRecorded || task.TerminalRecorded) return new(ChangeKind.Lifecycle, []);
             task.StartRecorded = true;
             if (!BackgroundTaskStatuses.IsTerminal(task.Status)) _running.Add(taskId);
@@ -146,14 +153,19 @@ internal sealed class ClaudeBackgroundTaskTracker
         if (Str(root, "task_id") is not { } taskId) return Change.None;
         lock (_gate)
         {
-            if (!_tasks.TryGetValue(taskId, out var task)
-                || !root.TryGetProperty("patch", out var patch) || patch.ValueKind != JsonValueKind.Object)
+            if (!root.TryGetProperty("patch", out var patch) || patch.ValueKind != JsonValueKind.Object)
                 return Change.None;
+            var promoted = Change.None;
+            if (!_tasks.ContainsKey(taskId)
+                && patch.TryGetProperty("is_backgrounded", out var backgrounded)
+                && backgrounded.ValueKind == JsonValueKind.True)
+                promoted = Promote(taskId);
+            if (!_tasks.TryGetValue(taskId, out var task)) return Change.None;
             if (TerminalStatus(Str(patch, "status")) is { } terminal)
                 task.ReportedTerminalStatus = terminal;
             if (patch.TryGetProperty("end_time", out var end) && end.TryGetInt64(out var endMs))
                 task.EndedAt = DateTimeOffset.FromUnixTimeMilliseconds(endMs);
-            return Change.None;
+            return promoted;
         }
     }
 
@@ -162,6 +174,8 @@ internal sealed class ClaudeBackgroundTaskTracker
         if (Str(root, "task_id") is not { } taskId) return Change.None;
         lock (_gate)
         {
+            // A foreground task that finished in the foreground was never background work.
+            if (_foreground.Remove(taskId)) return Change.Foreground;
             // A resumed CLI reports tasks of the process it replaced as stopped. Those were
             // already recorded as lost when that process ended, and they have nothing to attach to.
             if (!_tasks.TryGetValue(taskId, out var task)) return Change.None;
@@ -181,9 +195,12 @@ internal sealed class ClaudeBackgroundTaskTracker
         lock (_gate)
         {
             var listed = new HashSet<string>(StringComparer.Ordinal);
+            var records = new List<BackgroundTaskInfo>();
             foreach (var item in tasks.EnumerateArray())
             {
-                if (Str(item, "task_id") is not { } taskId || _foreground.Contains(taskId)) continue;
+                if (Str(item, "task_id") is not { } taskId) continue;
+                // The snapshot lists only background work: a listed foreground task was moved there.
+                if (_foreground.ContainsKey(taskId)) records.AddRange(Promote(taskId).Records);
                 listed.Add(taskId);
                 var task = GetOrAdd(taskId, now);
                 if (task.TerminalRecorded)
@@ -197,7 +214,6 @@ internal sealed class ClaudeBackgroundTaskTracker
             }
 
             var changed = !listed.SetEquals(_running);
-            var records = new List<BackgroundTaskInfo>();
             foreach (var taskId in _running.Where(id => !listed.Contains(id)).ToList())
             {
                 // The snapshot dropped a task whose notification never arrived: settle it from
@@ -227,6 +243,26 @@ internal sealed class ClaudeBackgroundTaskTracker
             _running.Clear();
             return records;
         }
+    }
+
+    /// <summary>
+    /// A foreground task the CLI moved to the background: from here it is ordinary background
+    /// work, recorded once with the attribution of the tool call that launched it.
+    /// </summary>
+    private Change Promote(string taskId)
+    {
+        if (!_foreground.Remove(taskId, out var task)) return Change.None;
+        _tasks[taskId] = task;
+        task.StartRecorded = true;
+        _running.Add(taskId);
+        return new(ChangeKind.Lifecycle, [task.ToInfo()]);
+    }
+
+    private static void Attribute(TaskState task, JsonElement root, Func<string, string?> resolveMessageUid)
+    {
+        if (Str(root, "tool_use_id") is not { } toolUseId) return;
+        task.ParentToolUseId = toolUseId;
+        task.MessageUid ??= resolveMessageUid(toolUseId);
     }
 
     /// <summary>
