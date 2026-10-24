@@ -13,13 +13,18 @@ namespace RedCompute.App.Services;
 /// parks on becomes its own outbox row (QuestionRequestId set), keyed apart from the subscription, so
 /// it never consumes or alters the terminal completion. A question row is sent once per request and
 /// distinct URL, and dropped unsent if the question resolves first.
+///
+/// A turn that ends Idle while background tasks still run is reported (with backgroundTasksRunning)
+/// but does not consume the subscription: it re-arms for the turn the background work wakes. Each
+/// such delivery carries deliverySequence, so retries of one delivery stay identical while the next
+/// turn's delivery is distinct under the same callbackId.
 /// </remarks>
 internal sealed class SessionPromptCallbacks
 {
     private sealed record Entry(string SessionId, string CallbackId, string PromptMessageUid, string Url, string? UserId,
         bool ActiveSeen = false, string? PauseReason = null, string? Payload = null,
         int Attempts = 0, DateTimeOffset? NextAttemptAt = null,
-        string? QuestionUrl = null, string? QuestionRequestId = null);
+        string? QuestionUrl = null, string? QuestionRequestId = null, int BackgroundDeliveries = 0);
     private readonly SessionCallbackStore _store;
     private readonly SessionInputQueueStore _queue;
     private readonly Func<string, UnifiedSessionInfo?> _current;
@@ -222,12 +227,15 @@ internal sealed class SessionPromptCallbacks
                 if (!cancelled && !paused && session!.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)) continue;
                 if (!cancelled && !paused && session!.Status == SessionStatus.Idle
                     && (prompt.State != SessionInputQueueState.Delivered || !entry.ActiveSeen)) continue;
-                var payload = JsonSerializer.Serialize(new { sessionId, callbackId = entry.CallbackId, promptMessageUid = entry.PromptMessageUid,
+                var completion = new { sessionId, callbackId = entry.CallbackId, promptMessageUid = entry.PromptMessageUid,
                     status = cancelled ? "Cancelled" : !paused && endedReason is not null && session!.Status != SessionStatus.Error ? "Ended" : session!.Status.ToString(),
                     reason = cancelled ? prompt.ErrorCode == "deployment_target_superseded" ? "superseded" : "cancelled" : endedReason,
                     stopReason = cancelled ? null : session!.StopReason, userId = entry.UserId,
                     deliveredMessageUid = prompt.State == SessionInputQueueState.Delivered ? prompt.DeliveredMessageUid : null,
-                    executionObserved = prompt.State == SessionInputQueueState.Delivered && entry.ActiveSeen });
+                    executionObserved = prompt.State == SessionInputQueueState.Delivered && entry.ActiveSeen };
+                var backgroundRunning = !cancelled && !paused && endedReason is null && session!.Status == SessionStatus.Idle
+                    ? SessionCallbackRegistry.RunningBackgroundTasks(session) : 0;
+                var payload = SessionCallbackRegistry.WithTurnIdentity(completion, backgroundRunning, entry.BackgroundDeliveries);
                 var pending = entry with { Payload = payload, ActiveSeen = paused ? false : entry.ActiveSeen, Attempts = 0, NextAttemptAt = null };
                 Save(pending); deliver.Add(pending);
             }
@@ -299,6 +307,13 @@ internal sealed class SessionPromptCallbacks
                 return;
             }
             using var doc = JsonDocument.Parse(entry.Payload!);
+            // The turn ended with background work still running: keep the subscription for the turn
+            // that work wakes. It must be observed executing again before it can report.
+            if (doc.RootElement.TryGetProperty("backgroundTasksRunning", out var running) && running.GetInt32() > 0)
+            {
+                Save(latest with { Payload = null, ActiveSeen = false, BackgroundDeliveries = latest.BackgroundDeliveries + 1, Attempts = 0, NextAttemptAt = null });
+                return;
+            }
             var pauseReason = doc.RootElement.GetProperty("stopReason").GetString();
             var paused = doc.RootElement.GetProperty("status").GetString() == "Stopped"
                 && (SessionStopReasons.IsAutoResumable(pauseReason) || pauseReason == "usage_limit");

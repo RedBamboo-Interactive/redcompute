@@ -1385,7 +1385,9 @@ public static class UnifiedSessionEndpoints
 
         endpoints.MapPost("/ai-session/sessions/{id}/callback",
             "Register a completion webhook: RedCompute POSTs the session result to the given URL when the session finishes. Preferred over polling for agents awaiting session completion. " +
-            "With questionUrl, RedCompute also POSTs once per parked question (sessionId, title, requestId, questions with options, askedAt, expiresAt); the completion callback is unaffected.", async (HttpContext ctx, string id) =>
+            "With questionUrl, RedCompute also POSTs once per parked question (sessionId, title, requestId, questions with options, askedAt, expiresAt); the completion callback is unaffected. " +
+            "A turn that ends Idle while background tasks still run is reported with backgroundTasksRunning (count) and deliverySequence, and the registration stays armed for the turn that background work wakes; " +
+            "every later delivery of that registration carries the next deliverySequence under the same callbackId, while retries of one delivery repeat it unchanged.", async (HttpContext ctx, string id) =>
         {
             if (_callbacks == null)
                 return Error(503, "not_configured", "Callback registry not available");

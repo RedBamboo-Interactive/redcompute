@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using RedBamboo.AppHost.Auth;
 using RedCompute.Core.Sessions;
 
@@ -9,7 +10,10 @@ namespace RedCompute.App.Services;
 
 public class SessionCallbackRegistry
 {
-    private record CallbackEntry(string Url, string? UserId, string CallbackId, string? QuestionUrl = null);
+    // BackgroundDeliveries counts turns already reported Idle with background work still running;
+    // AwaitingTurn holds the registration until the turn that work wakes has been seen executing.
+    private record CallbackEntry(string Url, string? UserId, string CallbackId, string? QuestionUrl = null,
+        int BackgroundDeliveries = 0, bool AwaitingTurn = false);
 
     private readonly ConcurrentDictionary<string, CallbackEntry> _callbacks = new();
     // In-memory registrations' question notifications already sent, by session, request and URL.
@@ -173,12 +177,35 @@ public class SessionCallbackRegistry
         }
         if (eventType == "session.updated" && data is UnifiedSessionInfo session)
         {
+            if (session.Status is SessionStatus.Active or SessionStatus.Starting)
+            {
+                if (_callbacks.TryGetValue(session.Id, out var waiting) && waiting.AwaitingTurn)
+                    _callbacks.TryUpdate(session.Id, waiting with { AwaitingTurn = false }, waiting);
+                return;
+            }
             if (session.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error))
                 return;
+            if (!_callbacks.TryGetValue(session.Id, out var entry))
+                return;
 
-            if (_callbacks.TryRemove(session.Id, out var entry))
+            var running = session.Status == SessionStatus.Idle ? RunningBackgroundTasks(session) : 0;
+            if (session.Status == SessionStatus.Idle && entry.AwaitingTurn)
+                return; // Still the reported turn's idle, or its background progress: wait for the woken turn.
+            if (running > 0)
+            {
+                // Report the turn, keep the registration for the turn the background work wakes.
+                var kept = entry with { BackgroundDeliveries = entry.BackgroundDeliveries + 1, AwaitingTurn = true };
+                if (_callbacks.TryUpdate(session.Id, kept, entry))
+                    _ = FireAsync(entry.Url, session.Id, session.Status.ToString(), entry.CallbackId, session.ProjectPath, session.Title,
+                        userId: session.UserId ?? entry.UserId, stopReason: session.StopReason,
+                        backgroundTasksRunning: running, deliverySequence: kept.BackgroundDeliveries);
+                return;
+            }
+
+            if (_callbacks.TryRemove(KeyValuePair.Create(session.Id, entry)))
                 _ = FireAsync(entry.Url, session.Id, session.Status.ToString(), entry.CallbackId, session.ProjectPath, session.Title,
-                    userId: session.UserId ?? entry.UserId, stopReason: session.StopReason);
+                    userId: session.UserId ?? entry.UserId, stopReason: session.StopReason,
+                    deliverySequence: entry.BackgroundDeliveries > 0 ? entry.BackgroundDeliveries + 1 : null);
         }
         else if (eventType == "session.ended")
         {
@@ -195,7 +222,8 @@ public class SessionCallbackRegistry
                         _questionsNotified.TryRemove(key, out _);
                     if (_durable is not null) _ = _durable.SessionEndedAsync(id);
                     if (_callbacks.TryRemove(id, out var entry))
-                        _ = FireAsync(entry.Url, id, "Ended", entry.CallbackId, reason: reason, userId: entry.UserId, stopReason: stopReason);
+                        _ = FireAsync(entry.Url, id, "Ended", entry.CallbackId, reason: reason, userId: entry.UserId, stopReason: stopReason,
+                            deliverySequence: entry.BackgroundDeliveries > 0 ? entry.BackgroundDeliveries + 1 : null);
                 }
             }
             catch { }
@@ -211,24 +239,49 @@ public class SessionCallbackRegistry
         catch (Exception) { _log("[Callbacks] Observation failed; subscription retained for owning sweep", null); }
     }
 
-    private async Task FireAsync(string url, string sessionId, string status, string callbackId,
-        string? projectPath = null, string? title = null, string? reason = null, string? userId = null, string? stopReason = null)
+    /// <summary>Background tasks of the session that have not reached a terminal state.</summary>
+    internal static int RunningBackgroundTasks(UnifiedSessionInfo session)
+        => session.BackgroundTasks.Count(task => !BackgroundTaskStatuses.IsTerminal(task.Status));
+
+    /// <summary>
+    /// Serializes a completion payload. Unchanged from the classic shape unless the turn ended with
+    /// background work running or follows such a turn; then it carries backgroundTasksRunning and a
+    /// 1-based deliverySequence that distinguishes each turn reported under one callbackId.
+    /// </summary>
+    internal static string WithTurnIdentity(object completion, int backgroundTasksRunning, int priorBackgroundDeliveries)
     {
+        if (backgroundTasksRunning <= 0 && priorBackgroundDeliveries <= 0)
+            return JsonSerializer.Serialize(completion);
+        var node = JsonSerializer.SerializeToNode(completion)!.AsObject();
+        node["backgroundTasksRunning"] = backgroundTasksRunning;
+        node["deliverySequence"] = priorBackgroundDeliveries + 1;
+        return node.ToJsonString();
+    }
+
+    private async Task FireAsync(string url, string sessionId, string status, string callbackId,
+        string? projectPath = null, string? title = null, string? reason = null, string? userId = null, string? stopReason = null,
+        int backgroundTasksRunning = 0, int? deliverySequence = null)
+    {
+        var completion = new
+        {
+            sessionId,
+            callbackId,
+            status,
+            projectPath,
+            title,
+            reason,
+            userId,
+            stopReason,
+        };
+        var payload = deliverySequence is { } sequence
+            ? WithTurnIdentity(completion, backgroundTasksRunning, sequence - 1)
+            : JsonSerializer.Serialize(completion);
         for (int attempt = 0; attempt < 3; attempt++)
         {
             try
             {
-                using var response = await _http.PostAsJsonAsync(url, new
-                {
-                    sessionId,
-                    callbackId,
-                    status,
-                    projectPath,
-                    title,
-                    reason,
-                    userId,
-                    stopReason,
-                });
+                using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+                using var response = await _http.PostAsync(url, content);
 
                 if (response.IsSuccessStatusCode)
                 {
