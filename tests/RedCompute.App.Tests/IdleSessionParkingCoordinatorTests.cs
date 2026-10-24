@@ -23,6 +23,7 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
     private readonly ParkingProvider _runtime;
     private readonly IdleSessionParkingCoordinator _coordinator;
     private DateTimeOffset _now;
+    private Func<bool> _keepResident = () => false;
 
     public IdleSessionParkingCoordinatorTests()
     {
@@ -37,7 +38,8 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
             new CapabilityConfig(),
             new Dictionary<string, IBackendProvider> { ["test"] = provider }, "test");
         _queue = new(_store, _attachments, registry, null!, new WebSocketBroadcaster(), (_, _) => { });
-        _coordinator = new(registry, _queue, TimeSpan.FromHours(1), (_, _) => { }, utcNow: () => _now);
+        _coordinator = new(registry, _queue, TimeSpan.FromHours(1), (_, _) => { }, utcNow: () => _now,
+            keepResident: _ => _keepResident());
     }
 
     [Fact]
@@ -112,6 +114,39 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
         Assert.Equal(0, _runtime.Parks);
         await _coordinator.SweepAsync(start.AddMinutes(91));
         Assert.Equal(1, _runtime.Parks);
+    }
+
+    [Fact]
+    public async Task Resident_sessions_are_never_parked_and_rejoin_the_policy_when_unmarked()
+    {
+        var start = DateTimeOffset.Parse("2026-10-24T09:00:00Z");
+        _keepResident = () => true;
+        await _coordinator.SweepAsync(start);
+        await _coordinator.SweepAsync(start.AddHours(1));
+        await _coordinator.SweepAsync(start.AddHours(6));
+        Assert.Equal(0, _runtime.Parks);
+        Assert.Equal(SessionStatus.Idle, _runtime.Info.Status);
+
+        // Unmarking does not forgive real idle time: the session has been continuously eligible.
+        _keepResident = () => false;
+        await _coordinator.SweepAsync(start.AddHours(6).AddMinutes(1));
+        Assert.Equal(1, _runtime.Parks);
+        Assert.Equal(SessionStopReasons.IdleTimeout, _runtime.Info.StopReason);
+    }
+
+    [Fact]
+    public async Task A_mark_that_lands_before_the_locked_recheck_still_prevents_parking()
+    {
+        var start = DateTimeOffset.Parse("2026-10-24T09:00:00Z");
+        await _coordinator.SweepAsync(start);
+        var reads = 0;
+        _keepResident = () => ++reads > 1;
+
+        await _coordinator.SweepAsync(start.AddHours(1));
+
+        Assert.Equal(2, reads);
+        Assert.Equal(0, _runtime.Parks);
+        Assert.Equal(SessionStatus.Idle, _runtime.Info.Status);
     }
 
     private static SessionInputQueueSubmission Submission() => new(

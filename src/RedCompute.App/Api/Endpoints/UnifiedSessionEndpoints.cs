@@ -342,6 +342,14 @@ public static class UnifiedSessionEndpoints
             }
             var confidential = body.TryGetProperty("confidential", out var confidentialValue)
                 && confidentialValue.ValueKind == JsonValueKind.True;
+            var keepResident = false;
+            if (body.TryGetProperty("keepResident", out var keepResidentValue)
+                && keepResidentValue.ValueKind != JsonValueKind.Null)
+            {
+                if (keepResidentValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    return Error(422, "validation_failed", "keepResident must be a boolean when supplied");
+                keepResident = keepResidentValue.GetBoolean();
+            }
             if (conversationOnly && confidential)
                 return Error(422, "validation_failed",
                     "conversation-only and confidential are separate ownership contracts and cannot be combined");
@@ -408,6 +416,7 @@ public static class UnifiedSessionEndpoints
                 log($"Provider {provider.ProviderId} created session {session.Id} without a valid compute job", null);
                 return Error(500, "tracking_failed", "Session creation was rolled back because its compute job was not created");
             }
+            if (keepResident) jobTracker.SetKeepResident(jobId, true);
 
             return Results.Json(session);
         })
@@ -421,7 +430,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body)
             .WithParam("developerInstructions", "string", description: "Provider-native developer instructions applied to the persistent session. Unsupported providers reject the request.", location: ParamLocation.Body)
             .WithParam("executionProfile", "string", description: "Persisted provider execution restrictions. conversation-only is currently supported by Codex.", enumValues: [SessionExecutionProfile.Default, SessionExecutionProfile.ConversationOnly], defaultValue: SessionExecutionProfile.Default, location: ParamLocation.Body)
-            .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body);
+            .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body)
+            .WithParam("keepResident", "boolean", description: "Exempt the session from idle parking. For always-on presence sessions only.", defaultValue: false, location: ParamLocation.Body);
 
 
         endpoints.MapGet("/ai-session/sessions/{id}",
@@ -587,31 +597,12 @@ public static class UnifiedSessionEndpoints
                 return Error(422, "classification_is_sticky",
                     "RedCompute only accepts confidentiality tightening; declassification happens at the owning application boundary");
 
-            UnifiedSessionInfo? info;
-            try { (info, _) = await _redLeafReader!.GetSessionInfoAsync(id); }
-            catch (Exception ex)
-            {
-                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
-            }
-            if (info?.JobId is not { } jobId)
-                return Error(404, "not_found", $"Session '{id}' not found");
-            var job = jobTracker.GetJob(jobId);
-            if (job?.CreationProvenance is not { } provenance)
-                return Error(404, "not_found", $"Session '{id}' not found");
-
-            var execution = ConfidentialResourcePolicy.ExecutionIdentity(ctx);
-            var actorId = execution?.Actor.EntityId ?? execution?.Actor.Id;
-            var ownerAgentId = provenance.Actor.EntityId ?? provenance.Actor.Id;
-            if (execution is null
-                || !execution.Actor.Kind.Equals("agent", StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(actorId, ownerAgentId, StringComparison.OrdinalIgnoreCase)
-                || !execution.Beneficiary.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(execution.Beneficiary.Id, job.UserId,
-                    StringComparison.OrdinalIgnoreCase))
-                return Error(404, "not_found", $"Session '{id}' not found");
+            var (owned, failure) = await ResolveOwnedSessionJobAsync(ctx, id, jobTracker);
+            if (owned is null) return failure!;
+            var (info, jobId, _, ownerAgentId) = owned;
 
             jobTracker.SetConfidential(jobId);
-            job = jobTracker.GetJob(jobId)!;
+            var job = jobTracker.GetJob(jobId)!;
             info.Confidential = true;
             info.OwnerAgentId = ownerAgentId;
             if (mirrorConfidential is not null)
@@ -620,6 +611,28 @@ public static class UnifiedSessionEndpoints
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path)
             .WithParam("confidential", "boolean", required: true, location: ParamLocation.Body);
+
+        endpoints.MapPut("/ai-session/sessions/{id}/keep-resident",
+            "Exempt a session from idle parking, or return it to the default policy. Owning Agent and beneficiary user only.",
+            async (HttpContext ctx, string id) =>
+        {
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            if (body.ValueKind != JsonValueKind.Object
+                || !body.TryGetProperty("keepResident", out var keepValue)
+                || keepValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return Error(422, "validation_failed", "keepResident must be a boolean");
+
+            var (owned, failure) = await ResolveOwnedSessionJobAsync(ctx, id, jobTracker);
+            if (owned is null) return failure!;
+
+            var keepResident = keepValue.GetBoolean();
+            jobTracker.SetKeepResident(owned.JobId, keepResident);
+            return Results.Json(new { sessionId = id, jobId = owned.JobId, keepResident });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path)
+            .WithParam("keepResident", "boolean", required: true, location: ParamLocation.Body);
 
         endpoints.MapGet("/ai-session/sessions/{id}/messages/{recordId:long}/output",
             "Stream a payload-backed transcript output. Supports HTTP byte ranges; bytes are loaded only when requested.", async (HttpContext ctx, string id, long recordId) =>
@@ -2393,6 +2406,42 @@ public static class UnifiedSessionEndpoints
             through = through is { } max ? Math.Max(max, sequence) : sequence;
         }
         return (from, through);
+    }
+
+    private sealed record OwnedSessionJob(
+        UnifiedSessionInfo Info, Guid JobId, JobRecord Job, string? OwnerAgentId);
+
+    /// <summary>
+    /// Resolves a session's linked job for a caller who is its verified owning Agent acting for the
+    /// job's beneficiary user. Every other caller sees 404 so ownership never leaks.
+    /// </summary>
+    private static async Task<(OwnedSessionJob? Owned, IResult? Failure)> ResolveOwnedSessionJobAsync(
+        HttpContext ctx, string id, IJobTracker jobTracker)
+    {
+        UnifiedSessionInfo? info;
+        try { (info, _) = await _redLeafReader!.GetSessionInfoAsync(id); }
+        catch (Exception ex)
+        {
+            return (null, Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}"));
+        }
+        if (info?.JobId is not { } jobId)
+            return (null, Error(404, "not_found", $"Session '{id}' not found"));
+        var job = jobTracker.GetJob(jobId);
+        if (job?.CreationProvenance is not { } provenance)
+            return (null, Error(404, "not_found", $"Session '{id}' not found"));
+
+        var execution = ConfidentialResourcePolicy.ExecutionIdentity(ctx);
+        var actorId = execution?.Actor.EntityId ?? execution?.Actor.Id;
+        var ownerAgentId = provenance.Actor.EntityId ?? provenance.Actor.Id;
+        if (execution is null
+            || !execution.Actor.Kind.Equals("agent", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(actorId, ownerAgentId, StringComparison.OrdinalIgnoreCase)
+            || !execution.Beneficiary.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(execution.Beneficiary.Id, job.UserId,
+                StringComparison.OrdinalIgnoreCase))
+            return (null, Error(404, "not_found", $"Session '{id}' not found"));
+
+        return (new OwnedSessionJob(info, jobId, job, ownerAgentId), null);
     }
 
     private static IResult Error(int status, string error, string message)

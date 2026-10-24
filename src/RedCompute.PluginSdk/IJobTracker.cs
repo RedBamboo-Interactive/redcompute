@@ -20,6 +20,7 @@ public interface IJobTracker
         => MarkFailed(jobId, reason, resultJson: resultJson);
     void UpdateName(Guid jobId, string name);
     void SetConfidential(Guid jobId) { }
+    void SetKeepResident(Guid jobId, bool keepResident) { }
     JobRecord? GetJob(Guid jobId) => null;
 
     IReadOnlyList<JobLifecycleEvent> GetJobEvents(Guid jobId) => [];

@@ -168,6 +168,49 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
     [Fact]
     public async Task Create_endpoint_starts_claude_session_with_developer_instructions()
     {
+        var instructions = DiscordLikeInstructions();
+        var (status, response, _) = await InvokeCreateAsync(new
+        {
+            projectPath = _root, provider = "claude-code", developerInstructions = instructions,
+        });
+
+        Assert.True(status == 200, $"{status}: {response}");
+        Assert.DoesNotContain("developer_instructions_not_supported", response);
+        Assert.DoesNotContain(instructions, response);
+        Assert.Equal(instructions,
+            ValueAfter(Assert.Single(_launches).ArgumentList.ToList(), "--append-system-prompt"));
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(null, false)]
+    public async Task Create_endpoint_persists_keep_resident_on_the_session_job(bool? keepResident, bool expected)
+    {
+        var (status, response, jobKeepResident) = await InvokeCreateAsync(new
+        {
+            projectPath = _root, provider = "claude-code", keepResident,
+        });
+
+        Assert.True(status == 200, $"{status}: {response}");
+        Assert.Equal(expected, jobKeepResident);
+    }
+
+    [Fact]
+    public async Task Create_endpoint_rejects_a_non_boolean_keep_resident_before_starting()
+    {
+        var (status, response, _) = await InvokeCreateAsync(new
+        {
+            projectPath = _root, provider = "claude-code", keepResident = "yes",
+        });
+
+        Assert.Equal(422, status);
+        Assert.Contains("keepResident", response);
+        Assert.Empty(_launches);
+    }
+
+    private async Task<(int Status, string Response, bool? JobKeepResident)> InvokeCreateAsync(object requestBody)
+    {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
         var dbPath = Path.Combine(f.Root, "jobs.db");
         RedComputeDbContext Db() => new(dbPath);
@@ -192,7 +235,6 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
             .Single(e => e.RoutePattern.RawText == "/ai-session/sessions"
                 && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("POST"));
 
-        var instructions = DiscordLikeInstructions();
         var ctx = new DefaultHttpContext
         {
             RequestServices = app.Services,
@@ -201,10 +243,7 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
         ctx.SetEndpoint(endpoint);
         ctx.Request.Method = "POST";
         ctx.Request.ContentType = "application/json";
-        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
-        {
-            projectPath = _root, provider = "claude-code", developerInstructions = instructions,
-        }));
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(requestBody));
         ctx.Request.Body = new MemoryStream(body);
         ctx.Request.ContentLength = body.Length;
         ctx.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>(new BodyFeature());
@@ -216,11 +255,13 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
 
             ctx.Response.Body.Position = 0;
             var response = await new StreamReader(ctx.Response.Body).ReadToEndAsync();
-            Assert.True(ctx.Response.StatusCode == 200, $"{ctx.Response.StatusCode}: {response}");
-            Assert.DoesNotContain("developer_instructions_not_supported", response);
-            Assert.DoesNotContain(instructions, response);
-            Assert.Equal(instructions,
-                ValueAfter(Assert.Single(_launches).ArgumentList.ToList(), "--append-system-prompt"));
+            bool? jobKeepResident = null;
+            if (ctx.Response.StatusCode == 200)
+            {
+                using var document = JsonDocument.Parse(response);
+                jobKeepResident = jobs.GetJob(document.RootElement.GetProperty("jobId").GetGuid())?.KeepResident;
+            }
+            return (ctx.Response.StatusCode, response, jobKeepResident);
         }
         finally
         {

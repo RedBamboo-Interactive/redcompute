@@ -731,6 +731,9 @@ public class JobTrackingService : IJobTracker
     public void SetConfidential(Guid jobId)
         => MutateProjection(jobId, job => job.Confidential = true);
 
+    public void SetKeepResident(Guid jobId, bool keepResident)
+        => MutateProjection(jobId, job => job.KeepResident = keepResident);
+
     public int RecoverOrphanedJobs(IReadOnlySet<Guid>? plannedRestartJobs = null)
     {
         var changed = new List<(JobRecord Job, JobLifecycleEvent Event)>();

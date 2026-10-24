@@ -45,7 +45,8 @@ public class RedComputeDbContext : DbContext
             ("ExternalExecution", "INTEGER NOT NULL DEFAULT 0"), ("ParentJobId", "TEXT"),
             ("LeaseOwner", "TEXT"), ("LeaseTokenHash", "TEXT"),
             ("LeaseExpiresAt", "TEXT"), ("AttemptCount", "INTEGER NOT NULL DEFAULT 0"),
-            ("Confidential", "INTEGER NOT NULL DEFAULT 0")
+            ("Confidential", "INTEGER NOT NULL DEFAULT 0"),
+            ("KeepResident", "INTEGER NOT NULL DEFAULT 0")
         })
         {
             cmd.CommandText = $"ALTER TABLE Jobs ADD COLUMN {col.Item1} {col.Item2}";

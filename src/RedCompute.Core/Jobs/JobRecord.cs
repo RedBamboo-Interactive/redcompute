@@ -64,6 +64,9 @@ public class JobRecord
     public string? UserName { get; set; }
     public string? UserAvatarUrl { get; set; }
     public bool Confidential { get; set; }
+    // Exempts the job's AI session from idle parking. Presence sessions (Nova LIVE, heartbeat)
+    // stay resident; every other session keeps the default policy.
+    public bool KeepResident { get; set; }
 
     public long? DurationMs => CompletedAt.HasValue && StartedAt.HasValue
         ? (long)(CompletedAt.Value - StartedAt.Value).TotalMilliseconds

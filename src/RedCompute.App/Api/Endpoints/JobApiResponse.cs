@@ -55,6 +55,7 @@ internal static class JobApiResponse
         response["costUsd"] = job.CostUsd;
         response["userId"] = job.UserId;
         response["confidential"] = job.Confidential;
+        response["keepResident"] = job.KeepResident;
         response["userName"] = job.UserName;
         response["userAvatarUrl"] = job.UserAvatarUrl;
         response["externalExecution"] = job.ExternalExecution;

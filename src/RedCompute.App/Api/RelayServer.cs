@@ -375,7 +375,9 @@ public class RelayServer
             var idleParking = new IdleSessionParkingCoordinator(
                 _registry, inputQueue,
                 TimeSpan.FromMinutes(_config.AiSessionIdleTimeoutMinutes),
-                _log);
+                _log,
+                keepResident: session => session.JobId is { } jobId
+                    && _jobTracker.GetJob(jobId)?.KeepResident == true);
             _ = idleParking.RunAsync(ct);
         }
 

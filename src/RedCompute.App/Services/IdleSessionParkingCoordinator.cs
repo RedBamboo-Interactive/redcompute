@@ -17,6 +17,7 @@ public sealed class IdleSessionParkingCoordinator
     private readonly TimeSpan _sweepInterval;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly Action<string, Guid?> _log;
+    private readonly Func<UnifiedSessionInfo, bool> _keepResident;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _eligibleSince = new(StringComparer.Ordinal);
 
     public IdleSessionParkingCoordinator(
@@ -25,7 +26,8 @@ public sealed class IdleSessionParkingCoordinator
         TimeSpan idleTimeout,
         Action<string, Guid?> log,
         TimeSpan? sweepInterval = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        Func<UnifiedSessionInfo, bool>? keepResident = null)
     {
         if (idleTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(idleTimeout));
         _registry = registry;
@@ -35,6 +37,7 @@ public sealed class IdleSessionParkingCoordinator
         if (_sweepInterval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(sweepInterval));
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _log = log;
+        _keepResident = keepResident ?? (_ => false);
 
         foreach (var provider in _registry.FindProviders<IIdleSessionParkingProvider>()
                      .Distinct<IIdleSessionParkingProvider>(ReferenceEqualityComparer.Instance))
@@ -91,6 +94,9 @@ public sealed class IdleSessionParkingCoordinator
 
                 var since = _eligibleSince.GetOrAdd(key, now);
                 if (now - since < _idleTimeout) continue;
+                // Checked only once the clock has expired: the resident mark is a job read, and
+                // a session marked mid-idle must still never be parked.
+                if (_keepResident(candidate)) continue;
 
                 var parked = false;
                 await _inputQueue.WithSessionLockAsync(candidate.Id, async () =>
@@ -98,7 +104,7 @@ public sealed class IdleSessionParkingCoordinator
                     if (await _inputQueue.HasQueuedInputAsync(candidate.Id, ct)) return;
                     var current = provider.GetResidentIdleSessions()
                         .FirstOrDefault(session => string.Equals(session.Id, candidate.Id, StringComparison.Ordinal));
-                    if (current is null || !IsProviderEligible(current)) return;
+                    if (current is null || !IsProviderEligible(current) || _keepResident(current)) return;
                     parked = await provider.TryParkIdleSessionAsync(
                         candidate.Id, SessionStopReasons.IdleTimeout, ct);
                 }, ct);
