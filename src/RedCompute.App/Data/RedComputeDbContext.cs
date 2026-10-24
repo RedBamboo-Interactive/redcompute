@@ -114,6 +114,13 @@ public class RedComputeDbContext : DbContext
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// SQLite <c>json_extract</c>, for queries that must read one scalar out of a JSON column
+    /// without materialising the rest of it. Only translatable inside LINQ-to-SQL.
+    /// </summary>
+    public static string? JsonExtract(string? json, string path)
+        => throw new NotSupportedException("json_extract is only available in database queries");
+
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {
         options.UseSqlite($"Data Source={_dbPath}");
@@ -121,6 +128,9 @@ public class RedComputeDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.HasDbFunction(typeof(RedComputeDbContext).GetMethod(nameof(JsonExtract))!)
+            .HasName("json_extract").IsBuiltIn();
+
         modelBuilder.Entity<JobRecord>(entity =>
         {
             entity.HasKey(j => j.Id);

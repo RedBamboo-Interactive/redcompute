@@ -43,7 +43,7 @@ internal static class ComputeResourceAccess
     public static IResult JobDenied()
         => Results.NotFound(new { error = "not_found", message = "Job not found" });
 
-    private static bool IsTrustedInfrastructure(HttpContext context)
+    internal static bool IsTrustedInfrastructure(HttpContext context)
         => string.Equals(context.User.FindFirst("client_id")?.Value, "redleaf",
                 StringComparison.OrdinalIgnoreCase)
             && string.Equals(context.User.FindFirst("compute_provenance")?.Value, "true",

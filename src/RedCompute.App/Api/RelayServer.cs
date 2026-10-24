@@ -324,6 +324,7 @@ public class RelayServer
 
         GlobalEndpoints.Initialize();
         GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger);
+        UsageEndpoints.Map(registry, new UsageCountsService());
         HardwareEndpoints.Map(registry, _hardwareMonitor);
         SettingsEndpoints.Map(registry, _configManager, _registry, _providerConfig);
 
