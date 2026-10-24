@@ -38,4 +38,8 @@ public class CodexSessionInfo
     public int? ContextWindow { get; set; }
     public int? ProcessId { get; set; }
     public DateTimeOffset? LastActivity { get; set; }
+
+    // How the most recent turn ended (Core.Sessions.SessionTurnOutcomes) and when. Live state only.
+    public string? LastTurnOutcome { get; set; }
+    public DateTimeOffset? LastTurnEndedAt { get; set; }
 }

@@ -964,6 +964,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         // message until the "idle" below says the replacement is ready. Emitted raw for the same
         // reason as "interrupting" — lifecycle, not transcript.
         StreamEvent?.Invoke(sessionId, new CodexStreamEvent { Type = "status", Content = "killed" });
+        // The interrupt ended this turn by replacing the app-server; the resumed session starts with
+        // a fresh info, so RedCompute's record of the requested interrupt carries the outcome there.
+        session.Info.LastTurnOutcome = Core.Sessions.SessionTurnOutcomes.Interrupted;
+        session.Info.LastTurnEndedAt = DateTimeOffset.UtcNow;
 
         // Remove before disposing so OnExited sees no session and stays quiet: a forced interrupt
         // must not surface as SessionEnded, which would tell every client the session died.
@@ -1052,6 +1056,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 }
                 var completionError = TurnCompletionError(
                     @params, session.HasFinalOutput, session.InterruptRequested, session.HasCompletedFinalAnswer);
+                var outcome = TurnOutcome(@params, session.InterruptRequested, completionError);
+                session.Info.LastTurnOutcome = outcome;
+                session.Info.LastTurnEndedAt = DateTimeOffset.UtcNow;
                 session.ActiveTurnId = null;
                 session.StreamedItems.Clear();
                 session.MessagePhases.Clear();
@@ -1062,9 +1069,12 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 session.Info.LastActivity = DateTimeOffset.UtcNow;
                 Persist(session.Info);
                 SessionUpdated?.Invoke(session.Info);
-                Emit(session, completionError is null
-                    ? new CodexStreamEvent { Type = "status", Content = "completed" }
-                    : new CodexStreamEvent { Type = "error", Content = completionError });
+                // An interrupted turn is not a completed one: say so in the same vocabulary Claude
+                // Code uses, so the client and the transcript stop labelling it completed.
+                Emit(session, completionError is not null
+                    ? new CodexStreamEvent { Type = "error", Content = completionError }
+                    : new CodexStreamEvent { Type = "status", Content = outcome == Core.Sessions.SessionTurnOutcomes.Interrupted
+                        ? "interrupted" : "completed" });
                 session.HasFinalOutput = false;
                 session.HasCompletedFinalAnswer = false;
                 session.InterruptRequested = false;
@@ -1169,6 +1179,27 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                     && item.TryGetProperty("type", out var type)
                     && type.ValueKind == JsonValueKind.String
                     && CodexEventMapper.NormaliseItemType(type.GetString()) == "agentMessage");
+
+    /// <summary>
+    /// How a turn ended. turn/completed carries the turn's status (completed, interrupted, failed);
+    /// an interrupt we requested that ended the turn without completing it is interrupted whatever
+    /// status the app-server gives. A turn that completed despite an interrupt raced it and won.
+    /// </summary>
+    internal static string TurnOutcome(JsonElement parameters, bool interruptRequested, string? completionError)
+    {
+        var status = parameters.ValueKind == JsonValueKind.Object
+            && parameters.TryGetProperty("turn", out var turn) && turn.ValueKind == JsonValueKind.Object
+            && turn.TryGetProperty("status", out var statusElement) && statusElement.ValueKind == JsonValueKind.String
+                ? statusElement.GetString() : null;
+        if (string.Equals(status, "interrupted", StringComparison.OrdinalIgnoreCase))
+            return Core.Sessions.SessionTurnOutcomes.Interrupted;
+        if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
+            return completionError is null ? Core.Sessions.SessionTurnOutcomes.Completed : Core.Sessions.SessionTurnOutcomes.Failed;
+        // TurnCompletionError treats any non-completed end of a turn we asked to stop as the
+        // interruption, including the "failed"/"Interrupted" form the app-server can report.
+        if (interruptRequested) return Core.Sessions.SessionTurnOutcomes.Interrupted;
+        return completionError is null ? Core.Sessions.SessionTurnOutcomes.Completed : Core.Sessions.SessionTurnOutcomes.Failed;
+    }
 
     internal static string? TurnCompletionError(
         JsonElement parameters,

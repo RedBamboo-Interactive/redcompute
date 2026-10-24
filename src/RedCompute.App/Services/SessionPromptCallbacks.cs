@@ -30,6 +30,12 @@ namespace RedCompute.App.Services;
 /// registration covered it. Those reports are their own outbox rows (Kind "unprompted",
 /// trigger "unprompted", deliverySequence per turn). The subscription lives until the session
 /// ends for good; prompt-scoped completion semantics are unchanged.
+///
+/// Every completion names its turn (turnId, shared by every prompt one turn carried, steered ones
+/// included), how it ended (turnOutcome: completed, interrupted, failed, stopped, or null when the
+/// provider does not say) and, for an interrupted turn, who interrupted it (interruptedBy). These
+/// come from the turn ledger, recorded when the turn ended. A prompt whose turn ended idle while the
+/// session already runs the next turn reports from that record, not from the next turn's state.
 /// </remarks>
 internal sealed class SessionPromptCallbacks
 {
@@ -251,6 +257,11 @@ internal sealed class SessionPromptCallbacks
         {
             if (!_entries.Values.Any(e => e.SessionId == sessionId)) return;
             var session = _current(sessionId);
+            // Close the session's finished turn before reading it, whichever observer runs first.
+            if (session?.Status is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
+                _queue.CloseTurn(sessionId, SessionTurnEnd.From(session));
+            else if (session is null && endedReason is not null)
+                _queue.CloseTurn(sessionId, new SessionTurnEnd("Ended", endedStopReason, null, null, 0));
             var currentDeliveryUid = await _queue.CurrentDeliveryUidAsync(sessionId, ct);
             int? pendingInputs = null; // Read once per observation, only when a payload is built.
             foreach (var entry in _entries.Values.Where(e => e.SessionId == sessionId).ToArray())
@@ -263,6 +274,30 @@ internal sealed class SessionPromptCallbacks
                 if (entry.Kind == KindSession) continue;
                 var prompt = await _queue.FindPromptAsync(sessionId, entry.PromptMessageUid, ct);
                 if (prompt is null || prompt.OwnerUserId != entry.UserId) continue;
+                // The turn this prompt rode; for a report re-armed by background work, the turn
+                // that work woke, which is the session's latest ended one when it reports.
+                var turn = prompt.State != SessionInputQueueState.Delivered || prompt.TurnId is null ? null
+                    : entry.BackgroundDeliveries > 0 ? _queue.GetLastEndedTurn(sessionId) ?? _queue.GetTurn(sessionId, prompt.TurnId)
+                    : _queue.GetTurn(sessionId, prompt.TurnId);
+                // The ledger saw this prompt's own turn run and end idle: the prompt executed, even
+                // if this registration never observed it (a steer accepted as the turn finished).
+                var turnRan = entry.PauseReason is null && entry.BackgroundDeliveries == 0
+                    && turn is { ActiveSeen: true, EndedAt: not null, Status: nameof(SessionStatus.Idle) }
+                    && turn.TurnId == prompt.TurnId;
+                if (entry.Payload is null && turnRan && (observedActive || session?.Status == SessionStatus.Active))
+                {
+                    // The turn ended idle and the session is already running the next one (an
+                    // interrupt-current input delivered ahead, a woken or unprompted turn). Report
+                    // the ended turn from its record instead of waiting for, and borrowing, the next.
+                    pendingInputs ??= await _queue.CountPendingAsync(sessionId, ct);
+                    var ended = Completion(sessionId, entry, prompt, turn.Status!, null, turn.StopReason, true,
+                        turn.BackgroundTasksRunning > 0 ? SessionWorkStates.Background : SessionWorkStates.Idle,
+                        pendingInputs.Value, turn);
+                    var recorded = entry with { Payload = SessionCallbackRegistry.WithTurnIdentity(ended, turn.BackgroundTasksRunning, entry.BackgroundDeliveries),
+                        ActiveSeen = true, Attempts = 0, NextAttemptAt = null };
+                    Save(recorded); deliver.Add(recorded);
+                    continue;
+                }
                 var executionObserved = (observedActive || session?.Status == SessionStatus.Active)
                     && (prompt.State == SessionInputQueueState.Delivering
                         || prompt.State == SessionInputQueueState.Delivered && prompt.DeliveredMessageUid == currentDeliveryUid);
@@ -289,20 +324,19 @@ internal sealed class SessionPromptCallbacks
                 if (paused && entry.PauseReason == session!.StopReason) continue;
                 if (!cancelled && !paused && session!.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)) continue;
                 if (!cancelled && !paused && session!.Status == SessionStatus.Idle
-                    && (prompt.State != SessionInputQueueState.Delivered || !entry.ActiveSeen)
+                    && (prompt.State != SessionInputQueueState.Delivered || !(entry.ActiveSeen || turnRan))
                     && !(settled && entry.BackgroundDeliveries > 0 && prompt.State == SessionInputQueueState.Delivered
                         && SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks) == SessionWorkStates.Idle))
                     continue;
                 pendingInputs ??= await _queue.CountPendingAsync(sessionId, ct);
-                var completion = new { sessionId, callbackId = entry.CallbackId, promptMessageUid = entry.PromptMessageUid,
-                    status = cancelled ? "Cancelled" : !paused && endedReason is not null && session!.Status != SessionStatus.Error ? "Ended" : session!.Status.ToString(),
-                    reason = cancelled ? prompt.ErrorCode == "deployment_target_superseded" ? "superseded" : "cancelled" : endedReason,
-                    stopReason = cancelled ? null : session!.StopReason, userId = entry.UserId,
-                    deliveredMessageUid = prompt.State == SessionInputQueueState.Delivered ? prompt.DeliveredMessageUid : null,
-                    executionObserved = prompt.State == SessionInputQueueState.Delivered && entry.ActiveSeen,
-                    workState = endedReason is not null || session is null ? SessionWorkStates.Idle
+                var completion = Completion(sessionId, entry, prompt,
+                    status: cancelled ? "Cancelled" : !paused && endedReason is not null && session!.Status != SessionStatus.Error ? "Ended" : session!.Status.ToString(),
+                    reason: cancelled ? prompt.ErrorCode == "deployment_target_superseded" ? "superseded" : "cancelled" : endedReason,
+                    stopReason: cancelled ? null : session!.StopReason,
+                    executionObserved: prompt.State == SessionInputQueueState.Delivered && (entry.ActiveSeen || turnRan),
+                    workState: endedReason is not null || session is null ? SessionWorkStates.Idle
                         : SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks),
-                    pendingInputs = pendingInputs.Value };
+                    pendingInputs: pendingInputs.Value, turn: cancelled ? null : turn);
                 var backgroundRunning = !cancelled && !paused && endedReason is null && session!.Status == SessionStatus.Idle
                     ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
                 var payload = SessionCallbackRegistry.WithTurnIdentity(completion, backgroundRunning, entry.BackgroundDeliveries);
@@ -364,6 +398,29 @@ internal sealed class SessionPromptCallbacks
             }
     }
 
+    /// <summary>
+    /// The completion payload of a prompt registration. The turn fields are additive: turnId names
+    /// the provider turn (every prompt it carried shares it), turnOutcome how it ended, and
+    /// interruptedBy the interrupt that ended it, when it was interrupted.
+    /// </summary>
+    private static object Completion(string sessionId, Entry entry, SessionInputQueueItem prompt, string status,
+        string? reason, string? stopReason, bool executionObserved, string workState, int pendingInputs, SessionTurnRecord? turn)
+        => new
+        {
+            sessionId, callbackId = entry.CallbackId, promptMessageUid = entry.PromptMessageUid,
+            status, reason, stopReason, userId = entry.UserId,
+            deliveredMessageUid = prompt.State == SessionInputQueueState.Delivered ? prompt.DeliveredMessageUid : null,
+            executionObserved, workState, pendingInputs,
+            turnId = turn?.TurnId,
+            turnOutcome = turn?.EndedAt is null ? null : turn.Outcome,
+            interruptedBy = InterruptedBy(turn),
+        };
+
+    private static object? InterruptedBy(SessionTurnRecord? turn)
+        => turn is { Interrupted: true, InterruptSource: { } source }
+            ? new { source, messageUid = turn.InterruptedByMessageUid }
+            : null;
+
     // A delivered prompt whose registration still waits to report its turn (or is re-armed for a
     // woken one) covers the session's current turn; it will report it itself.
     private async Task<bool> HasCoveringPromptAsync(string sessionId, CancellationToken ct)
@@ -386,6 +443,13 @@ internal sealed class SessionPromptCallbacks
                 : SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks),
             pendingInputs, trigger = "unprompted" };
         var node = JsonSerializer.SerializeToNode(completion)!.AsObject();
+        // The ledger records a turn the provider started itself under an "unprompted:" id.
+        if (_queue.GetLastEndedTurn(sessionId) is { } turn && turn.TurnId.StartsWith("unprompted:", StringComparison.Ordinal))
+        {
+            node["turnId"] = turn.TurnId;
+            node["turnOutcome"] = turn.Outcome;
+            node["interruptedBy"] = JsonSerializer.SerializeToNode(InterruptedBy(turn));
+        }
         node["backgroundTasksRunning"] = endedReason is null && session?.Status == SessionStatus.Idle
             ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
         node["deliverySequence"] = subscription.UnpromptedTurns;

@@ -373,7 +373,7 @@ public class RelayServer
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
-        RegisterWsEvents(broadcaster, transcriptPipeline);
+        RegisterWsEvents(broadcaster, transcriptPipeline, inputQueue);
         _ = inputQueue.RunAsync(ct);
         // Always runs: its eligibility clock also tells completion callbacks a session settled.
         // A zero idle timeout disables only the parking itself.
@@ -411,7 +411,8 @@ public class RelayServer
         _ = _qualityModes.EnsureLoadedAsync(ct);
     }
 
-    private void RegisterWsEvents(WebSocketBroadcaster broadcaster, SessionTranscriptPipeline transcriptPipeline)
+    private void RegisterWsEvents(WebSocketBroadcaster broadcaster, SessionTranscriptPipeline transcriptPipeline,
+        SessionInputQueueService inputQueue)
     {
         broadcaster.RegisterEvent(new WsEventSchema("job.created",
             "Fired when a new job is queued", "JobRecord",
@@ -430,7 +431,7 @@ public class RelayServer
             ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering", "backgroundTasks", "workState"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.updated",
             "Fired when a session's status, tokens, cost, title, or live background tasks change (background progress coalesced to ~500 ms)", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "backgroundTasks", "workState"]));
+            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "backgroundTasks", "workState", "lastTurnOutcome", "lastTurn"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason", "stopReason"]));
@@ -471,6 +472,9 @@ public class RelayServer
                 if (data is UnifiedSessionInfo session)
                 {
                     SessionEventProjection.ApplyWorkState(session, sessionProvider, _log);
+                    // How the last turn ended, interrupt included, so clients stop calling an
+                    // interrupted turn completed. The queue's own handler has already closed it.
+                    session.LastTurn = inputQueue.LastTurn(session.Id);
                     var confidential = session.JobId is { } jobId
                         && _jobTracker.GetJob(jobId)?.Confidential == true;
                     session.Confidential = confidential;

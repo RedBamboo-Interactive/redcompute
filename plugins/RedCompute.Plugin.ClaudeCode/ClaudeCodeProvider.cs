@@ -388,6 +388,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         UserAvatarUrl = s.UserAvatarUrl,
         SupportsSteering = true,
         BackgroundTasks = s.BackgroundTasks,
+        LastTurnOutcome = s.LastTurnOutcome,
+        LastTurnEndedAt = s.LastTurnEndedAt,
         ProviderMetadata = new()
         {
             ["cacheReadInputTokens"] = s.CacheReadInputTokens,

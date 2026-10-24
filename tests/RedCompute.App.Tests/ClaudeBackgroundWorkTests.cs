@@ -471,6 +471,55 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         Assert.Equal("task-1", unified.TurnOrigin?.TaskId);
     }
 
+    // --- turn outcome: how each turn ended, so an interrupted turn is never reported completed ---
+
+    [Fact]
+    public async Task Successful_result_reports_a_completed_turn()
+    {
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("work")], messageUid: "user-1"));
+        var before = DateTimeOffset.UtcNow;
+        h.Feed("""{"type":"result","subtype":"success","is_error":false,"result":"Done.","total_cost_usd":0.01}""");
+
+        Assert.Equal(ClaudeSessionStatus.Idle, h.Info.Status);
+        Assert.Equal(SessionTurnOutcomes.Completed, h.Info.LastTurnOutcome);
+        Assert.True(h.Info.LastTurnEndedAt >= before);
+    }
+
+    [Fact]
+    public async Task Interrupt_that_aborts_the_turn_reports_it_interrupted()
+    {
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("work")], messageUid: "user-1"));
+        Assert.Equal(ClaudeSessionService.InterruptResult.Interrupted, h.Service.InterruptSession(h.Id));
+        h.Feed("""{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Request was aborted.","total_cost_usd":0.01}""");
+
+        Assert.Equal(ClaudeSessionStatus.Idle, h.Info.Status);
+        Assert.Equal(SessionTurnOutcomes.Interrupted, h.Info.LastTurnOutcome);
+        Assert.Contains(h.Live, e => e.Type == "status" && e.Content == "interrupted");
+    }
+
+    [Fact]
+    public async Task Interrupt_raced_by_a_finishing_turn_reports_it_completed()
+    {
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("work")], messageUid: "user-1"));
+        h.Service.InterruptSession(h.Id);
+        h.Feed("""{"type":"result","subtype":"success","is_error":false,"result":"Done.","total_cost_usd":0.01}""");
+
+        Assert.Equal(SessionTurnOutcomes.Completed, h.Info.LastTurnOutcome);
+    }
+
+    [Fact]
+    public async Task Error_result_without_an_interrupt_reports_a_failed_turn()
+    {
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("work")], messageUid: "user-1"));
+        h.Feed("""{"type":"result","subtype":"error","error":"provider unavailable"}""");
+
+        Assert.Equal(SessionTurnOutcomes.Failed, h.Info.LastTurnOutcome);
+    }
+
     // --- harness ---
 
     private sealed record Entry(string? Proc, JsonElement? Line, JsonElement? Sent, string? Note);

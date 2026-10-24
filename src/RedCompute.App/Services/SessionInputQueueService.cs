@@ -19,7 +19,13 @@ public sealed record SessionInputAdmissionResult(
     SessionInputQueueItem Item,
     bool Existing,
     string Disposition,
-    SessionInputQueueSummary Queue);
+    SessionInputQueueSummary Queue,
+    // interrupt-current only: what asking the running turn to stop returned (SessionInterruptResults).
+    // A replay repeats the original admission's result; it never interrupts again.
+    string? InterruptResult = null);
+
+/// <summary>send-now: whether anything was queued to send, and what interrupting the turn returned.</summary>
+public sealed record SessionSendNowResult(bool Requested, string? InterruptResult);
 
 public sealed record SessionInputQueueChanged(
     string SessionId,
@@ -155,13 +161,17 @@ public sealed class SessionInputQueueService
                     "steer_unavailable", ct, errorCode: "steer_unavailable");
         }
 
-        if (!_deliveryPaused()
-            && !admitted.Existing
-            && submission.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent)
+        // interrupt-current interrupts the running turn on a fresh admission only; the input itself
+        // then overtakes older queued input (SelectDeliveryHead). The result is kept with the input
+        // so a replay reports what the original admission did.
+        var interruptResult = admitted.Existing ? admitted.Item.InterruptResult : null;
+        if (!admitted.Existing && submission.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent)
         {
-            var (provider, info) = FindSession(submission.SessionId);
-            if (provider is not null && info?.Status == SessionStatus.Active)
-                provider.InterruptSession(submission.SessionId);
+            // A maintenance drain lets running turns finish rather than cutting them short.
+            interruptResult = _deliveryPaused() ? SessionInterruptResults.Maintenance
+                : InterruptRunningTurn(submission.SessionId, SessionInterruptSources.InterruptCurrent,
+                    admitted.Item.MessageUid, requireActive: true).Result;
+            await _store.SetInterruptResultAsync(admitted.Item.Id, interruptResult, ct);
         }
 
         await ProcessSessionAsync(submission.SessionId, ct, authenticatedCallerToken is null ? null
@@ -170,7 +180,42 @@ public sealed class SessionInputQueueService
             ?? admitted.Item;
         var summary = await GetSummaryAsync(submission.SessionId, submission.OwnerUserId, ct);
         return new SessionInputAdmissionResult(current, admitted.Existing,
-            current.State == SessionInputQueueState.Delivered ? "delivered" : "queued", summary);
+            current.State == SessionInputQueueState.Delivered ? "delivered" : "queued", summary, interruptResult);
+    }
+
+    /// <summary>
+    /// Asks the session's running turn to stop on behalf of <paramref name="source"/> and the input
+    /// (if any) that wants to run instead. The request is recorded on the turn before the provider is
+    /// asked, so a turn that ends at once is still attributed, and withdrawn if the provider reports
+    /// it interrupted nothing. Whether the turn really ended by interruption is the turn's own
+    /// outcome, reported when it ends: an interrupt can race a turn that completes anyway.
+    /// </summary>
+    /// <param name="requireActive">Ask only a session that reports a running turn (input delivery);
+    /// a plain interrupt request leaves that judgement to the provider, as it always has.</param>
+    internal (InterruptResult? Provider, string Result) InterruptRunningTurn(string sessionId, string source, string? messageUid,
+        bool requireActive = false)
+    {
+        var (provider, info) = FindSession(sessionId);
+        if (provider is null || info is null) return (null, SessionInterruptResults.NotFound);
+        if (!provider.Capabilities.HasFlag(SessionCapabilities.Interrupt)) return (null, SessionInterruptResults.Unsupported);
+        if (requireActive && info.Status != SessionStatus.Active) return (InterruptResult.NotActive, SessionInterruptResults.NotActive);
+        var recordedOn = info.Status == SessionStatus.Active ? _store.MarkInterruptRequested(sessionId, source, messageUid) : null;
+        InterruptResult result;
+        try { result = provider.InterruptSession(sessionId); }
+        catch (Exception ex)
+        {
+            _log($"[InputQueue] Interrupt failed for session {sessionId}: {ex.Message}", info.JobId);
+            result = InterruptResult.Error;
+        }
+        if (result != InterruptResult.Interrupted && recordedOn is not null)
+            _store.ClearInterruptRequest(sessionId, recordedOn);
+        return (result, result switch
+        {
+            InterruptResult.Interrupted => SessionInterruptResults.Interrupted,
+            InterruptResult.NotActive => SessionInterruptResults.NotActive,
+            InterruptResult.NotFound => SessionInterruptResults.NotFound,
+            _ => SessionInterruptResults.Error,
+        });
     }
 
     public Task<IReadOnlyList<SessionInputQueueItem>> ListAsync(
@@ -219,23 +264,29 @@ public sealed class SessionInputQueueService
         return item;
     }
 
-    public async Task<bool> SendNowAsync(string sessionId, string ownerUserId, CancellationToken ct = default)
+    /// <summary>
+    /// Interrupts the running turn and lets the queue deliver in its own order as soon as the session
+    /// is idle: interrupt-current inputs first, then the rest FIFO. It reorders nothing; what it adds
+    /// is the interrupt, attributed to the input that will run next.
+    /// </summary>
+    public async Task<SessionSendNowResult> SendNowAsync(string sessionId, string ownerUserId, CancellationToken ct = default)
     {
         var items = await _store.ListAsync(sessionId, ownerUserId, includeTerminal: false, ct);
-        if (items.Count == 0) return false;
+        if (items.Count == 0) return new(false, null);
         var (provider, info) = FindSession(sessionId);
-        if (provider is null || info is null) return false;
-        if (info.Status == SessionStatus.Active) provider.InterruptSession(sessionId);
+        if (provider is null || info is null) return new(false, null);
+        var next = await _store.GetHeadAsync(sessionId, ct);
+        var interrupt = InterruptRunningTurn(sessionId, SessionInterruptSources.SendNow, next?.MessageUid, requireActive: true).Result;
         Signal(sessionId);
         await PublishAsync(sessionId, items.Select(item => item.Id).ToArray(), "send_now_requested", ct);
-        return true;
+        return new(true, interrupt);
     }
 
     public async Task<SessionInputQueueSummary> GetSummaryAsync(
         string sessionId, string ownerUserId, CancellationToken ct = default)
     {
         var items = await _store.ListAsync(sessionId, ownerUserId, includeTerminal: false, ct);
-        var head = items.FirstOrDefault();
+        var head = SessionInputQueueStore.SelectDeliveryHead(items);
         var (_, info) = FindSession(sessionId);
         var blocked = head?.State == SessionInputQueueState.Failed
             ? "failed_head"
@@ -535,6 +586,10 @@ public sealed class SessionInputQueueService
                 }
             }
 
+            // The session is idle: whatever turn ran last has ended. Close it from this state before
+            // the batch opens the next one, whatever order the provider's events arrive in.
+            if (current is not null) _store.CloseTurn(sessionId, SessionTurnEnd.From(current));
+            else if (info is not null) _store.CloseTurn(sessionId, SessionTurnEnd.From(info));
             var batch = await _store.ClaimBatchAsync(sessionId, _leaseOwner, DeliveryLease, ct);
             if (batch.Count == 0) return;
             if (authority is not null && !callerMatches)
@@ -717,9 +772,44 @@ public sealed class SessionInputQueueService
         return (null, null);
     }
 
-    private void OnProviderEvent(string type, object data)
+    /// <summary>
+    /// Follows the provider's turns for the turn ledger, synchronously and in the order the provider
+    /// raises them, then wakes delivery on Idle.
+    /// </summary>
+    internal void OnProviderEvent(string type, object data)
     {
+        try
+        {
+            if (type == "session.updated" && data is UnifiedSessionInfo updated)
+            {
+                if (updated.Status == SessionStatus.Active) _store.MarkTurnActive(updated.Id);
+                else if (updated.Status is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
+                    _store.CloseTurn(updated.Id, SessionTurnEnd.From(updated));
+            }
+            else if (type == "session.ended" && JsonSerializer.SerializeToElement(data) is { ValueKind: JsonValueKind.Object } ended
+                && ended.TryGetProperty("id", out var endedId) && endedId.ValueKind == JsonValueKind.String)
+            {
+                var stopReason = ended.TryGetProperty("stopReason", out var reason) && reason.ValueKind == JsonValueKind.String
+                    ? reason.GetString() : null;
+                _store.CloseTurn(endedId.GetString()!, new SessionTurnEnd("Ended", stopReason, null, null, 0));
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[InputQueue] Turn ledger update failed for {type}: {ex.Message}", null);
+        }
         if (type == "session.updated" && data is UnifiedSessionInfo { Status: SessionStatus.Idle } session)
             Signal(session.Id);
+    }
+
+    /// <summary>The session's most recently ended turn, for the session read and event overlay.</summary>
+    internal SessionTurnSummary? LastTurn(string sessionId)
+    {
+        try { return _store.LastEndedTurn(sessionId)?.Summary; }
+        catch (Exception ex)
+        {
+            _log($"[InputQueue] Last turn unavailable for {sessionId}: {ex.Message}", null);
+            return null;
+        }
     }
 }

@@ -44,4 +44,11 @@ public class UnifiedSessionInfo
     // What the session is doing now (SessionWorkStates): working, awaiting_answer, background or
     // idle. Live projection overlaid on reads and events, never persisted; Status stays the turn state.
     public string? WorkState { get; set; }
+    // Provider-reported outcome of the most recent turn (SessionTurnOutcomes) and when it ended.
+    // Live provider state; an outcome older than the turn being closed is not that turn's.
+    public string? LastTurnOutcome { get; set; }
+    public DateTimeOffset? LastTurnEndedAt { get; set; }
+    // RedCompute's record of the most recent turn: outcome plus the interrupt that ended it, if
+    // any. Overlaid on reads and events, never provider-written.
+    public SessionTurnSummary? LastTurn { get; set; }
 }

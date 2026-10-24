@@ -544,6 +544,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ProviderSessionId = s.ThreadId,
         ProviderMetadata = new() { ["executionProfile"] = s.ExecutionProfile },
         SupportsSteering = true,
+        LastTurnOutcome = s.LastTurnOutcome,
+        LastTurnEndedAt = s.LastTurnEndedAt,
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(CodexStreamEvent e) => new()

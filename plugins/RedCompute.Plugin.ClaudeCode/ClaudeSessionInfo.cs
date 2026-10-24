@@ -37,4 +37,7 @@ public class ClaudeSessionInfo
     public int? ProcessId { get; set; }
     // Live background work of the current CLI process. Replaced, never mutated in place.
     public IReadOnlyList<Core.Sessions.BackgroundTaskInfo> BackgroundTasks { get; set; } = [];
+    // How the most recent turn ended (Core.Sessions.SessionTurnOutcomes) and when. Live state only.
+    public string? LastTurnOutcome { get; set; }
+    public DateTimeOffset? LastTurnEndedAt { get; set; }
 }

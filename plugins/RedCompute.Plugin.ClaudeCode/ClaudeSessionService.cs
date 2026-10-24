@@ -1695,6 +1695,8 @@ public class ClaudeSessionService
         // process is about to die and be replaced. Clients must not treat this
         // as safe-to-write; wait for the "idle" status emitted after resume below.
         StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "killed" });
+        // The interrupt ended this turn, by replacing the process rather than by the CLI's own abort.
+        MarkTurnEnded(session, Core.Sessions.SessionTurnOutcomes.Interrupted);
 
         try { session.Process.Kill(entireProcessTree: true); } catch { }
 
@@ -3254,6 +3256,17 @@ public class ClaudeSessionService
         };
     }
 
+    /// <summary>
+    /// Records how the turn ended (SessionTurnOutcomes) before the Idle that publishes it, so the
+    /// turn's observers read the outcome with the status. A success that raced an interrupt is
+    /// completed: nothing was aborted.
+    /// </summary>
+    private static void MarkTurnEnded(ManagedSession session, string outcome)
+    {
+        session.Info.LastTurnOutcome = outcome;
+        session.Info.LastTurnEndedAt = DateTimeOffset.UtcNow;
+    }
+
     private ClaudeStreamEvent? ParseResultEvent(JsonElement root, ManagedSession session)
     {
         // Buffered stdout can deliver a result after StopSession, ForceKill or a forced restart
@@ -3329,6 +3342,7 @@ public class ClaudeSessionService
             }
             session.Info.Status = SessionStatus.Idle;
             session.Info.StopReason = "completed";
+            MarkTurnEnded(session, Core.Sessions.SessionTurnOutcomes.Completed);
 
             if (root.TryGetProperty("total_cost_usd", out var cost))
                 session.Info.CostUsd = cost.GetDouble();
@@ -3382,6 +3396,7 @@ public class ClaudeSessionService
                 session.InterruptCompletion?.TrySetResult(true);
                 session.InterruptCompletion = null;
                 session.Info.Status = SessionStatus.Idle;
+                MarkTurnEnded(session, Core.Sessions.SessionTurnOutcomes.Interrupted);
 
                 if (root.TryGetProperty("total_cost_usd", out var intCost))
                     session.Info.CostUsd = intCost.GetDouble();
@@ -3397,6 +3412,7 @@ public class ClaudeSessionService
             }
 
             session.Info.Status = SessionStatus.Idle;
+            MarkTurnEnded(session, Core.Sessions.SessionTurnOutcomes.Failed);
             if (root.TryGetProperty("total_cost_usd", out var errCost))
                 session.Info.CostUsd = errCost.GetDouble();
             ParseTokenUsage(root, session);

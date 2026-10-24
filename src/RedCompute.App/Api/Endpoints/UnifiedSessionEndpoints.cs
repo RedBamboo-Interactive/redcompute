@@ -99,6 +99,7 @@ public static class UnifiedSessionEndpoints
                 log($"[Sessions] Background tasks unavailable for {session.Provider}/{session.Id}: {ex.Message}", null);
             }
             session.WorkState = SessionWorkStates.Derive(session.Status, PendingQuestions(session).Count, session.BackgroundTasks);
+            session.LastTurn = _inputQueue!.LastTurn(session.Id);
             return session;
         }
 
@@ -965,6 +966,11 @@ public static class UnifiedSessionEndpoints
                     attachments = referenced.Select(PublicAttachment).ToArray(),
                     queue = queueSummary,
                     item = PublicQueueItem(admitted.Item, referenced),
+                    // interrupt-current: what asking the running turn to stop returned. turnInterrupted
+                    // means a running turn accepted the interrupt; the turn's own completion reports
+                    // whether it ended interrupted (turnOutcome), since it can still finish first.
+                    interruptResult = admitted.InterruptResult,
+                    turnInterrupted = admitted.InterruptResult == SessionInterruptResults.Interrupted,
                 }, statusCode: admitted.Disposition == "delivered" ? 200 : 202);
             }
             catch (AttachmentStoreException ex)
@@ -1011,7 +1017,7 @@ public static class UnifiedSessionEndpoints
                     metadata = new { type = "object", description = "Arbitrary key-value metadata (display-only, not sent to model)" },
                     deploymentVerificationTarget = DeploymentVerificationTargetSchema,
                     displayContent = new { type = "string", description = "Human-readable draft shown in queue views when provider input contains an enriched context envelope" },
-                    delivery = new { type = "string", @enum = new[] { "after-current", "steer-current", "interrupt-current" }, @default = "after-current", description = "Durable delivery policy. steer-current injects into a supported active turn without interruption and otherwise demotes to after-current." },
+                    delivery = new { type = "string", @enum = new[] { "after-current", "steer-current", "interrupt-current" }, @default = "after-current", description = "Durable delivery policy. steer-current injects into a supported active turn without interruption; it demotes to after-current when steering is unavailable (deliveryReason steer_unavailable) and runs as the next turn when no turn is running (deliveryReason no_active_turn). interrupt-current interrupts the running turn (interruptResult, turnInterrupted) and is delivered next, ahead of older queued input, which keeps its order behind it; nothing overtakes an input in flight or failed." },
                     messageUid = new { type = "string", description = "Stable message identity to persist with the message. Supply it when the same logical message is also stored elsewhere (cross-stream dedup); minted server-side when omitted. Returned in the response." },
                 },
             })
@@ -1104,7 +1110,7 @@ public static class UnifiedSessionEndpoints
             .WithResponse(QueueItemResponseSchema);
 
         endpoints.MapPost("/ai-session/sessions/{id}/input-queue/send-now",
-            "Request interruption of the active turn and deliver the durable queue once the provider reports a safe idle state",
+            "Interrupt the active turn and deliver the durable queue in its own order once the provider reports a safe idle state: interrupt-current input first, then FIFO. The interrupt is attributed to the input that runs next.",
             async (HttpContext ctx, string id) =>
         {
             var (_, info, _) = FindSessionAcrossProviders(registry, id);
@@ -1112,10 +1118,16 @@ public static class UnifiedSessionEndpoints
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
-            var requested = await _inputQueue!.SendNowAsync(id, userId ?? "local-user", ctx.RequestAborted);
-            if (!requested) return Error(409, "queue_empty", "There is no active queued input to send");
+            var sent = await _inputQueue!.SendNowAsync(id, userId ?? "local-user", ctx.RequestAborted);
+            if (!sent.Requested) return Error(409, "queue_empty", "There is no active queued input to send");
             var summary = await _inputQueue.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
-            return Results.Json(new { requested = true, queue = summary });
+            return Results.Json(new
+            {
+                requested = true,
+                queue = summary,
+                interruptResult = sent.InterruptResult,
+                turnInterrupted = sent.InterruptResult == SessionInterruptResults.Interrupted,
+            });
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithResponse(new
@@ -1126,6 +1138,8 @@ public static class UnifiedSessionEndpoints
                 {
                     requested = new { type = "boolean" },
                     queue = QueueSummarySchema,
+                    interruptResult = new { type = new[] { "string", "null" }, @enum = InterruptResultValues, description = "What asking the running turn to stop returned" },
+                    turnInterrupted = new { type = "boolean", description = "A running turn accepted the interrupt; its completion reports turnOutcome" },
                 },
             });
 
@@ -1305,7 +1319,8 @@ public static class UnifiedSessionEndpoints
             if (!provider!.Capabilities.HasFlag(SessionCapabilities.Interrupt))
                 return NotSupported(provider.ProviderId, "session interrupts");
 
-            var result = provider.InterruptSession(id);
+            var (result, _) = _inputQueue!.InterruptRunningTurn(id, SessionInterruptSources.Interrupt, null);
+            result ??= InterruptResult.Error;
             return Results.Json(new { interrupted = result == InterruptResult.Interrupted, reason = result.ToString() });
         });
 
@@ -2645,7 +2660,24 @@ public static class UnifiedSessionEndpoints
         },
         deliveredMessageUid = item.DeliveredMessageUid,
         completedAt = item.CompletedAt?.ToString("O"),
+        requestedDelivery = PublicDelivery(item.Requested),
+        deliveryReason = item.DeliveryReason,
+        turnId = item.TurnId,
+        interruptResult = item.InterruptResult,
     };
+
+    private static string PublicDelivery(SessionInputDeliveryPolicy policy) => policy switch
+    {
+        SessionInputDeliveryPolicy.InterruptCurrent => "interrupt-current",
+        SessionInputDeliveryPolicy.SteerCurrent => "steer-current",
+        _ => "after-current",
+    };
+
+    private static readonly string[] InterruptResultValues =
+    [
+        SessionInterruptResults.Interrupted, SessionInterruptResults.NotActive, SessionInterruptResults.NotFound,
+        SessionInterruptResults.Unsupported, SessionInterruptResults.Maintenance, SessionInterruptResults.Error,
+    ];
 
     private static object? ObserveDeploymentVerification(SessionInputQueueItem item)
     {
@@ -2870,6 +2902,10 @@ public static class UnifiedSessionEndpoints
             error = new { type = new[] { "object", "null" } },
             deliveredMessageUid = new { type = new[] { "string", "null" } },
             completedAt = new { type = new[] { "string", "null" }, format = "date-time" },
+            requestedDelivery = new { type = "string", @enum = new[] { "after-current", "steer-current", "interrupt-current" }, description = "The policy the caller asked for; delivery is the effective one" },
+            deliveryReason = new { type = new[] { "string", "null" }, @enum = new[] { "steer_unavailable", "no_active_turn" }, description = "Why delivery differs from requestedDelivery" },
+            turnId = new { type = new[] { "string", "null" }, description = "The provider turn that carried this input; every input one turn carried shares it" },
+            interruptResult = new { type = new[] { "string", "null" }, description = "interrupt-current: what asking the running turn to stop returned" },
         },
     };
 

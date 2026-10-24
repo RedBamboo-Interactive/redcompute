@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Reflection;
+using RedCompute.Core.Sessions;
 using RedCompute.Plugin.Codex;
 using Xunit;
 
@@ -128,8 +129,53 @@ public sealed class CodexTurnCompletionTests
         harness.Item("item/completed", "agentMessage", "final_answer", "");
         harness.SetInterrupt();
         harness.Complete("failed", "Interrupted");
+        // Not an error, and not a completion either: the turn we asked to stop was interrupted.
         Assert.Equal("status", harness.Events.Last().Type);
-        Assert.Equal("completed", harness.Events.Last().Content);
+        Assert.Equal("interrupted", harness.Events.Last().Content);
+        Assert.Equal(SessionTurnOutcomes.Interrupted, harness.Info.LastTurnOutcome);
+        Assert.NotNull(harness.Info.LastTurnEndedAt);
+    }
+
+    [Theory]
+    [InlineData("interrupted", true, "interrupted", SessionTurnOutcomes.Interrupted)]
+    [InlineData("completed", false, "completed", SessionTurnOutcomes.Completed)]
+    // An interrupt that lost the race to a completing turn interrupted nothing.
+    [InlineData("completed", true, "completed", SessionTurnOutcomes.Completed)]
+    public void TurnEndReportsItsOutcomeAndLabelsAnInterruptedTurnInterrupted(
+        string status, bool interruptRequested, string expectedStatus, string expectedOutcome)
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        harness.Item("item/completed", "agentMessage", "final_answer", "Done.");
+        if (interruptRequested) harness.SetInterrupt();
+        harness.Complete(status);
+
+        Assert.Equal("status", harness.Events.Last().Type);
+        Assert.Equal(expectedStatus, harness.Events.Last().Content);
+        Assert.Equal(expectedOutcome, harness.Info.LastTurnOutcome);
+    }
+
+    [Fact]
+    public void InterruptNobodyHereRequestedStillReportsInterruptedOutcome()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        harness.Complete("interrupted");
+
+        // Stopped from another Codex surface: still surfaced as before, but the outcome is the truth.
+        Assert.Equal("error", harness.Events.Last().Type);
+        Assert.Equal(SessionTurnOutcomes.Interrupted, harness.Info.LastTurnOutcome);
+    }
+
+    [Fact]
+    public void FailedTurnReportsFailed()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        harness.Complete("failed", "model overloaded");
+
+        Assert.Equal("error", harness.Events.Last().Type);
+        Assert.Equal(SessionTurnOutcomes.Failed, harness.Info.LastTurnOutcome);
     }
 
     [Fact]
@@ -269,6 +315,7 @@ public sealed class CodexTurnCompletionTests
         public void Item(string method, string type, string phase, string text) => Notify(method, new { item = new { id = "item-1", type, phase, text } });
         public void Complete(string status = "completed", string? error = null) => Notify("turn/completed", new { turn = new { status, error, items = Array.Empty<object>() } });
         public void SetInterrupt() => _sessionType.GetProperty("InterruptRequested")!.SetValue(_session, true);
+        public CodexSessionInfo Info => (CodexSessionInfo)_sessionType.GetProperty("Info")!.GetValue(_session)!;
     }
 
     private sealed class RecordingStore : ICodexSessionStore
