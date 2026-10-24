@@ -182,8 +182,10 @@ internal sealed class SessionPromptCallbacks
         finally { _gate.Release(); }
         foreach (var sessionId in sessions) await ObserveAsync(sessionId, ct);
     }
+    /// <param name="settled">The session has been Idle with nothing running and nothing queued for
+    /// the settle window: a subscription re-armed for a woken turn that never came reports now.</param>
     internal async Task ObserveAsync(string sessionId, CancellationToken ct = default, bool observedActive = false,
-        string? endedReason = null)
+        string? endedReason = null, bool settled = false)
     {
         var deliver = new List<Entry>();
         await _gate.WaitAsync(ct);
@@ -226,7 +228,10 @@ internal sealed class SessionPromptCallbacks
                 if (paused && entry.PauseReason == session!.StopReason) continue;
                 if (!cancelled && !paused && session!.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)) continue;
                 if (!cancelled && !paused && session!.Status == SessionStatus.Idle
-                    && (prompt.State != SessionInputQueueState.Delivered || !entry.ActiveSeen)) continue;
+                    && (prompt.State != SessionInputQueueState.Delivered || !entry.ActiveSeen)
+                    && !(settled && entry.BackgroundDeliveries > 0 && prompt.State == SessionInputQueueState.Delivered
+                        && SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks) == SessionWorkStates.Idle))
+                    continue;
                 var completion = new { sessionId, callbackId = entry.CallbackId, promptMessageUid = entry.PromptMessageUid,
                     status = cancelled ? "Cancelled" : !paused && endedReason is not null && session!.Status != SessionStatus.Error ? "Ended" : session!.Status.ToString(),
                     reason = cancelled ? prompt.ErrorCode == "deployment_target_superseded" ? "superseded" : "cancelled" : endedReason,

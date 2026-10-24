@@ -8,9 +8,19 @@ namespace RedCompute.App.Services;
 /// Owns the suite-wide resident-process idle policy. Providers keep responsibility for the
 /// atomic process teardown, while the coordinator serializes against durable input admission.
 /// </summary>
+/// <remarks>
+/// Its eligibility clock (Idle, every background task terminal, nothing queued) also answers a
+/// second question: has a session settled? A background task can end without the provider
+/// waking a new turn (the Claude CLI wakes on some endings and not others, and does not say
+/// which), so <see cref="Settled"/> fires once per eligible period after a short settle window.
+/// A woken turn leaves eligibility first, so the two never both apply. With parking disabled
+/// (an infinite idle timeout) the clock still runs and only parking is skipped.
+/// </remarks>
 public sealed class IdleSessionParkingCoordinator
 {
     private static readonly TimeSpan DefaultSweepInterval = TimeSpan.FromMinutes(1);
+    /// <summary>Well above the provider's wake latency (Claude CLI 2.1.309: 0.5-1.9 s observed).</summary>
+    internal static readonly TimeSpan DefaultSettleAfter = TimeSpan.FromSeconds(10);
     private readonly CapabilityRegistry _registry;
     private readonly SessionInputQueueService _inputQueue;
     private readonly TimeSpan _idleTimeout;
@@ -19,6 +29,14 @@ public sealed class IdleSessionParkingCoordinator
     private readonly Action<string, Guid?> _log;
     private readonly Func<UnifiedSessionInfo, bool> _keepResident;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _eligibleSince = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _settled = new(StringComparer.Ordinal);
+    private readonly TimeSpan _settleAfter;
+
+    /// <summary>
+    /// A session has been continuously Idle with nothing running and nothing queued for the settle
+    /// window: (providerId, sessionId). Raised once per eligible period.
+    /// </summary>
+    public event Action<string, string>? Settled;
 
     public IdleSessionParkingCoordinator(
         CapabilityRegistry registry,
@@ -27,9 +45,12 @@ public sealed class IdleSessionParkingCoordinator
         Action<string, Guid?> log,
         TimeSpan? sweepInterval = null,
         Func<DateTimeOffset>? utcNow = null,
-        Func<UnifiedSessionInfo, bool>? keepResident = null)
+        Func<UnifiedSessionInfo, bool>? keepResident = null,
+        TimeSpan? settleAfter = null)
     {
-        if (idleTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(idleTimeout));
+        if (idleTimeout <= TimeSpan.Zero && idleTimeout != Timeout.InfiniteTimeSpan)
+            throw new ArgumentOutOfRangeException(nameof(idleTimeout));
+        _settleAfter = settleAfter ?? DefaultSettleAfter;
         _registry = registry;
         _inputQueue = inputQueue;
         _idleTimeout = idleTimeout;
@@ -74,6 +95,7 @@ public sealed class IdleSessionParkingCoordinator
         if (_inputQueue.IsDeliveryPaused)
         {
             _eligibleSince.Clear();
+            _settled.Clear();
             return;
         }
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -88,12 +110,17 @@ public sealed class IdleSessionParkingCoordinator
 
                 if (!IsProviderEligible(candidate) || await _inputQueue.HasQueuedInputAsync(candidate.Id, ct))
                 {
-                    _eligibleSince.TryRemove(key, out _);
+                    Forget(key);
                     continue;
                 }
 
                 var since = _eligibleSince.GetOrAdd(key, now);
-                if (now - since < _idleTimeout) continue;
+                if (now - since >= _settleAfter && _settled.TryAdd(key, 0))
+                {
+                    try { Settled?.Invoke(provider.ProviderId, candidate.Id); }
+                    catch (Exception ex) { _log($"[IdleParking] Settled handler failed for {candidate.Id}: {ex.Message}", candidate.JobId); }
+                }
+                if (_idleTimeout == Timeout.InfiniteTimeSpan || now - since < _idleTimeout) continue;
                 // Checked only once the clock has expired: the resident mark is a job read, and
                 // a session marked mid-idle must still never be parked.
                 if (_keepResident(candidate)) continue;
@@ -110,13 +137,19 @@ public sealed class IdleSessionParkingCoordinator
                 }, ct);
 
                 if (!parked) continue;
-                _eligibleSince.TryRemove(key, out _);
+                Forget(key);
                 _log($"[IdleParking] Parked {provider.ProviderId} session {candidate.Id} after {_idleTimeout.TotalMinutes:0.#} idle minute(s)", candidate.JobId);
             }
         }
 
         foreach (var key in _eligibleSince.Keys)
-            if (!seen.Contains(key)) _eligibleSince.TryRemove(key, out _);
+            if (!seen.Contains(key)) Forget(key);
+    }
+
+    private void Forget(string key)
+    {
+        _eligibleSince.TryRemove(key, out _);
+        _settled.TryRemove(key, out _);
     }
 
     private static bool IsProviderEligible(UnifiedSessionInfo session)
@@ -131,7 +164,7 @@ public sealed class IdleSessionParkingCoordinator
         if (IsProviderEligible(session))
             _eligibleSince.TryAdd(key, _utcNow());
         else
-            _eligibleSince.TryRemove(key, out _);
+            Forget(key);
     }
 
     private static string Key(string providerId, string sessionId) => $"{providerId}\n{sessionId}";

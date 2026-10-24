@@ -125,6 +125,27 @@ public class SessionCallbackRegistry
         else if (evt.Type == "question_resolved" && evt.RequestId is { } requestId) OnQuestionResolved(sessionId, requestId);
     }
 
+    /// <summary>
+    /// The session has settled: Idle, nothing running, nothing queued, for the settle window. A
+    /// registration still waiting for the turn its background work would wake reports now
+    /// instead of waiting forever, since that work ended without waking one. A woken turn would
+    /// have left the settled state first and reported through the ordinary Idle path.
+    /// </summary>
+    public void OnSessionSettled(string sessionId)
+    {
+        if (_callbacks.TryGetValue(sessionId, out var entry) && entry.AwaitingTurn
+            && _currentSession(sessionId) is { Status: SessionStatus.Idle } session
+            && SessionWorkStates.Derive(session.Status, _pendingQuestions(sessionId).Count, session.BackgroundTasks) == SessionWorkStates.Idle
+            && _callbacks.TryRemove(KeyValuePair.Create(sessionId, entry)))
+        {
+            _log($"[Callbacks] Session {sessionId} settled without a woken turn; reporting completion", null);
+            _ = FireAsync(entry.Url, sessionId, session.Status.ToString(), entry.CallbackId, session.ProjectPath, session.Title,
+                userId: session.UserId ?? entry.UserId, stopReason: session.StopReason, workState: SessionWorkStates.Idle,
+                deliverySequence: entry.BackgroundDeliveries + 1);
+        }
+        if (_durable is not null) _ = ObserveSafelyAsync(sessionId, settled: true);
+    }
+
     public void OnQuestionResolved(string sessionId, string requestId)
     {
         foreach (var key in _questionsNotified.Keys.Where(k => k.Item1 == sessionId && k.Item2 == requestId))
@@ -255,9 +276,9 @@ public class SessionCallbackRegistry
     internal Task<bool> RemoveUnacceptedAsync(string sessionId, string callbackId, string promptMessageUid, string owner, CancellationToken ct)
         => _durable?.RemoveUnacceptedAsync(sessionId, callbackId, promptMessageUid, owner, ct) ?? Task.FromResult(false);
     internal Task DrainAsync() => _durable?.DrainAsync() ?? Task.CompletedTask;
-    private async Task ObserveSafelyAsync(string id, bool observedActive = false, string? endedReason = null)
+    private async Task ObserveSafelyAsync(string id, bool observedActive = false, string? endedReason = null, bool settled = false)
     {
-        try { await _durable!.ObserveAsync(id, observedActive: observedActive, endedReason: endedReason); }
+        try { await _durable!.ObserveAsync(id, observedActive: observedActive, endedReason: endedReason, settled: settled); }
         catch (Exception) { _log("[Callbacks] Observation failed; subscription retained for owning sweep", null); }
     }
 

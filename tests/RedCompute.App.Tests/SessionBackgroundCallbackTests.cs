@@ -93,6 +93,64 @@ public sealed class SessionBackgroundCallbackTests
     }
 
     [Fact]
+    public async Task In_memory_turn_never_woken_reports_once_when_the_session_settles()
+    {
+        var posts = Channel.CreateUnbounded<JsonElement>();
+        using var http = Http(posts);
+        var current = Info(SessionStatus.Idle, Background("b1", "running"));
+        var registry = new SessionCallbackRegistry(http, (_, _) => { });
+        registry.AttachQuestionSource(_ => [], _ => current);
+        registry.Register("session", CompleteUrl, "owner", "operation");
+
+        registry.OnSessionEvent("session.updated", current);
+        Assert.Equal(1, (await Next(posts)).GetProperty("deliverySequence").GetInt32());
+
+        // Settling while the work still runs, or while a turn runs, reports nothing.
+        registry.OnSessionSettled("session");
+        current = Info(SessionStatus.Active, Background("b1", "stopped"));
+        registry.OnSessionSettled("session");
+        await AssertNoMore(posts);
+
+        // The task was stopped and the provider never woke a turn.
+        current = Info(SessionStatus.Idle, Background("b1", "stopped"));
+        registry.OnSessionEvent("session.updated", current);
+        await AssertNoMore(posts);
+        registry.OnSessionSettled("session");
+        var final = await Next(posts);
+        Assert.Equal("Idle", final.GetProperty("status").GetString());
+        Assert.Equal("operation", final.GetProperty("callbackId").GetString());
+        Assert.Equal(2, final.GetProperty("deliverySequence").GetInt32());
+        Assert.Equal("idle", final.GetProperty("workState").GetString());
+
+        registry.OnSessionSettled("session");
+        registry.OnSessionEvent("session.updated", Info(SessionStatus.Active));
+        registry.OnSessionEvent("session.updated", Info(SessionStatus.Idle));
+        await AssertNoMore(posts);
+    }
+
+    [Fact]
+    public async Task In_memory_woken_turn_reports_once_and_a_later_settle_adds_nothing()
+    {
+        var posts = Channel.CreateUnbounded<JsonElement>();
+        using var http = Http(posts);
+        var current = Info(SessionStatus.Idle, Background("b1", "running"));
+        var registry = new SessionCallbackRegistry(http, (_, _) => { });
+        registry.AttachQuestionSource(_ => [], _ => current);
+        registry.Register("session", CompleteUrl, "owner", "operation");
+        registry.OnSessionEvent("session.updated", current);
+        await Next(posts);
+
+        current = Info(SessionStatus.Active, Background("b1", "completed"));
+        registry.OnSessionEvent("session.updated", current);
+        current = Info(SessionStatus.Idle, Background("b1", "completed"));
+        registry.OnSessionEvent("session.updated", current);
+        Assert.Equal(2, (await Next(posts)).GetProperty("deliverySequence").GetInt32());
+
+        registry.OnSessionSettled("session");
+        await AssertNoMore(posts);
+    }
+
+    [Fact]
     public async Task In_memory_idle_without_running_background_work_keeps_the_classic_payload()
     {
         var posts = Channel.CreateUnbounded<JsonElement>();
@@ -187,6 +245,52 @@ public sealed class SessionBackgroundCallbackTests
         Assert.False(payload.TryGetProperty("deliverySequence", out _));
         Assert.Equal("idle", payload.GetProperty("workState").GetString());
         Assert.Empty(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
+    }
+
+    [Fact]
+    public async Task Durable_turn_never_woken_reports_once_when_the_session_settles()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var (callbacks, payloads, _) = await DeliveredPrompt(f, HttpStatusCode.OK);
+        f.Runtime.Info.Status = SessionStatus.Idle; f.Runtime.Info.BackgroundTasks = [Background("b1", "running")];
+        await callbacks.SweepAsync(default); await callbacks.DrainAsync();
+        Assert.Single(payloads);
+
+        // Settled while the work still runs: nothing.
+        await callbacks.ObserveAsync("session", settled: true); await callbacks.DrainAsync();
+        Assert.Single(payloads);
+
+        // Stopped, never woken. Ordinary sweeps keep waiting; the settled signal reports.
+        f.Runtime.Info.BackgroundTasks = [Background("b1", "stopped")];
+        await callbacks.SweepAsync(default); await callbacks.DrainAsync();
+        Assert.Single(payloads);
+        await callbacks.ObserveAsync("session", settled: true); await callbacks.DrainAsync();
+        Assert.Equal(2, payloads.Count);
+        var final = payloads[1];
+        Assert.Equal("Idle", final.GetProperty("status").GetString());
+        Assert.Equal("prompt", final.GetProperty("callbackId").GetString());
+        Assert.Equal(2, final.GetProperty("deliverySequence").GetInt32());
+        Assert.Equal("idle", final.GetProperty("workState").GetString());
+        Assert.False(final.GetProperty("executionObserved").GetBoolean());
+        Assert.Empty(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
+
+        await callbacks.ObserveAsync("session", settled: true); await callbacks.DrainAsync();
+        Assert.Equal(2, payloads.Count);
+    }
+
+    [Fact]
+    public async Task Durable_settle_never_completes_a_prompt_that_was_not_delivered()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Runtime.Info.Status = SessionStatus.Idle; f.Runtime.Info.StopReason = null;
+        await f.Store.EnqueueAsync(f.Submission());
+        var payloads = new List<JsonElement>();
+        var callbacks = new SessionPromptCallbacks(f.Attachments.DatabasePath, f.Store, _ => f.Runtime.Info, Http(payloads));
+        await callbacks.RegisterAsync("session", "prompt", CompleteUrl, "owner", "prompt"); await callbacks.DrainAsync();
+
+        // A queued, never-delivered prompt on an idle session is not a finished turn.
+        await callbacks.ObserveAsync("session", settled: true); await callbacks.DrainAsync();
+        Assert.Empty(payloads);
     }
 
     // Registers an exact-prompt subscription and drives its prompt through observed delivery, so the

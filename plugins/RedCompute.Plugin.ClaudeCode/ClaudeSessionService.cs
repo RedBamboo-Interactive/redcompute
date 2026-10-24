@@ -2922,6 +2922,9 @@ public class ClaudeSessionService
             ToolInput = input.ValueKind == JsonValueKind.Undefined ? null : input.ToString(),
             MessageId = toolUseId,
         });
+        // The turn's work state is now awaiting_answer. Status stays Active, so without this no
+        // session.updated would tell clients until some unrelated change.
+        SessionUpdated?.Invoke(session.Info);
     }
 
     private void HandleControlCancelRequest(JsonElement root, ManagedSession session)
@@ -2941,6 +2944,7 @@ public class ClaudeSessionService
             RequestId = requestId,
             Content = "cancelled",
         });
+        SessionUpdated?.Invoke(session.Info);
     }
 
     private void ExpireQuestion(ManagedSession session, string requestId)
@@ -2962,6 +2966,7 @@ public class ClaudeSessionService
             RequestId = requestId,
             Content = "timeout",
         });
+        SessionUpdated?.Invoke(session.Info);
     }
 
     public Core.Sessions.QuestionAnswerResult SubmitQuestionAnswer(string sessionId, Core.Sessions.SessionQuestionAnswer answer)
@@ -2984,6 +2989,7 @@ public class ClaudeSessionService
                           "judgement and state the assumption you made."
                         : answer.DeclineReason);
                 EmitQuestionResolved(session, answer.RequestId, "declined");
+                SessionUpdated?.Invoke(session.Info);
                 return Core.Sessions.QuestionAnswerResult.Declined;
             }
 
@@ -3021,6 +3027,7 @@ public class ClaudeSessionService
 
             _log($"[Claude] Answered question {answer.RequestId} on session {sessionId}", null);
             EmitQuestionResolved(session, answer.RequestId, "answered");
+            SessionUpdated?.Invoke(session.Info);
             return Core.Sessions.QuestionAnswerResult.Answered;
         }
         catch (Exception ex)

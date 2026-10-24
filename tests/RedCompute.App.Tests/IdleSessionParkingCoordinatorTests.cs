@@ -57,6 +57,66 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Settled_fires_once_per_eligible_period_after_the_settle_window()
+    {
+        var settled = new List<string>();
+        _coordinator.Settled += (_, id) => settled.Add(id);
+        var start = DateTimeOffset.Parse("2026-10-24T13:00:00Z");
+        _now = start;
+        _runtime.Emit("session.updated");
+
+        await _coordinator.SweepAsync(start.AddSeconds(9));
+        Assert.Empty(settled);
+        await _coordinator.SweepAsync(start.AddSeconds(10));
+        await _coordinator.SweepAsync(start.AddSeconds(70));
+        Assert.Equal(["session"], settled);
+
+        // Working again ends the period; the next quiet period settles again, once.
+        _runtime.Info.Status = SessionStatus.Active; _runtime.Emit("session.updated");
+        _runtime.Info.Status = SessionStatus.Idle; _now = start.AddSeconds(100); _runtime.Emit("session.updated");
+        await _coordinator.SweepAsync(start.AddSeconds(105));
+        Assert.Single(settled);
+        await _coordinator.SweepAsync(start.AddSeconds(111));
+        Assert.Equal(["session", "session"], settled);
+        Assert.Equal(0, _runtime.Parks);
+    }
+
+    [Fact]
+    public async Task Running_background_work_or_queued_input_keeps_a_session_unsettled()
+    {
+        var settled = new List<string>();
+        _coordinator.Settled += (_, id) => settled.Add(id);
+        var start = DateTimeOffset.Parse("2026-10-24T13:00:00Z");
+        _now = start;
+        _runtime.Info.BackgroundTasks = [new BackgroundTaskInfo { TaskId = "b1", Kind = "shell", Status = "running" }];
+        _runtime.Emit("session.updated");
+        await _coordinator.SweepAsync(start.AddMinutes(5));
+        Assert.Empty(settled);
+
+        _runtime.Info.BackgroundTasks = [new BackgroundTaskInfo { TaskId = "b1", Kind = "shell", Status = "completed" }];
+        await _store.EnqueueAsync(Submission());
+        await _coordinator.SweepAsync(start.AddMinutes(6));
+        await _coordinator.SweepAsync(start.AddMinutes(7));
+        Assert.Empty(settled);
+    }
+
+    [Fact]
+    public async Task Parking_disabled_still_signals_settled_and_never_parks()
+    {
+        var registry = new CapabilityRegistry();
+        registry.Register("ai-session", new CapabilityDefinition { Slug = "ai-session", DisplayName = "Test" },
+            new CapabilityConfig(), new Dictionary<string, IBackendProvider> { ["test"] = (IBackendProvider)(object)_runtime }, "test");
+        var coordinator = new IdleSessionParkingCoordinator(registry, _queue, Timeout.InfiniteTimeSpan, (_, _) => { }, utcNow: () => _now);
+        var settled = 0;
+        coordinator.Settled += (_, _) => settled++;
+        var start = DateTimeOffset.Parse("2026-10-24T13:00:00Z");
+        await coordinator.SweepAsync(start);
+        await coordinator.SweepAsync(start.AddHours(5));
+        Assert.Equal(1, settled);
+        Assert.Equal(0, _runtime.Parks);
+    }
+
+    [Fact]
     public async Task Queue_and_background_work_each_reset_the_eligibility_clock()
     {
         var start = DateTimeOffset.Parse("2026-10-23T17:00:00Z");

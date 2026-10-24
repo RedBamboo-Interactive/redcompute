@@ -374,16 +374,18 @@ public class RelayServer
 
         RegisterWsEvents(broadcaster, transcriptPipeline);
         _ = inputQueue.RunAsync(ct);
-        if (_config.AiSessionIdleTimeoutMinutes > 0)
-        {
-            var idleParking = new IdleSessionParkingCoordinator(
-                _registry, inputQueue,
-                TimeSpan.FromMinutes(_config.AiSessionIdleTimeoutMinutes),
-                _log,
-                keepResident: session => session.JobId is { } jobId
-                    && _jobTracker.GetJob(jobId)?.KeepResident == true);
-            _ = idleParking.RunAsync(ct);
-        }
+        // Always runs: its eligibility clock also tells completion callbacks a session settled.
+        // A zero idle timeout disables only the parking itself.
+        var idleParking = new IdleSessionParkingCoordinator(
+            _registry, inputQueue,
+            _config.AiSessionIdleTimeoutMinutes > 0
+                ? TimeSpan.FromMinutes(_config.AiSessionIdleTimeoutMinutes)
+                : Timeout.InfiniteTimeSpan,
+            _log,
+            keepResident: session => session.JobId is { } jobId
+                && _jobTracker.GetJob(jobId)?.KeepResident == true);
+        idleParking.Settled += (_, sessionId) => _callbacks.OnSessionSettled(sessionId);
+        _ = idleParking.RunAsync(ct);
 
         // Tunnel and autostart endpoints are skipped: the Leaf kernel owns the one tunnel
         // and the one autostart entry. The dormant tunnel service only satisfies the
@@ -467,12 +469,7 @@ public class RelayServer
 
                 if (data is UnifiedSessionInfo session)
                 {
-                    try
-                    {
-                        session.WorkState = SessionWorkStates.Derive(session.Status,
-                            sessionProvider?.GetPendingQuestions(session.Id).Count ?? 0, session.BackgroundTasks);
-                    }
-                    catch (Exception ex) { _log($"[Sessions] Work state unavailable for {session.Provider}/{session.Id}: {ex.Message}", null); }
+                    SessionEventProjection.ApplyWorkState(session, sessionProvider, _log);
                     var confidential = session.JobId is { } jobId
                         && _jobTracker.GetJob(jobId)?.Confidential == true;
                     session.Confidential = confidential;

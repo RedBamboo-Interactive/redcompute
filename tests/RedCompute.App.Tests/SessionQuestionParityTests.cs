@@ -193,6 +193,52 @@ public sealed class SessionQuestionParityTests : IDisposable
     }
 
     [Theory]
+    [InlineData("claude-code", "answer", new[] { "working" })]
+    [InlineData("codex", "answer", new[] { "working" })]
+    [InlineData("claude-code", "decline", new[] { "working" })]
+    [InlineData("codex", "decline", new[] { "working" })]
+    [InlineData("claude-code", "cancel", new[] { "working" })]
+    [InlineData("codex", "cancel", new[] { "idle" })] // an interrupt ends the Codex turn: one update
+    [InlineData("claude-code", "turn_end", new[] { "working", "idle" })] // CLI cancel, then result
+    [InlineData("codex", "turn_end", new[] { "idle" })]
+    public void Parking_and_resolving_publish_exactly_one_session_update_per_transition(string provider, string path, string[] after)
+    {
+        using var h = Harness(provider);
+        var updates = WorkStateUpdates(h);
+        var before = updates.Count;
+
+        h.Park("req-1");
+        Assert.Equal([SessionWorkStates.AwaitingAnswer], updates.Skip(before));
+
+        var parked = updates.Count;
+        switch (path)
+        {
+            case "answer":
+                h.Provider.SubmitQuestionAnswer(h.SessionId, new SessionQuestionAnswer { RequestId = "req-1", PositionalAnswers = ["Postgres"] });
+                break;
+            case "decline":
+                h.Provider.SubmitQuestionAnswer(h.SessionId, new SessionQuestionAnswer { RequestId = "req-1", Decline = true });
+                break;
+            case "cancel": h.Cancel("req-1"); break;
+            case "turn_end": h.EndTurnWhileParked("req-1"); break;
+        }
+        Assert.Equal(after, updates.Skip(parked));
+    }
+
+    // Each broadcast session.updated as RelayServer projects it (SessionEventProjection).
+    private static List<string> WorkStateUpdates(ProviderHarness h)
+    {
+        var updates = new List<string>();
+        ((IPluginEventSource)h.Provider).PluginEvent += (type, data) =>
+        {
+            if (type != "session.updated" || data is not UnifiedSessionInfo session) return;
+            SessionEventProjection.ApplyWorkState(session, h.Provider, (_, _) => { });
+            lock (updates) updates.Add(session.WorkState!);
+        };
+        return updates;
+    }
+
+    [Theory]
     [MemberData(nameof(Providers))]
     public async Task Session_read_keeps_messages_and_their_order_while_a_question_is_pending(string provider)
     {

@@ -52,6 +52,8 @@ internal sealed class ClaudeBackgroundTaskTracker
         public string? ReportedTerminalStatus { get; set; }
         public bool StartRecorded { get; set; }
         public bool TerminalRecorded { get; set; }
+        /// <summary>Running again after its terminal record: the CLI resumed it under a new run.</summary>
+        public bool Reopened { get; set; }
 
         public BackgroundTaskInfo ToInfo() => new()
         {
@@ -111,7 +113,9 @@ internal sealed class ClaudeBackgroundTaskTracker
             }
 
             var task = GetOrAdd(taskId, now);
+            var previousRun = task.RunId;
             Apply(task, root);
+            if (task.TerminalRecorded && Reopen(task, previousRun)) return new(ChangeKind.Lifecycle, []);
             if (Str(root, "tool_use_id") is { } toolUseId)
             {
                 task.ParentToolUseId = toolUseId;
@@ -182,7 +186,13 @@ internal sealed class ClaudeBackgroundTaskTracker
                 if (Str(item, "task_id") is not { } taskId || _foreground.Contains(taskId)) continue;
                 listed.Add(taskId);
                 var task = GetOrAdd(taskId, now);
-                if (task.TerminalRecorded) continue;
+                if (task.TerminalRecorded)
+                {
+                    var previousRun = task.RunId;
+                    Apply(task, item);
+                    Reopen(task, previousRun);
+                    continue;
+                }
                 Apply(task, item);
             }
 
@@ -196,7 +206,7 @@ internal sealed class ClaudeBackgroundTaskTracker
                 records.AddRange(Terminate(task, task.ReportedTerminalStatus ?? BackgroundTaskStatuses.Completed, now));
             }
             foreach (var taskId in listed)
-                if (!_tasks[taskId].TerminalRecorded) _running.Add(taskId);
+                if (!_tasks[taskId].TerminalRecorded || _tasks[taskId].Reopened) _running.Add(taskId);
             return changed || records.Count > 0 ? new(ChangeKind.Lifecycle, records) : Change.None;
         }
     }
@@ -219,9 +229,33 @@ internal sealed class ClaudeBackgroundTaskTracker
         }
     }
 
+    /// <summary>
+    /// The CLI resumes a finished subagent when one of its own background tasks completes (the
+    /// task's notification becomes the agent's next prompt): same task id, new run id. It is
+    /// running again and may wake the main loop when it finishes, so it rejoins the running set.
+    /// Live state only: the durable start and terminal records already exist and are not repeated.
+    /// </summary>
+    private bool Reopen(TaskState task, string? previousRun)
+    {
+        if (task.RunId is null || task.RunId == previousRun) return false;
+        task.Reopened = true;
+        task.Status = BackgroundTaskStatuses.Running;
+        task.EndedAt = null;
+        task.ReportedTerminalStatus = null;
+        _running.Add(task.TaskId);
+        return true;
+    }
+
     private List<BackgroundTaskInfo> Terminate(TaskState task, string status, DateTimeOffset now)
     {
         _running.Remove(task.TaskId);
+        if (task.Reopened)
+        {
+            task.Reopened = false;
+            task.Status = status;
+            task.EndedAt = now;
+            return [];
+        }
         if (task.TerminalRecorded) return [];
         task.Status = status;
         task.EndedAt ??= now;
