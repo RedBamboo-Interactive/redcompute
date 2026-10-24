@@ -196,6 +196,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         string sessionId, string stopReason, CancellationToken ct = default)
         => _claude.TryParkIdleSessionAsync(sessionId, stopReason, ct);
     public void DismissSession(string sessionId) => _claude.DismissSession(sessionId);
+    public bool RestoreSession(string sessionId) => _claude.RestoreSession(sessionId);
 
     // --- ISessionProvider: Messaging ---
 

@@ -391,7 +391,8 @@ public sealed class SessionRecoveryTests
     public class RuntimeProvider : DispatchProxy
     {
         internal UnifiedSessionInfo Info = new() { Id = "session", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner", Status = SessionStatus.Stopped, StoppedAt = DateTimeOffset.UtcNow };
-        internal int Resumes, Deliveries;
+        internal int Resumes, Deliveries, Restores;
+        internal bool RestoreResult = true, Missing;
         internal SessionStatus ResumedStatus = SessionStatus.Idle;
         internal SessionInputDeliveryResult Result = SessionInputDeliveryResult.Accepted();
         internal Action<JobProvenance>? OnResume;
@@ -404,7 +405,9 @@ public sealed class SessionRecoveryTests
                 case "get_Capabilities": return SessionCapabilities.Resume | SessionCapabilities.SendMessage;
                 case "get_ProviderId": return "test";
                 case "get_ProviderDisplayName": return "Test";
-                case nameof(ISessionProvider.GetSession): return (Info, new List<UnifiedMessageRecord>());
+                case nameof(ISessionProvider.GetSession): return Missing ? ((UnifiedSessionInfo?)null, (List<UnifiedMessageRecord>?)null) : (Info, new List<UnifiedMessageRecord>());
+                case nameof(ISessionProvider.RestoreSession):
+                    Restores++; if (RestoreResult) Info.Dismissed = false; return RestoreResult;
                 case nameof(ISessionProvider.GetBackgroundTasks): return (IReadOnlyList<BackgroundTaskInfo>)[];
                 case nameof(ISessionProvider.ResumeSessionAsync):
                     Resumes++; ResumeHadFreshIdentity = SessionScratch.Environment(null)?.ContainsKey("REDLEAF_EXECUTION_TOKEN") == true;

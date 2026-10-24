@@ -256,6 +256,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public void DismissSession(string sessionId) => _codex.DismissSession(sessionId);
 
+    public bool RestoreSession(string sessionId) => _codex.RestoreSession(sessionId);
+
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
         => _interactive.SendInputAsync(sessionId, input, attachmentsJson, messageUid);
 

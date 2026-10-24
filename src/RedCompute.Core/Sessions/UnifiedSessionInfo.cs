@@ -34,6 +34,8 @@ public class UnifiedSessionInfo
     public string? UserAvatarUrl { get; set; }
     public string? OwnerAgentId { get; set; }
     public bool Confidential { get; set; }
+    // Hidden from default listings (archived); POST /ai-session/sessions/{id}/restore clears it.
+    public bool Dismissed { get; set; }
     public Dictionary<string, object?>? ProviderMetadata { get; set; }
     public bool SupportsSteering { get; set; }
     // Live background work (subagents, background shells) still running. It never makes the

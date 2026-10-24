@@ -134,6 +134,33 @@ public sealed class RedLeafSessionReader
             .Where(s => include?.Invoke(s) ?? true).Take(limit).ToList();
     }
 
+    /// <summary>
+    /// One page of dismissed (archived) sessions, most recently updated first. Paging is over
+    /// stored rows, so <paramref name="include"/> may return fewer items than requested;
+    /// NextOffset is null only once the stored rows are exhausted.
+    /// </summary>
+    public async Task<(List<UnifiedSessionInfo> Items, int? NextOffset)> GetDismissedSessionsPageAsync(
+        string? provider, int limit, int offset, string? search, Func<UnifiedSessionInfo, bool>? include = null)
+    {
+        limit = Math.Clamp(limit, 1, 500);
+        offset = Math.Max(offset, 0);
+        var url = $"api/entities?type=ai-session&data.dismissed=true&sort_by=updated_at&sort_dir=desc&limit={limit}&offset={offset}";
+        if (provider != null)
+            url += $"&data.provider={Uri.EscapeDataString(provider)}";
+        if (!string.IsNullOrWhiteSpace(search))
+            url += $"&search={Uri.EscapeDataString(search.Trim())}";
+
+        using var doc = await GetJsonAsync(url);
+        var rows = doc.RootElement.GetProperty("items");
+        var sessions = new List<UnifiedSessionInfo>();
+        foreach (var item in rows.EnumerateArray())
+        {
+            var info = MapSession(item);
+            if (info != null && (include?.Invoke(info) ?? true)) sessions.Add(info);
+        }
+        return (sessions, rows.GetArrayLength() < limit ? null : offset + limit);
+    }
+
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionAsync(
         string sessionId, int? tail = null)
         => await GetByDataFilterAsync($"data.session_id={Uri.EscapeDataString(sessionId)}", tail);
@@ -600,6 +627,7 @@ public sealed class RedLeafSessionReader
             UserId = Str(d, "user_id"),
             OwnerAgentId = Str(d, "owner_agent_id"),
             Confidential = Bool(d, "confidential") ?? false,
+            Dismissed = Bool(d, "dismissed") ?? false,
         };
     }
 

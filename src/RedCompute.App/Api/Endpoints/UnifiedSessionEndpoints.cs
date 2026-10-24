@@ -270,6 +270,35 @@ public static class UnifiedSessionEndpoints
             .WithParam("all", "boolean", description: "Include dismissed sessions (presence flag)", location: ParamLocation.Query)
             .WithParam("excludeSource", "string", description: "Exclude sessions whose source matches this value", location: ParamLocation.Query);
 
+        endpoints.MapGet("/ai-session/sessions/archived",
+            "List dismissed (archived) sessions, most recently updated first, as { items, nextOffset }. Paging is over stored rows and authorization filters each page, " +
+            "so a page may hold fewer items than the limit; pass nextOffset back until it is null.", async (HttpContext ctx) =>
+        {
+            var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
+            var limit = int.TryParse(ctx.Request.Query["limit"].FirstOrDefault(), out var l) ? l : 50;
+            var offset = int.TryParse(ctx.Request.Query["offset"].FirstOrDefault(), out var o) ? o : 0;
+            var search = ctx.Request.Query["q"].FirstOrDefault();
+
+            List<UnifiedSessionInfo> items;
+            int? nextOffset;
+            try
+            {
+                (items, nextOffset) = await _redLeafReader!.GetDismissedSessionsPageAsync(
+                    providerFilter, limit, offset, search, session => CanReadSession(ctx, session));
+            }
+            catch (Exception ex)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
+            foreach (var session in items) WithLiveCapabilities(session);
+            return Results.Json(new { items, nextOffset });
+        })
+            .WithParam("limit", "integer", description: "Stored rows to scan for this page (clamped to 500)", defaultValue: 50, location: ParamLocation.Query)
+            .WithParam("offset", "integer", description: "nextOffset from the previous page", defaultValue: 0, location: ParamLocation.Query)
+            .WithParam("q", "string", description: "Case-insensitive match on title or stored session fields", location: ParamLocation.Query)
+            .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
+
         endpoints.MapPost("/ai-session/sessions",
             "Start a new persistent session. The optional conversation-only profile uses an isolated empty workspace, read-only/no-network execution, denied approvals, and no derived suite credential.", async (HttpContext ctx) =>
         {
@@ -1362,6 +1391,20 @@ public static class UnifiedSessionEndpoints
             provider!.DismissSession(id);
             var cancelledQueueItems = await _inputQueue!.CancelSessionAsync(id, ctx.RequestAborted);
             return Results.Json(new { dismissed = true, cancelledQueueItems });
+        });
+
+        endpoints.MapPost("/ai-session/sessions/{id}/restore",
+            "Clear a dismissal so the session returns to default listings. Does not start a process; resume separately.", (HttpContext ctx, string id) =>
+        {
+            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info == null)
+                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            if (!CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
+
+            if (!provider!.RestoreSession(id))
+                return Error(409, "restore_unsupported", $"Provider '{provider.ProviderId}' cannot restore session '{id}'");
+            return Results.Json(new { restored = true });
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/input-queue/{itemId}/supersede-verification",

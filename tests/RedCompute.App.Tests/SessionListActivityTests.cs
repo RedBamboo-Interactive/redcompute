@@ -90,6 +90,84 @@ public sealed class SessionListActivityTests
         Assert.Equal(2, bounded.Length); Assert.Contains(bounded, s => s.GetProperty("id").GetString() == "own-active");
     }
 
+    [Fact]
+    public async Task Archived_page_reads_only_dismissed_rows_newest_first_and_pages_until_exhausted()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var handler = new ListHandler([
+            new("open", "Idle", 50), new("archived-a", "Stopped", 40, Dismissed: true),
+            new("archived-b", "Stopped", 30, Dismissed: true), new("archived-c", "Stopped", 20, Dismissed: true),
+            new("archived-other", "Stopped", 45, Provider: "other", Dismissed: true)]);
+        var reader = Reader(f, handler);
+
+        var (first, next) = await reader.GetDismissedSessionsPageAsync("test", 2, 0, null);
+        Assert.Equal(["archived-a", "archived-b"], first.Select(s => s.Id));
+        Assert.All(first, s => Assert.True(s.Dismissed));
+        Assert.Equal(2, next);
+        Assert.Contains("data.dismissed=true", handler.Requests.Last());
+        Assert.Contains("sort_by=updated_at", handler.Requests.Last());
+
+        var (second, end) = await reader.GetDismissedSessionsPageAsync("test", 2, 2, null);
+        Assert.Equal(["archived-c"], second.Select(s => s.Id));
+        Assert.Null(end);
+
+        var (matches, _) = await reader.GetDismissedSessionsPageAsync(null, 50, 0, "  OTHER ");
+        Assert.Equal(["archived-other"], matches.Select(s => s.Id));
+        Assert.Contains("search=OTHER", handler.Requests.Last());
+        Assert.False((await reader.GetSessionsAsync("test", 20, false)).Single().Dismissed);
+    }
+
+    [Fact]
+    public async Task Archived_endpoint_filters_unreadable_rows_and_restore_clears_dismissal()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var rows = new Row[] {
+            new("archived-own", "Stopped", 10, Dismissed: true),
+            new("archived-foreign-confidential", "Stopped", 20, Owner: "other", Confidential: true, Dismissed: true),
+            new("open", "Idle", 30) };
+        var builder = WebApplication.CreateSlimBuilder(); await using var app = builder.Build();
+        var registry = new EndpointRegistry(app);
+        UnifiedSessionEndpoints.Map(registry, f.Registry, null!, (_, _) => { }, f.Config,
+            redLeafReader: Reader(f, rows), attachmentStore: f.Attachments, inputQueue: f.Service());
+        RouteEndpoint Route(string pattern, string method) => ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints)
+            .OfType<RouteEndpoint>().Single(e => e.RoutePattern.RawText == pattern && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains(method));
+        async Task<(int Status, JsonElement Body)> Call(RouteEndpoint endpoint, string method, string path, string query = "")
+        {
+            var ctx = new DefaultHttpContext { RequestServices = app.Services,
+                User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "owner"), new Claim("roles", "[\"operator\"]")], "signed")) };
+            ctx.SetEndpoint(endpoint); ctx.Request.Method = method; ctx.Request.Path = path; ctx.Request.QueryString = new(query);
+            if (endpoint.RoutePattern.GetParameter("id") is not null) ctx.Request.RouteValues["id"] = path.Split('/')[^2];
+            ctx.Response.Body = new MemoryStream();
+            await endpoint.RequestDelegate!(ctx);
+            ctx.Response.Body.Position = 0;
+            using var result = await JsonDocument.ParseAsync(ctx.Response.Body);
+            return (ctx.Response.StatusCode, result.RootElement.Clone());
+        }
+
+        var (status, page) = await Call(Route("/ai-session/sessions/archived", "GET"), "GET", "/ai-session/sessions/archived");
+        Assert.Equal(200, status);
+        Assert.Equal(["archived-own"], page.GetProperty("items").EnumerateArray().Select(s => s.GetProperty("id").GetString()));
+        Assert.True(page.GetProperty("items")[0].GetProperty("dismissed").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, page.GetProperty("nextOffset").ValueKind);
+
+        var restore = Route("/ai-session/sessions/{id}/restore", "POST");
+        f.Runtime.Info.Dismissed = true;
+        var (restored, body) = await Call(restore, "POST", "/ai-session/sessions/session/restore");
+        Assert.Equal(200, restored);
+        Assert.True(body.GetProperty("restored").GetBoolean());
+        Assert.Equal(1, f.Runtime.Restores);
+        Assert.False(f.Runtime.Info.Dismissed);
+        Assert.Equal(0, f.Runtime.Resumes);
+
+        f.Runtime.RestoreResult = false;
+        var (unsupported, error) = await Call(restore, "POST", "/ai-session/sessions/session/restore");
+        Assert.Equal(409, unsupported);
+        Assert.Equal("restore_unsupported", error.GetProperty("error").GetString());
+
+        f.Runtime.Missing = true;
+        Assert.Equal(404, (await Call(restore, "POST", "/ai-session/sessions/missing/restore")).Status);
+    }
+
     private static RedLeafSessionReader Reader(SessionRecoveryTests.Fixture f, Row[] rows) => Reader(f, new ListHandler(rows));
     private static RedLeafSessionReader Reader(SessionRecoveryTests.Fixture f, ListHandler handler)
     {
@@ -104,8 +182,11 @@ public sealed class SessionListActivityTests
         {
             Requests.Add(request.RequestUri!.PathAndQuery);
             var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri.Query);
-            var selected = rows.Where(r => !query.TryGetValue("data.provider", out var provider) || r.Provider == provider)
-                .Where(r => !query.ContainsKey("data.dismissed") || !r.Dismissed);
+            IEnumerable<Row> selected = rows.Where(r => !query.TryGetValue("data.provider", out var provider) || r.Provider == provider)
+                .Where(r => !query.TryGetValue("data.dismissed", out var dismissed) || r.Dismissed == bool.Parse(dismissed!))
+                .Where(r => !query.TryGetValue("search", out var search) || r.Id.Contains(search!, StringComparison.OrdinalIgnoreCase));
+            if (query.ContainsKey("offset")) selected = selected.OrderByDescending(r => r.Age).Skip(int.Parse(query["offset"]!));
+            if (query.TryGetValue("limit", out var limit) && query.ContainsKey("offset")) selected = selected.Take(int.Parse(limit!));
             var items = selected.Select(r => new { id = r.Id, name = r.Id, data = JsonSerializer.Serialize(new {
                 session_id = r.Id, provider = r.Provider, status = r.Status, started_at = Epoch.AddMinutes(r.Age),
                 user_id = r.Owner, owner_agent_id = "agent", confidential = r.Confidential, source = r.Source, dismissed = r.Dismissed }) });

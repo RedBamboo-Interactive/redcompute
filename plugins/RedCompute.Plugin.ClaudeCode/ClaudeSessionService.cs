@@ -1910,6 +1910,16 @@ public class ClaudeSessionService
         }
     }
 
+    public bool RestoreSession(string sessionId)
+    {
+        var record = _sessionStore.FindSession(sessionId);
+        if (record == null) return false;
+        if (!record.Dismissed) return true;
+        record.Dismissed = false;
+        _sessionStore.SaveSession(record);
+        return true;
+    }
+
     public List<ClaudeSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false)
     {
         var live = _sessions.Values.Select(s => s.Info).ToList();

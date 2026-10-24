@@ -145,6 +145,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     public void DismissSession(string sessionId) => _opencode.DismissSession(sessionId);
 
+    public bool RestoreSession(string sessionId) => _opencode.RestoreSession(sessionId);
+
     // --- ISessionProvider: Messaging ---
 
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)

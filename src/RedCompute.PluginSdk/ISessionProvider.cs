@@ -48,6 +48,13 @@ public interface ISessionProvider
         => ForceKillAsync(sessionId);
     void DismissSession(string sessionId);
 
+    /// <summary>
+    /// Clears a dismissal so the session returns to default listings, without starting a
+    /// process. Returns false when the session is unknown or the provider cannot restore;
+    /// the default keeps older provider plugins compatible.
+    /// </summary>
+    bool RestoreSession(string sessionId) => false;
+
     // Messaging (SendMessage). messageUid is the provider-neutral message
     // identity minted by the caller (endpoint layer) — providers persist it
     // on the user message record verbatim.

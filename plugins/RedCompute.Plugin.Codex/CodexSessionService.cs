@@ -866,6 +866,16 @@ public class CodexSessionService
 
     public void DismissSession(string sessionId) => _store.DismissSession(sessionId);
 
+    public bool RestoreSession(string sessionId)
+    {
+        var record = _store.FindSession(sessionId);
+        if (record == null) return false;
+        if (!record.Dismissed) return true;
+        record.Dismissed = false;
+        _store.SaveSession(record);
+        return true;
+    }
+
     public async Task StopAllAsync()
     {
         foreach (var key in _runningProcesses.Keys.ToList())
