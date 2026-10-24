@@ -105,8 +105,7 @@ public sealed class SunoProvider : IPluginProvider
 
         _ownsApiHttp = apiHttp is null;
         _apiHttp = apiHttp ?? new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        if (!string.IsNullOrWhiteSpace(config.ApiKey))
-            _apiHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.ApiKey);
+        // The credential is attached per request, and only for the URL RedLeaf bound it to.
 
         _ownsDownloadHttp = downloadHttp is null;
         _downloadHttp = downloadHttp ?? new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
@@ -120,6 +119,12 @@ public sealed class SunoProvider : IPluginProvider
         {
             _status = BackendStatus.Error;
             _log("[Suno] No API key configured");
+            return Task.FromResult(false);
+        }
+        if (ProviderKeyBindings.Release(_config, new Uri(_baseUrl)) is null)
+        {
+            _status = BackendStatus.Error;
+            _log($"[Suno] Not sending the API key to {_baseUrl}: {ProviderKeyBindings.MismatchMessage}");
             return Task.FromResult(false);
         }
         _status = BackendStatus.Running;
@@ -305,7 +310,7 @@ public sealed class SunoProvider : IPluginProvider
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        using var response = await _apiHttp.PostAsJsonAsync(_baseUrl + endpoint, payload, timeout.Token);
+        using var response = await SendApiAsync(HttpMethod.Post, _baseUrl + endpoint, payload, timeout.Token);
         var body = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Suno submit HTTP {(int)response.StatusCode}: {Truncate(body, 500)}");
@@ -340,8 +345,8 @@ public sealed class SunoProvider : IPluginProvider
             {
                 using var pollTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 pollTimeout.CancelAfter(TimeSpan.FromSeconds(20));
-                using var response = await _apiHttp.GetAsync(
-                    $"{_baseUrl}{path}?taskId={Uri.EscapeDataString(taskId)}", pollTimeout.Token);
+                using var response = await SendApiAsync(HttpMethod.Get,
+                    $"{_baseUrl}{path}?taskId={Uri.EscapeDataString(taskId)}", null, pollTimeout.Token);
                 if (response.IsSuccessStatusCode)
                 {
                     using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
@@ -727,13 +732,24 @@ public sealed class SunoProvider : IPluginProvider
         };
     }
 
+    private async Task<HttpResponseMessage> SendApiAsync(
+        HttpMethod method, string url, object? payload, CancellationToken ct)
+    {
+        var uri = new Uri(url);
+        using var request = new HttpRequestMessage(method, uri);
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer", ProviderKeyBindings.Require(_config, uri));
+        if (payload != null) request.Content = JsonContent.Create(payload);
+        return await _apiHttp.SendAsync(request, ct);
+    }
+
     private async Task<int?> TryGetCreditsAsync(CancellationToken ct)
     {
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
-            using var response = await _apiHttp.GetAsync(_baseUrl + "/api/v1/generate/credit", timeout.Token);
+            using var response = await SendApiAsync(HttpMethod.Get, _baseUrl + "/api/v1/generate/credit", null, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {
                 _log($"[Suno] Credit balance unavailable: HTTP {(int)response.StatusCode} ({response.StatusCode})");

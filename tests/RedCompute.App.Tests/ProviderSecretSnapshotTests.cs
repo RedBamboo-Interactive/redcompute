@@ -20,8 +20,8 @@ public class ProviderSecretSnapshotTests
         const string snapshot = """
             {
               "items": [
-                { "id": "first-id", "slug": "renamed", "apiKey": "first-secret" },
-                { "id": "unknown-id", "slug": "second", "apiKey": "second-secret" }
+                { "id": "first-id", "slug": "renamed", "apiKey": "first-secret", "boundDestination": "https://api.one.test:443" },
+                { "id": "unknown-id", "slug": "second", "apiKey": "second-secret", "boundDestination": "https://api.two.test:443" }
               ]
             }
             """;
@@ -29,6 +29,7 @@ public class ProviderSecretSnapshotTests
         var hydrated = ProviderConfigService.ApplyProviderSecrets(providers, snapshot);
 
         Assert.Equal("first-secret", hydrated[0].ApiKey);
+        Assert.Equal("https://api.one.test:443", hydrated[0].ApiKeyDestination);
         Assert.Equal("second-secret", hydrated[1].ApiKey);
         Assert.Null(hydrated[2].ApiKey);
         Assert.Equal("backend", hydrated[0].Backend);
@@ -40,9 +41,9 @@ public class ProviderSecretSnapshotTests
         var providers = new List<ProviderEntityConfig> { Provider("provider-id", "provider") };
 
         var hydrated = ProviderConfigService.ApplyProviderSecrets(providers,
-            """{"items":[{"id":"provider-id","apiKey":""},{"slug":"unknown","apiKey":"secret"}]}""");
+            """{"items":[{"id":"provider-id","apiKey":null},{"slug":"unknown","apiKey":"secret","boundDestination":"https://api.x.test:443"}]}""");
 
-        Assert.Equal("", hydrated.Single().ApiKey);
+        Assert.Null(hydrated.Single().ApiKey);
         Assert.True(hydrated.Single().ApiKeyAuthoritative);
     }
 

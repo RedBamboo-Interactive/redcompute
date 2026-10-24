@@ -29,8 +29,8 @@ public class TtsElevenLabsProvider : IPluginProvider, ICustomEndpointProvider
         _log = log;
         _apiKey = config.ApiKey ?? "";
         _model = config.Model ?? ProviderHelpers.GetExtra(config, "model", "eleven_v3");
+        // xi-api-key is attached per request, and only for the URL RedLeaf bound it to.
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        _http.DefaultRequestHeaders.Add("xi-api-key", _apiKey);
     }
 
     // IBackendProvider
@@ -87,6 +87,10 @@ public class TtsElevenLabsProvider : IPluginProvider, ICustomEndpointProvider
             $"https://api.elevenlabs.io/v1/text-to-speech/{voiceId}");
         requestMsg.Headers.Add("Accept", "audio/mpeg");
         requestMsg.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        var apiKey = ProviderKeyBindings.Release(_config, requestMsg.RequestUri!);
+        if (apiKey is null)
+            return new JobResult { Success = false, ErrorMessage = ProviderKeyBindings.MismatchMessage };
+        requestMsg.Headers.Add("xi-api-key", apiKey);
 
         _log($"[tts-elevenlabs] Synthesizing {text.Length} chars with voice {voiceId}");
 
@@ -210,6 +214,14 @@ public class TtsElevenLabsProvider : IPluginProvider, ICustomEndpointProvider
             try
             {
                 var req = new HttpRequestMessage(HttpMethod.Get, "https://api.elevenlabs.io/v1/voices");
+                var apiKey = ProviderKeyBindings.Release(_config, req.RequestUri!);
+                if (apiKey is null)
+                {
+                    ctx.Response.StatusCode = 409;
+                    await ctx.Response.WriteAsJsonAsync(new { error = ProviderKeyBindings.MismatchMessage });
+                    return;
+                }
+                req.Headers.Add("xi-api-key", apiKey);
                 var resp = await _http.SendAsync(req);
                 if (!resp.IsSuccessStatusCode)
                 {

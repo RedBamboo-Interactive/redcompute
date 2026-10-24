@@ -93,11 +93,13 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
 
         var payload = BuildCreatePayload(request);
 
-        using var message = new HttpRequestMessage(HttpMethod.Post, "/v1/live/sessions")
+        var createUri = new Uri(_http.BaseAddress ?? new Uri("https://api.openai.com"), "/v1/live/sessions");
+        using var message = new HttpRequestMessage(HttpMethod.Post, createUri)
         {
             Content = JsonContent.Create(payload),
         };
-        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
+        message.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer", ProviderKeyBindings.Require(_config, createUri));
         using var response = await _http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
         var responseBody = await response.Content.ReadAsStringAsync(ct);
         if (response.StatusCode != HttpStatusCode.Created)
@@ -110,10 +112,11 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
         if (string.IsNullOrWhiteSpace(providerSessionId) || string.IsNullOrWhiteSpace(answerSdp))
             throw new OpenAILiveException(502, "OpenAI Live returned an invalid session response");
 
-        var socket = _socketFactory();
-        socket.Options.SetRequestHeader("Authorization", $"Bearer {_config.ApiKey}");
-        var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var uri = new Uri($"wss://api.openai.com/v1/live/sessions/{Uri.EscapeDataString(providerSessionId)}/attach");
+        var attachKey = ProviderKeyBindings.Require(_config, uri);
+        var socket = _socketFactory();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {attachKey}");
+        var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         try
         {
             await socket.ConnectAsync(uri, lifetime.Token);

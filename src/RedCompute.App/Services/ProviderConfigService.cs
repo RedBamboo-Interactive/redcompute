@@ -19,6 +19,10 @@ public record ProviderEntityConfig(
     public JsonElement? Settings { get; init; }
     public string RuntimeBinding { get; init; } = "shared";
     public bool ApiKeyAuthoritative { get; init; }
+    /// <summary>Origin RedLeaf bound <see cref="ApiKey"/> to; the key may be sent nowhere else.</summary>
+    public string? ApiKeyDestination { get; init; }
+    /// <summary>RedLeaf's reason for withholding a stored key (for example a changed endpoint).</summary>
+    public string? ApiKeyError { get; init; }
 }
 
 public sealed record VaultedProviderCoordinate(string CapabilitySlug, string ProviderName);
@@ -98,6 +102,8 @@ public class ProviderConfigService
                 var secretsJson = await _http.GetStringAsync(
                     $"{baseUrl}/api/internal/compute/provider-secrets", ct);
                 parsed = ApplyProviderSecrets(parsed, secretsJson);
+                foreach (var withheld in parsed.Where(p => p.ApiKeyError != null))
+                    _log($"[ProviderConfig] Provider '{withheld.Slug}' key withheld by RedLeaf: {withheld.ApiKeyError}", null);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
@@ -455,7 +461,14 @@ public class ProviderConfigService
         provider.DisplayName = entity.Name;
         provider.Backend = entity.Backend;
         provider.RuntimeBinding = entity.RuntimeBinding;
-        if (entity.ApiKeyAuthoritative) provider.ApiKey = entity.ApiKey;
+        if (entity.ApiKeyAuthoritative)
+        {
+            provider.ApiKey = entity.ApiKey;
+            // One reference swap keeps the key and its destination consistent for readers.
+            provider.KeyBinding = !string.IsNullOrEmpty(entity.ApiKey) && entity.ApiKeyDestination != null
+                ? new ProviderKeyBinding(entity.ApiKey, entity.ApiKeyDestination)
+                : null;
+        }
         if (!string.IsNullOrWhiteSpace(entity.DefaultModel)) provider.Model = entity.DefaultModel;
         if (!string.IsNullOrWhiteSpace(entity.EndpointUrl)) provider.Endpoint = entity.EndpointUrl;
 
@@ -685,22 +698,33 @@ public class ProviderConfigService
             || items.ValueKind != JsonValueKind.Array)
             throw new JsonException("Provider secret snapshot has no items array.");
 
-        var byId = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var bySlug = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var byId = new Dictionary<string, (string? ApiKey, string? Destination, string? Error)>(
+            StringComparer.OrdinalIgnoreCase);
+        var bySlug = new Dictionary<string, (string? ApiKey, string? Destination, string? Error)>(
+            StringComparer.OrdinalIgnoreCase);
         foreach (var item in items.EnumerateArray())
         {
-            var apiKey = GetString(item, "apiKey");
+            var destination = GetString(item, "boundDestination");
+            // A key without a bound destination is never released into the runtime.
+            var apiKey = destination is null ? null : GetString(item, "apiKey");
+            var error = GetString(item, "keyErrorMessage") ?? GetString(item, "keyError");
             var id = GetString(item, "id");
             var slug = GetString(item, "slug");
-            if (!string.IsNullOrEmpty(id)) byId[id] = apiKey;
-            if (!string.IsNullOrEmpty(slug)) bySlug[slug] = apiKey;
+            if (!string.IsNullOrEmpty(id)) byId[id] = (apiKey, destination, error);
+            if (!string.IsNullOrEmpty(slug)) bySlug[slug] = (apiKey, destination, error);
         }
 
         return providers.Select(provider =>
         {
-            if (byId.TryGetValue(provider.Id, out var apiKey)
-                || bySlug.TryGetValue(provider.Slug, out apiKey))
-                return provider with { ApiKey = apiKey, ApiKeyAuthoritative = true };
+            if (byId.TryGetValue(provider.Id, out var secret)
+                || bySlug.TryGetValue(provider.Slug, out secret))
+                return provider with
+                {
+                    ApiKey = secret.ApiKey,
+                    ApiKeyAuthoritative = true,
+                    ApiKeyDestination = secret.ApiKey is null ? null : secret.Destination,
+                    ApiKeyError = secret.Error,
+                };
             return provider;
         }).ToList();
     }

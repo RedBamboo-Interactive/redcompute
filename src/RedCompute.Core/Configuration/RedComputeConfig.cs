@@ -74,6 +74,14 @@ public class ProviderConfig
 
     // RunPod settings
     public string? ApiKey { get; set; }
+
+    /// <summary>
+    /// The vaulted key together with the origin RedLeaf bound it to. Runtime only: it is
+    /// replaced as one reference, never persisted, and is the only key plugins may send
+    /// (see RedCompute.PluginSdk.ProviderKeyBindings).
+    /// </summary>
+    [JsonIgnore]
+    public ProviderKeyBinding? KeyBinding { get; set; }
     public string? PodId { get; set; }
     public int GpuCount { get; set; } = 1;
     public bool AutoStopOnExit { get; set; } = true;
@@ -82,3 +90,6 @@ public class ProviderConfig
     [JsonExtensionData]
     public Dictionary<string, object?>? Extra { get; set; }
 }
+
+/// <summary>A provider API key and the normalised scheme://host:port it may be sent to.</summary>
+public sealed record ProviderKeyBinding(string ApiKey, string Destination);

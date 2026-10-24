@@ -205,7 +205,7 @@ public class ProviderEntityBindingTests
             """;
 
         private const string Secrets = """
-            {"items":[{"id":"custom-id","slug":"acme-cloud","apiKey":"vault-secret"}]}
+            {"items":[{"id":"custom-id","slug":"acme-cloud","apiKey":"vault-secret","boundDestination":"https://api.acme.test:443"}]}
             """;
     }
 }

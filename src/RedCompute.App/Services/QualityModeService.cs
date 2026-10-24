@@ -25,7 +25,7 @@ public record QualityMode(
 public record ResolvedMode(string Provider, string? Model, string? Effort,
     string? Backend = null, string? EndpointUrl = null, string? ApiKey = null,
     int? ThinkingBudget = null, string? QualityTier = null,
-    int? TimeoutSeconds = null, int? MaxTurns = null);
+    int? TimeoutSeconds = null, int? MaxTurns = null, string? ApiKeyDestination = null);
 
 public enum QualityResolutionFailure
 {
@@ -231,7 +231,8 @@ public class QualityModeService : IProviderQualityModeResolver
                 var pc = string.IsNullOrWhiteSpace(preferredProvider)
                     ? _providerConfig.GetDefault()
                     : _providerConfig.Resolve(preferredProvider);
-                return new ResolvedMode(pc.Slug, null, null, pc.Backend, pc.EndpointUrl, pc.ApiKey, QualityTier: tier);
+                return new ResolvedMode(pc.Slug, null, null, pc.Backend, pc.EndpointUrl, pc.ApiKey, QualityTier: tier,
+                    ApiKeyDestination: pc.ApiKeyDestination);
             }
         }
 
@@ -241,7 +242,8 @@ public class QualityModeService : IProviderQualityModeResolver
                 string.Equals(m.Provider, preferredProvider, StringComparison.OrdinalIgnoreCase));
             if (match != null) return ToResolved(match);
             var ppc = _providerConfig.Resolve(preferredProvider);
-            return new ResolvedMode(preferredProvider, null, null, ppc.Backend, ppc.EndpointUrl, ppc.ApiKey, QualityTier: tier);
+            return new ResolvedMode(preferredProvider, null, null, ppc.Backend, ppc.EndpointUrl, ppc.ApiKey, QualityTier: tier,
+                ApiKeyDestination: ppc.ApiKeyDestination);
         }
 
         var chosen = ChooseDefault(candidates);
@@ -391,7 +393,7 @@ public class QualityModeService : IProviderQualityModeResolver
     {
         var pc = _providerConfig.Resolve(m.Provider);
         return new(m.Provider, m.Model, m.Effort, pc.Backend, pc.EndpointUrl, pc.ApiKey,
-            m.ThinkingBudget, m.QualityTier, m.Timeout, m.MaxTurns);
+            m.ThinkingBudget, m.QualityTier, m.Timeout, m.MaxTurns, pc.ApiKeyDestination);
     }
 
     private void ApplySnapshot(

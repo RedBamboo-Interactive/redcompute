@@ -440,14 +440,14 @@ public static class UnifiedSessionEndpoints
                     if (conversationOnly)
                     {
                         session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
-                            effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
+                            effort, q.EndpointUrl, SessionApiKey(q), thinkingBudget, q.QualityTier, q.ProviderName,
                             repository?.Id, provenance, scratchDirectory, confidential, developerInstructions);
                     }
                     else
                     {
                         using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
                             session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
-                                effort, q.EndpointUrl, q.ApiKey, thinkingBudget, q.QualityTier, q.ProviderName,
+                                effort, q.EndpointUrl, SessionApiKey(q), thinkingBudget, q.QualityTier, q.ProviderName,
                                 repository?.Id, provenance, scratchDirectory, confidential, developerInstructions);
                     }
                 }
@@ -1775,16 +1775,7 @@ public static class UnifiedSessionEndpoints
                 providerParams["userId"] = userId;
 
             // Thread provider endpoint/key into env so providers that support custom endpoints can use them.
-            if (!string.IsNullOrEmpty(q.EndpointUrl))
-            {
-                env ??= new Dictionary<string, string>();
-                env["OPENAI_BASE_URL"] = q.EndpointUrl;
-            }
-            if (!string.IsNullOrEmpty(q.ApiKey))
-            {
-                env ??= new Dictionary<string, string>();
-                env["OPENAI_API_KEY"] = q.ApiKey;
-            }
+            env = WithProviderCredentialEnv(env, q.EndpointUrl, q.ApiKey, q.ApiKeyDestination);
 
             var inputSummary = prompt.Length > 100 ? prompt[..97] + "..." : prompt;
             var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;
@@ -2314,7 +2305,50 @@ public static class UnifiedSessionEndpoints
     /// </summary>
     private record QualityResolution(string? Model, string? Effort, string? ProviderName,
         string? BackendName = null, string? EndpointUrl = null, string? ApiKey = null,
-        int? ThinkingBudget = null, string? QualityTier = null);
+        int? ThinkingBudget = null, string? QualityTier = null, string? ApiKeyDestination = null);
+
+    private const string DefaultOpenAiBaseUrl = "https://api.openai.com";
+
+    // Caller env that would route or intercept the child's TLS traffic elsewhere.
+    private static readonly string[] CredentialRedirectEnv =
+    [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    ];
+
+    /// <summary>The provider key handed to a session provider, only when bound to the session endpoint.</summary>
+    private static string? SessionApiKey(QualityResolution q)
+        => ProviderKeyBindings.Release(q.ApiKey, q.ApiKeyDestination, q.EndpointUrl);
+
+    /// <summary>
+    /// OPENAI_BASE_URL / OPENAI_API_KEY for an execute child. The provider key is injected
+    /// only when it is bound to the base URL the child will actually call (the provider
+    /// endpoint, else a caller-supplied base URL, else the SDK default) and the caller env
+    /// does not redirect or intercept TLS traffic.
+    /// </summary>
+    internal static Dictionary<string, string>? WithProviderCredentialEnv(
+        Dictionary<string, string>? env, string? endpointUrl, string? apiKey, string? apiKeyDestination)
+    {
+        if (!string.IsNullOrEmpty(endpointUrl))
+        {
+            env ??= new Dictionary<string, string>();
+            env["OPENAI_BASE_URL"] = endpointUrl;
+        }
+        if (string.IsNullOrEmpty(apiKey)) return env;
+
+        string? EnvValue(string name) => env?.FirstOrDefault(kv =>
+            string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
+        var baseUrl = new[] { EnvValue("OPENAI_BASE_URL"), EnvValue("OPENAI_API_BASE") }
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? DefaultOpenAiBaseUrl;
+        var redirected = CredentialRedirectEnv.Any(name => !string.IsNullOrWhiteSpace(EnvValue(name)));
+        var key = redirected ? null : ProviderKeyBindings.Release(apiKey, apiKeyDestination, baseUrl);
+        if (key != null)
+        {
+            env ??= new Dictionary<string, string>();
+            env["OPENAI_API_KEY"] = key;
+        }
+        return env;
+    }
 
     private static (QualityResolution Resolution, IResult? Error) ResolveQuality(HttpContext ctx, JsonElement body)
     {
@@ -2333,7 +2367,8 @@ public static class UnifiedSessionEndpoints
                 var pc = _providerConfig.Resolve(explicitProvider);
                 return (new QualityResolution(
                     string.IsNullOrWhiteSpace(model) ? pc.DefaultModel : model,
-                    effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey), null);
+                    effort, explicitProvider, pc.Backend, pc.EndpointUrl, pc.ApiKey,
+                    ApiKeyDestination: pc.ApiKeyDestination), null);
             }
             return (new QualityResolution(model, effort, explicitProvider), null);
         }
@@ -2354,7 +2389,8 @@ public static class UnifiedSessionEndpoints
             resolved.EndpointUrl,
             resolved.ApiKey,
             resolved.ThinkingBudget,
-            resolved.QualityTier), null);
+            resolved.QualityTier,
+            resolved.ApiKeyDestination), null);
     }
 
     private static IResult QualityResolutionError(

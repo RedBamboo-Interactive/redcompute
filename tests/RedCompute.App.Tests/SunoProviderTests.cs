@@ -482,6 +482,7 @@ public sealed class SunoProviderTests
     {
         Type = "Suno",
         ApiKey = "secret-test-key",
+        KeyBinding = new ProviderKeyBinding("secret-test-key", "https://api.sunoapi.org:443"),
         Extra = extra,
     };
 
