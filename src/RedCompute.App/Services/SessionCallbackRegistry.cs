@@ -21,12 +21,16 @@ public class SessionCallbackRegistry
     private readonly HttpClient _http;
     private readonly Action<string, Guid?> _log;
     private SessionPromptCallbacks? _durable;
+    private SessionInputQueueStore? _queue;
     private Func<string, IReadOnlyList<PendingSessionQuestion>> _pendingQuestions = _ => [];
     private Func<string, UnifiedSessionInfo?> _currentSession = _ => null;
 
     internal void AttachDurableStore(string databasePath, SessionInputQueueStore queue,
         Func<string, UnifiedSessionInfo?> currentSession)
-        => _durable = new(databasePath, queue, currentSession, _http, _log) { PendingQuestions = id => _pendingQuestions(id) };
+    {
+        _queue = queue;
+        _durable = new(databasePath, queue, currentSession, _http, _log) { PendingQuestions = id => _pendingQuestions(id) };
+    }
 
     /// <summary>Where parked questions are read from: the live session providers.</summary>
     internal void AttachQuestionSource(Func<string, IReadOnlyList<PendingSessionQuestion>> pendingQuestions,
@@ -301,6 +305,13 @@ public class SessionCallbackRegistry
         string? projectPath = null, string? title = null, string? reason = null, string? userId = null, string? stopReason = null,
         string workState = SessionWorkStates.Idle, int backgroundTasksRunning = 0, int? deliverySequence = null)
     {
+        // Counted once, before the retry loop, so every attempt posts the same payload.
+        var pendingInputs = 0;
+        if (_queue is not null)
+        {
+            try { pendingInputs = await _queue.CountPendingAsync(sessionId); }
+            catch (Exception ex) { _log($"[Callbacks] Pending input count for {sessionId} unavailable: {ex.Message}", null); }
+        }
         var completion = new
         {
             sessionId,
@@ -312,6 +323,7 @@ public class SessionCallbackRegistry
             userId,
             stopReason,
             workState,
+            pendingInputs,
         };
         var payload = deliverySequence is { } sequence
             ? WithTurnIdentity(completion, backgroundTasksRunning, sequence - 1)

@@ -145,6 +145,89 @@ public sealed class SessionInputQueueStoreTests : IDisposable
         Assert.All(batch, item => Assert.Equal(SessionInputQueueState.Delivering, item.State));
     }
 
+    // Discussion 258167da: four completion events queued for one parent session each carried their
+    // own event context, so each was its own scope and they reached the model one turn at a time.
+    [Fact]
+    public async Task Queued_events_from_one_caller_claim_as_one_batch()
+    {
+        var (_, queue) = Stores();
+        var admitted = new List<string>();
+        foreach (var uid in new[] { "event-1", "event-2", "event-3", "event-4", "event-5" })
+            admitted.Add((await queue.EnqueueAsync(Event(uid))).Item.Id);
+
+        var batch = await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+
+        Assert.Equal(admitted, batch.Select(item => item.Id));
+        // The stored provenance still names each event.
+        Assert.Equal(["event-1", "event-2", "event-3", "event-4", "event-5"],
+            batch.Select(item => item.Provenance.Context.Single(c => c.Kind == "event").Id));
+    }
+
+    [Fact]
+    public async Task An_event_and_an_ordinary_message_never_share_a_batch()
+    {
+        var (_, queue) = Stores();
+        var first = await queue.EnqueueAsync(Event("event-1"));
+        var second = await queue.EnqueueAsync(Event("event-2"));
+        var message = await queue.EnqueueAsync(Message("message-1"));
+        var third = await queue.EnqueueAsync(Event("event-3"));
+
+        var events = await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+        Assert.Equal([first.Item.Id, second.Item.Id], events.Select(item => item.Id));
+        await queue.MarkDeliveredAsync(events, events[0].MessageUid);
+
+        var messages = await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+        Assert.Equal([message.Item.Id], messages.Select(item => item.Id));
+        await queue.MarkDeliveredAsync(messages, messages[0].MessageUid);
+
+        var later = await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+        Assert.Equal([third.Item.Id], later.Select(item => item.Id));
+    }
+
+    [Fact]
+    public async Task Distinct_events_admit_separately_and_a_keyed_retry_dedupes()
+    {
+        var (_, queue) = Stores();
+        var first = await queue.EnqueueAsync(Event("event-1", idempotent: true));
+        var second = await queue.EnqueueAsync(Event("event-2", idempotent: true));
+        Assert.False(first.Existing); Assert.False(second.Existing);
+        Assert.NotEqual(first.Item.Id, second.Item.Id);
+
+        // A redelivery arrives with a fresh signed execution and the same event identity.
+        var retry = await queue.EnqueueAsync(Event("event-1", idempotent: true));
+        Assert.True(retry.Existing);
+        Assert.Equal(first.Item.Id, retry.Item.Id);
+
+        // Unkeyed events never dedupe, even with identical text.
+        var unkeyedA = await queue.EnqueueAsync(Event("event-3") with { DisplayContent = "same" });
+        var unkeyedB = await queue.EnqueueAsync(Event("event-4") with { DisplayContent = "same" });
+        Assert.False(unkeyedB.Existing);
+        Assert.NotEqual(unkeyedA.Item.Id, unkeyedB.Item.Id);
+        Assert.Equal(4, (await queue.ListAsync("session-a", "owner-a", includeTerminal: false)).Count);
+    }
+
+    // An event admitted by a build whose scope still hashed the event ID, retried after the upgrade.
+    [Fact]
+    public async Task Event_admitted_under_the_old_scope_dedupes_its_retry_after_the_change()
+    {
+        var (attachments, queue) = Stores();
+        var first = await queue.EnqueueAsync(Event("event-1", idempotent: true));
+        await using (var connection = new SqliteConnection($"Data Source={attachments.DatabasePath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            var command = connection.CreateCommand();
+            command.CommandText = "UPDATE SessionQueuedInputs SET ProvenanceScope='scope-with-event-id', IdempotencyFingerprint='old-fingerprint' WHERE Id=$id";
+            command.Parameters.AddWithValue("$id", first.Item.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var retry = await queue.EnqueueAsync(Event("event-1", idempotent: true));
+
+        Assert.True(retry.Existing);
+        Assert.Equal(first.Item.Id, retry.Item.Id);
+        Assert.Single(await queue.ListAsync("session-a", "owner-a", includeTerminal: false));
+    }
+
     [Fact]
     public async Task ClaimNeverCoalescesAcrossDeliveryPolicies()
     {
@@ -299,6 +382,27 @@ public sealed class SessionInputQueueStoreTests : IDisposable
             "m_" + Guid.NewGuid().ToString("N"),
             attachments ?? [],
             idempotencyKey);
+
+    // The context Nova's EventInjector sends for a discussion event, as stored on live queue rows.
+    private static SessionInputQueueSubmission Event(string uid, bool idempotent = false) =>
+        Submission(uid, idempotencyKey: idempotent ? $"nova-event:{uid}" : null, provenance: Provenance("nova",
+        [
+            new JobContextReference("discussion", "discussion-1"),
+            new JobContextReference("session", "session-a"),
+            new JobContextReference("event", uid),
+            new JobContextReference("origin-entrypoint", Route: "/api/apps/nova/discussions/discussion-1/event"),
+            new JobContextReference("execution", Guid.NewGuid().ToString()),
+        ])) with { MessageUid = uid };
+
+    private static SessionInputQueueSubmission Message(string uid) =>
+        Submission(uid, idempotencyKey: $"q-{uid}", provenance: Provenance("nova",
+        [
+            new JobContextReference("discussion", "discussion-1"),
+            new JobContextReference("session", "session-a"),
+            new JobContextReference("origin-entrypoint", Route: "/api/apps/nova/discussions/discussion-1/message"),
+            new JobContextReference("execution", Guid.NewGuid().ToString()),
+            new JobContextReference("parent-execution", Guid.NewGuid().ToString()),
+        ])) with { MessageUid = uid };
 
     private static JobProvenance Provenance(string appId, IReadOnlyList<JobContextReference>? context = null) => new(
         JobProvenance.CurrentSchemaVersion,

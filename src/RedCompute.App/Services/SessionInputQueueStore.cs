@@ -147,6 +147,15 @@ public sealed class SessionInputQueueStore
         return await command.ExecuteScalarAsync(ct) as string;
     }
 
+    /// <summary>Inputs of the session still waiting for, or in, delivery to the provider.</summary>
+    internal async Task<int> CountPendingAsync(string sessionId, CancellationToken ct = default)
+    {
+        await using var connection = Open(); var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM SessionQueuedInputs WHERE SessionId=$id AND State IN ('Pending','Delivering')";
+        Add(command, "$id", sessionId);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(ct));
+    }
+
     internal async Task RequireRecoveryAsync(SessionInputQueueItem item, CancellationToken ct)
     {
         await using var connection = Open(); var command = connection.CreateCommand();
@@ -858,8 +867,12 @@ public sealed class SessionInputQueueStore
             // Signed execution and parent-execution IDs identify this HTTP attempt, not the
             // logical browser outbox entry. Keeping them here defeats idempotency on retry while
             // the immutable provenance stored on the queue item still retains the full lineage.
+            // An event ID likewise identifies one logical input, as a message UID does, not a
+            // caller boundary: keeping it made every queued event its own scope, so events from
+            // one caller never coalesced into a turn. Events still differ from ordinary messages
+            // by their origin-entrypoint route, and the stored provenance keeps the event ID.
             Context = provenance.Context
-                .Where(c => c.Kind is not ("execution" or "parent-execution"))
+                .Where(c => c.Kind is not ("execution" or "parent-execution" or "event"))
                 .Select(c => new { c.Kind, c.Id, c.EntityId, c.Route })
                 .ToArray(),
         };

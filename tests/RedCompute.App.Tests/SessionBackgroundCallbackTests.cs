@@ -160,8 +160,8 @@ public sealed class SessionBackgroundCallbackTests
 
         registry.OnSessionEvent("session.updated", Info(SessionStatus.Idle, Background("b1", "completed"), Background("b2", "lost")));
         var payload = await Next(posts);
-        // The classic fields, unchanged and in order, plus the additive workState.
-        Assert.Equal(["sessionId", "callbackId", "status", "projectPath", "title", "reason", "userId", "stopReason", "workState"],
+        // The classic fields, unchanged and in order, plus the additive workState and pendingInputs.
+        Assert.Equal(["sessionId", "callbackId", "status", "projectPath", "title", "reason", "userId", "stopReason", "workState", "pendingInputs"],
             payload.EnumerateObject().Select(p => p.Name));
         Assert.Equal("idle", payload.GetProperty("workState").GetString());
         registry.OnSessionEvent("session.updated", Info(SessionStatus.Active));
@@ -291,6 +291,62 @@ public sealed class SessionBackgroundCallbackTests
         // A queued, never-delivered prompt on an idle session is not a finished turn.
         await callbacks.ObserveAsync("session", settled: true); await callbacks.DrainAsync();
         Assert.Empty(payloads);
+    }
+
+    // Several subscriptions resolved by one batched turn each keep their own BackgroundDeliveries,
+    // yet every member reports the same deliverySequence for the turn and for the woken turn, so
+    // the receiver can key on (deliveredMessageUid, deliverySequence).
+    [Fact]
+    public async Task Durable_batched_background_turn_reports_one_sequence_across_members()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Runtime.Info.Status = SessionStatus.Idle; f.Runtime.Info.StopReason = null;
+        var prompts = new[] { "p1", "p2", "p3" };
+        foreach (var uid in prompts) await f.Store.EnqueueAsync(f.Submission(uid));
+        var payloads = new List<JsonElement>();
+        var callbacks = new SessionPromptCallbacks(f.Attachments.DatabasePath, f.Store, _ => f.Runtime.Info, Http(payloads));
+        foreach (var uid in prompts) await callbacks.RegisterAsync("session", uid, CompleteUrl, "owner", uid);
+        var batch = await f.Store.ClaimBatchAsync("session", "provider", TimeSpan.FromMinutes(1));
+        f.Runtime.Info.Status = SessionStatus.Active;
+        await callbacks.ObserveAsync("session"); await f.Store.MarkDeliveredAsync(batch, "p1");
+
+        f.Runtime.Info.Status = SessionStatus.Idle; f.Runtime.Info.BackgroundTasks = [Background("b1", "running")];
+        await callbacks.SweepAsync(default); await callbacks.DrainAsync();
+        Assert.Equal(3, payloads.Count);
+        Assert.All(payloads, p => Assert.Equal(("p1", 1), (p.GetProperty("deliveredMessageUid").GetString(), p.GetProperty("deliverySequence").GetInt32())));
+
+        f.Runtime.Info.Status = SessionStatus.Active; f.Runtime.Info.BackgroundTasks = [Background("b1", "completed")];
+        await callbacks.ObserveAsync("session", observedActive: true); await callbacks.DrainAsync();
+        f.Runtime.Info.Status = SessionStatus.Idle;
+        await callbacks.SweepAsync(default); await callbacks.DrainAsync();
+        Assert.Equal(6, payloads.Count);
+        Assert.All(payloads.Skip(3), p => Assert.Equal(("p1", 2), (p.GetProperty("deliveredMessageUid").GetString(), p.GetProperty("deliverySequence").GetInt32())));
+        Assert.Equal(prompts, payloads.Skip(3).Select(p => p.GetProperty("callbackId").GetString()!).Order());
+    }
+
+    [Fact]
+    public async Task In_memory_payload_counts_pending_inputs_once_for_every_attempt()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        await f.Store.EnqueueAsync(f.Submission("queued-1"));
+        await f.Store.EnqueueAsync(f.Submission("queued-2"));
+        var posts = Channel.CreateUnbounded<string>(); var calls = 0;
+        using var http = new HttpClient(new Handler(async r => {
+            await posts.Writer.WriteAsync(await r.Content!.ReadAsStringAsync());
+            if (Interlocked.Increment(ref calls) > 1) return new(HttpStatusCode.OK);
+            // The queue grows while the first attempt is in flight; the retry must not notice.
+            await f.Store.EnqueueAsync(f.Submission("queued-3"));
+            return new(HttpStatusCode.BadGateway);
+        }));
+        var registry = new SessionCallbackRegistry(http, (_, _) => { });
+        registry.AttachDurableStore(f.Attachments.DatabasePath, f.Store, _ => f.Runtime.Info);
+        registry.Register("session", CompleteUrl, "owner", "operation");
+
+        registry.OnSessionEvent("session.updated", Info(SessionStatus.Idle));
+        var first = await posts.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        var retry = await posts.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(2, JsonSerializer.Deserialize<JsonElement>(first).GetProperty("pendingInputs").GetInt32());
+        Assert.Equal(first, retry);
     }
 
     // Registers an exact-prompt subscription and drives its prompt through observed delivery, so the

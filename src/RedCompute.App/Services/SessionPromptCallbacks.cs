@@ -18,6 +18,10 @@ namespace RedCompute.App.Services;
 /// but does not consume the subscription: it re-arms for the turn the background work wakes. Each
 /// such delivery carries deliverySequence, so retries of one delivery stay identical while the next
 /// turn's delivery is distinct under the same callbackId.
+///
+/// Every completion carries pendingInputs, the session's inputs still Pending or Delivering when the
+/// payload is built, so a receiver can tell "this turn completed" from "nothing is left to do". It is
+/// part of the persisted payload, so retries of one delivery repeat the same count.
 /// </remarks>
 internal sealed class SessionPromptCallbacks
 {
@@ -193,6 +197,7 @@ internal sealed class SessionPromptCallbacks
         {
             var session = _current(sessionId);
             var currentDeliveryUid = await _queue.CurrentDeliveryUidAsync(sessionId, ct);
+            int? pendingInputs = null; // Read once per observation, only when a payload is built.
             foreach (var entry in _entries.Values.Where(e => e.SessionId == sessionId).ToArray())
             {
                 if (entry.QuestionRequestId is not null)
@@ -232,6 +237,7 @@ internal sealed class SessionPromptCallbacks
                     && !(settled && entry.BackgroundDeliveries > 0 && prompt.State == SessionInputQueueState.Delivered
                         && SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks) == SessionWorkStates.Idle))
                     continue;
+                pendingInputs ??= await _queue.CountPendingAsync(sessionId, ct);
                 var completion = new { sessionId, callbackId = entry.CallbackId, promptMessageUid = entry.PromptMessageUid,
                     status = cancelled ? "Cancelled" : !paused && endedReason is not null && session!.Status != SessionStatus.Error ? "Ended" : session!.Status.ToString(),
                     reason = cancelled ? prompt.ErrorCode == "deployment_target_superseded" ? "superseded" : "cancelled" : endedReason,
@@ -239,7 +245,8 @@ internal sealed class SessionPromptCallbacks
                     deliveredMessageUid = prompt.State == SessionInputQueueState.Delivered ? prompt.DeliveredMessageUid : null,
                     executionObserved = prompt.State == SessionInputQueueState.Delivered && entry.ActiveSeen,
                     workState = endedReason is not null || session is null ? SessionWorkStates.Idle
-                        : SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks) };
+                        : SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks),
+                    pendingInputs = pendingInputs.Value };
                 var backgroundRunning = !cancelled && !paused && endedReason is null && session!.Status == SessionStatus.Idle
                     ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
                 var payload = SessionCallbackRegistry.WithTurnIdentity(completion, backgroundRunning, entry.BackgroundDeliveries);

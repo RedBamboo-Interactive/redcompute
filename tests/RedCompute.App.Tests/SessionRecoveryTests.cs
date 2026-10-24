@@ -213,6 +213,44 @@ public sealed class SessionRecoveryTests
         Assert.Equal("recovery_agent_revoked", (await f.Store.GetHeadAsync("session"))!.ErrorCode);
     }
 
+    // Events from one caller now share a scope, so a caller admitting the next event recovers and
+    // authorizes the events it queued before the restart, exactly as it does for ordinary messages.
+    [Fact]
+    public async Task Caller_recovery_matches_queued_events_by_their_shared_scope()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var earlier = (await f.Store.EnqueueAsync(f.EventSubmission("event-1"))).Item;
+        var service = f.Service();
+
+        var admitted = await service.AdmitWithCallerAsync(f.EventSubmission("event-2"), f.Fresh().AccessToken!, default);
+
+        Assert.Equal(0, f.AuthorityReads);
+        Assert.Equal(1, f.Runtime.Resumes); Assert.Equal(1, f.Runtime.Deliveries);
+        Assert.Equal("delivered", admitted.Disposition);
+        foreach (var id in new[] { earlier.Id, admitted.Item.Id })
+        {
+            var item = await f.Store.GetAsync("session", id, "owner");
+            Assert.Equal(SessionInputQueueState.Delivered, item!.State);
+            Assert.Equal("event-1", item.DeliveredMessageUid);
+        }
+    }
+
+    [Fact]
+    public async Task Event_caller_does_not_recover_an_ordinary_message_queued_ahead_of_it()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var message = (await f.Store.EnqueueAsync(f.Submission("message-1"))).Item;
+        var service = f.Service();
+
+        var admitted = await service.AdmitWithCallerAsync(f.EventSubmission("event-1"), f.Fresh().AccessToken!, default);
+
+        // Different scope: the head needs its own recovery authority and delivers alone.
+        Assert.True(f.AuthorityReads > 0);
+        Assert.Equal(1, f.Runtime.Deliveries);
+        Assert.Equal(SessionInputQueueState.Delivered, (await f.Store.GetAsync("session", message.Id, "owner"))!.State);
+        Assert.Equal(SessionInputQueueState.Pending, (await f.Store.GetAsync("session", admitted.Item.Id, "owner"))!.State);
+    }
+
     [Fact]
     public async Task Expired_uncertain_delivery_lease_is_never_resumed_or_replayed()
     {
@@ -376,6 +414,24 @@ public sealed class SessionRecoveryTests
             deliveryPaused: () => Paused, recoverAuthority: (s, q, ct) => Authority(s, q, ct), deploymentTarget: _ => TargetState);
         internal SessionInputQueueSubmission Submission(string uid = "prompt") => new("session", "owner", [new("text", uid)], uid, null,
             new(1, new("redcompute", new("app", "nova", null, "Nova"), new("http", "/accepted", "POST")), new("agent", "Nova", Id: "nova"), new("user", "owner"), [], new(), JobProvenanceAssurance.Verified, DateTimeOffset.UtcNow), SessionInputDeliveryPolicy.AfterCurrent, uid, [], uid);
+        // A Nova discussion event: its own event ID and execution, the shared event route.
+        internal SessionInputQueueSubmission EventSubmission(string uid)
+        {
+            var submission = Submission(uid);
+            return submission with
+            {
+                IdempotencyKey = $"nova-event:{uid}",
+                Provenance = submission.Provenance with
+                {
+                    Context =
+                    [
+                        new("discussion", "discussion"), new("session", "session"), new("event", uid),
+                        new("origin-entrypoint", Route: "/api/apps/nova/discussions/discussion/event"),
+                        new("execution", Guid.NewGuid().ToString()),
+                    ],
+                },
+            };
+        }
         public void Dispose()
         {
             using var connection = new SqliteConnection($"Data Source={Path.Combine(Root, "jobs.db")}");

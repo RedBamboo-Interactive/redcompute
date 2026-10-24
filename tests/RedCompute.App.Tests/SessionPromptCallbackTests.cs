@@ -172,6 +172,52 @@ public sealed class SessionPromptCallbackTests
         Assert.True(payload.GetProperty("executionObserved").GetBoolean());
     }
 
+    // Worker 8d9d5930dd14: five continuations merged into one turn, a sixth still queued. Every
+    // subscription reports the same turn and the same pending depth; a retry repeats its first
+    // payload byte for byte even after the queue changed.
+    [Fact]
+    public async Task Batched_turn_reports_pending_inputs_on_every_member_and_retries_repeat_them()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Runtime.Info.Status = SessionStatus.Idle; f.Runtime.Info.StopReason = null;
+        var prompts = new[] { "p1", "p2", "p3", "p4", "p5" };
+        foreach (var uid in prompts) await f.Store.EnqueueAsync(f.Submission(uid));
+        var bodies = new List<string>(); var now = DateTimeOffset.UtcNow; var acknowledge = false;
+        using var http = new HttpClient(new Handler(async r => {
+            var body = await r.Content!.ReadAsStringAsync();
+            lock (bodies) bodies.Add(body);
+            return new(acknowledge ? HttpStatusCode.OK : HttpStatusCode.BadGateway); }));
+        var callbacks = new SessionPromptCallbacks(f.Attachments.DatabasePath, f.Store, _ => f.Runtime.Info, http, now: () => now);
+        foreach (var uid in prompts) await callbacks.RegisterAsync("session", uid, "http://localhost/callback", "owner", uid);
+        var batch = await f.Store.ClaimBatchAsync("session", "provider", TimeSpan.FromMinutes(1));
+        Assert.Equal(5, batch.Count);
+        await f.Store.EnqueueAsync(f.Submission("p6"));
+        f.Runtime.Info.Status = SessionStatus.Active;
+        await callbacks.ObserveAsync("session"); await f.Store.MarkDeliveredAsync(batch, "p1");
+        f.Runtime.Info.Status = SessionStatus.Idle;
+        // Four delivery slots: the fifth row goes out on the next sweep.
+        for (var i = 0; i < 2; i++) { await callbacks.SweepAsync(default); await callbacks.DrainAsync(); }
+
+        Assert.Equal(5, bodies.Count);
+        var first = bodies.Select(b => JsonSerializer.Deserialize<JsonElement>(b)).ToArray();
+        Assert.Equal(prompts.Order(), first.Select(p => p.GetProperty("callbackId").GetString()).Order());
+        Assert.All(first, p =>
+        {
+            Assert.Equal("p1", p.GetProperty("deliveredMessageUid").GetString());
+            Assert.True(p.GetProperty("executionObserved").GetBoolean());
+            Assert.Equal(1, p.GetProperty("pendingInputs").GetInt32());
+            Assert.False(p.TryGetProperty("deliverySequence", out _));
+        });
+
+        // The queue moves on before the retries go out; the persisted payloads do not.
+        await f.Store.EnqueueAsync(f.Submission("p7"));
+        acknowledge = true; now = now.AddSeconds(31);
+        for (var i = 0; i < 3; i++) { await callbacks.SweepAsync(default); await callbacks.DrainAsync(); }
+        Assert.Equal(10, bodies.Count);
+        Assert.Equal(bodies.Take(5).Order(), bodies.Skip(5).Order());
+        Assert.Empty(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
+    }
+
     [Fact]
     public async Task Held_webhook_cannot_stall_owning_input_scheduler_and_retry_survives_reopen()
     {
