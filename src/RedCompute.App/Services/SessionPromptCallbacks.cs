@@ -232,9 +232,11 @@ internal sealed class SessionPromptCallbacks
                     reason = cancelled ? prompt.ErrorCode == "deployment_target_superseded" ? "superseded" : "cancelled" : endedReason,
                     stopReason = cancelled ? null : session!.StopReason, userId = entry.UserId,
                     deliveredMessageUid = prompt.State == SessionInputQueueState.Delivered ? prompt.DeliveredMessageUid : null,
-                    executionObserved = prompt.State == SessionInputQueueState.Delivered && entry.ActiveSeen };
+                    executionObserved = prompt.State == SessionInputQueueState.Delivered && entry.ActiveSeen,
+                    workState = endedReason is not null || session is null ? SessionWorkStates.Idle
+                        : SessionWorkStates.Derive(session.Status, PendingQuestions(sessionId).Count, session.BackgroundTasks) };
                 var backgroundRunning = !cancelled && !paused && endedReason is null && session!.Status == SessionStatus.Idle
-                    ? SessionCallbackRegistry.RunningBackgroundTasks(session) : 0;
+                    ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
                 var payload = SessionCallbackRegistry.WithTurnIdentity(completion, backgroundRunning, entry.BackgroundDeliveries);
                 var pending = entry with { Payload = payload, ActiveSeen = paused ? false : entry.ActiveSeen, Attempts = 0, NextAttemptAt = null };
                 Save(pending); deliver.Add(pending);

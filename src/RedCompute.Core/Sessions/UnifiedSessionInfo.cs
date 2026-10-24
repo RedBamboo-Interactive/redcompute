@@ -39,4 +39,7 @@ public class UnifiedSessionInfo
     // Live background work (subagents, background shells) still running. It never makes the
     // session Active. Overlaid from the provider on every read; empty when nothing runs.
     public IReadOnlyList<BackgroundTaskInfo> BackgroundTasks { get; set; } = [];
+    // What the session is doing now (SessionWorkStates): working, awaiting_answer, background or
+    // idle. Live projection overlaid on reads and events, never persisted; Status stays the turn state.
+    public string? WorkState { get; set; }
 }

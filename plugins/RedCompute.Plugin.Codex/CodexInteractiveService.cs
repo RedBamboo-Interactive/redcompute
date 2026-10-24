@@ -434,7 +434,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         }
 
         FinishPendingSteer(session);
-        session.Questions.Clear();
+        DiscardQuestions(session, "session_parked");
         await session.Connection.DisposeAsync();
         session.Info.Status = "Stopped";
         session.Info.StopReason = stopReason;
@@ -451,6 +451,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         if (_sessions.TryRemove(sessionId, out var session))
         {
             FinishPendingSteer(session);
+            DiscardQuestions(session, "session_ended");
             await session.Connection.DisposeAsync();
             session.Info.Status = "Stopped";
             session.Info.StopReason = stopReason;
@@ -502,6 +503,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     {
         if (!_sessions.TryRemove(sessionId, out var session)) return;
         FinishPendingSteer(session);
+        DiscardQuestions(session, "session_ended");
         session.Info.Status = code == 0 ? "Stopped" : "Error";
         session.Info.StopReason = code == 0 ? "process_exited" : $"process_exited:{code}";
         session.Info.StoppedAt = code == 0 ? DateTimeOffset.UtcNow : null;
@@ -619,11 +621,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             return SessionInputDeliveryResult.NotSteerable("session_not_active", "The session has no live active turn");
         var info = session.Info;
         var activeTurnId = session.ActiveTurnId;
+        // Same refusal and code as Claude: a parked question holds the turn, and the queue waits
+        // for the answer instead of steering past it. Checked first, since parking sets "Waiting".
+        if (!session.Questions.IsEmpty)
+            return SessionInputDeliveryResult.NotSteerable("question_parked", "The active turn is waiting for a question answer");
         if (info.Status != "Active" || string.IsNullOrWhiteSpace(activeTurnId)
             || string.IsNullOrWhiteSpace(info.ThreadId))
             return SessionInputDeliveryResult.NotSteerable("no_active_turn", "The session has no active turn");
-        if (!session.Questions.IsEmpty)
-            return SessionInputDeliveryResult.NotSteerable("parked_question", "The active turn is waiting for a structured question answer");
         if (SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
             && !IsConversationInputAllowed(input))
             return SessionInputDeliveryResult.Rejected(
@@ -964,6 +968,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         // Remove before disposing so OnExited sees no session and stays quiet: a forced interrupt
         // must not surface as SessionEnded, which would tell every client the session died.
         _sessions.TryRemove(sessionId, out _);
+        DiscardQuestions(session, "cancelled");
         try { await session.Connection.DisposeAsync(); } catch { }
 
         // The thread lives in Codex's own rollout on disk, so thread/resume reattaches to the same
@@ -1051,9 +1056,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 session.StreamedItems.Clear();
                 session.MessagePhases.Clear();
                 // A question belongs to its turn: once the turn ends (an interrupt, or the
-                // app-server abandoning the request) nothing is waiting for the answer. Control
-                // state only, so it is dropped without a transcript record.
-                session.Questions.Clear();
+                // app-server abandoning the request) nothing is waiting for the answer.
+                DiscardQuestions(session, "cancelled");
                 session.Info.Status = "Idle";
                 session.Info.LastActivity = DateTimeOffset.UtcNow;
                 Persist(session.Info);
@@ -1439,6 +1443,24 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     }
 
     /// <summary>
+    /// Drops every parked question without answering and tells clients which way it went, as Claude
+    /// does on every resolution path. Control state, not conversation: raised live only, never
+    /// written to the transcript, so history and hydration are unchanged.
+    /// </summary>
+    private void DiscardQuestions(ManagedSession session, string outcome)
+    {
+        foreach (var itemId in session.Questions.Keys)
+        {
+            if (!session.Questions.TryRemove(itemId, out _)) continue;
+            StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
+            {
+                Type = "question_resolved", MessageId = itemId, RequestId = itemId, Content = outcome,
+                MessageUid = session.CurrentTurnUid,
+            });
+        }
+    }
+
+    /// <summary>
     /// Questions a live session is parked on. Codex waits for an answer without a deadline, so
     /// <see cref="Core.Sessions.PendingSessionQuestion.ExpiresAt"/> is always null.
     /// </summary>
@@ -1524,6 +1546,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         Emit(session, new CodexStreamEvent
         {
             Type = "question_resolved", MessageId = answer.RequestId, RequestId = answer.RequestId,
+            Content = answer.Decline ? "declined" : "answered",
         });
         session.Info.Status = "Active";
         Persist(session.Info);

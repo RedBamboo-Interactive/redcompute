@@ -30,6 +30,7 @@ public sealed class SessionBackgroundCallbackTests
         Assert.Equal("operation", first.GetProperty("callbackId").GetString());
         Assert.Equal(1, first.GetProperty("backgroundTasksRunning").GetInt32());
         Assert.Equal(1, first.GetProperty("deliverySequence").GetInt32());
+        Assert.Equal("background", first.GetProperty("workState").GetString());
 
         // Background progress and the task finishing re-publish Idle; neither is the woken turn.
         registry.OnSessionEvent("session.updated", Info(SessionStatus.Idle, Background("b1", "running")));
@@ -43,6 +44,7 @@ public sealed class SessionBackgroundCallbackTests
         Assert.Equal("operation", woken.GetProperty("callbackId").GetString());
         Assert.Equal(0, woken.GetProperty("backgroundTasksRunning").GetInt32());
         Assert.Equal(2, woken.GetProperty("deliverySequence").GetInt32());
+        Assert.Equal("idle", woken.GetProperty("workState").GetString());
 
         // Consumed now, exactly as a plain completion is.
         registry.OnSessionEvent("session.updated", Info(SessionStatus.Active));
@@ -100,8 +102,10 @@ public sealed class SessionBackgroundCallbackTests
 
         registry.OnSessionEvent("session.updated", Info(SessionStatus.Idle, Background("b1", "completed"), Background("b2", "lost")));
         var payload = await Next(posts);
-        Assert.Equal(["sessionId", "callbackId", "status", "projectPath", "title", "reason", "userId", "stopReason"],
+        // The classic fields, unchanged and in order, plus the additive workState.
+        Assert.Equal(["sessionId", "callbackId", "status", "projectPath", "title", "reason", "userId", "stopReason", "workState"],
             payload.EnumerateObject().Select(p => p.Name));
+        Assert.Equal("idle", payload.GetProperty("workState").GetString());
         registry.OnSessionEvent("session.updated", Info(SessionStatus.Active));
         registry.OnSessionEvent("session.updated", Info(SessionStatus.Idle));
         await AssertNoMore(posts);
@@ -122,6 +126,7 @@ public sealed class SessionBackgroundCallbackTests
         Assert.True(first.GetProperty("executionObserved").GetBoolean());
         Assert.Equal(1, first.GetProperty("backgroundTasksRunning").GetInt32());
         Assert.Equal(1, first.GetProperty("deliverySequence").GetInt32());
+        Assert.Equal("background", first.GetProperty("workState").GetString());
         Assert.Single(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
 
         // Idle sweeps, including the task finishing before the wake, do not report again.
@@ -142,6 +147,7 @@ public sealed class SessionBackgroundCallbackTests
         Assert.Equal("prompt", woken.GetProperty("callbackId").GetString());
         Assert.Equal(0, woken.GetProperty("backgroundTasksRunning").GetInt32());
         Assert.Equal(2, woken.GetProperty("deliverySequence").GetInt32());
+        Assert.Equal("idle", woken.GetProperty("workState").GetString());
         Assert.Empty(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
         _ = batch;
     }
@@ -179,6 +185,7 @@ public sealed class SessionBackgroundCallbackTests
         var payload = Assert.Single(payloads);
         Assert.False(payload.TryGetProperty("backgroundTasksRunning", out _));
         Assert.False(payload.TryGetProperty("deliverySequence", out _));
+        Assert.Equal("idle", payload.GetProperty("workState").GetString());
         Assert.Empty(new SessionCallbackStore(f.Attachments.DatabasePath).Load());
     }
 

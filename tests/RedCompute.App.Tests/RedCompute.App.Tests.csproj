@@ -16,6 +16,7 @@
     </PackageReference>
     <ProjectReference Include="..\..\src\RedCompute.App\RedCompute.App.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ClaudeCode\RedCompute.Plugin.ClaudeCode.csproj" />
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Codex\RedCompute.Plugin.Codex.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenCode\RedCompute.Plugin.OpenCode.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Suno\RedCompute.Plugin.Suno.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ComfyUI\RedCompute.Plugin.ComfyUI.csproj" />

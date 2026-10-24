@@ -71,7 +71,7 @@ public class SessionCallbackRegistry
 
     public bool RegisterIfStillActive(string sessionId, string callbackUrl, SessionStatus currentStatus,
         string? userId = null, string? stopReason = null, bool force = false, string? callbackId = null, string? promptMessageUid = null,
-        string? questionUrl = null)
+        string? questionUrl = null, IReadOnlyList<BackgroundTaskInfo>? backgroundTasks = null)
     {
         if (_durable is not null && callbackId is not null && promptMessageUid is not null)
         {
@@ -80,7 +80,20 @@ public class SessionCallbackRegistry
         }
         if (!force && currentStatus is SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)
         {
-            _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), callbackId ?? Guid.NewGuid().ToString("N"), userId: userId, stopReason: stopReason);
+            var identity = callbackId ?? Guid.NewGuid().ToString("N");
+            var tasks = backgroundTasks ?? [];
+            var running = currentStatus == SessionStatus.Idle ? SessionWorkStates.RunningBackgroundTasks(tasks) : 0;
+            var workState = SessionWorkStates.Derive(currentStatus, _pendingQuestions(sessionId).Count, tasks);
+            if (running > 0)
+            {
+                // Already Idle with background work running: report this turn now and stay armed
+                // for the turn that work wakes, exactly as a live registration would.
+                _callbacks[sessionId] = new CallbackEntry(callbackUrl, userId, identity, questionUrl, BackgroundDeliveries: 1, AwaitingTurn: true);
+                _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), identity, userId: userId, stopReason: stopReason,
+                    workState: workState, backgroundTasksRunning: running, deliverySequence: 1);
+                return true;
+            }
+            _ = FireAsync(callbackUrl, sessionId, currentStatus.ToString(), identity, userId: userId, stopReason: stopReason, workState: workState);
             return false;
         }
 
@@ -103,6 +116,13 @@ public class SessionCallbackRegistry
             }
             catch (Exception ex) { _log($"[Callbacks] Question notification for session {sessionId} failed: {ex.Message}", null); }
         });
+    }
+
+    /// <summary>Routes the provider stream events that open or close a parked question.</summary>
+    public void OnStreamEvent(string sessionId, UnifiedStreamEvent evt)
+    {
+        if (evt.Type == "question") OnQuestionParked(sessionId);
+        else if (evt.Type == "question_resolved" && evt.RequestId is { } requestId) OnQuestionResolved(sessionId, requestId);
     }
 
     public void OnQuestionResolved(string sessionId, string requestId)
@@ -188,7 +208,8 @@ public class SessionCallbackRegistry
             if (!_callbacks.TryGetValue(session.Id, out var entry))
                 return;
 
-            var running = session.Status == SessionStatus.Idle ? RunningBackgroundTasks(session) : 0;
+            var running = session.Status == SessionStatus.Idle ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
+            var workState = SessionWorkStates.Derive(session.Status, _pendingQuestions(session.Id).Count, session.BackgroundTasks);
             if (session.Status == SessionStatus.Idle && entry.AwaitingTurn)
                 return; // Still the reported turn's idle, or its background progress: wait for the woken turn.
             if (running > 0)
@@ -197,14 +218,14 @@ public class SessionCallbackRegistry
                 var kept = entry with { BackgroundDeliveries = entry.BackgroundDeliveries + 1, AwaitingTurn = true };
                 if (_callbacks.TryUpdate(session.Id, kept, entry))
                     _ = FireAsync(entry.Url, session.Id, session.Status.ToString(), entry.CallbackId, session.ProjectPath, session.Title,
-                        userId: session.UserId ?? entry.UserId, stopReason: session.StopReason,
+                        userId: session.UserId ?? entry.UserId, stopReason: session.StopReason, workState: workState,
                         backgroundTasksRunning: running, deliverySequence: kept.BackgroundDeliveries);
                 return;
             }
 
             if (_callbacks.TryRemove(KeyValuePair.Create(session.Id, entry)))
                 _ = FireAsync(entry.Url, session.Id, session.Status.ToString(), entry.CallbackId, session.ProjectPath, session.Title,
-                    userId: session.UserId ?? entry.UserId, stopReason: session.StopReason,
+                    userId: session.UserId ?? entry.UserId, stopReason: session.StopReason, workState: workState,
                     deliverySequence: entry.BackgroundDeliveries > 0 ? entry.BackgroundDeliveries + 1 : null);
         }
         else if (eventType == "session.ended")
@@ -223,6 +244,7 @@ public class SessionCallbackRegistry
                     if (_durable is not null) _ = _durable.SessionEndedAsync(id);
                     if (_callbacks.TryRemove(id, out var entry))
                         _ = FireAsync(entry.Url, id, "Ended", entry.CallbackId, reason: reason, userId: entry.UserId, stopReason: stopReason,
+                            workState: SessionWorkStates.Idle,
                             deliverySequence: entry.BackgroundDeliveries > 0 ? entry.BackgroundDeliveries + 1 : null);
                 }
             }
@@ -238,10 +260,6 @@ public class SessionCallbackRegistry
         try { await _durable!.ObserveAsync(id, observedActive: observedActive, endedReason: endedReason); }
         catch (Exception) { _log("[Callbacks] Observation failed; subscription retained for owning sweep", null); }
     }
-
-    /// <summary>Background tasks of the session that have not reached a terminal state.</summary>
-    internal static int RunningBackgroundTasks(UnifiedSessionInfo session)
-        => session.BackgroundTasks.Count(task => !BackgroundTaskStatuses.IsTerminal(task.Status));
 
     /// <summary>
     /// Serializes a completion payload. Unchanged from the classic shape unless the turn ended with
@@ -260,7 +278,7 @@ public class SessionCallbackRegistry
 
     private async Task FireAsync(string url, string sessionId, string status, string callbackId,
         string? projectPath = null, string? title = null, string? reason = null, string? userId = null, string? stopReason = null,
-        int backgroundTasksRunning = 0, int? deliverySequence = null)
+        string workState = SessionWorkStates.Idle, int backgroundTasksRunning = 0, int? deliverySequence = null)
     {
         var completion = new
         {
@@ -272,6 +290,7 @@ public class SessionCallbackRegistry
             reason,
             userId,
             stopReason,
+            workState,
         };
         var payload = deliverySequence is { } sequence
             ? WithTurnIdentity(completion, backgroundTasksRunning, sequence - 1)

@@ -103,6 +103,29 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _interactive.StreamEvent += Broadcast;
     }
 
+    /// <summary>
+    /// Test seam: the provider contract over an existing interactive service, without opening the
+    /// real Codex store or CLI catalog (as ClaudeCodeProvider's equivalent does). Only the
+    /// interactive session surface is usable through it.
+    /// </summary>
+    internal CodexProvider(string capabilitySlug, CodexInteractiveService interactive, IJobTracker jobTracker, Action<string, Guid?> log)
+    {
+        _capabilitySlug = capabilitySlug;
+        _log = log;
+        _jobTracker = jobTracker;
+        _interactive = interactive;
+        _codex = null!;
+        _defaultSandbox = "workspace-write";
+        _store = null!;
+        _models = null!;
+        _accountUsage = null!;
+        _cliVersionManager = null!;
+        _interactive.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
+        _interactive.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
+        _interactive.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
+        _interactive.StreamEvent += Broadcast;
+    }
+
     private void Broadcast(string sessionId, CodexStreamEvent evt)
     {
         PluginEvent?.Invoke("session.stream", new { sessionId, @event = evt });
@@ -298,9 +321,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         => _interactive.GetPendingQuestions(sessionId);
 
     public Core.Sessions.QuestionAnswerResult SubmitQuestionAnswer(string sessionId, Core.Sessions.SessionQuestionAnswer answer)
-        => _interactive.SubmitQuestionAnswer(sessionId, answer)
-            ? Core.Sessions.QuestionAnswerResult.Answered
-            : Core.Sessions.QuestionAnswerResult.RequestNotFound;
+        => !_interactive.SubmitQuestionAnswer(sessionId, answer) ? Core.Sessions.QuestionAnswerResult.RequestNotFound
+            : answer.Decline ? Core.Sessions.QuestionAnswerResult.Declined
+            : Core.Sessions.QuestionAnswerResult.Answered;
 
     // The service reports the real outcome now. Collapsing it to a bool here was half the reason
     // stop looked broken: "no such session", "no thread" and "nothing running" all arrived as
@@ -407,7 +430,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var result = new Dictionary<Guid, Core.Sessions.SessionStatus>();
         foreach (var (jobId, statusStr) in statuses)
         {
-            if (Enum.TryParse<Core.Sessions.SessionStatus>(statusStr, out var status))
+            if (UnifiedStatus(statusStr) is { } status)
                 result[jobId] = status;
         }
         return result;
@@ -476,6 +499,15 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     // --- Mapping Helpers ---
 
+    /// <summary>
+    /// Codex's internal "Waiting" means the turn is parked on a question: still the running turn,
+    /// exactly as Claude reports a parked AskUserQuestion. It is not a stop, and must not end
+    /// completion subscriptions or make the session unwritable.
+    /// </summary>
+    internal static Core.Sessions.SessionStatus? UnifiedStatus(string? status)
+        => status == "Waiting" ? Core.Sessions.SessionStatus.Active
+            : Enum.TryParse<Core.Sessions.SessionStatus>(status, out var parsed) ? parsed : null;
+
     private static UnifiedSessionInfo ToUnified(CodexSessionInfo s) => new()
     {
         Id = s.Id,
@@ -484,8 +516,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         RepositoryId = s.RepositoryId,
-        Status = Enum.TryParse<Core.Sessions.SessionStatus>(s.Status, out var st)
-            ? st : Core.Sessions.SessionStatus.Stopped,
+        Status = UnifiedStatus(s.Status) ?? Core.Sessions.SessionStatus.Stopped,
         StartedAt = s.StartedAt,
         Model = s.Model,
         Title = s.Title,

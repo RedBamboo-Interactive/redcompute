@@ -98,6 +98,7 @@ public static class UnifiedSessionEndpoints
                 session.BackgroundTasks = [];
                 log($"[Sessions] Background tasks unavailable for {session.Provider}/{session.Id}: {ex.Message}", null);
             }
+            session.WorkState = SessionWorkStates.Derive(session.Status, PendingQuestions(session).Count, session.BackgroundTasks);
             return session;
         }
 
@@ -234,7 +235,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("refresh", "boolean", description: "Bypass the short provider cache", defaultValue: false, location: ParamLocation.Query);
 
         endpoints.MapGet("/ai-session/sessions",
-            "List sessions across providers: Active and Starting first, then dormant history; newest StartedAt first within each group. Authorization and source filtering precede the requested limit.", async (HttpContext ctx) =>
+            "List sessions across providers: Active and Starting first, then dormant history; newest StartedAt first within each group. Authorization and source filtering precede the requested limit. " +
+            WorkStateDescription, async (HttpContext ctx) =>
         {
             var providerFilter = ctx.Request.Query["provider"].FirstOrDefault();
             var limitStr = ctx.Request.Query["limit"].FirstOrDefault();
@@ -455,7 +457,8 @@ public static class UnifiedSessionEndpoints
         endpoints.MapGet("/ai-session/sessions/{id}",
             "Get session details and message history. pendingQuestions lists the structured questions the live session is parked on " +
             "(Claude AskUserQuestion, Codex requestUserInput) with requestId, options, askedAt and expiresAt; answer one with " +
-            "POST /ai-session/sessions/{id}/question. Empty when nothing is pending.", async (HttpContext ctx, string id) =>
+            "POST /ai-session/sessions/{id}/question. Empty when nothing is pending. Claude questions expire after 30 minutes (the session is told to proceed " +
+            "on its own judgement); Codex questions have no deadline (expiresAt null). " + WorkStateDescription, async (HttpContext ctx, string id) =>
         {
             int? tail = null;
             if (int.TryParse(ctx.Request.Query["tail"].FirstOrDefault(), out var requestedTail))
@@ -1387,7 +1390,8 @@ public static class UnifiedSessionEndpoints
             "Register a completion webhook: RedCompute POSTs the session result to the given URL when the session finishes. Preferred over polling for agents awaiting session completion. " +
             "With questionUrl, RedCompute also POSTs once per parked question (sessionId, title, requestId, questions with options, askedAt, expiresAt); the completion callback is unaffected. " +
             "A turn that ends Idle while background tasks still run is reported with backgroundTasksRunning (count) and deliverySequence, and the registration stays armed for the turn that background work wakes; " +
-            "every later delivery of that registration carries the next deliverySequence under the same callbackId, while retries of one delivery repeat it unchanged.", async (HttpContext ctx, string id) =>
+            "every later delivery of that registration carries the next deliverySequence under the same callbackId, while retries of one delivery repeat it unchanged. " +
+            "Every completion payload also carries workState (working, awaiting_answer, background or idle) at delivery time.", async (HttpContext ctx, string id) =>
         {
             if (_callbacks == null)
                 return Error(503, "not_configured", "Callback registry not available");
@@ -1433,7 +1437,8 @@ public static class UnifiedSessionEndpoints
                 questionUrl = question.GetString();
             }
             bool deferred;
-            try { deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId, promptMessageUid, questionUrl); }
+            try { deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId, promptMessageUid, questionUrl,
+                info.BackgroundTasks); }
             catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         })
@@ -2666,6 +2671,19 @@ public static class UnifiedSessionEndpoints
         },
     };
 
+    private const string WorkStateDescription =
+        "Each session carries workState, derived in one place from the turn status, parked questions and background tasks: " +
+        "working (a turn is running), awaiting_answer (the turn is parked on a question), background (the turn ended Idle while background tasks still run), " +
+        "idle (nothing running). status stays the turn state. Only Claude Code sessions have background tasks; Codex has no background work concept, " +
+        "so a Codex session never reports background.";
+
+    private static readonly object WorkStateSchema = new
+    {
+        type = new[] { "string", "null" },
+        @enum = new[] { SessionWorkStates.Working, SessionWorkStates.AwaitingAnswer, SessionWorkStates.Background, SessionWorkStates.Idle },
+        description = WorkStateDescription,
+    };
+
     private static readonly object PendingQuestionSchema = new
     {
         type = "object",
@@ -2678,7 +2696,7 @@ public static class UnifiedSessionEndpoints
             questions = new { type = "array", items = new { type = "object" }, description = "Questions with their options, verbatim from the provider" },
             input = new { type = "object", description = "The provider's original question input, verbatim" },
             askedAt = new { type = "string", format = "date-time" },
-            expiresAt = new { type = new[] { "string", "null" }, format = "date-time", description = "When the provider stops waiting and proceeds without an answer; null when it waits indefinitely" },
+            expiresAt = new { type = new[] { "string", "null" }, format = "date-time", description = "When the provider stops waiting and proceeds without an answer; null when it waits indefinitely. Claude: asked + 30 minutes, then auto-denied. Codex: always null." },
         },
     };
 
@@ -2688,7 +2706,7 @@ public static class UnifiedSessionEndpoints
         required = new[] { "session", "messages", "inputQueue", "transcript", "pendingQuestions" },
         properties = new
         {
-            session = new { type = "object" },
+            session = new { type = "object", properties = new { workState = WorkStateSchema } },
             messages = new { type = "array", items = new { type = "object" } },
             inputQueue = new { type = "object" },
             transcript = new { type = "object" },

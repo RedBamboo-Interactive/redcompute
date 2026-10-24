@@ -474,6 +474,14 @@
           "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )"
         }
       },
+      "redcompute.plugin.codex": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.EntityFrameworkCore.Sqlite": "[9.0.18, )",
+          "RedCompute.PluginSdk": "[1.0.0, )",
+          "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )"
+        }
+      },
       "redcompute.plugin.comfyui": {
         "type": "Project",
         "dependencies": {

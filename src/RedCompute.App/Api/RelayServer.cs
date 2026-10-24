@@ -424,10 +424,10 @@ public class RelayServer
             Fields: ["slug", "displayName", "status", "sleeping", "provider"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.created",
             "Fired when a new AI session is started", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering", "backgroundTasks"]));
+            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering", "backgroundTasks", "workState"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.updated",
             "Fired when a session's status, tokens, cost, title, or live background tasks change (background progress coalesced to ~500 ms)", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "backgroundTasks"]));
+            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "backgroundTasks", "workState"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason", "stopReason"]));
@@ -467,6 +467,12 @@ public class RelayServer
 
                 if (data is UnifiedSessionInfo session)
                 {
+                    try
+                    {
+                        session.WorkState = SessionWorkStates.Derive(session.Status,
+                            sessionProvider?.GetPendingQuestions(session.Id).Count ?? 0, session.BackgroundTasks);
+                    }
+                    catch (Exception ex) { _log($"[Sessions] Work state unavailable for {session.Provider}/{session.Id}: {ex.Message}", null); }
                     var confidential = session.JobId is { } jobId
                         && _jobTracker.GetJob(jobId)?.Confidential == true;
                     session.Confidential = confidential;
@@ -511,12 +517,7 @@ public class RelayServer
             sp.SessionStreamEvent += (sessionId, evt) =>
                 transcriptPipeline.HandleLiveEvent(providerId, sessionId, evt);
             // Question notifications ride the callback registry, apart from the transcript.
-            sp.SessionStreamEvent += (sessionId, evt) =>
-            {
-                if (evt.Type == "question") _callbacks.OnQuestionParked(sessionId);
-                else if (evt.Type == "question_resolved" && evt.RequestId is { } requestId)
-                    _callbacks.OnQuestionResolved(sessionId, requestId);
-            };
+            sp.SessionStreamEvent += _callbacks.OnStreamEvent;
         }
 
         _hardwareMonitor.SnapshotUpdated += snapshot => broadcaster.Broadcast("hardware.snapshot", snapshot);
