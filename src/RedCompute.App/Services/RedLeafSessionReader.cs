@@ -53,14 +53,13 @@ public sealed class RedLeafSessionReader
         // RedLeaf deliberately permits its signed RedCompute projection owner to enumerate
         // confidential session entities. Keep the reader's existing admin permission while
         // emitting that service identity instead of the unrelated "system" user subject.
-        var token = jwtService.GenerateServiceAccessToken(
-            "redcompute", roles: ["service", "admin"]);
-        _http = new HttpClient
+        // The badge is fetched per request (cached in vault mode), never fixed at construction.
+        _http = new HttpClient(new BadgeBearerHandler(
+            () => jwtService.GenerateServiceAccessToken("redcompute", roles: ["service", "admin"])))
         {
             BaseAddress = new Uri(redLeafBaseUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(15),
         };
-        _http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {token}");
         _recoveryHttp = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) {
             BaseAddress = _http.BaseAddress, Timeout = _http.Timeout };
     }

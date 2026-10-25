@@ -29,13 +29,12 @@ public sealed class RepositoryReferenceValidator
 
     public RepositoryReferenceValidator(string redLeafBaseUrl, JwtService jwtService)
     {
-        var token = jwtService.GenerateAccessToken("system", "system@redsuite", "System", ["admin"]);
-        _http = new HttpClient
+        _http = new HttpClient(new BadgeBearerHandler(
+            () => jwtService.GenerateAccessToken("system", "system@redsuite", "System", ["admin"])))
         {
             BaseAddress = new Uri(redLeafBaseUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(15),
         };
-        _http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {token}");
     }
 
     internal RepositoryReferenceValidator(HttpClient http) => _http = http;

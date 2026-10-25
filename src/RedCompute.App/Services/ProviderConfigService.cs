@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using RedBamboo.AppHost.Auth;
+using RedBamboo.AppHost.Auth.Vault;
 using RedCompute.Core.Configuration;
 
 namespace RedCompute.App.Services;
@@ -731,12 +732,14 @@ public class ProviderConfigService
 
     private static (HttpClient Client, Func<string?> Token) CreateServiceClient()
     {
-        var redSuiteDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite");
-        var signingKey = SigningKeyPersistence.EnsureSigningKey(redSuiteDir);
-        var jwt = new JwtService(new JwtOptions { SigningKey = signingKey });
+        // The one JwtService RedCompute builds when its server starts (vault or shared key, decided once
+        // there). This service is created earlier, so the badge is looked up per call, never fixed here.
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        return (client, () => jwt.GenerateServiceAccessToken("redcompute"));
+        return (client, () =>
+        {
+            try { return BadgeSigning.Shared.GenerateServiceAccessToken("redcompute"); }
+            catch (VaultUnavailableException) { return null; } // the call goes out unauthenticated and fails plainly
+        });
     }
 
     private void RefreshServiceAuthorization()

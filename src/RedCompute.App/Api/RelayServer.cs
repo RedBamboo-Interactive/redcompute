@@ -10,6 +10,7 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RedBamboo.AppHost.Auth;
+using RedBamboo.AppHost.Auth.Vault;
 using RedBamboo.AppHost.Discovery;
 using RedBamboo.AppHost.Extensions;
 using RedBamboo.AppHost.Logging;
@@ -99,11 +100,10 @@ public class RelayServer
         builder.Services.AddAppHostTelemetry(opts => opts.AppName = "RedCompute");
 
         var redSuiteDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite");
-        var signingKey = SigningKeyPersistence.EnsureSigningKey(redSuiteDir);
         var googleAuth = SigningKeyPersistence.LoadGoogleOAuth(redSuiteDir);
         builder.Services.AddAppHostAuth(new AuthOptions
         {
-            Jwt = new JwtOptions { SigningKey = signingKey },
+            Jwt = BadgeSigning.Options,
             Google = googleAuth,
             Mode = googleAuth != null ? AuthMode.Required : AuthMode.LocalDefault,
         });
@@ -137,6 +137,8 @@ public class RelayServer
         // No static frontend: the dashboard is the compute-dashboard Leaf plugin, served
         // by the kernel and talking through the /compute/* proxy.
 
+        var jwt = BadgeSigning.Shared;
+        _ = BadgeSigningBootstrap.ConfirmInBackground(jwt, redSuiteDir, "redcompute", m => App.LogService.Log(RedBamboo.AppHost.Logging.LogLevel.Info, "auth", m));
         var authFactory = _app.Services.GetRequiredService<AuthenticatedHttpClientFactory>();
         _callbacks = new SessionCallbackRegistry(_log, authFactory);
         _voiceSessions = new VoiceSessionCoordinator(
@@ -149,7 +151,7 @@ public class RelayServer
         // SQLite stays the read path (dual-write) until reads move over too.
         _streamClient = new RedLeafStreamClient(
             _config.RedLeafUrl, "redcompute",
-            new JwtService(new JwtOptions { SigningKey = signingKey }),
+            jwt,
             App.LogService);
         _streamClient.DefineStream(new StreamDefinition(
             "compute-logs", "Compute Logs",
@@ -332,7 +334,7 @@ public class RelayServer
         // Read-path cutover: session list/history reads come from RedLeaf
         // (hard dependency by decision); plugin SQLite stays write-only
         // (dual-write) until the verification window closes.
-        var redLeafJwt = new JwtService(new JwtOptions { SigningKey = signingKey });
+        var redLeafJwt = jwt;
         var redLeafReader = new RedLeafSessionReader(
             _config.RedLeafUrl, redLeafJwt, _qualityModes) { Checkpoints = transcriptPipeline.Checkpoints };
         var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
