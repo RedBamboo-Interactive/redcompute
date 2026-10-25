@@ -15,6 +15,14 @@ namespace RedCompute.App.Services;
 /// which), so <see cref="Settled"/> fires once per eligible period after a short settle window.
 /// A woken turn leaves eligibility first, so the two never both apply. With parking disabled
 /// (an infinite idle timeout) the clock still runs and only parking is skipped.
+/// <para>
+/// A supervisor that delegated work is waiting, not idle: while any session bound to it as its
+/// supervisor is still working (a turn running or background work alive), it stays resident.
+/// Waiting is not idle time, so the hold restarts the supervisor's idle clock: once the delegate
+/// stops working, its completion callback has a full timeout to arrive before parking applies.
+/// The hold is derived from the delegate's live state on every check, so a delegate that ends,
+/// parks or is stopped releases it without any bookkeeping.
+/// </para>
 /// </remarks>
 public sealed class IdleSessionParkingCoordinator
 {
@@ -28,6 +36,8 @@ public sealed class IdleSessionParkingCoordinator
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly Action<string, Guid?> _log;
     private readonly Func<UnifiedSessionInfo, bool> _keepResident;
+    private readonly Func<string, IReadOnlyCollection<Guid>> _supervisedJobs;
+    private readonly ConcurrentDictionary<string, byte> _heldLogged = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _eligibleSince = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _settled = new(StringComparer.Ordinal);
     private readonly TimeSpan _settleAfter;
@@ -46,7 +56,8 @@ public sealed class IdleSessionParkingCoordinator
         TimeSpan? sweepInterval = null,
         Func<DateTimeOffset>? utcNow = null,
         Func<UnifiedSessionInfo, bool>? keepResident = null,
-        TimeSpan? settleAfter = null)
+        TimeSpan? settleAfter = null,
+        Func<string, IReadOnlyCollection<Guid>>? supervisedJobs = null)
     {
         if (idleTimeout <= TimeSpan.Zero && idleTimeout != Timeout.InfiniteTimeSpan)
             throw new ArgumentOutOfRangeException(nameof(idleTimeout));
@@ -59,6 +70,7 @@ public sealed class IdleSessionParkingCoordinator
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _log = log;
         _keepResident = keepResident ?? (_ => false);
+        _supervisedJobs = supervisedJobs ?? (_ => []);
 
         foreach (var provider in _registry.FindProviders<IIdleSessionParkingProvider>()
                      .Distinct<IIdleSessionParkingProvider>(ReferenceEqualityComparer.Instance))
@@ -121,9 +133,16 @@ public sealed class IdleSessionParkingCoordinator
                     catch (Exception ex) { _log($"[IdleParking] Settled handler failed for {candidate.Id}: {ex.Message}", candidate.JobId); }
                 }
                 if (_idleTimeout == Timeout.InfiniteTimeSpan || now - since < _idleTimeout) continue;
-                // Checked only once the clock has expired: the resident mark is a job read, and
-                // a session marked mid-idle must still never be parked.
+                // Checked only once the clock has expired: the resident mark and the delegate
+                // lookup are job reads, and a session held mid-idle must still never be parked.
                 if (_keepResident(candidate)) continue;
+                if (SupervisesWorkingDelegate(candidate.Id))
+                {
+                    _eligibleSince[key] = now;
+                    if (_heldLogged.TryAdd(key, 0))
+                        _log($"[IdleParking] Holding {provider.ProviderId} session {candidate.Id}: a delegated session is still working", candidate.JobId);
+                    continue;
+                }
 
                 var parked = false;
                 await _inputQueue.WithSessionLockAsync(candidate.Id, async () =>
@@ -131,7 +150,8 @@ public sealed class IdleSessionParkingCoordinator
                     if (await _inputQueue.HasQueuedInputAsync(candidate.Id, ct)) return;
                     var current = provider.GetResidentIdleSessions()
                         .FirstOrDefault(session => string.Equals(session.Id, candidate.Id, StringComparison.Ordinal));
-                    if (current is null || !IsProviderEligible(current) || _keepResident(current)) return;
+                    if (current is null || !IsProviderEligible(current) || _keepResident(current)
+                        || SupervisesWorkingDelegate(current.Id)) return;
                     parked = await provider.TryParkIdleSessionAsync(
                         candidate.Id, SessionStopReasons.IdleTimeout, ct);
                 }, ct);
@@ -150,6 +170,33 @@ public sealed class IdleSessionParkingCoordinator
     {
         _eligibleSince.TryRemove(key, out _);
         _settled.TryRemove(key, out _);
+        _heldLogged.TryRemove(key, out _);
+    }
+
+    /// <summary>
+    /// True while a session bound to <paramref name="supervisorSessionId"/> is running a turn or
+    /// still has background work alive. Statuses come from the providers' per-job status read,
+    /// which never loads a transcript.
+    /// </summary>
+    private bool SupervisesWorkingDelegate(string supervisorSessionId)
+    {
+        var jobs = _supervisedJobs(supervisorSessionId);
+        if (jobs.Count == 0) return false;
+        foreach (var provider in _registry.FindProviders<ISessionProvider>()
+                     .Distinct<ISessionProvider>(ReferenceEqualityComparer.Instance))
+        {
+            if (provider.GetSessionStatusesByJobIds(jobs).Values
+                .Any(status => status is SessionStatus.Active or SessionStatus.Starting))
+                return true;
+        }
+        foreach (var provider in _registry.FindProviders<IIdleSessionParkingProvider>()
+                     .Distinct<IIdleSessionParkingProvider>(ReferenceEqualityComparer.Instance))
+        {
+            if (provider.GetResidentIdleSessions().Any(session => session.JobId is { } jobId
+                    && jobs.Contains(jobId) && !IsProviderEligible(session)))
+                return true;
+        }
+        return false;
     }
 
     private static bool IsProviderEligible(UnifiedSessionInfo session)

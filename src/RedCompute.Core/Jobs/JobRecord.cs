@@ -67,6 +67,9 @@ public class JobRecord
     // Exempts the job's AI session from idle parking. Presence sessions (Nova LIVE, heartbeat)
     // stay resident; every other session keeps the default policy.
     public bool KeepResident { get; set; }
+    // The AI session that delegated this job's session and waits on it. While this session
+    // still has work, idle parking keeps the supervisor resident. Last binding wins.
+    public string? SupervisorSessionId { get; set; }
 
     public long? DurationMs => CompletedAt.HasValue && StartedAt.HasValue
         ? (long)(CompletedAt.Value - StartedAt.Value).TotalMilliseconds

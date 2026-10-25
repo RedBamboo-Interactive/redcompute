@@ -24,6 +24,8 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
     private readonly IdleSessionParkingCoordinator _coordinator;
     private DateTimeOffset _now;
     private Func<bool> _keepResident = () => false;
+    private static readonly Guid DelegateJob = Guid.Parse("6d0c4e1b-5f43-4d8e-9b8a-0b2a7c6f1d11");
+    private Func<IReadOnlyCollection<Guid>> _supervisedJobs = () => [];
 
     public IdleSessionParkingCoordinatorTests()
     {
@@ -39,7 +41,8 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
             new Dictionary<string, IBackendProvider> { ["test"] = provider }, "test");
         _queue = new(_store, _attachments, registry, null!, new WebSocketBroadcaster(), (_, _) => { });
         _coordinator = new(registry, _queue, TimeSpan.FromHours(1), (_, _) => { }, utcNow: () => _now,
-            keepResident: _ => _keepResident());
+            keepResident: _ => _keepResident(),
+            supervisedJobs: id => id == "session" ? _supervisedJobs() : []);
     }
 
     [Fact]
@@ -209,6 +212,92 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
         Assert.Equal(SessionStatus.Idle, _runtime.Info.Status);
     }
 
+    [Fact]
+    public async Task A_supervisor_stays_resident_while_its_delegate_works_and_then_gets_a_full_timeout()
+    {
+        var start = DateTimeOffset.Parse("2026-10-25T09:00:00Z");
+        _supervisedJobs = () => [DelegateJob];
+        _runtime.Delegate = Delegate(SessionStatus.Active);
+        await _coordinator.SweepAsync(start);
+        await _coordinator.SweepAsync(start.AddHours(1));
+        await _coordinator.SweepAsync(start.AddHours(5));
+        Assert.Equal(0, _runtime.Parks);
+        Assert.Equal(SessionStatus.Idle, _runtime.Info.Status);
+
+        // Waiting was not idle time: the delegate's completion callback gets a full timeout.
+        _runtime.Delegate.Status = SessionStatus.Idle;
+        await _coordinator.SweepAsync(start.AddHours(5).AddMinutes(59));
+        Assert.Equal(0, _runtime.Parks);
+        await _coordinator.SweepAsync(start.AddHours(6));
+        Assert.Equal(1, _runtime.Parks);
+        Assert.Equal(SessionStopReasons.IdleTimeout, _runtime.Info.StopReason);
+    }
+
+    [Fact]
+    public async Task Background_work_on_an_idle_delegate_holds_its_supervisor()
+    {
+        var start = DateTimeOffset.Parse("2026-10-25T09:00:00Z");
+        _supervisedJobs = () => [DelegateJob];
+        _runtime.Delegate = Delegate(SessionStatus.Idle);
+        _runtime.Delegate.BackgroundTasks = [new BackgroundTaskInfo
+        {
+            TaskId = "build", Kind = BackgroundTaskKinds.Agent,
+            Status = BackgroundTaskStatuses.Running, StartedAt = start,
+        }];
+        await _coordinator.SweepAsync(start);
+        await _coordinator.SweepAsync(start.AddHours(1));
+        Assert.Equal(0, _runtime.Parks);
+
+        _runtime.Delegate.BackgroundTasks = [];
+        await _coordinator.SweepAsync(start.AddHours(2));
+        Assert.Equal(1, _runtime.Parks);
+    }
+
+    [Theory]
+    [InlineData(SessionStatus.Stopped)]
+    [InlineData(SessionStatus.Error)]
+    [InlineData(SessionStatus.Idle)]
+    public async Task A_delegate_that_is_not_working_does_not_hold_its_supervisor(SessionStatus status)
+    {
+        var start = DateTimeOffset.Parse("2026-10-25T09:00:00Z");
+        _supervisedJobs = () => [DelegateJob];
+        _runtime.Delegate = Delegate(status);
+        await _coordinator.SweepAsync(start);
+        await _coordinator.SweepAsync(start.AddHours(1));
+        Assert.Equal(1, _runtime.Parks);
+    }
+
+    [Fact]
+    public async Task A_working_session_that_is_not_bound_to_the_supervisor_does_not_hold_it()
+    {
+        var start = DateTimeOffset.Parse("2026-10-25T09:00:00Z");
+        _runtime.Delegate = Delegate(SessionStatus.Active);
+        await _coordinator.SweepAsync(start);
+        await _coordinator.SweepAsync(start.AddHours(1));
+        Assert.Equal(1, _runtime.Parks);
+    }
+
+    [Fact]
+    public async Task A_delegation_that_lands_before_the_locked_recheck_still_prevents_parking()
+    {
+        var start = DateTimeOffset.Parse("2026-10-25T09:00:00Z");
+        _runtime.Delegate = Delegate(SessionStatus.Active);
+        await _coordinator.SweepAsync(start);
+        var reads = 0;
+        _supervisedJobs = () => ++reads > 1 ? [DelegateJob] : [];
+
+        await _coordinator.SweepAsync(start.AddHours(1));
+
+        Assert.Equal(2, reads);
+        Assert.Equal(0, _runtime.Parks);
+    }
+
+    private static UnifiedSessionInfo Delegate(SessionStatus status) => new()
+    {
+        Id = "delegate", Provider = "test", ProjectName = "Test", ProjectPath = ".",
+        UserId = "owner", Status = status, BackgroundTasks = [], JobId = DelegateJob,
+    };
+
     private static SessionInputQueueSubmission Submission() => new(
         "session", "owner", [new("text", "queued")], "queued", null,
         RedCompute.Core.Jobs.JobProvenance.DirectRedCompute(
@@ -232,8 +321,12 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
             Id = "session", Provider = "test", ProjectName = "Test", ProjectPath = ".",
             UserId = "owner", Status = SessionStatus.Idle, BackgroundTasks = [],
         };
+        internal UnifiedSessionInfo? Delegate;
         internal int Parks;
         private Action<string, object>? _pluginEvent;
+
+        private IEnumerable<UnifiedSessionInfo> Sessions()
+            => Delegate is null ? [Info] : [Info, Delegate];
 
         internal void Emit(string type) => _pluginEvent?.Invoke(type, Info);
 
@@ -245,15 +338,20 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
                 case "add_PluginEvent": _pluginEvent += (Action<string, object>)args![0]!; return null;
                 case "remove_PluginEvent": _pluginEvent -= (Action<string, object>)args![0]!; return null;
                 case nameof(IIdleSessionParkingProvider.GetResidentIdleSessions):
-                    return Info.Status == SessionStatus.Idle
-                        ? (IReadOnlyList<UnifiedSessionInfo>)[Info]
-                        : Array.Empty<UnifiedSessionInfo>();
+                    return (IReadOnlyList<UnifiedSessionInfo>)Sessions()
+                        .Where(session => session.Status == SessionStatus.Idle).ToArray();
                 case nameof(IIdleSessionParkingProvider.TryParkIdleSessionAsync):
-                    if (Info.Status != SessionStatus.Idle) return Task.FromResult(false);
-                    Parks++;
-                    Info.Status = SessionStatus.Stopped;
-                    Info.StopReason = (string)args![1]!;
+                    var target = Sessions().Single(session => session.Id == (string)args![0]!);
+                    if (target.Status != SessionStatus.Idle) return Task.FromResult(false);
+                    // Parks counts the supervisor under test; a parked delegate only changes state.
+                    if (target == Info) Parks++;
+                    target.Status = SessionStatus.Stopped;
+                    target.StopReason = (string)args![1]!;
                     return Task.FromResult(true);
+                case nameof(ISessionProvider.GetSessionStatusesByJobIds):
+                    var wanted = ((IEnumerable<Guid>)args![0]!).ToHashSet();
+                    return Sessions().Where(session => session.JobId is { } jobId && wanted.Contains(jobId))
+                        .ToDictionary(session => session.JobId!.Value, session => session.Status);
                 default: throw new NotSupportedException(method.Name);
             }
         }

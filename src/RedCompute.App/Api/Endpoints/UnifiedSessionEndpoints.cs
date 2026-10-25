@@ -689,6 +689,38 @@ public static class UnifiedSessionEndpoints
             .WithParam("id", "string", required: true, location: ParamLocation.Path)
             .WithParam("keepResident", "boolean", required: true, location: ParamLocation.Body);
 
+        endpoints.MapPut("/ai-session/sessions/{id}/supervisor",
+            "Bind the session to the session that delegated it, or clear the binding with null. While this session is working, idle parking keeps its supervisor resident. Owning Agent and beneficiary user of both sessions only.",
+            async (HttpContext ctx, string id) =>
+        {
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            if (body.ValueKind != JsonValueKind.Object
+                || !body.TryGetProperty("supervisorSessionId", out var supervisorValue)
+                || supervisorValue.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                return Error(422, "validation_failed", "supervisorSessionId must be a string or null");
+            var supervisorId = supervisorValue.ValueKind == JsonValueKind.String ? supervisorValue.GetString() : null;
+            if (supervisorId is not null && string.IsNullOrWhiteSpace(supervisorId))
+                return Error(422, "validation_failed", "supervisorSessionId must not be blank");
+            if (string.Equals(supervisorId, id, StringComparison.Ordinal))
+                return Error(422, "validation_failed", "A session cannot supervise itself");
+
+            var (owned, failure) = await ResolveOwnedSessionJobAsync(ctx, id, jobTracker);
+            if (owned is null) return failure!;
+            if (supervisorId is not null)
+            {
+                // The same owner check on the supervisor: a caller can only hold its own sessions.
+                var (supervisor, supervisorFailure) = await ResolveOwnedSessionJobAsync(ctx, supervisorId, jobTracker);
+                if (supervisor is null) return supervisorFailure!;
+            }
+
+            jobTracker.SetSupervisorSession(owned.JobId, supervisorId);
+            return Results.Json(new { sessionId = id, jobId = owned.JobId, supervisorSessionId = supervisorId });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path)
+            .WithParam("supervisorSessionId", "string", required: true, description: "The delegating session, or null to clear", location: ParamLocation.Body);
+
         endpoints.MapGet("/ai-session/sessions/{id}/messages/{recordId:long}/output",
             "Stream a payload-backed transcript output. Supports HTTP byte ranges; bytes are loaded only when requested.", async (HttpContext ctx, string id, long recordId) =>
         {

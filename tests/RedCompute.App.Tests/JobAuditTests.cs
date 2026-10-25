@@ -73,6 +73,29 @@ public sealed class JobAuditTests : IDisposable
     }
 
     [Fact]
+    public void Supervisor_binding_persists_rebinds_and_clears()
+    {
+        var provenance = Provenance("nova", "agent-nova", "user-1", "/nova/delegate");
+        var first = _jobs.CreateJob(new JobSubmission("ai-session", "Claude Code", "{}", provenance));
+        var second = _jobs.CreateJob(new JobSubmission("ai-session", "Claude Code", "{}", provenance));
+
+        _jobs.SetSupervisorSession(first.Id, "supervisor-a");
+        _jobs.SetSupervisorSession(second.Id, "supervisor-a");
+        Assert.Equal(new[] { first.Id, second.Id }.Order(),
+            _jobs.GetSupervisedJobs("supervisor-a").Select(j => j.Id).Order());
+        Assert.Equal("supervisor-a", _jobs.GetJob(first.Id)!.SupervisorSessionId);
+
+        // The last binding wins: a continuation from another discussion moves the hold with it.
+        _jobs.SetSupervisorSession(first.Id, "supervisor-b");
+        Assert.Equal(second.Id, Assert.Single(_jobs.GetSupervisedJobs("supervisor-a")).Id);
+        Assert.Equal(first.Id, Assert.Single(_jobs.GetSupervisedJobs("supervisor-b")).Id);
+
+        _jobs.SetSupervisorSession(second.Id, null);
+        Assert.Empty(_jobs.GetSupervisedJobs("supervisor-a"));
+        Assert.Null(_jobs.GetJob(second.Id)!.SupervisorSessionId);
+    }
+
+    [Fact]
     public void Planned_restart_preserves_checkpointed_interactive_jobs_and_fails_other_orphans()
     {
         var provenance = Provenance("nova", "agent-nova", "user-1", "/nova/message");

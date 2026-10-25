@@ -46,7 +46,8 @@ public class RedComputeDbContext : DbContext
             ("LeaseOwner", "TEXT"), ("LeaseTokenHash", "TEXT"),
             ("LeaseExpiresAt", "TEXT"), ("AttemptCount", "INTEGER NOT NULL DEFAULT 0"),
             ("Confidential", "INTEGER NOT NULL DEFAULT 0"),
-            ("KeepResident", "INTEGER NOT NULL DEFAULT 0")
+            ("KeepResident", "INTEGER NOT NULL DEFAULT 0"),
+            ("SupervisorSessionId", "TEXT")
         })
         {
             cmd.CommandText = $"ALTER TABLE Jobs ADD COLUMN {col.Item1} {col.Item2}";
@@ -103,6 +104,7 @@ public class RedComputeDbContext : DbContext
             CREATE INDEX IF NOT EXISTS IX_Jobs_IdempotencyFingerprint ON Jobs(IdempotencyFingerprint);
             CREATE INDEX IF NOT EXISTS IX_Jobs_IdempotencyScope_Key ON Jobs(IdempotencyScope, IdempotencyKey);
             CREATE INDEX IF NOT EXISTS IX_Jobs_ParentJobId ON Jobs(ParentJobId);
+            CREATE INDEX IF NOT EXISTS IX_Jobs_SupervisorSessionId ON Jobs(SupervisorSessionId);
             CREATE INDEX IF NOT EXISTS IX_Jobs_ExternalLease ON Jobs(ExternalExecution, Status, LeaseExpiresAt);
 
             CREATE TABLE IF NOT EXISTS TranscriptCursors (
@@ -154,6 +156,7 @@ public class RedComputeDbContext : DbContext
             entity.HasIndex(j => new { j.IdempotencyScope, j.IdempotencyKey }).IsUnique(false);
             entity.HasIndex(j => j.IdempotencyFingerprint).IsUnique(false);
             entity.HasIndex(j => j.ParentJobId).IsUnique(false);
+            entity.HasIndex(j => j.SupervisorSessionId).IsUnique(false);
             entity.HasIndex(j => new { j.ExternalExecution, j.Status, j.LeaseExpiresAt }).IsUnique(false);
             entity.Property(j => j.LeaseExpiresAt).HasConversion(
                 v => v.HasValue ? v.Value.ToString("O") : null,

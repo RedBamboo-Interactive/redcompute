@@ -386,7 +386,8 @@ public class RelayServer
                 : Timeout.InfiniteTimeSpan,
             _log,
             keepResident: session => session.JobId is { } jobId
-                && _jobTracker.GetJob(jobId)?.KeepResident == true);
+                && _jobTracker.GetJob(jobId)?.KeepResident == true,
+            supervisedJobs: sessionId => _jobTracker.GetSupervisedJobs(sessionId).Select(job => job.Id).ToArray());
         idleParking.Settled += (_, sessionId) => _callbacks.OnSessionSettled(sessionId);
         _ = idleParking.RunAsync(ct);
 

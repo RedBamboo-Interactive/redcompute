@@ -734,6 +734,15 @@ public class JobTrackingService : IJobTracker
     public void SetKeepResident(Guid jobId, bool keepResident)
         => MutateProjection(jobId, job => job.KeepResident = keepResident);
 
+    public void SetSupervisorSession(Guid jobId, string? supervisorSessionId)
+        => MutateProjection(jobId, job => job.SupervisorSessionId = supervisorSessionId);
+
+    public IReadOnlyList<JobRecord> GetSupervisedJobs(string supervisorSessionId)
+    {
+        using var db = _dbFactory();
+        return db.Jobs.AsNoTracking().Where(j => j.SupervisorSessionId == supervisorSessionId).ToList();
+    }
+
     public int RecoverOrphanedJobs(IReadOnlySet<Guid>? plannedRestartJobs = null)
     {
         var changed = new List<(JobRecord Job, JobLifecycleEvent Event)>();

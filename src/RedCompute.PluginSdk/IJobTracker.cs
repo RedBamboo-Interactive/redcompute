@@ -21,6 +21,9 @@ public interface IJobTracker
     void UpdateName(Guid jobId, string name);
     void SetConfidential(Guid jobId) { }
     void SetKeepResident(Guid jobId, bool keepResident) { }
+    void SetSupervisorSession(Guid jobId, string? supervisorSessionId) { }
+    /// <summary>Jobs whose AI session is currently bound to the given supervisor session.</summary>
+    IReadOnlyList<JobRecord> GetSupervisedJobs(string supervisorSessionId) => [];
     JobRecord? GetJob(Guid jobId) => null;
 
     IReadOnlyList<JobLifecycleEvent> GetJobEvents(Guid jobId) => [];
