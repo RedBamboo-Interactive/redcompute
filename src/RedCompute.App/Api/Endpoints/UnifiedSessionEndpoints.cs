@@ -471,7 +471,7 @@ public static class UnifiedSessionEndpoints
             return Results.Json(session);
         })
             .WithParam("projectPath", "string", description: "Path to the project directory. Omit for conversation-only sessions, which receive an isolated workspace.", location: ParamLocation.Body)
-            .WithParam("repositoryId", "string", description: "Stable RedLeaf Repository entity UUID. When supplied, its active local_path must exactly match projectPath.", location: ParamLocation.Body)
+            .WithParam("repositoryId", "string", description: "Stable RedLeaf Repository entity UUID. When supplied, projectPath must be the Repository's active local_path (exact match) or the root of a git worktree of it (proved with git, usually <local_path>.worktrees/<branch>). Rejected with 422 when the Repository's branch_work is main-only, the worktree folder is missing, or the path is unrelated; the message names the failed rule.", location: ParamLocation.Body)
             .WithParam("provider", "string", description: "Provider to use. Defaults to the active provider.", enumValues: providerEnum, location: ParamLocation.Body)
             .WithParam("model", "string", description: "Model to use. Overrides qualityTier when both are given.", location: ParamLocation.Body)
             .WithParam("effort", "string", description: "Effort level (e.g. low, normal, high)", location: ParamLocation.Body)
@@ -1405,6 +1405,9 @@ public static class UnifiedSessionEndpoints
                     session = await provider.ResumeSessionAsync(id, provenance);
                 return session?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
             }, ctx.RequestAborted);
+            if (session == null && provider.LastStartErrorCode == SessionStopReasons.ProjectPathMissing)
+                return Error(409, SessionStopReasons.ProjectPathMissing,
+                    provider.LastStartError ?? "The session's working directory no longer exists");
             if (session == null)
                 return Error(500, "resume_failed", provider.LastStartError ?? "Failed to resume session");
 

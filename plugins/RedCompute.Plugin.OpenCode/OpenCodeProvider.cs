@@ -44,6 +44,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         SessionCapabilities.FileAttachments;
 
     public string? LastStartError => _opencode.LastStartError;
+    public string? LastStartErrorCode => _opencode.LastStartErrorCode;
 
     public OpenCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, Action<string, Guid?> log,

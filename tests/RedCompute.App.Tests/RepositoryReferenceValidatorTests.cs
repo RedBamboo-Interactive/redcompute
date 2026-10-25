@@ -68,7 +68,7 @@ public sealed class RepositoryReferenceValidatorTests
 
             Assert.False(result.Ok);
             Assert.Equal(422, result.StatusCode);
-            Assert.Equal("projectPath does not match the referenced Repository checkout", result.Error);
+            Assert.Contains("projectPath does not match the referenced Repository checkout", result.Error);
         }
         finally
         {

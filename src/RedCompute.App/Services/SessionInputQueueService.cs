@@ -555,7 +555,10 @@ public sealed class SessionInputQueueService
                 }
                 if (info is null)
                 {
-                    await _store.BlockPendingAsync(head, "recovery_resume_failed", true, ct);
+                    // A removed working folder (e.g. a deleted worktree) cannot heal by retrying.
+                    var missing = provider.LastStartErrorCode == SessionStopReasons.ProjectPathMissing;
+                    await _store.BlockPendingAsync(head,
+                        missing ? SessionStopReasons.ProjectPathMissing : "recovery_resume_failed", !missing, ct);
                     await PublishAsync(sessionId, [head.Id], "blocked", ct);
                     return;
                 }

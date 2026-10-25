@@ -241,6 +241,12 @@ public interface ISessionProvider
     void CancelExecution(string key);
     Task StopAllAsync();
     string? LastStartError { get; }
+
+    /// <summary>
+    /// Machine-readable reason for the last failed start/resume (for example
+    /// <see cref="RedCompute.Core.Sessions.SessionStopReasons.ProjectPathMissing"/>); null when the failure has no typed reason.
+    /// </summary>
+    string? LastStartErrorCode => null;
 }
 
 /// <summary>

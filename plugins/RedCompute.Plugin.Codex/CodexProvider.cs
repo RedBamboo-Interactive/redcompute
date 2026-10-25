@@ -61,7 +61,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public SessionCapabilities Capabilities => DeclaredCapabilities;
     // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch).
 
-    public string? LastStartError => Volatile.Read(ref _lastStartError);
+    public string? LastStartError => Volatile.Read(ref _lastStartError) ?? _interactive.LastStartError;
+    public string? LastStartErrorCode => Volatile.Read(ref _lastStartError) is null ? _interactive.LastStartErrorCode : null;
 
     public CodexProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,

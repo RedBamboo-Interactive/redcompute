@@ -194,6 +194,23 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
     // ===== Lifecycle =========================================================================
 
+    private string? _lastStartError;
+    private string? _lastStartErrorCode;
+
+    /// <summary>Why the last start/resume returned null, when known. Reset at the beginning of every attempt.</summary>
+    public string? LastStartError => Volatile.Read(ref _lastStartError);
+    public string? LastStartErrorCode => Volatile.Read(ref _lastStartErrorCode);
+
+    private void SetStartFailure(string? message, string? code)
+    {
+        Volatile.Write(ref _lastStartErrorCode, code);
+        Volatile.Write(ref _lastStartError, message);
+    }
+
+    // The app-server silently inherits RedCompute's cwd when the directory is gone, so refuse up front.
+    private bool ProjectPathExists(string? path)
+        => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path);
+
     public Task<CodexSessionInfo?> StartSessionAsync(
         string projectPath, string? model, string? userId, string? userName,
         string? userAvatarUrl, string? effort, string? qualityTier,
@@ -214,9 +231,18 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string? developerInstructions,
         string executionProfile)
     {
+        SetStartFailure(null, null);
         if (_sessions.Count >= _config.MaxSessions)
         {
             _log($"[Codex] Session cap reached ({_config.MaxSessions})", null);
+            SetStartFailure($"Max sessions reached ({_config.MaxSessions})", null);
+            return null;
+        }
+
+        if (!ProjectPathExists(projectPath))
+        {
+            _log($"[Codex] Refusing to start: project path not found: {projectPath}", null);
+            SetStartFailure($"Project path not found: {projectPath}", SessionStopReasons.ProjectPathMissing);
             return null;
         }
 
@@ -293,12 +319,25 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private async Task<CodexSessionInfo?> ResumeSessionCoreAsync(
         string sessionId, JobProvenance? provenance)
     {
+        SetStartFailure(null, null);
         if (_sessions.TryGetValue(sessionId, out var live)) return live.Info;
 
         var record = _store.FindSession(sessionId);
         if (record?.ThreadId == null)
         {
             _log($"[Codex] Cannot resume {sessionId}: no thread id on record", null);
+            return null;
+        }
+
+        if (!ProjectPathExists(record.ProjectPath))
+        {
+            _log($"[Codex] Cannot resume {sessionId}: project path not found: {record.ProjectPath}", null);
+            SetStartFailure($"Project path not found: {record.ProjectPath}", SessionStopReasons.ProjectPathMissing);
+            // Park under a non-auto-resumable reason so recovery paths do not retry in a loop.
+            record.StopReason = SessionStopReasons.ProjectPathMissing;
+            record.StoppedAt ??= DateTimeOffset.UtcNow;
+            try { _store.SaveSession(record); }
+            catch (Exception ex) { _log($"[Codex] Could not persist project_path_missing for {sessionId}: {ex.Message}", null); }
             return null;
         }
 

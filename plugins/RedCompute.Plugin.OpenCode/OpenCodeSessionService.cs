@@ -28,7 +28,16 @@ public class OpenCodeSessionService
 
     public void EmitStreamEvent(string key, OpenCodeStreamEvent evt) => StreamEvent?.Invoke(key, evt);
 
-    public string? LastStartError { get; private set; }
+    private string? _lastStartError;
+
+    /// <summary>Setting the message clears <see cref="LastStartErrorCode"/>; set the code after the message.</summary>
+    public string? LastStartError
+    {
+        get => _lastStartError;
+        private set { _lastStartError = value; LastStartErrorCode = null; }
+    }
+
+    public string? LastStartErrorCode { get; private set; }
 
     internal class ManagedSession
     {
@@ -129,6 +138,7 @@ public class OpenCodeSessionService
         if (!Directory.Exists(projectPath))
         {
             LastStartError = $"Project path not found: {projectPath}";
+            LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
             return null;
         }
 
@@ -218,6 +228,11 @@ public class OpenCodeSessionService
         if (!Directory.Exists(record.ProjectPath))
         {
             LastStartError = $"Project path not found: {record.ProjectPath}";
+            LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
+            // Park under a non-auto-resumable reason so recovery paths do not retry in a loop.
+            record.StopReason = SessionStopReasons.ProjectPathMissing;
+            record.StoppedAt ??= DateTimeOffset.UtcNow;
+            _store.SaveSession(record);
             return null;
         }
 

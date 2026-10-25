@@ -47,6 +47,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public SessionCapabilities Capabilities => DeclaredCapabilities;
 
     public string? LastStartError => _claude.LastStartError;
+    public string? LastStartErrorCode => _claude.LastStartErrorCode;
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,

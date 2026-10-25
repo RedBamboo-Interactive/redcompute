@@ -191,12 +191,8 @@ public class ClaudeSessionService
             if (string.IsNullOrEmpty(claudeSessionId) || string.IsNullOrEmpty(session.ProjectPath))
                 return;
 
-            var slug = session.ProjectPath.Replace(":", "-").Replace("\\", "-").Replace("/", "-");
-            var jsonlPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".claude", "projects", slug, $"{claudeSessionId}.jsonl");
-
-            if (!File.Exists(jsonlPath)) return;
+            var jsonlPath = ClaudeTranscriptPaths.FindTranscript(session.ProjectPath, claudeSessionId);
+            if (jsonlPath is null) return;
 
             var lastTimestamp = _sessionStore.GetLastMessageTimestamp(session.Id);
 
@@ -318,7 +314,28 @@ public class ClaudeSessionService
         }
     }
 
-    public string? LastStartError { get; private set; }
+    private string? _lastStartError;
+
+    /// <summary>Setting the message clears <see cref="LastStartErrorCode"/>; set the code after the message.</summary>
+    public string? LastStartError
+    {
+        get => _lastStartError;
+        private set { _lastStartError = value; LastStartErrorCode = null; }
+    }
+
+    public string? LastStartErrorCode { get; private set; }
+
+    /// <summary>
+    /// A resume that failed because the folder is gone must not be retried by auto-resume paths:
+    /// park the record under a stop reason that is not auto-resumable. An explicit resume still works once the folder returns.
+    /// </summary>
+    private void MarkProjectPathMissing(ClaudeSessionRecord record)
+    {
+        record.StopReason = SessionStopReasons.ProjectPathMissing;
+        record.StoppedAt ??= DateTimeOffset.UtcNow;
+        try { _sessionStore.SaveSession(record); }
+        catch (Exception ex) { _log($"[Claude] Could not persist project_path_missing for {record.Id}: {ex.Message}", null); }
+    }
 
     public record OneshotResult(bool Success, string? Text, string? StreamOutput, string? Model, int InputTokens, int OutputTokens, double? CostUsd, string? Error);
 
@@ -962,6 +979,7 @@ public class ClaudeSessionService
         if (!Directory.Exists(projectPath))
         {
             LastStartError = $"Project path not found: {projectPath}";
+            LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
             return null;
         }
 
@@ -1110,6 +1128,8 @@ public class ClaudeSessionService
         if (!Directory.Exists(sessionRecord.ProjectPath))
         {
             LastStartError = $"Project path not found: {sessionRecord.ProjectPath}";
+            LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
+            MarkProjectPathMissing(sessionRecord);
             return null;
         }
 
@@ -3716,12 +3736,8 @@ public class ClaudeSessionService
             if (string.IsNullOrEmpty(claudeSessionId) || string.IsNullOrEmpty(session.Info.ProjectPath))
                 return;
 
-            var slug = session.Info.ProjectPath.Replace(":", "-").Replace("\\", "-").Replace("/", "-");
-            var jsonlPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".claude", "projects", slug, $"{claudeSessionId}.jsonl");
-
-            if (!File.Exists(jsonlPath)) return;
+            var jsonlPath = ClaudeTranscriptPaths.FindTranscript(session.Info.ProjectPath, claudeSessionId);
+            if (jsonlPath is null) return;
 
             string? aiTitle = null;
             foreach (var line in File.ReadLines(jsonlPath))
