@@ -1058,6 +1058,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                     @params, session.HasFinalOutput, session.InterruptRequested, session.HasCompletedFinalAnswer);
                 var outcome = TurnOutcome(@params, session.InterruptRequested, completionError);
                 session.Info.LastTurnOutcome = outcome;
+                // Same vocabulary as Claude Code: a clean end says "completed", anything else clears
+                // the previous turn's reason so callbacks never inherit a stale one.
+                session.Info.StopReason = outcome == Core.Sessions.SessionTurnOutcomes.Completed ? "completed" : null;
                 session.Info.LastTurnEndedAt = DateTimeOffset.UtcNow;
                 session.ActiveTurnId = null;
                 session.StreamedItems.Clear();

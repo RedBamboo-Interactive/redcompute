@@ -179,6 +179,22 @@ public sealed class CodexTurnCompletionTests
     }
 
     [Fact]
+    public void CleanTurnEndSaysCompletedAndTheNextTurnDoesNotInheritIt()
+    {
+        var harness = new NotificationHarness();
+        harness.Start("turn-1");
+        harness.Item("item/completed", "agentMessage", "final_answer", "Done.");
+        harness.Complete("completed");
+        // Same reason Claude Code gives, so completion callbacks stop reporting "unknown" for Codex.
+        Assert.Equal("completed", harness.Info.StopReason);
+
+        harness.Start("turn-2");
+        harness.SetInterrupt();
+        harness.Complete("interrupted");
+        Assert.Null(harness.Info.StopReason);
+    }
+
+    [Fact]
     public void NonemptyStreamedFinalStillPersistsOnceAndDoesNotBroadcastTwice()
     {
         var harness = new NotificationHarness();
