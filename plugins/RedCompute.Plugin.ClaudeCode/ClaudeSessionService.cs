@@ -2279,7 +2279,11 @@ public class ClaudeSessionService
         ResetSteerBoundaryWatchdogs(session);
         var evt = ParseStreamLine(line, session);
         if (evt == null) return;
+        Publish(session, evt);
+    }
 
+    private void Publish(ManagedSession session, ClaudeStreamEvent evt)
+    {
         // Stamp the turn uid before the event is broadcast or persisted so the
         // streamed copy and the stored record carry the same identity.
         // status/error close the turn. Background work (a subagent's line, tagged with the tool
@@ -2306,7 +2310,12 @@ public class ClaudeSessionService
         // Children of a tool call (nested subagents included) resolve to the turn that made it.
         if (evt is { Type: "tool_use", MessageId: { } toolUseId })
             session.ToolTurnUids[toolUseId] = evt.MessageUid;
+        Deliver(session, evt);
+    }
 
+    /// <summary>Broadcasts, retains and persists an event whose turn uid is already stamped.</summary>
+    private void Deliver(ManagedSession session, ClaudeStreamEvent evt)
+    {
         // Streamed text and thinking are live-only, as Codex's agent-message/reasoning deltas are.
         // Each block is persisted once, whole: text when its commentary/final phase is decided,
         // thinking at content_block_stop (or a terminal flush). Persisting each delta makes token
@@ -2443,6 +2452,7 @@ public class ClaudeSessionService
     /// </summary>
     private void SettleTurnContent(ManagedSession session)
     {
+        SettleCompaction(session, "Context compaction ended with the turn");
         PersistSettledThinking(session, session.TextBlocks.SettleTurnThinking());
         PersistSettledText(session, session.TextBlocks.SettleTurn());
     }
@@ -2713,11 +2723,101 @@ public class ClaudeSessionService
                 ApplyBackgroundChange(session, session.BackgroundTasks.Snapshot(root, now));
                 return;
 
+            case "status":
+                HandleCompactionStatus(root, session);
+                return;
+
+            case "compact_boundary":
+                HandleCompactBoundary(root, session);
+                return;
+
             default:
                 if (session.LoggedSystemSubtypes.TryAdd(subtype ?? "", 0))
                     _log($"[Claude] Session {session.Info.Id}: ignoring system subtype '{subtype}' (logged once per session)", null);
                 return;
         }
+    }
+
+    // Compaction is part of a running turn, not a terminal status. As for Codex, it is one
+    // ContextCompaction tool pair: opened by status "compacting" so clients show the long silent
+    // pause immediately, settled by compact_boundary (which carries the token counts), a failed
+    // compact_result, or the end of the turn. The CLI repeats "compacting" while it works and also
+    // sends status null/"requesting" outside compaction, so only those signals open or settle.
+    internal const string ContextCompactionToolName = "ContextCompaction";
+
+    private void HandleCompactionStatus(JsonElement root, ManagedSession session)
+    {
+        var status = root.TryGetProperty("status", out var statusElement)
+            && statusElement.ValueKind == JsonValueKind.String ? statusElement.GetString() : null;
+        if (status == "compacting")
+        {
+            OpenCompaction(session);
+            return;
+        }
+
+        var result = root.TryGetProperty("compact_result", out var resultElement)
+            && resultElement.ValueKind == JsonValueKind.String ? resultElement.GetString() : null;
+        var error = root.TryGetProperty("compact_error", out var errorElement)
+            && errorElement.ValueKind == JsonValueKind.String ? errorElement.GetString() : null;
+        // Success is settled by the compact_boundary that follows it, which carries the token counts.
+        if (result == "failed" || !string.IsNullOrWhiteSpace(error))
+            SettleCompaction(session, string.IsNullOrWhiteSpace(error)
+                ? "Context compaction failed"
+                : $"Context compaction failed: {error}");
+    }
+
+    private void HandleCompactBoundary(JsonElement root, ManagedSession session)
+    {
+        // A boundary without a preceding "compacting" (a CLI that does not report it) still
+        // shows as one settled pair.
+        OpenCompaction(session);
+        SettleCompaction(session, DescribeCompactBoundary(root));
+    }
+
+    internal static string DescribeCompactBoundary(JsonElement root)
+    {
+        if (!root.TryGetProperty("compact_metadata", out var metadata) || metadata.ValueKind != JsonValueKind.Object)
+            return "Context compacted";
+        var trigger = metadata.TryGetProperty("trigger", out var t) && t.ValueKind == JsonValueKind.String
+            ? t.GetString() : null;
+        long? pre = metadata.TryGetProperty("pre_tokens", out var p) && p.TryGetInt64(out var preTokens)
+            ? preTokens : null;
+        long? post = metadata.TryGetProperty("post_tokens", out var q) && q.TryGetInt64(out var postTokens)
+            ? postTokens : null;
+        var text = string.IsNullOrWhiteSpace(trigger) ? "Context compacted" : $"Context compacted ({trigger})";
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        if (pre is { } before && post is { } after)
+            text += string.Format(culture, ": {0:N0} -> {1:N0} tokens", before, after);
+        else if (pre is { } only)
+            text += string.Format(culture, ": {0:N0} tokens before", only);
+        return text;
+    }
+
+    private void OpenCompaction(ManagedSession session)
+    {
+        if (session.OpenCompaction is not null) return;
+        var evt = new ClaudeStreamEvent
+        {
+            Type = "tool_use",
+            ToolName = ContextCompactionToolName,
+            MessageId = "compaction-" + Guid.NewGuid().ToString("N"),
+        };
+        Publish(session, evt);
+        session.OpenCompaction = (evt.MessageId!, evt.MessageUid);
+    }
+
+    private void SettleCompaction(ManagedSession session, string content)
+    {
+        if (session.OpenCompaction is not { } open) return;
+        session.OpenCompaction = null;
+        Deliver(session, new ClaudeStreamEvent
+        {
+            Type = "tool_result",
+            Content = content,
+            ToolResult = content,
+            MessageId = open.ToolUseId,
+            MessageUid = open.TurnUid,
+        });
     }
 
     private void ApplyBackgroundChange(ManagedSession session, ClaudeBackgroundTaskTracker.Change change)
@@ -3891,6 +3991,8 @@ public class ClaudeSessionService
         // The result is the CLI's error, or null on success.
         public ConcurrentDictionary<string, TaskCompletionSource<string?>> PendingControlRequests { get; } = new();
         public ConcurrentDictionary<string, byte> LoggedSystemSubtypes { get; } = new(StringComparer.Ordinal);
+        // The ContextCompaction tool_use awaiting its result, with the turn it belongs to.
+        public (string ToolUseId, string? TurnUid)? OpenCompaction { get; set; }
         public object BackgroundPublishGate { get; } = new();
         public DateTimeOffset LastBackgroundPublish { get; set; }
         public bool BackgroundPublishScheduled { get; set; }
