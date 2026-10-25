@@ -131,6 +131,15 @@ public class ProviderConfigService
                     lock (_lock) { _defaultProviderSlug = defaultSlug; }
                     _log($"[ProviderConfig] Default provider from suite-config: {defaultSlug}", null);
                 }
+                else if (parsed.Count > 0)
+                {
+                    // A fresh read that no longer resolves (cleared, or the provider was removed)
+                    // supersedes the earlier value; keeping it would run on a stale default.
+                    string? stale;
+                    lock (_lock) { stale = _defaultProviderSlug; _defaultProviderSlug = null; }
+                    if (stale != null)
+                        _log($"[ProviderConfig] Suite-config default provider '{stale}' no longer resolves; using the fallback order", null);
+                }
             }
             catch { /* suite-config is optional */ }
 
@@ -396,6 +405,21 @@ public class ProviderConfigService
         return AliasMap.TryGetValue(reference, out var aliasSlug) ? aliasSlug : reference;
     }
 
+    /// <summary>Fallback order when no default resolves: Claude Code, then Codex, then by slug.</summary>
+    private static readonly string[] FallbackPreference = ["anthropic-direct", "codex-default"];
+
+    private static ProviderEntityConfig? FirstActiveByPreference(IEnumerable<ProviderEntityConfig> providers)
+        => providers
+            .Where(p => p.Status == "active")
+            .OrderBy(p =>
+            {
+                var rank = Array.FindIndex(FallbackPreference,
+                    slug => string.Equals(slug, p.Slug, StringComparison.OrdinalIgnoreCase));
+                return rank < 0 ? FallbackPreference.Length : rank;
+            })
+            .ThenBy(p => p.Slug, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
     public ProviderEntityConfig GetDefault()
     {
         Dictionary<string, ProviderEntityConfig> snapshot;
@@ -405,7 +429,7 @@ public class ProviderConfigService
         if (defaultSlug != null && snapshot.TryGetValue(defaultSlug, out var configured))
             return configured;
 
-        var first = snapshot.Values.FirstOrDefault(p => p.Status == "active");
+        var first = FirstActiveByPreference(snapshot.Values);
         if (first != null) return first;
 
         return new ProviderEntityConfig("", "", "", "", null, null, null, null, "disabled", null);
@@ -418,7 +442,7 @@ public class ProviderConfigService
             lock (_lock)
             {
                 return _defaultProviderSlug
-                    ?? _providers.Values.FirstOrDefault(p => p.Status == "active")?.Slug
+                    ?? FirstActiveByPreference(_providers.Values)?.Slug
                     ?? "";
             }
         }
