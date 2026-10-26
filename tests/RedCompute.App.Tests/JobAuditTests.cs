@@ -380,9 +380,33 @@ public sealed class JobAuditTests : IDisposable
             Provenance("nova", "agent-nova", "user-1", "/nova/speak")));
 
         Assert.True(_jobs.GetJob(confidential.Id)!.Confidential);
-        var visible = _jobs.GetJobs(canRead: job => !job.Confidential);
+        var visible = _jobs.GetJobs(canRead: job => !job.Confidential,
+            publicJobsAlwaysReadable: true);
         Assert.Single(visible.Items);
         Assert.Equal(1, visible.TotalCount);
+    }
+
+    [Fact]
+    public void Job_listing_materializes_only_summary_fields()
+    {
+        var created = _jobs.CreateJob(new JobSubmission(
+            "ai-session", "Codex", "{\"prompt\":\"large private input\"}",
+            Provenance("nova", "agent-nova", "user-1", "/nova/message"),
+            Name: "Summary contract"));
+        _jobs.MarkCompleted(created.Id, resultJson: "{\"large\":\"private result\"}");
+
+        var listed = Assert.Single(_jobs.GetJobs().Items);
+
+        Assert.Equal(created.Id, listed.Id);
+        Assert.Equal("Summary contract", listed.Name);
+        Assert.Equal("{}", listed.InputJson);
+        Assert.Null(listed.ResultJson);
+        Assert.Null(listed.ErrorDetails);
+        Assert.NotNull(listed.CreationProvenance);
+
+        var detail = _jobs.GetJob(created.Id)!;
+        Assert.Contains("large private input", detail.InputJson);
+        Assert.Contains("private result", detail.ResultJson);
     }
 
     [Fact]

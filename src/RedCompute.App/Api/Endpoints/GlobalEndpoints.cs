@@ -23,19 +23,37 @@ public static class GlobalEndpoints
 
         endpoints.MapGet("/status", "Service status with uptime and capability states", async () =>
         {
-            var capabilities = new List<object>();
-            foreach (var (slug, entry) in registry.Capabilities)
+            var capabilitySnapshot = registry.Capabilities.ToArray();
+            var providers = capabilitySnapshot
+                .SelectMany(capability => capability.Value.Providers.Values)
+                .Distinct<IBackendProvider>(ReferenceEqualityComparer.Instance);
+            var statusTasks = new Dictionary<IBackendProvider, Task<BackendStatus>>(
+                ReferenceEqualityComparer.Instance);
+            foreach (var provider in providers)
+                statusTasks.Add(provider, provider.GetStatusAsync());
+            await Task.WhenAll(statusTasks.Values);
+
+            var capabilities = capabilitySnapshot.Select(capability =>
             {
-                var defaultStatus = await registry.GetStatus(slug);
-
-                var providerStatuses = new List<object>();
-                foreach (var (name, prov) in entry.Providers)
+                var (slug, entry) = capability;
+                var providerStatuses = entry.Providers.Select(provider => new
                 {
-                    var pStatus = await prov.GetStatusAsync();
-                    providerStatuses.Add(new { name, status = pStatus.ToString() });
-                }
+                    name = provider.Key,
+                    provider = provider.Value,
+                    status = statusTasks[provider.Value].GetAwaiter().GetResult(),
+                }).ToArray();
 
-                capabilities.Add(new
+                var activeProvider = entry.ActiveProvider;
+                var activeStatus = activeProvider == null
+                    ? null
+                    : providerStatuses.FirstOrDefault(item => ReferenceEquals(item.provider, activeProvider));
+                var defaultStatus = entry.IsExternal
+                    ? BackendStatus.Running
+                    : activeProvider == null
+                        ? BackendStatus.Stopped
+                        : activeStatus?.status ?? statusTasks[activeProvider].GetAwaiter().GetResult();
+
+                return new
                 {
                     slug,
                     entry.Definition.DisplayName,
@@ -43,9 +61,13 @@ public static class GlobalEndpoints
                     status = defaultStatus.ToString(),
                     provider = entry.IsExternal
                         ? entry.Definition.WorkerDisplayName
-                        : entry.ActiveProvider?.Name,
+                        : activeProvider?.Name,
                     defaultProvider = entry.DefaultProviderName,
-                    providers = providerStatuses,
+                    providers = providerStatuses.Select(item => new
+                    {
+                        item.name,
+                        status = item.status.ToString(),
+                    }),
                     executionMode = entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
                     sleeping = entry.IsSleeping,
                     disabled = entry.IsManuallyDisabled,
@@ -53,9 +75,9 @@ public static class GlobalEndpoints
                     color = entry.Definition.Color,
                     description = entry.Definition.Description,
                     category = entry.Definition.Category,
-                    rerunnable = entry.ActiveProvider is IPluginProvider pp && pp.SupportsRerun
-                });
-            }
+                    rerunnable = activeProvider is IPluginProvider pp && pp.SupportsRerun
+                };
+            }).ToArray();
 
             return Results.Ok(new
             {
@@ -74,7 +96,7 @@ public static class GlobalEndpoints
             var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, search,
                 limit ?? 50, offset ?? 0, originApp, originApi, actor, beneficiary, assurance, complete,
                 parentJobId, contextKind, contextId, externalExecution, executionId,
-                job => ComputeResourceAccess.CanReadJob(ctx, job));
+                job => ComputeResourceAccess.CanReadJob(ctx, job), publicJobsAlwaysReadable: true);
 
             var sessionStatuses = new Dictionary<Guid, string>();
             var aiSessionJobIds = jobs

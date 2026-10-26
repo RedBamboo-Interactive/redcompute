@@ -155,6 +155,23 @@ public sealed class JobApiContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Status_checks_providers_concurrently_and_only_once()
+    {
+        var gate = new CoordinatedStatusGate(expectedCalls: 2);
+        var first = new CoordinatedStatusProvider("first", gate);
+        var second = new CoordinatedStatusProvider("second", gate);
+        RegisterStatusCapability("status-first", first);
+        RegisterStatusCapability("status-first-shared", first);
+        RegisterStatusCapability("status-second", second);
+
+        using var response = await _client.GetAsync("/status");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, first.StatusCalls);
+        Assert.Equal(1, second.StatusCalls);
+    }
+
+    [Fact]
     public void Multiple_artifacts_use_service_relative_selector_urls_and_never_paths()
     {
         var job = CreateJob();
@@ -280,6 +297,18 @@ public sealed class JobApiContractTests : IAsyncLifetime
     private JobRecord CreateJob() => _jobs.CreateJob(new JobSubmission(
         "image-gen", "fake", "{}", Provenance()));
 
+    private void RegisterStatusCapability(string slug, IBackendProvider provider)
+    {
+        _registry.Register(slug, new CapabilityDefinition
+        {
+            Slug = slug,
+            DisplayName = slug,
+        }, new CapabilityConfig(), new Dictionary<string, IBackendProvider>
+        {
+            [provider.Name] = provider,
+        }, provider.Name);
+    }
+
     private static JobProvenance Provenance() => new(
         JobProvenance.CurrentSchemaVersion,
         new JobOrigin("redleaf", new JobAppReference("plugin", "test", null, "Test"),
@@ -324,5 +353,44 @@ public sealed class JobApiContractTests : IAsyncLifetime
             request.ProgressCallback!(Convert.ToDouble(request.Parameters["progress"]));
             return new JobResult { Success = true, ResultJson = "{}" };
         }
+    }
+
+    private sealed class CoordinatedStatusGate(int expectedCalls)
+    {
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public async Task ArriveAsync(CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _calls) == expectedCalls)
+                _release.TrySetResult();
+            await _release.Task.WaitAsync(TimeSpan.FromSeconds(2), ct);
+        }
+    }
+
+    private sealed class CoordinatedStatusProvider(
+        string name, CoordinatedStatusGate gate) : IBackendProvider
+    {
+        private int _statusCalls;
+
+        public string Name => name;
+        public int StatusCalls => _statusCalls;
+        public string CapabilitySlug => name;
+        public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(30);
+        public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
+        public Task StopAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public string? GetProxyTargetUrl() => null;
+        public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default)
+            => Task.FromResult<JobResult?>(new JobResult { Success = true, ResultJson = "{}" });
+
+        public async Task<BackendStatus> GetStatusAsync(CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _statusCalls);
+            await gate.ArriveAsync(ct);
+            return BackendStatus.Running;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

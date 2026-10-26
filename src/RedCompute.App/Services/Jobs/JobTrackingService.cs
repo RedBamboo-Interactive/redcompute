@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq.Expressions;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -14,6 +15,33 @@ public class JobTrackingService : IJobTracker
 {
     private static readonly JsonSerializerOptions JsonOptions = JobProvenance.JsonOptions;
     private static readonly TimeSpan FutureTimestampTolerance = TimeSpan.FromMinutes(5);
+    private static readonly Expression<Func<JobRecord, JobRecord>> JobListProjection = j => new JobRecord
+    {
+        Id = j.Id,
+        CapabilitySlug = j.CapabilitySlug,
+        ProviderName = j.ProviderName,
+        Status = j.Status,
+        QueuedAt = j.QueuedAt,
+        StartedAt = j.StartedAt,
+        CompletedAt = j.CompletedAt,
+        Progress = j.Progress,
+        ProviderStartedAt = j.ProviderStartedAt,
+        ErrorMessage = j.ErrorMessage,
+        Name = j.Name,
+        Rationale = j.Rationale,
+        CostUsd = j.CostUsd,
+        UserId = j.UserId,
+        UserName = j.UserName,
+        UserAvatarUrl = j.UserAvatarUrl,
+        Confidential = j.Confidential,
+        CreationProvenanceJson = j.CreationProvenanceJson,
+        ExternalExecution = j.ExternalExecution,
+        ParentJobId = j.ParentJobId,
+        AttemptCount = j.AttemptCount,
+        LeaseOwner = j.LeaseOwner,
+        LeaseExpiresAt = j.LeaseExpiresAt,
+        InputJson = "{}",
+    };
     private readonly object _lock = new();
     private readonly object _terminalWaitersLock = new();
     private readonly Dictionary<Guid, HashSet<TaskCompletionSource<bool>>> _terminalWaiters = new();
@@ -786,7 +814,7 @@ public class JobTrackingService : IJobTracker
         string? beneficiary = null, string? assurance = null, bool? complete = null,
         Guid? parentJobId = null, string? contextKind = null, string? contextId = null,
         bool? externalExecution = null, string? executionId = null,
-        Func<JobRecord, bool>? canRead = null)
+        Func<JobRecord, bool>? canRead = null, bool publicJobsAlwaysReadable = false)
     {
         using var db = _dbFactory();
         IQueryable<JobRecord> query = db.Jobs;
@@ -801,9 +829,63 @@ public class JobTrackingService : IJobTracker
                 (j.CreationProvenanceJson != null && j.CreationProvenanceJson.Contains(search)) ||
                 j.CapabilitySlug.Contains(search));
 
+        var latestPlausibleTimestamp = _clock() + FutureTimestampTolerance;
+        var hasStructuredProvenanceFilter = originApp != null || originApi != null || actor != null
+            || beneficiary != null || assurance != null || complete != null
+            || contextKind != null || contextId != null || executionId != null;
+
+        // The API's access policy always admits public jobs. Keep the security-sensitive
+        // confidential check in memory, but perform it only for confidential rows. Public
+        // pagination then needs only IDs and timestamps, and only the selected page loads
+        // provenance and other list metadata.
+        if (publicJobsAlwaysReadable && canRead != null && !hasStructuredProvenanceFilter)
+        {
+            var candidates = query
+                .Where(j => !j.Confidential)
+                .AsNoTracking()
+                .Select(j => new JobListCandidate(j.Id, j.QueuedAt))
+                .ToList();
+            var readableConfidential = query
+                .Where(j => j.Confidential)
+                .AsNoTracking()
+                .Select(JobListProjection)
+                .ToList()
+                .Where(canRead)
+                .ToList();
+            candidates.AddRange(readableConfidential.Select(j => new JobListCandidate(j.Id, j.QueuedAt)));
+
+            var totalCount = candidates.Count;
+            var pageIds = candidates
+                .OrderBy(j => j.QueuedAt > latestPlausibleTimestamp)
+                .ThenByDescending(j => j.QueuedAt)
+                .ThenByDescending(j => j.Id)
+                .Skip(offset)
+                .Take(limit)
+                .Select(j => j.Id)
+                .ToList();
+            if (pageIds.Count == 0) return ([], totalCount);
+
+            var pageOrder = pageIds.Select((id, index) => (id, index))
+                .ToDictionary(item => item.id, item => item.index);
+            var page = query
+                .Where(j => pageIds.Contains(j.Id))
+                .AsNoTracking()
+                .Select(JobListProjection)
+                .ToList();
+            page.Sort((left, right) => pageOrder[left.Id].CompareTo(pageOrder[right.Id]));
+            return (page, totalCount);
+        }
+
         // Provenance filters operate on the typed contract. Substring matching JSON can
         // confuse origin app IDs with actor/beneficiary IDs and is not an audit boundary.
-        IEnumerable<JobRecord> filtered = query.ToList();
+        // Lists never return invocation inputs, result payloads, detailed errors, or
+        // idempotency material. Project before materialising so a page read does not
+        // pull every job's potentially huge detail JSON out of SQLite merely to
+        // authorize, count, sort, and discard all but one page.
+        IEnumerable<JobRecord> filtered = query
+            .AsNoTracking()
+            .Select(JobListProjection)
+            .ToList();
         if (originApp != null) filtered = filtered.Where(j => Eq(j.CreationProvenance?.Origin.App.Id, originApp));
         if (originApi != null) filtered = filtered.Where(j => Eq(j.CreationProvenance?.Origin.Entrypoint.Route, originApi));
         if (actor != null) filtered = filtered.Where(j =>
@@ -832,7 +914,6 @@ public class JobTrackingService : IJobTracker
         // A temporary host-clock jump must not pin completed work above genuinely
         // recent jobs until the wall clock catches up. Preserve the recorded audit
         // timestamp, but demote implausibly future records in list projections.
-        var latestPlausibleTimestamp = _clock() + FutureTimestampTolerance;
         var materialized = filtered
             .OrderBy(j => j.QueuedAt > latestPlausibleTimestamp)
             .ThenByDescending(j => j.QueuedAt)
@@ -840,6 +921,8 @@ public class JobTrackingService : IJobTracker
             .ToList();
         return (materialized.Skip(offset).Take(limit).ToList(), materialized.Count);
     }
+
+    private sealed record JobListCandidate(Guid Id, DateTimeOffset QueuedAt);
 
     public JobRecord? GetJob(Guid id)
     {
