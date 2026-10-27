@@ -1,0 +1,2931 @@
+[
+  {
+    "name": "markdown-image-of-a-redleaf-asset",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "Here it is: ![a sunset](/api/assets/9df7aa11.png)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:9df7aa11.png",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/9df7aa11.png",
+        "title": "a sunset",
+        "mediaType": "image/png",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "image-link-to-redleaf-asset-alias-path",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[look](/api/redleaf-asset/abc123.webp)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:abc123.webp",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/redleaf-asset/abc123.webp",
+        "title": "look",
+        "mediaType": "image/webp",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "loopback-asset-urls-canonicalize-to-relative-and-dedup",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![x](http://127.0.0.1:18804/api/assets/img1.jpg?w=256)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![y](http://localhost:18804/api/assets/img1.jpg)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:img1.jpg",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/img1.jpg?w=256",
+        "title": "x",
+        "mediaType": "image/jpeg",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 2
+      }
+    ]
+  },
+  {
+    "name": "loopback-asset-canonicalization-ignores-the-port",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![o](http://127.0.0.1:9999/api/assets/other.png)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:other.png",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/other.png",
+        "title": "o",
+        "mediaType": "image/png",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "non-loopback-asset-path-stays-an-external-url",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![r](https://example.com/api/assets/z.png)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://example.com/api/assets/z.png",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://example.com/api/assets/z.png",
+        "title": "r",
+        "mediaType": "image/png",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "external-image-url-with-query-and-uppercase-extension",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![cat](https://cdn.example.com/cat.PNG?size=2)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://cdn.example.com/cat.PNG?size=2",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://cdn.example.com/cat.PNG?size=2",
+        "title": "cat",
+        "mediaType": "image/png",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "svg-link-with-fragment-is-an-image",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[diagram](https://x.example/d.svg#frag)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://x.example/d.svg#frag",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://x.example/d.svg#frag",
+        "title": "diagram",
+        "mediaType": "image/svg+xml",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "image-inline-without-extension-is-still-an-image",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![gen](/api/assets/abcdef)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![render](https://img.example.com/render?id=5)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://img.example.com/render?id=5",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://img.example.com/render?id=5",
+        "title": "render",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "asset:abcdef",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/abcdef",
+        "title": "gen",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "video-by-extension-for-assets-and-external-urls",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[clip](/api/assets/c1.mp4)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![demo](https://v.example.com/a.webm)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://v.example.com/a.webm",
+        "kind": "video",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://v.example.com/a.webm",
+        "title": "demo",
+        "mediaType": "video/webm",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "asset:c1.mp4",
+        "kind": "video",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/c1.mp4",
+        "title": "clip",
+        "mediaType": "video/mp4",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "ogg-resolves-as-video-oga-and-opus-as-audio",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[talk](/api/assets/talk.ogg)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[song](/api/assets/song.oga)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[voice](/api/assets/voice.opus)",
+        "messageUid": "m3",
+        "sequence": 3
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:voice.opus",
+        "kind": "audio",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/voice.opus",
+        "title": "voice",
+        "mediaType": "audio/opus",
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "asset:song.oga",
+        "kind": "audio",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/song.oga",
+        "title": "song",
+        "mediaType": "audio/ogg",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "asset:talk.ogg",
+        "kind": "video",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/talk.ogg",
+        "title": "talk",
+        "mediaType": "video/ogg",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "audio-extensions-are-audio",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[track mp3](https://audio.example.com/t.mp3)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[track wav](https://audio.example.com/t.wav)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[track m4a](https://audio.example.com/t.m4a)",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[track flac](https://audio.example.com/t.flac)",
+        "messageUid": "m4",
+        "sequence": 4
+      },
+      {
+        "id": 5,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[track aac](https://audio.example.com/t.aac)",
+        "messageUid": "m5",
+        "sequence": 5
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://audio.example.com/t.aac",
+        "kind": "audio",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://audio.example.com/t.aac",
+        "title": "track aac",
+        "mediaType": "audio/aac",
+        "first": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "last": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://audio.example.com/t.flac",
+        "kind": "audio",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://audio.example.com/t.flac",
+        "title": "track flac",
+        "mediaType": "audio/flac",
+        "first": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "last": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://audio.example.com/t.m4a",
+        "kind": "audio",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://audio.example.com/t.m4a",
+        "title": "track m4a",
+        "mediaType": "audio/mp4",
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://audio.example.com/t.wav",
+        "kind": "audio",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://audio.example.com/t.wav",
+        "title": "track wav",
+        "mediaType": "audio/wav",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://audio.example.com/t.mp3",
+        "kind": "audio",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://audio.example.com/t.mp3",
+        "title": "track mp3",
+        "mediaType": "audio/mpeg",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "non-media-assets-are-documents",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[report](/api/assets/rep1.pdf)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[blob](/api/redleaf-asset/f9)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:f9",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/redleaf-asset/f9",
+        "title": "blob",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "asset:rep1.pdf",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/rep1.pdf",
+        "title": "report",
+        "mediaType": "application/pdf",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "local-windows-file-link-is-a-document",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "See [readme](C:\\Projects\\x\\README.md).",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/projects/x/readme.md",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/Projects/x/README.md",
+        "title": "readme",
+        "mediaType": "text/markdown",
+        "file": {
+          "path": "C:/Projects/x/README.md"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "local-file-link-forms-and-line-suffixes",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[a](/C:/Work/a.ts#L12)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[b](file:///C:/Work/b.ts)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[c](C:/Work/c.ts:7:3)",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[g](C:%5CWork%5Cg.md)",
+        "messageUid": "m4",
+        "sequence": 4
+      },
+      {
+        "id": 5,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[f](<C:\\My Docs\\a b.pdf>)",
+        "messageUid": "m5",
+        "sequence": 5
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/my docs/a b.pdf",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/My Docs/a b.pdf",
+        "title": "f",
+        "mediaType": "application/pdf",
+        "file": {
+          "path": "C:/My Docs/a b.pdf"
+        },
+        "first": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "last": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/work/g.md",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/Work/g.md",
+        "title": "g",
+        "mediaType": "text/markdown",
+        "file": {
+          "path": "C:/Work/g.md"
+        },
+        "first": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "last": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/work/c.ts",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/Work/c.ts",
+        "title": "c",
+        "file": {
+          "path": "C:/Work/c.ts",
+          "line": 7
+        },
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/work/b.ts",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/Work/b.ts",
+        "title": "b",
+        "file": {
+          "path": "C:/Work/b.ts"
+        },
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/work/a.ts",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/Work/a.ts",
+        "title": "a",
+        "file": {
+          "path": "C:/Work/a.ts",
+          "line": 12
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "local-file-dedup-folds-case-and-keeps-the-first-line-and-title",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[a](C:\\W\\a.ts:5)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[a again](c:/w/A.TS#L9)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/w/a.ts",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/W/a.ts",
+        "title": "a",
+        "file": {
+          "path": "C:/W/a.ts",
+          "line": 5
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 2
+      }
+    ]
+  },
+  {
+    "name": "local-image-paths-are-images-with-a-file-ref",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "![shot](C:\\Shots\\one.png)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[two](C:/Shots/two.jpg)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/shots/two.jpg",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/Shots/two.jpg",
+        "title": "two",
+        "mediaType": "image/jpeg",
+        "file": {
+          "path": "C:/Shots/two.jpg"
+        },
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/shots/one.png",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/Shots/one.png",
+        "title": "shot",
+        "mediaType": "image/png",
+        "file": {
+          "path": "C:/Shots/one.png"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "entity-link-forms",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[p](redleaf://page/abc-1)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[q](redleaf://person/p2?display=preview)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[r](/database/entities/task/t3)",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[s](http://127.0.0.1:18804/database/entities/note/n4)",
+        "messageUid": "m4",
+        "sequence": 4
+      }
+    ],
+    "expected": [
+      {
+        "key": "entity:n4",
+        "kind": "entity",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/database/entities/note/n4",
+        "title": "s",
+        "entity": {
+          "typeSlug": "note",
+          "id": "n4"
+        },
+        "first": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "last": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "entity:t3",
+        "kind": "entity",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/database/entities/task/t3",
+        "title": "r",
+        "entity": {
+          "typeSlug": "task",
+          "id": "t3"
+        },
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "entity:p2",
+        "kind": "entity",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "redleaf://person/p2?display=preview",
+        "title": "q",
+        "entity": {
+          "typeSlug": "person",
+          "id": "p2"
+        },
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "entity:abc-1",
+        "kind": "entity",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "redleaf://page/abc-1",
+        "title": "p",
+        "entity": {
+          "typeSlug": "page",
+          "id": "abc-1"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "entity-route-with-a-query-is-an-internal-link",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[t](/database/entities/task/t3?x=1)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:/database/entities/task/t3?x=1",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/database/entities/task/t3?x=1",
+        "title": "t",
+        "internal": true,
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "external-internal-and-autolinks",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[docs](https://example.com/docs)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[home](/apps/nova)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[loop](http://127.0.0.1:18804/apps/code?x=1)",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "<https://auto.example.org/a>",
+        "messageUid": "m4",
+        "sequence": 4
+      },
+      {
+        "id": 5,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "Bare https://bare.example.net/x.",
+        "messageUid": "m5",
+        "sequence": 5
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://bare.example.net/x",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://bare.example.net/x",
+        "first": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "last": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://auto.example.org/a",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://auto.example.org/a",
+        "first": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "last": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:/apps/code?x=1",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/apps/code?x=1",
+        "title": "loop",
+        "internal": true,
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:/apps/nova",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/apps/nova",
+        "title": "home",
+        "internal": true,
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://example.com/docs",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://example.com/docs",
+        "title": "docs",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "dangerous-schemes-and-non-leaf-targets-are-dropped",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[a](javascript:alert(1))\n\n[b](vbscript:x)\n\n[c](data:text/html;base64,AAAA)\n\n![d](data:image/png;base64,iVBOR)\n\n[e](JaVaScRiPt:alert(1))\n\n[m](mailto:a@b.c)\n\n[r](docs/readme.md)\n\n[h](#section)\n\n[p](//cdn.example.com/x.js)\n\n[x]()\n\n[ok](https://ok.example.com/)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://ok.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://ok.example.com/",
+        "title": "ok",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "nothing-inside-code-is-extracted",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "```md\n![x](/api/assets/hidden.png)\n[l](https://hidden.example.com)\n```\n\nInline `[i](https://inline.example.com)` too.\n\n    [indented](https://indented.example.com)\n\n[v](https://visible.example.com/)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://visible.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://visible.example.com/",
+        "title": "v",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "an-unclosed-fence-hides-the-rest-of-the-message",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[before](https://before.example.com/)\n\n```\n[x](https://unclosed.example.com)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://before.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://before.example.com/",
+        "title": "before",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "reference-style-links-and-images-resolve",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "See [the docs][d], ![chart][c] and [nothing][zzz].\n\n[d]: https://example.com/ref\n[c]: /api/assets/chart1.png \"Chart\"",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:chart1.png",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/chart1.png",
+        "title": "chart",
+        "mediaType": "image/png",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://example.com/ref",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://example.com/ref",
+        "title": "the docs",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "raw-html-is-not-an-artifact",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "<a href=\"https://html.example.com\">x</a> <img src=\"/api/assets/h.png\">",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": []
+  },
+  {
+    "name": "links-inside-quotes-lists-headings-and-emphasis",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "> quoted [q](https://q.example.com/)\n\n- item [i](https://i.example.com/)\n\n## Head [h](https://h.example.com/)\n\n**bold [b](https://b.example.com/)**",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://b.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://b.example.com/",
+        "title": "b",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://h.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://h.example.com/",
+        "title": "h",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://i.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://i.example.com/",
+        "title": "i",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://q.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://q.example.com/",
+        "title": "q",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "titles-flatten-nested-formatting",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[**bold** and `code`](https://f.example.com/)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://f.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://f.example.com/",
+        "title": "bold and code",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "an-image-wrapped-in-a-link-yields-both",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[![thumb](/api/assets/t1.png)](https://full.example.com/page)",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:t1.png",
+        "kind": "image",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "/api/assets/t1.png",
+        "title": "thumb",
+        "mediaType": "image/png",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://full.example.com/page",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://full.example.com/page",
+        "title": "thumb",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "nova-envelopes-are-not-artifacts",
+    "records": [
+      {
+        "id": 1,
+        "role": "user",
+        "eventType": "text",
+        "content": "<nova-context source=\"x\">[ctx](https://ctx.example.com)</nova-context>\n<nova-prior-messages>![p](/api/assets/prior.png)</nova-prior-messages>\n<nova-event source=\"live\" type=\"x\">[ev](https://event.example.com)</nova-event>\n<task-notification>[tn](https://task.example.com)</task-notification>\nreal [text](https://real.example.com/)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "<nova-event source=\"live\" type=\"x\">[ev2](https://event2.example.com)</nova-event>",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://real.example.com/",
+        "kind": "link",
+        "origin": "user-text",
+        "role": "user",
+        "target": "https://real.example.com/",
+        "title": "text",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "only-visible-user-and-assistant-text-is-read",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "thinking",
+        "content": "[a](https://thinking.example.com)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "status",
+        "content": "[b](https://status.example.com)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "task",
+        "content": "[c](https://task.example.com)",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "user",
+        "eventType": "tool_result",
+        "toolName": "Read",
+        "toolInput": "{\"file_path\":\"C:\\\\r\\\\a.md\"}",
+        "content": "[d](https://result.example.com)",
+        "messageUid": "m4",
+        "sequence": 4
+      },
+      {
+        "id": 5,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Read",
+        "toolInput": "{\"file_path\":\"C:\\\\r\\\\a.md\"}",
+        "messageUid": "m5",
+        "sequence": 5
+      },
+      {
+        "id": 6,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Edit",
+        "toolInput": "{\"file_path\":\"C:\\\\r\\\\b.md\"}",
+        "messageUid": "m6",
+        "sequence": 6
+      },
+      {
+        "id": 7,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "MultiEdit",
+        "toolInput": "{\"file_path\":\"C:\\\\r\\\\c.md\"}",
+        "messageUid": "m7",
+        "sequence": 7
+      },
+      {
+        "id": 8,
+        "role": "system",
+        "eventType": "text",
+        "content": "[e](https://system.example.com)",
+        "messageUid": "m8",
+        "sequence": 8
+      },
+      {
+        "id": 9,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Bash",
+        "toolInput": "{\"command\":\"open https://bash.example.com\"}",
+        "messageUid": "m9",
+        "sequence": 9
+      }
+    ],
+    "expected": []
+  },
+  {
+    "name": "commentary-and-final-phases-are-both-read",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[c](https://commentary.example.com/)",
+        "messageUid": "m1",
+        "sequence": 1,
+        "phase": "commentary"
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[f](https://final.example.com/)",
+        "messageUid": "m2",
+        "sequence": 2,
+        "phase": "final_answer"
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://final.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://final.example.com/",
+        "title": "f",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:https://commentary.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://commentary.example.com/",
+        "title": "c",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "user-attachments-keep-name-size-and-media-type",
+    "records": [
+      {
+        "id": 1,
+        "role": "user",
+        "eventType": "text",
+        "content": "here",
+        "messageUid": "m1",
+        "sequence": 1,
+        "attachmentsJson": "{\"inputMessageUids\":[\"m1\"],\"attachments\":[{\"id\":\"a1\",\"kind\":\"image\",\"name\":\"photo.jpg\",\"mediaType\":\"image/jpeg\",\"size\":2048,\"sha256\":\"x\",\"downloadUrl\":\"/ai-session/input-attachments/a1\"},{\"id\":\"a2\",\"kind\":\"file\",\"name\":\"notes.pdf\",\"mediaType\":\"application/pdf\",\"size\":99,\"downloadUrl\":\"/ai-session/input-attachments/a2\"}],\"metadata\":{\"k\":1}}"
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:/ai-session/input-attachments/a1",
+        "kind": "image",
+        "origin": "user-attachment",
+        "role": "user",
+        "target": "/ai-session/input-attachments/a1",
+        "mediaType": "image/jpeg",
+        "name": "photo.jpg",
+        "size": 2048,
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "url:/ai-session/input-attachments/a2",
+        "kind": "document",
+        "origin": "user-attachment",
+        "role": "user",
+        "target": "/ai-session/input-attachments/a2",
+        "mediaType": "application/pdf",
+        "name": "notes.pdf",
+        "size": 99,
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "legacy-base64-images-and-unusable-attachments-are-skipped",
+    "records": [
+      {
+        "id": 1,
+        "role": "user",
+        "eventType": "text",
+        "content": "see",
+        "messageUid": "m1",
+        "sequence": 1,
+        "attachmentsJson": "{\"images\":[{\"mediaType\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}],\"attachments\":[{\"id\":\"a1\",\"kind\":\"image\",\"name\":\"inline.png\",\"mediaType\":\"image/png\",\"size\":5,\"downloadUrl\":\"data:image/png;base64,AAAA\"},{\"id\":\"a2\",\"kind\":\"file\",\"name\":\"missing.txt\",\"mediaType\":\"text/plain\",\"size\":5}]}"
+      },
+      {
+        "id": 2,
+        "role": "user",
+        "eventType": "text",
+        "content": "broken",
+        "messageUid": "m2",
+        "sequence": 2,
+        "attachmentsJson": "{not json"
+      }
+    ],
+    "expected": []
+  },
+  {
+    "name": "audio-url-is-a-voice-message-whatever-the-extension",
+    "records": [
+      {
+        "id": 1,
+        "role": "user",
+        "eventType": "text",
+        "content": "voice note",
+        "messageUid": "m1",
+        "sequence": 1,
+        "attachmentsJson": "{\"audioUrl\":\"/api/assets/voice1.webm\"}"
+      },
+      {
+        "id": 2,
+        "role": "user",
+        "eventType": "text",
+        "content": "no extension",
+        "messageUid": "m2",
+        "sequence": 2,
+        "attachmentsJson": "{\"audioUrl\":\"/api/assets/v2\"}"
+      },
+      {
+        "id": 3,
+        "role": "user",
+        "eventType": "text",
+        "content": "absolute",
+        "messageUid": "m3",
+        "sequence": 3,
+        "attachmentsJson": "{\"audioUrl\":\"http://127.0.0.1:18804/api/assets/v3.mp3\"}"
+      }
+    ],
+    "expected": [
+      {
+        "key": "asset:v3.mp3",
+        "kind": "audio",
+        "origin": "voice",
+        "role": "user",
+        "target": "/api/assets/v3.mp3",
+        "mediaType": "audio/mpeg",
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "asset:v2",
+        "kind": "audio",
+        "origin": "voice",
+        "role": "user",
+        "target": "/api/assets/v2",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "asset:voice1.webm",
+        "kind": "audio",
+        "origin": "voice",
+        "role": "user",
+        "target": "/api/assets/voice1.webm",
+        "mediaType": "audio/webm",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "assistant-image-payload-records",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "image",
+        "content": "generated",
+        "messageUid": "m1",
+        "sequence": 1,
+        "payloadRef": {
+          "recordId": 7002,
+          "kind": "assistant-image",
+          "length": 1234,
+          "contentType": "image/png",
+          "encoding": "binary",
+          "sha256": "s",
+          "available": true
+        }
+      }
+    ],
+    "expected": [
+      {
+        "key": "payload:7002",
+        "kind": "image",
+        "origin": "assistant-image",
+        "role": "assistant",
+        "target": "/ai-session/sessions/s1/messages/7002/output",
+        "mediaType": "image/png",
+        "payloadRef": {
+          "recordId": 7002,
+          "kind": "assistant-image",
+          "length": 1234,
+          "contentType": "image/png",
+          "encoding": "binary",
+          "sha256": "s",
+          "available": true
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "other-image-events-and-payload-kinds-are-ignored",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "image",
+        "content": "album art",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "image",
+        "content": "snapshot",
+        "messageUid": "m2",
+        "sequence": 2,
+        "payloadRef": {
+          "recordId": 7003,
+          "kind": "tool-output",
+          "length": 1234,
+          "contentType": "image/png",
+          "encoding": "binary",
+          "sha256": "s",
+          "available": true
+        }
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "tool_result",
+        "content": "x",
+        "messageUid": "m3",
+        "sequence": 3,
+        "payloadRef": {
+          "recordId": 7004,
+          "kind": "assistant-image",
+          "length": 1234,
+          "contentType": "image/png",
+          "encoding": "binary",
+          "sha256": "s",
+          "available": true
+        }
+      }
+    ],
+    "expected": []
+  },
+  {
+    "name": "write-tool-files-inside-the-project-are-documents",
+    "projectPath": "C:\\Projects\\x",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\out.md\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"path\":\"c:/projects/X/src/Main.cs\",\"content\":\"hi\"}",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{broken",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"content\":\"no path\"}",
+        "messageUid": "m4",
+        "sequence": 4
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/projects/x/src/main.cs",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "c:/projects/X/src/Main.cs",
+        "file": {
+          "path": "c:/projects/X/src/Main.cs"
+        },
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/projects/x/out.md",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/out.md",
+        "mediaType": "text/markdown",
+        "file": {
+          "path": "C:/Projects/x/out.md"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "write-tool-files-outside-the-project-are-not-artifacts",
+    "projectPath": "C:\\Projects\\x",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"S:\\\\RedCompute\\\\patch_journal.py\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\elsewhere\\\\a.md\",\"content\":\"x\"}",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Users\\\\a\\\\scratch\\\\b.md\",\"content\":\"x\"}",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"relative\\\\c.md\",\"content\":\"x\"}",
+        "messageUid": "m4",
+        "sequence": 4
+      },
+      {
+        "id": 5,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\kept.md\",\"content\":\"x\"}",
+        "messageUid": "m5",
+        "sequence": 5
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/projects/x/kept.md",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/kept.md",
+        "mediaType": "text/markdown",
+        "file": {
+          "path": "C:/Projects/x/kept.md"
+        },
+        "first": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "last": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "a-sibling-folder-sharing-the-project-prefix-is-outside",
+    "projectPath": "C:/Projects/x/",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x2\\\\a.md\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\xylophone\\\\b.md\",\"content\":\"x\"}",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\sub\\\\c.md\",\"content\":\"x\"}",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\",\"content\":\"x\"}",
+        "messageUid": "m4",
+        "sequence": 4
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/projects/x/sub/c.md",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/sub/c.md",
+        "mediaType": "text/markdown",
+        "file": {
+          "path": "C:/Projects/x/sub/c.md"
+        },
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "an-empty-project-path-means-no-written-files",
+    "projectPath": "",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\a.md\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"/home/dev/b.md\",\"content\":\"x\"}",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": []
+  },
+  {
+    "name": "a-missing-project-path-means-no-written-files",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\a.md\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      }
+    ],
+    "expected": []
+  },
+  {
+    "name": "posix-project-paths-contain-by-segment-and-case-sensitively",
+    "projectPath": "/home/dev/app",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"/home/dev/app/notes.txt\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"/home/dev/App/other.txt\",\"content\":\"x\"}",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"/home/dev/app2/other.txt\",\"content\":\"x\"}",
+        "messageUid": "m3",
+        "sequence": 3
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:/home/dev/app/notes.txt",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "/home/dev/app/notes.txt",
+        "mediaType": "text/plain",
+        "file": {
+          "path": "/home/dev/app/notes.txt"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "a-written-file-kind-follows-its-extension",
+    "projectPath": "C:\\Projects\\x",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\chart.PNG\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\demo.mp4\",\"content\":\"x\"}",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\voice.mp3\",\"content\":\"x\"}",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\talk.ogg\",\"content\":\"x\"}",
+        "messageUid": "m4",
+        "sequence": 4
+      },
+      {
+        "id": 5,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\report.pdf\",\"content\":\"x\"}",
+        "messageUid": "m5",
+        "sequence": 5
+      },
+      {
+        "id": 6,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\Projects\\\\x\\\\script.py\",\"content\":\"x\"}",
+        "messageUid": "m6",
+        "sequence": 6
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/projects/x/script.py",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/script.py",
+        "file": {
+          "path": "C:/Projects/x/script.py"
+        },
+        "first": {
+          "messageUid": "m6",
+          "recordId": 6,
+          "sequence": 6
+        },
+        "last": {
+          "messageUid": "m6",
+          "recordId": 6,
+          "sequence": 6
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/projects/x/report.pdf",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/report.pdf",
+        "mediaType": "application/pdf",
+        "file": {
+          "path": "C:/Projects/x/report.pdf"
+        },
+        "first": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "last": {
+          "messageUid": "m5",
+          "recordId": 5,
+          "sequence": 5
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/projects/x/talk.ogg",
+        "kind": "video",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/talk.ogg",
+        "mediaType": "video/ogg",
+        "file": {
+          "path": "C:/Projects/x/talk.ogg"
+        },
+        "first": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "last": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/projects/x/voice.mp3",
+        "kind": "audio",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/voice.mp3",
+        "mediaType": "audio/mpeg",
+        "file": {
+          "path": "C:/Projects/x/voice.mp3"
+        },
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/projects/x/demo.mp4",
+        "kind": "video",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/demo.mp4",
+        "mediaType": "video/mp4",
+        "file": {
+          "path": "C:/Projects/x/demo.mp4"
+        },
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      },
+      {
+        "key": "file:c:/projects/x/chart.png",
+        "kind": "image",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/chart.PNG",
+        "mediaType": "image/png",
+        "file": {
+          "path": "C:/Projects/x/chart.PNG"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "plan-tools-count-only-with-a-file-path-inside-the-project",
+    "projectPath": "C:\\Projects\\x",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "ExitPlanMode",
+        "toolInput": "{\"plan\":\"# Plan\",\"planFilePath\":\"C:\\\\Projects\\\\x\\\\plans\\\\p.md\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "ExitPlanMode",
+        "toolInput": "{\"plan\":\"# Inline plan only\"}",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "NotebookEdit",
+        "toolInput": "{\"notebook_path\":\"C:\\\\Projects\\\\x\\\\a.ipynb\"}",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "ExitPlanMode",
+        "toolInput": "{\"plan\":\"# Home plan\",\"planFilePath\":\"C:\\\\Users\\\\a\\\\.claude\\\\plans\\\\q.md\"}",
+        "messageUid": "m4",
+        "sequence": 4
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/projects/x/plans/p.md",
+        "kind": "document",
+        "origin": "tool-write",
+        "role": "assistant",
+        "target": "C:/Projects/x/plans/p.md",
+        "mediaType": "text/markdown",
+        "file": {
+          "path": "C:/Projects/x/plans/p.md"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "a-written-file-later-linked-is-one-artifact",
+    "projectPath": "C:\\p",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "tool_use",
+        "toolName": "Write",
+        "toolInput": "{\"file_path\":\"C:\\\\p\\\\a.md\",\"content\":\"x\"}",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "Saved [a](C:/P/A.md)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "file:c:/p/a.md",
+        "kind": "document",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "C:/p/a.md",
+        "title": "a",
+        "mediaType": "text/markdown",
+        "file": {
+          "path": "C:/p/a.md"
+        },
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 2
+      }
+    ]
+  },
+  {
+    "name": "occurrences-count-records-not-repeats-within-a-record",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[a](https://rep.example.com/) and again [a2](https://rep.example.com/)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "user",
+        "eventType": "text",
+        "content": "[b](https://rep.example.com/) [once](https://once.example.com/)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "<https://rep.example.com/>",
+        "messageUid": "m3",
+        "sequence": 3
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://rep.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://rep.example.com/",
+        "title": "a",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "occurrences": 3
+      },
+      {
+        "key": "url:https://once.example.com/",
+        "kind": "link",
+        "origin": "user-text",
+        "role": "user",
+        "target": "https://once.example.com/",
+        "title": "once",
+        "first": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 1
+      }
+    ]
+  },
+  {
+    "name": "url-keys-fold-scheme-and-host-case",
+    "records": [
+      {
+        "id": 1,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[a](https://Example.com/x)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[b](HTTPS://EXAMPLE.COM/x)",
+        "messageUid": "m2",
+        "sequence": 2
+      },
+      {
+        "id": 3,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[c](https://example.com)",
+        "messageUid": "m3",
+        "sequence": 3
+      },
+      {
+        "id": 4,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[d](https://example.com/)",
+        "messageUid": "m4",
+        "sequence": 4
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://example.com",
+        "title": "c",
+        "first": {
+          "messageUid": "m3",
+          "recordId": 3,
+          "sequence": 3
+        },
+        "last": {
+          "messageUid": "m4",
+          "recordId": 4,
+          "sequence": 4
+        },
+        "occurrences": 2
+      },
+      {
+        "key": "url:https://example.com/x",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://Example.com/x",
+        "title": "a",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 2
+      }
+    ]
+  },
+  {
+    "name": "user-and-assistant-mentions-share-one-artifact",
+    "records": [
+      {
+        "id": 1,
+        "role": "user",
+        "eventType": "text",
+        "content": "[a](https://both.example.com/)",
+        "messageUid": "m1",
+        "sequence": 1
+      },
+      {
+        "id": 2,
+        "role": "assistant",
+        "eventType": "text",
+        "content": "[a](https://both.example.com/)",
+        "messageUid": "m2",
+        "sequence": 2
+      }
+    ],
+    "expected": [
+      {
+        "key": "url:https://both.example.com/",
+        "kind": "link",
+        "origin": "assistant-text",
+        "role": "assistant",
+        "target": "https://both.example.com/",
+        "title": "a",
+        "first": {
+          "messageUid": "m1",
+          "recordId": 1,
+          "sequence": 1
+        },
+        "last": {
+          "messageUid": "m2",
+          "recordId": 2,
+          "sequence": 2
+        },
+        "occurrences": 2
+      }
+    ]
+  }
+]

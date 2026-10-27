@@ -79,6 +79,11 @@
           "H.NotifyIcon": "2.2.0"
         }
       },
+      "Markdig": {
+        "type": "Transitive",
+        "resolved": "0.41.3",
+        "contentHash": "i3vSTyGpBGWbJB04aJ3cPJs0T3BV2e1nduW3EUHK/i+xUupYbym75iZPss/XjqhS5JlBErwQYnx7ofK3Zcsozg=="
+      },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
         "resolved": "17.11.1",
@@ -454,6 +459,7 @@
       "RedCompute": {
         "type": "Project",
         "dependencies": {
+          "Markdig": "[0.41.3, )",
           "Microsoft.EntityFrameworkCore.Sqlite": "[9.0.18, )",
           "RedBamboo.AppHost": "[0.1.0, )",
           "RedCompute.Plugin.ClaudeCode": "[1.0.0, )",

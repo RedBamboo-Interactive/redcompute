@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
+using RedCompute.App.Services.SessionArtifacts;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
@@ -51,6 +52,7 @@ public static class UnifiedSessionEndpoints
     private static ProviderConfigService? _providerConfig;
     private static InputAttachmentStore? _attachmentStore;
     private static SessionInputQueueService? _inputQueue;
+    private static SessionArtifactIndex _artifactIndex = new();
     private static MaintenanceDeploymentCoordinator? _maintenance;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
@@ -67,6 +69,7 @@ public static class UnifiedSessionEndpoints
         _callbacks = callbacks;
         _quality = quality;
         _redLeafReader = redLeafReader;
+        _artifactIndex = new SessionArtifactIndex();
         _providerConfig = providerConfig;
         _attachmentStore = attachmentStore ?? new InputAttachmentStore(config);
         _inputQueue = inputQueue ?? throw new ArgumentNullException(nameof(inputQueue));
@@ -639,6 +642,107 @@ public static class UnifiedSessionEndpoints
             .WithParam("before", "string", description: "Opaque oldest-edge cursor returned by a previous page", location: ParamLocation.Query)
             .WithParam("after", "string", description: "Opaque newest-edge cursor returned by a previous page", location: ParamLocation.Query)
             .WithResponse(TranscriptPageResponseSchema);
+
+        endpoints.MapGet("/ai-session/sessions/{id}/artifacts",
+            "Deduplicated artifacts (images, video, audio, documents, links, entities) of the session's current epoch, derived from the canonical transcript",
+            async (HttpContext ctx, string id) =>
+        {
+            var kinds = ParseArtifactCsv(ctx.Request.Query["kinds"].FirstOrDefault(), ArtifactKinds.All, out var kindsError);
+            if (kindsError is not null) return Error(400, "invalid_filter", $"Unknown kind '{kindsError}'");
+            var origins = ParseArtifactCsv(ctx.Request.Query["origins"].FirstOrDefault(), ArtifactOrigins.All, out var originsError);
+            if (originsError is not null) return Error(400, "invalid_filter", $"Unknown origin '{originsError}'");
+
+            long? sinceSequence = null;
+            var requestedSince = ctx.Request.Query["sinceSequence"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(requestedSince))
+            {
+                if (!long.TryParse(requestedSince, out var since) || since < 0)
+                    return Error(400, "invalid_pagination", "sinceSequence must be a non-negative integer");
+                sinceSequence = since;
+            }
+
+            var limit = DefaultArtifactPageLimit;
+            var requestedLimit = ctx.Request.Query["limit"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(requestedLimit))
+            {
+                if (!int.TryParse(requestedLimit, out limit))
+                    return Error(400, "invalid_pagination", "limit must be an integer");
+                limit = Math.Clamp(limit, 1, MaxArtifactPageLimit);
+            }
+            var cursorText = ctx.Request.Query["cursor"].FirstOrDefault();
+
+            UnifiedSessionInfo? info;
+            string? entityId;
+            try
+            {
+                (info, entityId) = await _redLeafReader!.GetSessionInfoAsync(id);
+            }
+            catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
+            if (info == null || entityId == null)
+                return Error(404, "not_found", $"Session '{id}' not found");
+
+            // Exactly the transcript read, and before any cursor validation: a cursor must not become
+            // an oracle for another user's confidential session.
+            if (!CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
+
+            var epoch = TranscriptOrdering.Epoch(info.Provider, info.Id);
+            (long Sequence, long RecordId, string Key)? after = null;
+            if (!string.IsNullOrWhiteSpace(cursorText))
+            {
+                try { after = SessionArtifactCursor.Decode(cursorText, info.Id, epoch); }
+                catch (TranscriptPageCursorException ex)
+                {
+                    return Error(ex.Code == "invalid_cursor" ? 400 : 409, ex.Code, ex.Message);
+                }
+            }
+
+            SessionArtifactSnapshot snapshot;
+            try
+            {
+                snapshot = await _artifactIndex.QueryAsync(
+                    info.Id, epoch,
+                    (afterRecordId, ct) => _redLeafReader.GetTranscriptPageAsync(
+                        entityId, info.Id, RedLeafSessionReader.MaxTranscriptPageLimit,
+                        beforeRecordId: null, afterRecordId: afterRecordId, ct),
+                    new SessionArtifactFilter(kinds, origins, sinceSequence),
+                    ctx.RequestAborted,
+                    info.ProjectPath);
+            }
+            catch (TranscriptPageTooLargeException ex)
+            {
+                log(
+                    $"Artifact scan rejected for {info.Provider}/{info.Id}: " +
+                    $"boundaryRecords={ex.RecordCount}, boundaryInlineBytes={ex.InlineBytes}",
+                    null);
+                return Error(413, "transcript_message_too_large", ex.Message);
+            }
+            catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
+            var (items, nextCursor) = SessionArtifactCursor.Slice(snapshot.Items, after, limit, info.Id, epoch);
+            return Results.Json(new SessionArtifactPage
+            {
+                SessionId = info.Id,
+                Epoch = epoch,
+                ThroughSequence = snapshot.ThroughSequence,
+                Items = items,
+                Page = new SessionArtifactPageInfo { NextCursor = nextCursor },
+            });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("kinds", "string", description: "Comma-separated artifact kinds: image, video, audio, document, link, entity (default all)", location: ParamLocation.Query)
+            .WithParam("origins", "string", description: "Comma-separated origins: user-text, assistant-text, user-attachment, assistant-image, voice, tool-write (default all). An artifact matches when any of its occurrences has one of them", location: ParamLocation.Query)
+            .WithParam("sinceSequence", "integer", description: "Delta read: only artifacts whose last occurrence sequence is greater than this", location: ParamLocation.Query)
+            .WithParam("limit", "integer", description: "Page size, clamped to 1..500", defaultValue: 200, location: ParamLocation.Query)
+            .WithParam("cursor", "string", description: "Opaque cursor returned in page.nextCursor", location: ParamLocation.Query)
+            .WithResponse(ArtifactsResponseSchema);
 
         endpoints.MapPut("/ai-session/sessions/{id}/confidential",
             "Permanently tighten a session and its linked job to the verified owning Agent and beneficiary user.",
@@ -2753,6 +2857,78 @@ public static class UnifiedSessionEndpoints
             blockedReason = new { type = new[] { "string", "null" } },
             headItemId = new { type = new[] { "string", "null" } },
             errorCode = new { type = new[] { "string", "null" } },
+        },
+    };
+
+    internal const int DefaultArtifactPageLimit = 200;
+    internal const int MaxArtifactPageLimit = 500;
+
+    /// <summary>Null means "all"; <paramref name="unknown"/> names the first value outside <paramref name="allowed"/>.</summary>
+    private static HashSet<string>? ParseArtifactCsv(string? csv, IReadOnlyList<string> allowed, out string? unknown)
+    {
+        unknown = null;
+        if (string.IsNullOrWhiteSpace(csv)) return null;
+        var values = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var part in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var value = part.ToLowerInvariant();
+            if (!allowed.Contains(value)) { unknown = part; return null; }
+            values.Add(value);
+        }
+        return values.Count == 0 ? null : values;
+    }
+
+    private static readonly object ArtifactOccurrenceSchema = new
+    {
+        type = "object",
+        properties = new
+        {
+            messageUid = new { type = "string", nullable = true },
+            recordId = new { type = "integer" },
+            sequence = new { type = "integer" },
+            timestamp = new { type = "string", format = "date-time" },
+        },
+    };
+
+    private static readonly object ArtifactsResponseSchema = new
+    {
+        type = "object",
+        required = new[] { "sessionId", "epoch", "throughSequence", "extractorVersion", "items", "page" },
+        properties = new
+        {
+            sessionId = new { type = "string" },
+            epoch = new { type = "string" },
+            throughSequence = new { type = "integer" },
+            extractorVersion = new { type = "integer" },
+            items = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    required = new[] { "key", "kind", "origin", "role", "target", "first", "last", "occurrences" },
+                    properties = new
+                    {
+                        key = new { type = "string", description = "Stable dedup key: asset:<id>, entity:<id>, file:<path>, payload:<recordId> or url:<url>" },
+                        kind = new { type = "string", @enum = ArtifactKinds.All },
+                        origin = new { type = "string", @enum = ArtifactOrigins.All },
+                        role = new { type = "string" },
+                        target = new { type = "string", description = "URL, path or redleaf:// href; never base64 or a data: URL" },
+                        title = new { type = "string", nullable = true },
+                        mediaType = new { type = "string", nullable = true },
+                        name = new { type = "string", nullable = true },
+                        size = new { type = "integer", nullable = true },
+                        entity = new { type = "object", nullable = true, properties = new { typeSlug = new { type = "string" }, id = new { type = "string" } } },
+                        file = new { type = "object", nullable = true, properties = new { path = new { type = "string" }, line = new { type = "integer", nullable = true } } },
+                        payloadRef = new { type = "object", nullable = true },
+                        @internal = new { type = "boolean", nullable = true },
+                        first = ArtifactOccurrenceSchema,
+                        last = ArtifactOccurrenceSchema,
+                        occurrences = new { type = "integer" },
+                    },
+                },
+            },
+            page = new { type = "object", properties = new { nextCursor = new { type = "string", nullable = true } } },
         },
     };
 

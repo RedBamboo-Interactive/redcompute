@@ -41,5 +41,8 @@
     <None Include="..\Fixtures\vision\*" LinkBase="Fixtures\vision">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\Fixtures\artifact-extraction-cases.json" Link="Fixtures\artifact-extraction-cases.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>
