@@ -738,7 +738,6 @@ public class ClaudeSessionService
         // Nothing is written to disk, so there is no file for any tool to reach, and the tool-free
         // flags and init-event check below are exactly the same as for a text-only call.
         var hasImages = images is { Count: > 0 };
-        var useCliArg = !hasImages && Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
         var stdinPayload = hasImages ? OneshotImageInput(prompt, images!) : prompt;
 
         using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-claude-generate");
@@ -756,45 +755,51 @@ public class ClaudeSessionService
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        startInfo.ArgumentList.Add("-p");
-        if (useCliArg)
-            startInfo.ArgumentList.Add(prompt);
-        startInfo.ArgumentList.Add("--output-format");
-        startInfo.ArgumentList.Add("stream-json");
+        var options = new List<string> { "--output-format", "stream-json" };
         // Current CLIs refuse --print with stream-json unless --verbose is also present.
-        startInfo.ArgumentList.Add("--verbose");
+        options.Add("--verbose");
         if (hasImages)
         {
-            startInfo.ArgumentList.Add("--input-format");
-            startInfo.ArgumentList.Add("stream-json");
+            options.Add("--input-format");
+            options.Add("stream-json");
         }
         if (!string.IsNullOrWhiteSpace(model))
         {
-            startInfo.ArgumentList.Add("--model");
-            startInfo.ArgumentList.Add(model);
+            options.Add("--model");
+            options.Add(model);
         }
-        startInfo.ArgumentList.Add("--no-session-persistence");
+        options.Add("--no-session-persistence");
         // Tool-free by construction. --allowedTools only changes permission prompts; it does not
         // remove built-ins. These flags also prevent user settings, plugins, and MCP servers from
         // repopulating the surface.
-        startInfo.ArgumentList.Add("--tools");
-        startInfo.ArgumentList.Add("");
-        startInfo.ArgumentList.Add("--strict-mcp-config");
-        startInfo.ArgumentList.Add("--mcp-config");
-        startInfo.ArgumentList.Add(EmptyMcpConfig);
+        options.Add("--tools");
+        options.Add("");
+        options.Add("--strict-mcp-config");
+        options.Add("--mcp-config");
+        options.Add(EmptyMcpConfig);
         // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
-        startInfo.ArgumentList.Add("--thinking-display");
-        startInfo.ArgumentList.Add("summarized");
+        options.Add("--thinking-display");
+        options.Add("summarized");
         if (!string.IsNullOrEmpty(system))
         {
-            startInfo.ArgumentList.Add("--system-prompt");
-            startInfo.ArgumentList.Add(system);
+            options.Add("--system-prompt");
+            options.Add(system);
         }
         if (!string.IsNullOrEmpty(effort))
         {
-            startInfo.ArgumentList.Add("--effort");
-            startInfo.ArgumentList.Add(effort);
+            options.Add("--effort");
+            options.Add(effort);
         }
+
+        if (OneshotCommandLineLength(claudePath, options) > MaxOneshotCommandLineChars)
+            return new OneshotResult(false, null, null, null, 0, 0, null,
+                "The system prompt is too long for the claude command line.");
+        var useCliArg = UsePromptArgument(claudePath, prompt, options, hasImages);
+        startInfo.ArgumentList.Add("-p");
+        if (useCliArg)
+            startInfo.ArgumentList.Add(prompt);
+        foreach (var option in options)
+            startInfo.ArgumentList.Add(option);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -883,6 +888,28 @@ public class ClaudeSessionService
     }
 
     /// <summary>One stream-json user message: the flattened prompt, then each validated image.</summary>
+    /// <summary>
+    /// Windows limits a whole command line to 32,767 UTF-16 characters. The prompt rides on the
+    /// command line only when everything fits with margin; otherwise it goes through stdin.
+    /// Measuring the prompt alone let a long system prompt push release notes over the limit
+    /// ("The filename or extension is too long", 2026-10-28).
+    /// </summary>
+    internal const int MaxOneshotCommandLineChars = 30_000;
+
+    internal static bool UsePromptArgument(
+        string fileName, string prompt, IReadOnlyList<string> options, bool hasImages)
+        => !hasImages
+           && OneshotCommandLineLength(fileName, [.. options, "-p", prompt]) <= MaxOneshotCommandLineChars;
+
+    /// <summary>Upper bound of the quoted command line Process builds from these arguments.</summary>
+    internal static int OneshotCommandLineLength(string fileName, IEnumerable<string> arguments)
+    {
+        var length = fileName.Length + 3;
+        foreach (var argument in arguments)
+            length += argument.Length + 3 + argument.Count(c => c is '"' or '\\');
+        return length;
+    }
+
     internal static string OneshotImageInput(string prompt, IReadOnlyList<GenerateImage> images)
     {
         var content = new List<object> { new { type = "text", text = prompt } };
