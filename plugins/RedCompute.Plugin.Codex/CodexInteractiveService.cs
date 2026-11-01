@@ -603,6 +603,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         // A user message opens a new turn, so the previous turn's uid must not leak into it.
         session.CurrentTurnUid = null;
+        session.ActiveTurnId = null;
         session.HasFinalOutput = false;
         session.HasCompletedFinalAnswer = false;
         session.InterruptRequested = false;
@@ -645,6 +646,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         catch (Exception ex)
         {
             _log($"[Codex] turn/start failed for {sessionId}: {ex.Message}", null);
+            // turn/started is authoritative: the turn is running and only its acknowledgement failed.
+            if (info.Status == "Active" && session.ActiveTurnId != null) return true;
             Emit(session, new CodexStreamEvent { Type = "error", Content = ex.Message });
             info.Status = "Idle";
             Persist(info);

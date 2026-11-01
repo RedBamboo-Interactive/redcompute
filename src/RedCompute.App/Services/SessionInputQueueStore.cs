@@ -785,6 +785,34 @@ public sealed class SessionInputQueueStore
     public Task MarkDeliveredAsync(IReadOnlyList<SessionInputQueueItem> batch, string deliveredMessageUid, CancellationToken ct = default) =>
         CompleteBatchAsync(batch, SessionInputQueueState.Delivered, deliveredMessageUid, null, null, false, null, ct);
 
+    /// <summary>
+    /// Settles failed inputs the session transcript already holds. The transcript is the permanent
+    /// delivery record, so the failure was about the send's report, not about the input.
+    /// </summary>
+    public async Task SettleFailedAsDeliveredAsync(IReadOnlyList<SessionInputQueueItem> items, string deliveredMessageUid, CancellationToken ct = default)
+    {
+        if (items.Count == 0) return;
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        foreach (var item in items)
+        {
+            var cmd = connection.CreateCommand();
+            cmd.Transaction = transaction;
+            cmd.CommandText = """
+                UPDATE SessionQueuedInputs
+                SET State = 'Delivered', UpdatedAt = $now, NextAttemptAt = NULL,
+                    LeaseOwner = NULL, LeaseExpiresAt = NULL, ErrorCode = NULL,
+                    ErrorMessage = NULL, ErrorRetryable = 0,
+                    DeliveredMessageUid = $deliveredMessageUid, CompletedAt = $now
+                WHERE Id = $id AND State = 'Failed'
+                """;
+            Add(cmd, "$now", now); Add(cmd, "$deliveredMessageUid", deliveredMessageUid); Add(cmd, "$id", item.Id);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await transaction.CommitAsync(ct);
+    }
+
     public Task RequeueBusyAsync(IReadOnlyList<SessionInputQueueItem> batch, CancellationToken ct = default) =>
         CompleteBatchAsync(batch, SessionInputQueueState.Pending, null, null, null, false, null, ct);
 

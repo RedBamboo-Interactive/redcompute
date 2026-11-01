@@ -370,6 +370,24 @@ public sealed class SessionInputQueueService
 
     internal Task ProcessSessionAsync(string sessionId, CancellationToken ct) => ProcessSessionAsync(sessionId, ct, null);
 
+    private static bool TranscriptHoldsInput(ISessionProvider provider, string sessionId, string messageUid)
+    {
+        var (_, history) = provider.GetSession(sessionId);
+        return history.Any(message => message.Role == "user" && message.MessageUid == messageUid);
+    }
+
+    /// <summary>
+    /// A blocked session comes back on every sweep. A failed input is only recorded before its
+    /// failure, so one look per process is enough and a long transcript isn't reread every few seconds.
+    /// </summary>
+    private bool FailedInputIsInTranscript(ISessionProvider provider, SessionInputQueueItem head)
+    {
+        if (_failuresOutsideTranscript.ContainsKey(head.Id)) return false;
+        if (TranscriptHoldsInput(provider, head.SessionId, head.MessageUid)) return true;
+        _failuresOutsideTranscript.TryAdd(head.Id, 0);
+        return false;
+    }
+
     internal async Task RecoverSteeringDeliveriesAsync(CancellationToken ct)
     {
         var delivering = await _store.GetDeliveringSteersAsync(ct);
@@ -401,6 +419,8 @@ public sealed class SessionInputQueueService
             }
         }
     }
+
+    private readonly ConcurrentDictionary<string, byte> _failuresOutsideTranscript = new(StringComparer.Ordinal);
 
     private async Task ProcessSessionAsync(string sessionId, CancellationToken ct, CallerRecovery? caller)
     {
@@ -509,6 +529,18 @@ public sealed class SessionInputQueueService
             // Every pre-restart accepted authority must be revalidated, including later FIFO scopes.
             if (restart) await _store.RequireSessionRecoveryAsync(sessionId, ct);
             var head = await _store.GetHeadAsync(sessionId, ct);
+            if (head?.State == SessionInputQueueState.Failed && FailedInputIsInTranscript(provider, head))
+            {
+                // Only one batch can be failed at a time, because nothing is claimed behind a failed
+                // head. Every failed row therefore belongs to the batch the transcript already holds.
+                var failed = (await _store.ListAsync(sessionId, head.OwnerUserId, includeTerminal: false, ct))
+                    .Where(item => item.State == SessionInputQueueState.Failed).ToArray();
+                await _store.SettleFailedAsDeliveredAsync(failed, head.MessageUid, ct);
+                await PublishAsync(sessionId, failed.Select(item => item.Id).ToArray(), "delivered", ct,
+                    deliveredMessageUid: head.MessageUid);
+                _log($"[InputQueue] Settled failed input {head.Id} for session {sessionId}: the transcript already holds it", info.JobId);
+                head = await _store.GetHeadAsync(sessionId, ct);
+            }
             if (head is null || head.State != SessionInputQueueState.Pending) return;
             var callerMatches = caller is not null && caller.Owner == info.UserId
                 && caller.Owner == head.OwnerUserId && caller.Scope == head.ProvenanceScope;
@@ -628,6 +660,15 @@ public sealed class SessionInputQueueService
                     case SessionInputDeliveryStatus.Busy:
                         await _store.RequeueBusyAsync(batch, CancellationToken.None);
                         await PublishAsync(sessionId, batch.Select(item => item.Id).ToArray(), "waiting_for_session", CancellationToken.None);
+                        break;
+                    // A provider can record the input and then report failure (Codex when turn/start
+                    // fails). The input is in the conversation with any error beside it, and failing
+                    // it would leave a blocker behind a message that was already sent.
+                    case var _ when !result.Retryable && TranscriptHoldsInput(provider, sessionId, deliveredMessageUid):
+                        await _store.MarkDeliveredAsync(batch, deliveredMessageUid, CancellationToken.None);
+                        await PublishAsync(sessionId, batch.Select(item => item.Id).ToArray(), "delivered",
+                            CancellationToken.None, deliveredMessageUid: deliveredMessageUid);
+                        _log($"[InputQueue] Provider refused input it had already recorded for session {sessionId}: {result.ErrorCode}", info.JobId);
                         break;
                     default:
                         await _store.FailAsync(batch, result.ErrorCode ?? "delivery_failed",
