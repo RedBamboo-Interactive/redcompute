@@ -170,6 +170,62 @@ internal static class JobApiResponse
     private static object Field(string type, string description) => new { type, description };
 }
 
+/// <summary>The half-open <c>[since, until)</c> range of a job listing, parsed strictly from its query.</summary>
+internal readonly record struct JobTimeRange(DateTimeOffset? Since, DateTimeOffset? Until)
+{
+    private static readonly string[] Iso8601 =
+    [
+        "yyyy-MM-dd",
+        "yyyy-MM-dd'T'HH:mm",
+        "yyyy-MM-dd'T'HH:mmK",
+        "yyyy-MM-dd'T'HH:mm:ss",
+        "yyyy-MM-dd'T'HH:mm:ssK",
+        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF",
+        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK",
+    ];
+
+    public static bool TryParse(string? since, string? until, out JobTimeRange range, out IResult? error)
+    {
+        range = default;
+        error = null;
+        if (!TryReadInstant(since, out var from))
+        {
+            error = Invalid("invalid_since", "since");
+            return false;
+        }
+        if (!TryReadInstant(until, out var to))
+        {
+            error = Invalid("invalid_until", "until");
+            return false;
+        }
+        if (from > to)
+        {
+            error = Results.BadRequest(new { error = "invalid_range", message = "since must not be after until" });
+            return false;
+        }
+        range = new(from, to);
+        return true;
+    }
+
+    private static bool TryReadInstant(string? value, out DateTimeOffset? instant)
+    {
+        instant = null;
+        if (value is null) return true;
+        if (!DateTimeOffset.TryParseExact(value, Iso8601, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal, out var parsed))
+            return false;
+        instant = parsed;
+        return true;
+    }
+
+    // A '+' in a query string decodes to a space, so an unescaped offset lands here too.
+    private static IResult Invalid(string code, string name) => Results.BadRequest(new
+    {
+        error = code,
+        message = $"{name} must be an ISO 8601 instant such as 2026-11-03T03:00:00Z; escape a + in an offset as %2B",
+    });
+}
+
 internal static class JobLongPoll
 {
     public const int MaximumSeconds = 60;

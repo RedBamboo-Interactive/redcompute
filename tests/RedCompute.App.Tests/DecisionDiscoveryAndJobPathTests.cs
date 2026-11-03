@@ -54,8 +54,8 @@ public sealed class DecisionDiscoveryAndJobPathTests
         Assert.NotNull(validate.Response);
         Assert.Contains("job-backed", validate.Description);
 
-        var openApi = JsonSerializer.Serialize(
-            await OpenApiGenerator.GenerateAsync(descriptor));
+        var catalog = await new DiscoveryCatalogProvider(app, descriptor).GetAsync();
+        var openApi = JsonSerializer.Serialize(OpenApiGenerator.Generate(descriptor, catalog));
         Assert.Contains("/decision/generate", openApi);
         Assert.Contains("discriminator", openApi);
         Assert.Contains("probabilities", openApi);

@@ -814,11 +814,24 @@ public class JobTrackingService : IJobTracker
         string? beneficiary = null, string? assurance = null, bool? complete = null,
         Guid? parentJobId = null, string? contextKind = null, string? contextId = null,
         bool? externalExecution = null, string? executionId = null,
-        Func<JobRecord, bool>? canRead = null, bool publicJobsAlwaysReadable = false)
+        Func<JobRecord, bool>? canRead = null, bool publicJobsAlwaysReadable = false,
+        DateTimeOffset? queuedSince = null, DateTimeOffset? queuedUntil = null)
     {
         using var db = _dbFactory();
         IQueryable<JobRecord> query = db.Jobs;
 
+        // QueuedAt is stored as round-trip text, so these compare as strings: only instants written
+        // in the same offset order correctly. Stored rows are UTC, so the bounds must be too.
+        if (queuedSince is { } since)
+        {
+            var from = since.ToUniversalTime();
+            query = query.Where(j => j.QueuedAt >= from);
+        }
+        if (queuedUntil is { } until)
+        {
+            var to = until.ToUniversalTime();
+            query = query.Where(j => j.QueuedAt < to);
+        }
         if (capabilitySlug != null) query = query.Where(j => j.CapabilitySlug == capabilitySlug);
         if (status != null) query = query.Where(j => j.Status == status);
         if (parentJobId != null) query = query.Where(j => j.ParentJobId == parentJobId);

@@ -84,7 +84,8 @@ public sealed class JobApiContractTests : IAsyncLifetime
         Assert.Contains("outputs", response);
         Assert.Contains("timed_out", response);
 
-        var openApi = JsonSerializer.Serialize(await OpenApiGenerator.GenerateAsync(descriptor));
+        var catalog = await new DiscoveryCatalogProvider(_app, descriptor).GetAsync();
+        var openApi = JsonSerializer.Serialize(OpenApiGenerator.Generate(descriptor, catalog));
         Assert.Contains("waitSeconds", openApi);
         Assert.Contains("lifecycleEvents", openApi);
         Assert.Contains("executing", openApi);
@@ -292,6 +293,72 @@ public sealed class JobApiContractTests : IAsyncLifetime
         Assert.Equal(0.75, _jobs.GetJob(second.Id)!.Progress);
         Assert.NotNull(_jobs.GetJob(first.Id)!.ProviderStartedAt);
         Assert.NotNull(_jobs.GetJob(second.Id)!.ProviderStartedAt);
+    }
+
+    [Fact]
+    public async Task Job_listing_filters_queuedAt_over_a_half_open_range()
+    {
+        var boundary = new DateTimeOffset(2026, 3, 3, 3, 0, 0, TimeSpan.Zero);
+        var database = Path.Combine(_directory, "jobs.db");
+        JobRecord At(DateTimeOffset queuedAt, string capability = "image-gen", string name = "range") =>
+            new JobTrackingService(() => new RedComputeDbContext(database), () => queuedAt)
+                .CreateJob(new JobSubmission(capability, "fake", "{}", Provenance(), Name: name));
+        var before = At(boundary.AddTicks(-1));
+        var first = At(boundary);
+        var last = At(boundary.AddDays(1).AddTicks(-1));
+        var after = At(boundary.AddDays(1));
+        var other = At(boundary.AddHours(1), "tts", "other capability");
+
+        var since = Uri.EscapeDataString(boundary.ToString("O"));
+        var until = Uri.EscapeDataString(boundary.AddDays(1).ToString("O"));
+
+        Assert.Equal([last.Id, other.Id, first.Id], await ListedAsync($"/jobs?since={since}&until={until}"));
+        Assert.Equal([after.Id, last.Id, other.Id, first.Id], await ListedAsync($"/jobs?since={since}"));
+        Assert.Equal([first.Id, before.Id], await ListedAsync($"/jobs?until={Uri.EscapeDataString(boundary.AddTicks(1).ToString("O"))}"));
+
+        // The same instant in another offset selects the same rows; it must not compare as text.
+        var zurich = Uri.EscapeDataString(boundary.ToOffset(TimeSpan.FromHours(1)).ToString("O"));
+        Assert.Equal([last.Id, other.Id, first.Id], await ListedAsync($"/jobs?since={zurich}&until={until}"));
+
+        // A range combines with every other filter, and an empty range is empty rather than an error.
+        Assert.Equal([last.Id, first.Id], await ListedAsync($"/jobs?since={since}&until={until}&capability=image-gen"));
+        Assert.Equal([other.Id], await ListedAsync($"/jobs?since={since}&until={until}&search=other%20capability"));
+        Assert.Equal([last.Id, other.Id, first.Id], await ListedAsync($"/jobs?since={since}&until={until}&actor=agent-1"));
+        Assert.Empty(await ListedAsync($"/jobs?since={since}&until={since}"));
+    }
+
+    [Theory]
+    [InlineData("since=yesterday", "invalid_since")]
+    [InlineData("until=11/03/2026", "invalid_until")]
+    [InlineData("since=2026-11-03T03:00:00%2000:00", "invalid_since")]
+    [InlineData("since=", "invalid_since")]
+    [InlineData("since=2026-11-04T00:00:00Z&until=2026-11-03T00:00:00Z", "invalid_range")]
+    public async Task Job_listing_refuses_an_unreadable_range(string query, string code)
+    {
+        using var response = await _client.GetAsync($"/jobs?{query}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(code, body.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public void Job_listing_range_is_documented_for_discovery()
+    {
+        var route = Assert.Single(_endpoints.GetEndpoints(), endpoint => endpoint.Method == "GET" && endpoint.Path == "/jobs");
+
+        Assert.Contains("[since, until)", route.Description);
+        Assert.Contains(route.Parameters!, parameter => parameter.Name == "since");
+        Assert.Contains(route.Parameters!, parameter => parameter.Name == "until");
+    }
+
+    private async Task<List<Guid>> ListedAsync(string path)
+    {
+        using var response = await _client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return body.RootElement.GetProperty("items").EnumerateArray()
+            .Select(item => item.GetProperty("id").GetGuid()).ToList();
     }
 
     private JobRecord CreateJob() => _jobs.CreateJob(new JobSubmission(

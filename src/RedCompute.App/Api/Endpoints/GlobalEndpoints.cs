@@ -87,16 +87,20 @@ public static class GlobalEndpoints
             });
         });
 
-        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, and provenance filters", (HttpContext ctx, string? capability, string? status, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, string? executionId, bool? externalExecution, int? limit, int? offset) =>
+        endpoints.MapGet("/jobs", "List jobs with independent execution, hierarchy, provenance and queued-time filters. since and until select the half-open range [since, until) over queuedAt and combine with every other filter; an unreadable or reversed range answers 400.", (HttpContext ctx, string? capability, string? status, string? search, string? originApp, string? originApi, string? actor, string? beneficiary, string? assurance, bool? complete, Guid? parentJobId, string? contextKind, string? contextId, string? executionId, bool? externalExecution, string? since, string? until, int? limit, int? offset) =>
         {
             JobStatus? statusFilter = null;
             if (status != null && Enum.TryParse<JobStatus>(status, true, out var parsed))
                 statusFilter = parsed;
 
+            if (!JobTimeRange.TryParse(since, until, out var queued, out var rangeError))
+                return rangeError!;
+
             var (jobs, totalCount) = jobTracker.GetJobs(capability, statusFilter, search,
                 limit ?? 50, offset ?? 0, originApp, originApi, actor, beneficiary, assurance, complete,
                 parentJobId, contextKind, contextId, externalExecution, executionId,
-                job => ComputeResourceAccess.CanReadJob(ctx, job), publicJobsAlwaysReadable: true);
+                job => ComputeResourceAccess.CanReadJob(ctx, job), publicJobsAlwaysReadable: true,
+                queuedSince: queued.Since, queuedUntil: queued.Until);
 
             var sessionStatuses = new Dictionary<Guid, string>();
             var aiSessionJobIds = jobs
@@ -159,6 +163,8 @@ public static class GlobalEndpoints
             .WithParam("executionId", "string", description: "Filter by the signed suite execution id. This is the direct audit lookup for an app, agent, automation, or child process execution.", location: ParamLocation.Query)
             .WithParam("externalExecution", "boolean", description: "Filter work performed by an external trusted worker", location: ParamLocation.Query)
             .WithParam("search", "string", description: "Substring match over job name, provider and capability", location: ParamLocation.Query)
+            .WithParam("since", "string", description: "ISO 8601 instant: only jobs queued at or after it. A value with no offset is read as UTC.", location: ParamLocation.Query)
+            .WithParam("until", "string", description: "ISO 8601 instant: only jobs queued before it. A value with no offset is read as UTC.", location: ParamLocation.Query)
             .WithParam("limit", "integer", description: "Max jobs to return", defaultValue: 50, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
