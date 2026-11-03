@@ -58,6 +58,8 @@ public class ClaudeSessionService
 
     /// <summary>Test seam for the short-lived, tool-free completion process.</summary>
     internal Func<ProcessStartInfo, Process?> LaunchOneshotProcess { get; set; } = Process.Start;
+    /// <summary>Test seam for the agent execution process.</summary>
+    internal Func<ProcessStartInfo, Process?> LaunchAgentProcess { get; set; } = Process.Start;
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
     public ClaudeSessionService(
@@ -350,8 +352,8 @@ public class ClaudeSessionService
         string? streamKey = null,
         Dictionary<string, string>? env = null)
         => LaunchGate.RunWhenInstallIdleAsync(
-            () => ExecuteAgentCoreAsync(prompt, container, workingDir, model, effort, maxTurns,
-                tools, allowedTools, addDirs, timeout, ct, streamKey, env),
+            spawned => ExecuteAgentCoreAsync(prompt, container, workingDir, model, effort, maxTurns,
+                tools, allowedTools, addDirs, timeout, ct, streamKey, env, spawned),
             ct);
 
     private async Task<ExecuteResult> ExecuteAgentCoreAsync(
@@ -360,7 +362,8 @@ public class ClaudeSessionService
         string[]? tools, string[]? allowedTools, string[]? addDirs, int timeout,
         CancellationToken ct,
         string? streamKey,
-        Dictionary<string, string>? env)
+        Dictionary<string, string>? env,
+        Action spawned)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
         var useCliArg = Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
@@ -408,11 +411,12 @@ public class ClaudeSessionService
         }
 
         var sw = Stopwatch.StartNew();
-        using var process = Process.Start(startInfo);
+        using var process = LaunchAgentProcess(startInfo);
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start process");
         if (streamKey != null)
             _runningProcesses[streamKey] = process;
+        spawned();
         _log($"[Claude] TIMING Process.Start took {sw.ElapsedMilliseconds}ms (docker={useDocker})", null);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -719,12 +723,12 @@ public class ClaudeSessionService
         int maxTokens, CancellationToken ct, string? effort = null, int timeout = 120,
         IReadOnlyList<GenerateImage>? images = null)
         => LaunchGate.RunWhenInstallIdleAsync(
-            () => ExecuteOneshotCoreAsync(model, system, messages, maxTokens, ct, effort, timeout, images),
+            spawned => ExecuteOneshotCoreAsync(model, system, messages, maxTokens, ct, effort, timeout, images, spawned),
             ct);
 
     private async Task<OneshotResult> ExecuteOneshotCoreAsync(string? model, string? system,
         JsonElement messages, int maxTokens, CancellationToken ct, string? effort, int timeout,
-        IReadOnlyList<GenerateImage>? images)
+        IReadOnlyList<GenerateImage>? images, Action spawned)
     {
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
@@ -806,6 +810,7 @@ public class ClaudeSessionService
         using var process = LaunchOneshotProcess(startInfo);
         if (process == null)
             return new OneshotResult(false, null, null, null, 0, 0, null, "Failed to start claude process");
+        spawned();
 
         _log($"[Claude] Oneshot process started in {sw.ElapsedMilliseconds}ms", null);
 
@@ -884,6 +889,12 @@ public class ClaudeSessionService
                     $"Execution timed out after {clampedTimeout}s");
             }
             return new OneshotResult(false, null, null, null, 0, 0, null, $"Execution timed out after {clampedTimeout}s");
+        }
+        catch (OperationCanceledException)
+        {
+            // Leaving now ends this run's hold on installs, so the process must not outlive it.
+            try { process.Kill(entireProcessTree: true); } catch { }
+            throw;
         }
     }
 

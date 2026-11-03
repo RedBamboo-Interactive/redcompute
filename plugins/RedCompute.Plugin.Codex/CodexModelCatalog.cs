@@ -145,10 +145,10 @@ public sealed class CodexModelCatalog(CodexConfig config, Action<string, Guid?> 
     }
 
     private Task<IReadOnlyList<CodexModel>> FetchAsync(CancellationToken ct)
-        => LaunchGate.RunWhenInstallIdleAsync(async () =>
+        => LaunchGate.RunWhenInstallIdleAsync(async spawned =>
         {
             await using var conn = await CodexAppServerConnection.StartAsync(
-                config.CodexPath, workingDirectory: null, log, env: null, ct);
+                config.CodexPath, workingDirectory: null, log, env: null, ct, spawned: spawned);
 
             var result = await conn.SendRequestAsync("model/list", new { }, timeoutSeconds: 30, ct);
             return Parse(result);

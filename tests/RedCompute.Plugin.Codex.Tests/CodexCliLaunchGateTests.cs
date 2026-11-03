@@ -127,6 +127,384 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(1, Volatile.Read(ref spawnCount));
     }
 
+    private const string ExecOutput =
+        "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n" +
+        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n" +
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n";
+
+    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
+    private readonly List<Process> _longRunning = [];
+
+    [Fact]
+    public async Task Running_exec_does_not_block_another_exec_and_keeps_installs_out_until_it_ends()
+    {
+        var (exec, manager) = CreateExec();
+        var launches = 0;
+        Process? observer = null;
+        exec.LaunchExecProcess = _ =>
+        {
+            if (Interlocked.Increment(ref launches) > 1)
+                return CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+            var process = StartLongRunningProcess();
+            observer = Process.GetProcessById(process.Id);
+            return process;
+        };
+
+        using var cancel = new CancellationTokenSource();
+        var running = exec.ExecuteExecAsync("first", null, _root, null, null, 120, cancel.Token);
+        await WaitUntilAsync(() => Volatile.Read(ref observer) is not null);
+
+        var second = await exec.ExecuteExecAsync("second", null, _root, null, null, 30, CancellationToken.None)
+            .WaitAsync(Patience);
+        Assert.True(second.Success, second.Error);
+        Assert.False(running.IsCompleted);
+
+        var refused = Assert.Throws<CliInstallRejectedException>(() => manager.StartInstall("latest"));
+        Assert.Equal("cli_runs_active", refused.Code);
+
+        cancel.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(Patience));
+        Assert.True(observer!.WaitForExit(5000));
+        observer.Dispose();
+
+        var operation = manager.StartInstall("latest");
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Exec_during_install_waits_before_spawning()
+    {
+        var installStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseInstall = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (exec, manager) = CreateExec(new BlockingInstallRunner(installStarted, releaseInstall));
+        var launches = 0;
+        exec.LaunchExecProcess = _ =>
+        {
+            Interlocked.Increment(ref launches);
+            return CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+        };
+        var operation = manager.StartInstall("latest");
+        await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var waiting = exec.ExecuteExecAsync("during install", null, _root, null, null, 30, CancellationToken.None);
+        await Task.Delay(100);
+        Assert.Equal(0, Volatile.Read(ref launches));
+
+        releaseInstall.TrySetResult();
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+        Assert.True((await waiting.WaitAsync(Patience)).Success);
+        Assert.Equal(1, Volatile.Read(ref launches));
+    }
+
+    [Fact]
+    public async Task Each_exec_retry_passes_the_gate_for_its_own_spawn()
+    {
+        var (exec, _) = CreateExec();
+        var gate = new CountingGate();
+        exec.LaunchGate = gate;
+        exec.LaunchExecProcess = _ => StartFailingProcess("being used by another process");
+
+        var result = await exec.ExecuteExecAsync("locked", null, _root, null, null, 30, CancellationToken.None)
+            .WaitAsync(Patience);
+
+        Assert.False(result.Success);
+        Assert.Equal(3, gate.Admissions);
+        Assert.Equal(3, gate.Spawns);
+    }
+
+    [Fact]
+    public async Task Slow_session_handshake_does_not_block_exec_and_keeps_installs_out()
+    {
+        var (exec, manager) = CreateExec();
+        exec.LaunchExecProcess = _ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+        await using var interactive = CreateInteractive(exec, manager, out var codexPath);
+        var releaseFile = Path.Combine(_root, "release-handshake");
+        var spawned = 0;
+        interactive.LaunchAppServerProcess = _ =>
+        {
+            Interlocked.Increment(ref spawned);
+            return StartAppServerWaitingFor(releaseFile);
+        };
+
+        var start = interactive.StartSessionAsync(
+            _root, null, "owner", null, null, null, null, null, null, Provenance());
+        await WaitUntilAsync(() => Volatile.Read(ref spawned) == 1);
+
+        var result = await exec.ExecuteExecAsync("meanwhile", null, _root, null, null, 30, CancellationToken.None)
+            .WaitAsync(Patience);
+        Assert.True(result.Success, result.Error);
+        Assert.False(start.IsCompleted);
+        Assert.Equal("cli_runs_active",
+            Assert.Throws<CliInstallRejectedException>(() => manager.StartInstall("latest")).Code);
+
+        File.WriteAllText(releaseFile, "");
+        var session = await start.WaitAsync(Patience);
+        Assert.NotNull(session);
+        Assert.Equal("Idle", session!.Status);
+        Assert.Equal(0, (await manager.GetStatusAsync().WaitAsync(Patience)).ActiveRunCount);
+    }
+
+    [Fact]
+    public async Task Concurrent_resumes_of_one_session_still_spawn_one_app_server()
+    {
+        var (exec, manager) = CreateExec();
+        await using var interactive = CreateInteractive(exec, manager, out _,
+            new CodexSessionRecord
+            {
+                Id = "parked-session", ProjectName = "Parked", ProjectPath = _root,
+                Status = "Stopped", StopReason = SessionStopReasons.MaintenanceRestart,
+                ThreadId = "thread-1", JobId = TestJobId,
+                StartedAt = DateTimeOffset.UtcNow, LastActivity = DateTimeOffset.UtcNow,
+            });
+        var releaseFile = Path.Combine(_root, "release-resume");
+        var spawned = 0;
+        interactive.LaunchAppServerProcess = _ =>
+        {
+            Interlocked.Increment(ref spawned);
+            return StartAppServerWaitingFor(releaseFile);
+        };
+
+        var first = interactive.ResumeSessionAsync("parked-session", Provenance());
+        var second = interactive.ResumeSessionAsync("parked-session", Provenance());
+        await WaitUntilAsync(() => Volatile.Read(ref spawned) == 1);
+        await Task.Delay(200);
+        File.WriteAllText(releaseFile, "");
+
+        var resumed = await Task.WhenAll(first, second).WaitAsync(Patience);
+        Assert.All(resumed, Assert.NotNull);
+        Assert.Equal(1, Volatile.Read(ref spawned));
+    }
+
+    [Fact]
+    public async Task Slow_model_catalog_fetch_does_not_block_exec_and_keeps_installs_out()
+    {
+        var (exec, manager) = CreateExec();
+        exec.LaunchExecProcess = _ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+        var releaseFile = Path.Combine(_root, "release-catalog");
+        var spawnedFile = Path.Combine(_root, "spawned-catalog");
+        var catalog = new CodexModelCatalog(
+            new CodexConfig { CodexPath = WriteAppServerCli(releaseFile, spawnedFile) }, (_, _) => { })
+        {
+            LaunchGate = manager,
+        };
+
+        var fetch = catalog.GetAsync(forceRefresh: true);
+        await WaitUntilAsync(() => File.Exists(spawnedFile), Patience);
+
+        Assert.True((await exec.ExecuteExecAsync("meanwhile", null, _root, null, null, 30, CancellationToken.None)
+            .WaitAsync(Patience)).Success);
+        Assert.False(fetch.IsCompleted);
+        Assert.Equal("cli_runs_active",
+            Assert.Throws<CliInstallRejectedException>(() => manager.StartInstall("latest")).Code);
+
+        File.WriteAllText(releaseFile, "");
+        await fetch.WaitAsync(Patience);
+        Assert.Equal(0, (await manager.GetStatusAsync().WaitAsync(Patience)).ActiveRunCount);
+    }
+
+    [Fact]
+    public async Task Slow_account_usage_read_does_not_block_exec_and_keeps_installs_out()
+    {
+        var (exec, manager) = CreateExec();
+        exec.LaunchExecProcess = _ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+        var releaseFile = Path.Combine(_root, "release-usage");
+        var spawnedFile = Path.Combine(_root, "spawned-usage");
+        var usage = new CodexAccountUsageService(
+            new CodexConfig { CodexPath = WriteAppServerCli(releaseFile, spawnedFile) }, (_, _) => { })
+        {
+            LaunchGate = manager,
+        };
+
+        var read = usage.GetAsync(forceRefresh: true, CancellationToken.None);
+        await WaitUntilAsync(() => File.Exists(spawnedFile), Patience);
+
+        Assert.True((await exec.ExecuteExecAsync("meanwhile", null, _root, null, null, 30, CancellationToken.None)
+            .WaitAsync(Patience)).Success);
+        Assert.False(read.IsCompleted);
+        Assert.Equal("cli_runs_active",
+            Assert.Throws<CliInstallRejectedException>(() => manager.StartInstall("latest")).Code);
+
+        File.WriteAllText(releaseFile, "");
+        await read.WaitAsync(Patience);
+        Assert.Equal(0, (await manager.GetStatusAsync().WaitAsync(Patience)).ActiveRunCount);
+    }
+
+    [Fact]
+    public async Task Abandoned_app_server_handshake_leaves_no_process_behind()
+    {
+        Directory.CreateDirectory(_root);
+        var codexPath = Path.Combine(_root, "codex.exe");
+        File.WriteAllText(codexPath, "test seam only");
+        Process? observer = null;
+        using var cancel = new CancellationTokenSource();
+
+        var connect = CodexAppServerConnection.StartAsync(
+            codexPath, workingDirectory: null, (_, _) => { }, ct: cancel.Token,
+            launchProcess: _ =>
+            {
+                var process = StartAppServerWaitingFor(Path.Combine(_root, "never-released"));
+                observer = Process.GetProcessById(process.Id);
+                return process;
+            });
+        await WaitUntilAsync(() => Volatile.Read(ref observer) is not null);
+        using (observer)
+        {
+            cancel.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connect.WaitAsync(Patience));
+
+            // Once the caller is back the run no longer keeps installs out, so the process must be gone.
+            Assert.True(observer!.WaitForExit(5000));
+        }
+    }
+
+    private static readonly Guid TestJobId = Guid.NewGuid();
+
+    private (CodexSessionService Exec, NpmCliVersionManager Manager) CreateExec(ICliCommandRunner? runner = null)
+    {
+        Directory.CreateDirectory(_root);
+        var codexPath = Path.Combine(_root, "codex.exe");
+        File.WriteAllText(codexPath, "test seam only");
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        released.TrySetResult();
+        var manager = new NpmCliVersionManager(
+            "@openai/codex", "Codex", () => codexPath,
+            () => CliProviderSessionState.Empty,
+            (_, _) => Task.CompletedTask,
+            runner ?? new BlockingInstallRunner(
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously), released),
+            () => "npm.cmd",
+            () => _root,
+            new EmptyProcessInspector(),
+            TimeSpan.FromSeconds(30));
+        var exec = new CodexSessionService(
+            new CodexConfig { CodexPath = codexPath },
+            new TestJobTracker(TestJob()),
+            new TestStore(Placeholder()),
+            (_, _) => { })
+        {
+            LaunchGate = manager,
+        };
+        return (exec, manager);
+    }
+
+    private CodexInteractiveService CreateInteractive(
+        CodexSessionService exec, NpmCliVersionManager manager, out string codexPath,
+        CodexSessionRecord? record = null)
+    {
+        codexPath = Path.Combine(_root, "codex.exe");
+        var config = new CodexConfig { CodexPath = codexPath };
+        var jobs = new TestJobTracker(TestJob());
+        return new CodexInteractiveService(
+            config, new TestStore(record ?? Placeholder()), new CodexModelCatalog(config, (_, _) => { }), exec, jobs,
+            new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
+            () => null, (_, _) => { })
+        {
+            LaunchGate = manager,
+        };
+    }
+
+    private static JobRecord TestJob() => new()
+    {
+        Id = TestJobId, CapabilitySlug = "ai-session", ProviderName = "Codex",
+        CreationProvenance = Provenance(),
+    };
+
+    private CodexSessionRecord Placeholder() => new()
+    {
+        Id = "placeholder", ProjectName = "placeholder", ProjectPath = _root,
+        Status = "Stopped", StartedAt = DateTimeOffset.UtcNow,
+    };
+
+    private Process StartLongRunningProcess()
+    {
+        var process = StartPowerShell("Start-Sleep -Seconds 120");
+        lock (_longRunning) _longRunning.Add(process);
+        return process;
+    }
+
+    private static Process StartFailingProcess(string stderr)
+    {
+        var startInfo = PowerShellStartInfo("[Console]::Error.Write($env:RED_COMPUTE_TEST_STDERR); exit 1");
+        startInfo.Environment["RED_COMPUTE_TEST_STDERR"] = stderr;
+        return Process.Start(startInfo)!;
+    }
+
+    private static Process StartAppServerWaitingFor(string releaseFile)
+    {
+        var startInfo = PowerShellStartInfo(AppServerScript);
+        startInfo.Environment["RED_COMPUTE_TEST_RELEASE"] = releaseFile;
+        return Process.Start(startInfo)!;
+    }
+
+    /// <summary>
+    /// A CLI on disk, for the services that spawn through the located executable rather than a seam.
+    /// It answers nothing until the release file exists, so the app-server handshake stays pending.
+    /// </summary>
+    private string WriteAppServerCli(string releaseFile, string spawnedFile)
+    {
+        var scriptPath = Path.Combine(_root, $"app-server-{Guid.NewGuid():N}.ps1");
+        File.WriteAllText(scriptPath, AppServerScript);
+        var cliPath = Path.ChangeExtension(scriptPath, ".cmd");
+        File.WriteAllText(cliPath,
+            "@echo off\r\n" +
+            $"set \"RED_COMPUTE_TEST_RELEASE={releaseFile}\"\r\n" +
+            $"echo.> \"{spawnedFile}\"\r\n" +
+            $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"\r\n");
+        return cliPath;
+    }
+
+    private const string AppServerScript = """
+        $deadline = (Get-Date).AddSeconds(60)
+        while (-not (Test-Path -LiteralPath $env:RED_COMPUTE_TEST_RELEASE)) {
+          if ((Get-Date) -gt $deadline) { exit 1 }
+          Start-Sleep -Milliseconds 25
+        }
+        while ($null -ne ($line = [Console]::In.ReadLine())) {
+          try { $request = $line | ConvertFrom-Json } catch { continue }
+          if ($null -eq $request.id) { continue }
+          if ($request.method -eq 'thread/start') {
+            $result = @{ thread = @{ id = 'thread-1' } }
+          } else {
+            $result = @{}
+          }
+          $response = @{ jsonrpc = '2.0'; id = $request.id; result = $result } |
+            ConvertTo-Json -Compress -Depth 8
+          [Console]::Out.WriteLine($response)
+          [Console]::Out.Flush()
+        }
+        """;
+
+    private static Process StartPowerShell(string script) => Process.Start(PowerShellStartInfo(script))!;
+
+    private static ProcessStartInfo PowerShellStartInfo(string script)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "powershell.exe", CreateNoWindow = true, UseShellExecute = false,
+            RedirectStandardInput = true, RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-Command");
+        startInfo.ArgumentList.Add(script);
+        return startInfo;
+    }
+
+    private sealed class CountingGate : ICliProcessLaunchGate
+    {
+        public int Admissions;
+        public int Spawns;
+
+        public Task<T> RunWhenInstallIdleAsync<T>(Func<Action, Task<T>> launch, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref Admissions);
+            return launch(() => Interlocked.Increment(ref Spawns));
+        }
+
+        public Task<T> RunWhenInstallIdleAsync<T>(Func<Task<T>> launch, CancellationToken ct = default)
+            => throw new InvalidOperationException("exec must signal its spawn");
+    }
+
     [Fact]
     public async Task App_server_token_is_issued_for_the_session_it_serves_on_start_and_resume()
     {
@@ -355,9 +733,9 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         return Process.Start(startInfo)!;
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? patience = null)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(patience ?? TimeSpan.FromSeconds(5));
         while (!condition()) await Task.Delay(10, timeout.Token);
     }
 
@@ -391,6 +769,10 @@ public sealed class CodexCliLaunchGateTests : IDisposable
 
     public void Dispose()
     {
+        foreach (var process in _longRunning)
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+        }
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
     }
 

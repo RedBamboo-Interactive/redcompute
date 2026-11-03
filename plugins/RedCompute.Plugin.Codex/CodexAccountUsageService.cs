@@ -37,10 +37,10 @@ internal sealed class CodexAccountUsageService
         {
             if (!forceRefresh && TryGetCompleteCache(out cached)) return cached;
 
-            var snapshot = await LaunchGate.RunWhenInstallIdleAsync(async () =>
+            var snapshot = await LaunchGate.RunWhenInstallIdleAsync(async spawned =>
             {
                 await using var connection = await CodexAppServerConnection.StartAsync(
-                    _config.CodexPath, workingDirectory: null, _log, ct: ct);
+                    _config.CodexPath, workingDirectory: null, _log, ct: ct, spawned: spawned);
                 var result = await connection.SendRequestAsync(
                     "account/rateLimits/read", timeoutSeconds: 30, ct: ct);
                 return ParseSnapshot(result);

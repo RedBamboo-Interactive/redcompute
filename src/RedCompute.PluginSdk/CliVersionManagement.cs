@@ -38,6 +38,18 @@ public interface ICliProcessInspector
 /// </summary>
 public interface ICliProcessLaunchGate
 {
+    /// <summary>
+    /// For work that outlives its spawn. The gate is held until <paramref name="launch"/> calls the
+    /// action it receives, straight after the process starts, or returns without calling it. Until
+    /// <paramref name="launch"/> returns, the work counts as a running process and refuses installs,
+    /// so it must not return while its process is alive, unless a session now tracks that process.
+    /// </summary>
+    Task<T> RunWhenInstallIdleAsync<T>(Func<Action, Task<T>> launch, CancellationToken ct = default);
+
+    /// <summary>
+    /// For genuinely short work: the gate is held for all of <paramref name="launch"/>, and an
+    /// install waits for it to finish. Anything that waits on a running process uses the other overload.
+    /// </summary>
     Task<T> RunWhenInstallIdleAsync<T>(Func<Task<T>> launch, CancellationToken ct = default);
 }
 
@@ -46,6 +58,9 @@ public sealed class UnrestrictedCliProcessLaunchGate : ICliProcessLaunchGate
     public static readonly UnrestrictedCliProcessLaunchGate Instance = new();
 
     private UnrestrictedCliProcessLaunchGate() { }
+
+    public Task<T> RunWhenInstallIdleAsync<T>(Func<Action, Task<T>> launch, CancellationToken ct = default)
+        => launch(static () => { });
 
     public Task<T> RunWhenInstallIdleAsync<T>(Func<Task<T>> launch, CancellationToken ct = default)
         => launch();
@@ -238,7 +253,8 @@ public sealed record CliVersionStatus(
     int ExternalProcessCount,
     bool InstallAllowed,
     string? BlockedReason,
-    CliInstallOperation? Operation);
+    CliInstallOperation? Operation,
+    int ActiveRunCount = 0);
 
 public sealed record CliVersionCatalog(
     IReadOnlyList<string> Versions,
@@ -269,9 +285,9 @@ public sealed class CliInstallRejectedException : Exception
 }
 
 /// <summary>
-/// Shared npm-backed version manager. Starting or Active sessions and non-Leaf package processes
-/// block installs. Idle provider sessions are parked through the provider's existing resumable
-/// maintenance-stop path immediately before npm is launched.
+/// Shared npm-backed version manager. Starting or Active sessions, runs admitted through the launch
+/// gate, and non-Leaf package processes block installs. Idle provider sessions are parked through
+/// the provider's existing resumable maintenance-stop path immediately before npm is launched.
 /// </summary>
 public sealed class NpmCliVersionManager : ICliProcessLaunchGate
 {
@@ -293,6 +309,10 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
     private readonly TimeSpan _installTimeout;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _launchGate = new(1, 1);
+    // Runs past their spawn. They are not sessions, and the process inspector can miss them (an
+    // executable outside the package directory, an unreadable main module), so this count is what
+    // keeps an install away from them. Guarded by _gate.
+    private int _activeRuns;
     private readonly Dictionary<Guid, CliInstallOperation> _operations = [];
     private Guid? _currentOperationId;
     private TaskCompletionSource? _installFinished;
@@ -329,10 +349,12 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
         var installed = await GetInstalledVersionAsync(ct);
         var sessions = GetSessionState();
         var activeCount = sessions.BlockingSessionCount;
+        var activeRuns = ActiveRunCount();
         var externalProcesses = FindExternalProcesses(sessions);
         var operation = CurrentOperation();
         var installing = operation?.Status is "queued" or "running";
         var blockedReason = activeCount > 0 ? FormatSessionCount(activeCount)
+            : activeRuns > 0 ? FormatRunCount(activeRuns)
             : externalProcesses.Count > 0 ? FormatExternalProcessCount(externalProcesses.Count)
             : installing ? "Install already in progress"
             : null;
@@ -345,7 +367,8 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             externalProcesses.Count,
             blockedReason is null,
             blockedReason,
-            operation);
+            operation,
+            activeRuns);
     }
 
     public Task<CliInstalledVersionResult> GetInstalledVersionAsync(CancellationToken ct = default)
@@ -419,6 +442,8 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             var activeCount = sessions.BlockingSessionCount;
             if (activeCount > 0)
                 throw new CliInstallRejectedException("sessions_running", FormatSessionCount(activeCount), activeCount);
+            if (_activeRuns > 0)
+                throw new CliInstallRejectedException("cli_runs_active", FormatRunCount(_activeRuns));
             var externalProcesses = FindExternalProcesses(sessions);
             if (externalProcesses.Count > 0)
                 throw new CliInstallRejectedException(
@@ -485,20 +510,18 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             ["install", "--global", $"{packageName}@{requestedVersion}"]);
 
     /// <summary>
-    /// Serializes every provider process launch against an install. A launch already in progress
+    /// Serializes every provider process spawn against an install. A spawn already in progress
     /// finishes first; launches admitted after an install is queued wait for its bounded operation.
+    /// A run past its spawn no longer holds the gate and does not delay any other launch: it refuses
+    /// installs instead, because waiting for it would stall every launch for as long as it runs.
     /// </summary>
     public async Task<T> RunWhenInstallIdleAsync<T>(
-        Func<Task<T>> launch,
+        Func<Action, Task<T>> launch,
         CancellationToken ct = default)
     {
         while (true)
         {
-            Task? installFinished;
-            lock (_gate)
-                installFinished = CurrentOperationUnsafe()?.Status is "queued" or "running"
-                    ? _installFinished?.Task
-                    : null;
+            var installFinished = PendingInstall();
             if (installFinished is not null)
             {
                 await installFinished.WaitAsync(ct);
@@ -506,21 +529,66 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             }
 
             await _launchGate.WaitAsync(ct);
+            var admission = new LaunchAdmission(this);
             try
             {
-                lock (_gate)
-                    installFinished = CurrentOperationUnsafe()?.Status is "queued" or "running"
-                        ? _installFinished?.Task
-                        : null;
+                installFinished = PendingInstall();
                 if (installFinished is null)
-                    return await launch();
+                    return await launch(admission.SpawnCompleted);
             }
             finally
             {
-                _launchGate.Release();
+                admission.Finish();
             }
 
             await installFinished.WaitAsync(ct);
+        }
+    }
+
+    public Task<T> RunWhenInstallIdleAsync<T>(
+        Func<Task<T>> launch,
+        CancellationToken ct = default)
+        => RunWhenInstallIdleAsync(_ => launch(), ct);
+
+    private Task? PendingInstall()
+    {
+        lock (_gate)
+            return CurrentOperationUnsafe()?.Status is "queued" or "running"
+                ? _installFinished?.Task
+                : null;
+    }
+
+    /// <summary>
+    /// One holder of the launch gate. The run is counted before the gate is released, so an install
+    /// that takes the gate next always sees it.
+    /// </summary>
+    private sealed class LaunchAdmission(NpmCliVersionManager manager)
+    {
+        private enum Stage { Spawning, Running, Finished }
+
+        private Stage _stage = Stage.Spawning;
+
+        public void SpawnCompleted()
+        {
+            lock (manager._gate)
+            {
+                if (_stage != Stage.Spawning) return;
+                _stage = Stage.Running;
+                manager._activeRuns++;
+            }
+            manager._launchGate.Release();
+        }
+
+        public void Finish()
+        {
+            Stage previous;
+            lock (manager._gate)
+            {
+                previous = _stage;
+                _stage = Stage.Finished;
+                if (previous == Stage.Running) manager._activeRuns--;
+            }
+            if (previous == Stage.Spawning) manager._launchGate.Release();
         }
     }
 
@@ -538,6 +606,15 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             if (activeCount > 0)
             {
                 Complete(operationId, "refused", "sessions_running", FormatSessionCount(activeCount));
+                return;
+            }
+
+            // Holding the gate, so no new run can start: a run seen here spawned before this install
+            // took the gate, and none can appear between here and npm.
+            var activeRuns = ActiveRunCount();
+            if (activeRuns > 0)
+            {
+                Complete(operationId, "refused", "cli_runs_active", FormatRunCount(activeRuns));
                 return;
             }
 
@@ -625,6 +702,12 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             return CurrentOperationUnsafe();
     }
 
+    private int ActiveRunCount()
+    {
+        lock (_gate)
+            return _activeRuns;
+    }
+
     private CliInstallOperation? CurrentOperationUnsafe()
         => _currentOperationId is { } id ? _operations.GetValueOrDefault(id) : null;
 
@@ -651,6 +734,9 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
 
     private static string FormatSessionCount(int count)
         => $"{count} {(count == 1 ? "session" : "sessions")} running";
+
+    private string FormatRunCount(int count)
+        => $"{count} {_processDisplayName} {(count == 1 ? "run" : "runs")} in progress";
 
     private string FormatExternalProcessCount(int count)
         => $"{count} {_processDisplayName} {(count == 1 ? "process" : "processes")} still running outside Leaf";

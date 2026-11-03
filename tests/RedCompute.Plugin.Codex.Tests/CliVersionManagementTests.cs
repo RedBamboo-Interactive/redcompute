@@ -242,6 +242,297 @@ public class CliVersionManagementTests
     }
 
     [Fact]
+    public async Task RunningLaunch_DoesNotBlockAnotherLaunch()
+    {
+        var manager = CreateManager("@openai/codex", SuccessfulInstallRunner("0.163.0"));
+        var spawnedFirst = NewSignal();
+        var finishFirst = NewSignal();
+
+        var first = manager.RunWhenInstallIdleAsync(async spawned =>
+        {
+            spawned();
+            spawnedFirst.TrySetResult();
+            await finishFirst.Task;
+            return 1;
+        });
+        await spawnedFirst.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var second = await manager
+            .RunWhenInstallIdleAsync(spawned =>
+            {
+                spawned();
+                return Task.FromResult(2);
+            })
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, second);
+        Assert.False(first.IsCompleted);
+
+        finishFirst.TrySetResult();
+        Assert.Equal(1, await first.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task LaunchDuringInstall_WaitsBeforeItsSpawn()
+    {
+        var installStarted = NewSignal();
+        var releaseInstall = NewSignal();
+        var manager = CreateManager("@openai/codex", BlockingInstallRunner(installStarted, releaseInstall));
+        var operation = manager.StartInstall("latest");
+        await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var entered = false;
+        var launch = manager.RunWhenInstallIdleAsync(spawned =>
+        {
+            entered = true;
+            spawned();
+            return Task.FromResult(42);
+        });
+        await Task.Delay(50);
+        Assert.False(entered);
+        Assert.False(launch.IsCompleted);
+
+        releaseInstall.TrySetResult();
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+        Assert.Equal(42, await launch.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task Install_DoesNotStartWhileSpawnIsInProgress()
+    {
+        var runner = SuccessfulInstallRunner("0.163.0");
+        var manager = CreateManager("@openai/codex", runner);
+        var spawning = NewSignal();
+        var finishSpawn = NewSignal();
+        var inProgress = manager.RunWhenInstallIdleAsync(async () =>
+        {
+            spawning.TrySetResult();
+            await finishSpawn.Task;
+            return 1;
+        });
+        await spawning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var operation = manager.StartInstall("latest");
+        var later = manager.RunWhenInstallIdleAsync(() => Task.FromResult(2));
+        await Task.Delay(100);
+
+        Assert.Equal("queued", manager.GetOperation(operation.Id)!.Status);
+        Assert.DoesNotContain(runner.Commands, command => command.Arguments.FirstOrDefault() == "install");
+        Assert.False(later.IsCompleted);
+
+        finishSpawn.TrySetResult();
+        await inProgress.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+        Assert.Equal(2, await later.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task SpawnFinishingWhileInstallIsQueued_RefusesInstallBeforeNpmRuns()
+    {
+        var runner = SuccessfulInstallRunner("0.163.0");
+        var parked = false;
+        var manager = CreateManager("@openai/codex", runner,
+            sessionState: () => new CliProviderSessionState(0, ["idle-a"], [41]),
+            parkIdleSessions: (_, _) =>
+            {
+                parked = true;
+                return Task.CompletedTask;
+            });
+        var spawning = NewSignal();
+        var finishSpawn = NewSignal();
+        var finishRun = NewSignal();
+        var run = manager.RunWhenInstallIdleAsync(async spawned =>
+        {
+            spawning.TrySetResult();
+            await finishSpawn.Task;
+            spawned();
+            await finishRun.Task;
+            return 1;
+        });
+        await spawning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var operation = manager.StartInstall("latest");
+        finishSpawn.TrySetResult();
+        var refused = await WaitForTerminalAsync(manager, operation.Id);
+
+        Assert.Equal("refused", refused.Status);
+        Assert.Equal("cli_runs_active", refused.ErrorCode);
+        Assert.Equal("1 Codex run in progress", refused.Error);
+        Assert.Empty(runner.Commands);
+        Assert.False(parked);
+        Assert.False(run.IsCompleted);
+
+        finishRun.TrySetResult();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Install_IsRefusedUntilRunningRunsFinish_WithoutHelpFromTheProcessInspector()
+    {
+        var runner = SuccessfulInstallRunner("0.163.0");
+        var manager = CreateManager("@openai/codex", runner);
+        var finishRuns = NewSignal();
+        var spawnedBoth = new[] { NewSignal(), NewSignal() };
+        var runs = spawnedBoth.Select(signal => manager.RunWhenInstallIdleAsync(async spawned =>
+        {
+            spawned();
+            signal.TrySetResult();
+            await finishRuns.Task;
+            return 1;
+        })).ToArray();
+        await Task.WhenAll(spawnedBoth.Select(signal => signal.Task)).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var error = Assert.Throws<CliInstallRejectedException>(() => manager.StartInstall("latest"));
+        Assert.Equal("cli_runs_active", error.Code);
+        Assert.Equal("2 Codex runs in progress", error.Message);
+
+        var blocked = await manager.GetStatusAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(blocked.InstallAllowed);
+        Assert.Equal(2, blocked.ActiveRunCount);
+        Assert.Equal(0, blocked.ActiveSessionCount);
+        Assert.Equal("2 Codex runs in progress", blocked.BlockedReason);
+
+        finishRuns.TrySetResult();
+        await Task.WhenAll(runs).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var allowed = await manager.GetStatusAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(allowed.InstallAllowed);
+        Assert.Equal(0, allowed.ActiveRunCount);
+        var operation = manager.StartInstall("latest");
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+    }
+
+    [Fact]
+    public async Task CancelledWaitForTheGate_LeavesTheGateWorking()
+    {
+        var manager = CreateManager("@openai/codex", SuccessfulInstallRunner("0.163.0"));
+        var spawning = NewSignal();
+        var finishSpawn = NewSignal();
+        var holder = manager.RunWhenInstallIdleAsync(async () =>
+        {
+            spawning.TrySetResult();
+            await finishSpawn.Task;
+            return 1;
+        });
+        await spawning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var cancel = new CancellationTokenSource();
+        var entered = false;
+        var waiting = manager.RunWhenInstallIdleAsync(() =>
+        {
+            entered = true;
+            return Task.FromResult(2);
+        }, cancel.Token);
+        cancel.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(entered);
+
+        // The cancelled waiter must not have released a gate it never held: a third launch still waits.
+        var third = manager.RunWhenInstallIdleAsync(() => Task.FromResult(3));
+        await Task.Delay(50);
+        Assert.False(third.IsCompleted);
+
+        finishSpawn.TrySetResult();
+        await holder.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(3, await third.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        var operation = manager.StartInstall("latest");
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+    }
+
+    [Fact]
+    public async Task CancelledWaitForAnInstall_DoesNotDisturbTheInstall()
+    {
+        var installStarted = NewSignal();
+        var releaseInstall = NewSignal();
+        var manager = CreateManager("@openai/codex", BlockingInstallRunner(installStarted, releaseInstall));
+        var operation = manager.StartInstall("latest");
+        await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var cancel = new CancellationTokenSource();
+        var entered = false;
+        var waiting = manager.RunWhenInstallIdleAsync(() =>
+        {
+            entered = true;
+            return Task.FromResult(1);
+        }, cancel.Token);
+        cancel.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(entered);
+        Assert.Equal("running", manager.GetOperation(operation.Id)!.Status);
+
+        releaseInstall.TrySetResult();
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+        Assert.Equal(2, await manager.RunWhenInstallIdleAsync(() => Task.FromResult(2)).WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task FailedSpawn_ReleasesTheGateAndCountsNoRun()
+    {
+        var manager = CreateManager("@openai/codex", SuccessfulInstallRunner("0.163.0"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.RunWhenInstallIdleAsync<int>(
+            _ => throw new InvalidOperationException("spawn failed")));
+
+        Assert.Equal(1, await manager.RunWhenInstallIdleAsync(() => Task.FromResult(1)).WaitAsync(TimeSpan.FromSeconds(5)));
+        var operation = manager.StartInstall("latest");
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+    }
+
+    [Fact]
+    public async Task RunFailingAfterItsSpawn_StopsCountingAsARun()
+    {
+        var manager = CreateManager("@openai/codex", SuccessfulInstallRunner("0.163.0"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.RunWhenInstallIdleAsync<int>(async spawned =>
+        {
+            spawned();
+            await Task.Yield();
+            throw new InvalidOperationException("run failed");
+        }));
+
+        var operation = manager.StartInstall("latest");
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+    }
+
+    [Fact]
+    public async Task SpawnSignal_IsIdempotentAndIgnoredAfterTheRunEnds()
+    {
+        var manager = CreateManager("@openai/codex", SuccessfulInstallRunner("0.163.0"));
+        Action? keptSignal = null;
+
+        await manager.RunWhenInstallIdleAsync(spawned =>
+        {
+            keptSignal = spawned;
+            spawned();
+            spawned();
+            return Task.FromResult(1);
+        });
+        keptSignal!();
+
+        // Over-releasing would admit these two at once; a stale count would refuse the install.
+        var spawning = NewSignal();
+        var finishSpawn = NewSignal();
+        var holder = manager.RunWhenInstallIdleAsync(async () =>
+        {
+            spawning.TrySetResult();
+            await finishSpawn.Task;
+            return 1;
+        });
+        await spawning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var second = manager.RunWhenInstallIdleAsync(() => Task.FromResult(2));
+        await Task.Delay(50);
+        Assert.False(second.IsCompleted);
+        finishSpawn.TrySetResult();
+        await Task.WhenAll(holder, second).WaitAsync(TimeSpan.FromSeconds(5));
+
+        var operation = manager.StartInstall("latest");
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+    }
+
+    [Fact]
     public async Task Install_PreservesNpmErrorText()
     {
         var runner = new FakeRunner(command =>
@@ -257,6 +548,19 @@ public class CliVersionManagementTests
         Assert.Equal("npm_install_failed", failed.ErrorCode);
         Assert.Equal("npm ERR! version not found", failed.Error);
     }
+
+    private static TaskCompletionSource NewSignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static FakeRunner BlockingInstallRunner(TaskCompletionSource started, TaskCompletionSource release)
+        => new(async (command, ct) =>
+        {
+            if (command.Arguments.FirstOrDefault() != "install")
+                return new CliCommandResult(0, "codex-cli 0.163.0", "");
+            started.TrySetResult();
+            await release.Task.WaitAsync(ct);
+            return new CliCommandResult(0, "installed", "");
+        });
 
     private static FakeRunner SuccessfulInstallRunner(string installedVersion)
         => new(command => command.Arguments.FirstOrDefault() == "install"

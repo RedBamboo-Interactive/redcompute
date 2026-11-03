@@ -10,7 +10,7 @@ public static class CliVersionEndpoints
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry)
     {
         endpoints.MapGet("/ai-session/providers/{providerId}/cli",
-            "Installed CLI version, install eligibility, blocking session count, and current install operation for an opted-in provider.",
+            "Installed CLI version, install eligibility, blocking session and CLI run counts, and current install operation for an opted-in provider.",
             async (string providerId, CancellationToken ct) =>
             {
                 var provider = FindProvider(registry, providerId);
@@ -50,7 +50,7 @@ public static class CliVersionEndpoints
             });
 
         endpoints.MapPost("/ai-session/providers/{providerId}/cli/install",
-            "Start an asynchronous npm install for latest or a specific published CLI version. Refuses while provider sessions are Starting or Active.",
+            "Start an asynchronous npm install for latest or a specific published CLI version. Refuses while provider sessions are Starting or Active, or while one-shot or agent runs are in progress.",
             async (HttpContext ctx, string providerId) =>
             {
                 var provider = FindProvider(registry, providerId);

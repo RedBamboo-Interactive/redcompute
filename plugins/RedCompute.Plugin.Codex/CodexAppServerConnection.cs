@@ -51,6 +51,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
     /// <summary>
     /// Spawns <c>codex app-server</c> and completes the initialize/initialized handshake.
     /// Throws if the CLI cannot be found or the handshake does not complete.
+    /// <paramref name="spawned"/> runs as soon as the process exists, before the handshake.
     /// </summary>
     public static async Task<CodexAppServerConnection> StartAsync(
         string? configuredCliPath,
@@ -58,7 +59,8 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         Action<string, Guid?> log,
         IReadOnlyDictionary<string, string>? env = null,
         CancellationToken ct = default,
-        Func<ProcessStartInfo, Process?>? launchProcess = null)
+        Func<ProcessStartInfo, Process?>? launchProcess = null,
+        Action? spawned = null)
     {
         var exe = CodexCliLocator.Resolve(configuredCliPath)
             ?? throw new InvalidOperationException(
@@ -87,6 +89,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
 
         var process = (launchProcess ?? Process.Start)(startInfo)
             ?? throw new InvalidOperationException("Failed to start 'codex app-server'.");
+        spawned?.Invoke();
 
         var conn = new CodexAppServerConnection(process, log);
         process.EnableRaisingEvents = true;
@@ -101,13 +104,23 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         _ = Task.Run(() => conn.ReadStdoutAsync(), CancellationToken.None);
         _ = Task.Run(() => conn.ReadStderrAsync(), CancellationToken.None);
 
-        conn.InitializeResult = await conn.SendRequestAsync("initialize", new
+        try
         {
-            clientInfo = new { name = "redcompute", title = "RedCompute", version = "0.2.0" },
-        }, timeoutSeconds: 30, ct);
+            conn.InitializeResult = await conn.SendRequestAsync("initialize", new
+            {
+                clientInfo = new { name = "redcompute", title = "RedCompute", version = "0.2.0" },
+            }, timeoutSeconds: 30, ct);
 
-        await conn.SendNotificationAsync("initialized", null, ct);
-        return conn;
+            await conn.SendNotificationAsync("initialized", null, ct);
+            return conn;
+        }
+        catch
+        {
+            // The caller never receives this connection, so nothing else can end its process, and
+            // once the caller is back the launch gate no longer keeps an install away from it.
+            await conn.DisposeAsync();
+            throw;
+        }
     }
 
     public async Task<JsonElement> SendRequestAsync(

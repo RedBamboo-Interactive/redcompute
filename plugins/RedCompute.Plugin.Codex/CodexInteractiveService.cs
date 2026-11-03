@@ -99,6 +99,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     private readonly Action<string, Guid?> _log;
 
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
+    // The session cap and the "already live" resume check are check-then-act across the app-server
+    // handshake. The launch gate no longer spans that handshake, so this keeps them serialized.
+    private readonly SemaphoreSlim _sessionLaunchLock = new(1, 1);
     internal Func<ProcessStartInfo, Process?> LaunchAppServerProcess { get; set; } = Process.Start;
 
     public event Action<CodexSessionInfo>? SessionCreated;
@@ -218,10 +221,24 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string? scratchDirectory = null, bool confidential = false,
         string? developerInstructions = null,
         string executionProfile = SessionExecutionProfile.Default)
-        => LaunchGate.RunWhenInstallIdleAsync(() => StartSessionCoreAsync(
+        => RunSessionLaunchAsync(spawned => StartSessionCoreAsync(
             projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratchDirectory, confidential,
-            developerInstructions, executionProfile));
+            developerInstructions, executionProfile, spawned));
+
+    private async Task<CodexSessionInfo?> RunSessionLaunchAsync(
+        Func<Action, Task<CodexSessionInfo?>> launch)
+    {
+        await _sessionLaunchLock.WaitAsync();
+        try
+        {
+            return await LaunchGate.RunWhenInstallIdleAsync(launch);
+        }
+        finally
+        {
+            _sessionLaunchLock.Release();
+        }
+    }
 
     private async Task<CodexSessionInfo?> StartSessionCoreAsync(
         string projectPath, string? model, string? userId, string? userName,
@@ -229,7 +246,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory, bool confidential,
         string? developerInstructions,
-        string executionProfile)
+        string executionProfile,
+        Action spawned)
     {
         SetStartFailure(null, null);
         if (_sessions.Count >= _config.MaxSessions)
@@ -272,7 +290,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         try
         {
             conn = await ConnectAsync(id, projectPath, scratchDirectory,
-                suiteAccess: !SessionExecutionProfile.IsConversationOnly(executionProfile));
+                suiteAccess: !SessionExecutionProfile.IsConversationOnly(executionProfile),
+                spawned);
             var session = new ManagedSession { Info = info, Connection = conn };
 
             var result = await conn.SendRequestAsync(
@@ -314,10 +333,10 @@ public sealed class CodexInteractiveService : IAsyncDisposable
     }
 
     public Task<CodexSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance? provenance = null)
-        => LaunchGate.RunWhenInstallIdleAsync(() => ResumeSessionCoreAsync(sessionId, provenance));
+        => RunSessionLaunchAsync(spawned => ResumeSessionCoreAsync(sessionId, provenance, spawned));
 
     private async Task<CodexSessionInfo?> ResumeSessionCoreAsync(
-        string sessionId, JobProvenance? provenance)
+        string sessionId, JobProvenance? provenance, Action spawned)
     {
         SetStartFailure(null, null);
         if (_sessions.TryGetValue(sessionId, out var live)) return live.Info;
@@ -351,7 +370,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 sessionId,
                 record.ProjectPath,
                 ScratchDirectoryForResume(record),
-                suiteAccess: !conversationOnly);
+                suiteAccess: !conversationOnly,
+                spawned);
             try
             {
                 await conn.SendRequestAsync(
@@ -438,12 +458,13 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             : record.ScratchDirectory;
 
     private async Task<CodexAppServerConnection> ConnectAsync(string sessionId, string projectPath,
-        string? scratchDirectory = null, bool suiteAccess = true)
+        string? scratchDirectory, bool suiteAccess, Action spawned)
     {
         var conn = await CodexAppServerConnection.StartAsync(
             _config.CodexPath, projectPath, _log,
             SessionScratch.Environment(scratchDirectory, suiteAccess, sessionId),
-            launchProcess: LaunchAppServerProcess);
+            launchProcess: LaunchAppServerProcess,
+            spawned: spawned);
         conn.Notification += (method, p) => OnNotification(sessionId, method, p);
         conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);
         conn.Exited += code => OnExited(sessionId, code);

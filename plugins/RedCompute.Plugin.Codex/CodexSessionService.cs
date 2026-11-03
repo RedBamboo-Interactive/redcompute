@@ -103,7 +103,7 @@ public class CodexSessionService
         set => _toolFreeRelay = value;
     }
 
-    public Task<ExecuteResult> ExecuteExecAsync(
+    public async Task<ExecuteResult> ExecuteExecAsync(
         string prompt, string? container, string? workingDir,
         string? model, string? sandbox, int timeout,
         CancellationToken ct,
@@ -113,27 +113,15 @@ public class CodexSessionService
         string? effort = null,
         IReadOnlyList<string>? extraArgs = null,
         bool retryTransientLocks = true)
-        => LaunchGate.RunWhenInstallIdleAsync(
-            () => ExecuteExecCoreAsync(prompt, container, workingDir, model, sandbox, timeout,
-                ct, streamKey, env, networkAccess, effort, extraArgs, retryTransientLocks),
-            ct);
-
-    private async Task<ExecuteResult> ExecuteExecCoreAsync(
-        string prompt, string? container, string? workingDir,
-        string? model, string? sandbox, int timeout,
-        CancellationToken ct,
-        string? streamKey,
-        Dictionary<string, string>? env,
-        bool networkAccess,
-        string? effort,
-        IReadOnlyList<string>? extraArgs,
-        bool retryTransientLocks)
     {
         ExecuteResult? last = null;
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            last = await ExecuteExecOnceAsync(prompt, container, workingDir, model, sandbox,
-                timeout, ct, streamKey, env, networkAccess, effort, extraArgs);
+            // Each attempt is its own spawn, so each one passes the gate.
+            last = await LaunchGate.RunWhenInstallIdleAsync(
+                spawned => ExecuteExecOnceAsync(prompt, container, workingDir, model, sandbox,
+                    timeout, ct, streamKey, env, networkAccess, effort, extraArgs, spawned),
+                ct);
             if (last.Success || !retryTransientLocks || !IsTransientWorkspaceLock(last) || attempt == 3)
                 return last;
 
@@ -455,7 +443,8 @@ public class CodexSessionService
         Dictionary<string, string>? env,
         bool networkAccess,
         string? effort,
-        IReadOnlyList<string>? extraArgs)
+        IReadOnlyList<string>? extraArgs,
+        Action spawned)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
 
@@ -504,6 +493,7 @@ public class CodexSessionService
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start codex process");
         if (streamKey != null)
             _runningProcesses[streamKey] = process;
+        spawned();
         _log($"[Codex] Process started in {sw.ElapsedMilliseconds}ms", null);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
