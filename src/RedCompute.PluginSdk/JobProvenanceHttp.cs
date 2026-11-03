@@ -33,6 +33,7 @@ public static class JobProvenanceHttp
             {
                 OnBehalfOf = trusted ? supplied.OnBehalfOf : beneficiary,
                 Assurance = trusted ? supplied.Assurance : JobProvenanceAssurance.Asserted,
+                Cause = trusted ? JobCauses.Normalize(supplied.Cause) : null,
                 Trace = supplied.Trace with { RequestId = supplied.Trace.RequestId ?? ctx.TraceIdentifier },
             };
             result.ValidateForNewJob();

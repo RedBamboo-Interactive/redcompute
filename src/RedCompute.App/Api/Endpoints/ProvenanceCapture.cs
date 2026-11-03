@@ -34,6 +34,7 @@ public static class ProvenanceCapture
                         // asserted. Trust the service to verify what it stamped, never upgrade
                         // a lower assurance it intentionally preserved.
                         Assurance = supplied.Assurance,
+                        Cause = JobCauses.Normalize(supplied.Cause),
                         Trace = supplied.Trace with
                         {
                             RequestId = supplied.Trace.RequestId ?? ctx.TraceIdentifier,
@@ -55,6 +56,8 @@ public static class ProvenanceCapture
                 {
                     OnBehalfOf = assertedBeneficiary,
                     Assurance = JobProvenanceAssurance.Asserted,
+                    // A direct caller saying a person started this proves nothing.
+                    Cause = null,
                     Trace = supplied.Trace with
                     {
                         RequestId = ctx.TraceIdentifier,

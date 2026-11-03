@@ -51,32 +51,33 @@ public sealed class UsageDailyCountsTests : IDisposable
     public void Groups_by_normalised_dimensions_and_sums_execution_seconds()
     {
         Seed(
-            // Two ComfyUI app-initiated images: 10.5s + 5.9s floors to 16 only after summing.
+            // Two ComfyUI images a person started: 10.5s + 5.9s floors to 16 only after summing.
             Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("app", "provider-comfyui"),
-                execution: TimeSpan.FromSeconds(10.5)),
+                execution: TimeSpan.FromSeconds(10.5), cause: JobCauses.Beneficiary),
             Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday.AddMinutes(5), "image/png; charset=binary",
-                Actor("app", "spriteforge"), execution: TimeSpan.FromSeconds(5.9)),
+                Actor("app", "spriteforge"), execution: TimeSpan.FromSeconds(5.9), cause: JobCauses.Beneficiary),
             Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "video/mp4", Actor("agent", "agent-nova"),
-                execution: TimeSpan.FromSeconds(30)),
+                execution: TimeSpan.FromSeconds(30), cause: JobCauses.Agent),
             Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/webp", Actor("plugin", "pixoo")),
             // Completed without a provider start, and a clock-skewed negative duration, add nothing.
-            Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("user", User)),
+            Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("user", User),
+                cause: JobCauses.Beneficiary),
             Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("user", "someone-else", entityId: User),
-                execution: TimeSpan.FromSeconds(-20)),
+                execution: TimeSpan.FromSeconds(-20), cause: JobCauses.Beneficiary),
             Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("user", "someone-else"),
-                execution: TimeSpan.FromSeconds(4)),
+                execution: TimeSpan.FromSeconds(4), cause: JobCauses.OtherPerson),
             Job("ai-session", "Claude Code", JobStatus.Failed, Yesterday, null, Actor("agent", "agent-nova"),
-                execution: TimeSpan.FromSeconds(60)),
-            Job("ai-session", "Open Code", JobStatus.TimedOut, Yesterday, null, Actor("agent", "agent-nova")),
-            Job("ai-session", "OpenCode", JobStatus.Cancelled, Yesterday, null, Actor("agent", "agent-nova")),
-            Job("ai-session", "Codex", JobStatus.Skipped, Yesterday, null, Actor("agent", "agent-nova")),
-            Job("ai-session", "Codex", JobStatus.Running, Yesterday, null, Actor("agent", "agent-nova")),
+                execution: TimeSpan.FromSeconds(60), cause: JobCauses.Agent),
+            Job("ai-session", "Open Code", JobStatus.TimedOut, Yesterday, null, Actor("agent", "agent-nova"), cause: JobCauses.Agent),
+            Job("ai-session", "OpenCode", JobStatus.Cancelled, Yesterday, null, Actor("agent", "agent-nova"), cause: JobCauses.Agent),
+            Job("ai-session", "Codex", JobStatus.Skipped, Yesterday, null, Actor("agent", "agent-nova"), cause: JobCauses.Agent),
+            Job("ai-session", "Codex", JobStatus.Running, Yesterday, null, Actor("agent", "agent-nova"), cause: JobCauses.Agent),
             Job("music", "Suno", JobStatus.Completed, Yesterday, "audio/mpeg", null, execution: TimeSpan.FromSeconds(2)),
             // UTC bucketing: 01:00+05:00 on the 23rd is the 22nd in UTC; 23:30-05:00 on the 23rd is today.
             Job("image-gen", "ComfyUI", JobStatus.Completed, new DateTimeOffset(2026, 10, 23, 1, 0, 0, TimeSpan.FromHours(5)),
-                "image/png", Actor("app", "outfits")),
+                "image/png", Actor("app", "outfits"), cause: JobCauses.Beneficiary),
             Job("image-gen", "ComfyUI", JobStatus.Completed, new DateTimeOffset(2026, 10, 23, 23, 30, 0, TimeSpan.FromHours(-5)),
-                "image/png", Actor("app", "outfits")));
+                "image/png", Actor("app", "outfits"), cause: JobCauses.Beneficiary));
 
         var counts = Service().GetDailyCounts("2026-10-22", "2026-10-23", User, null).Counts!;
 
@@ -99,7 +100,8 @@ public sealed class UsageDailyCountsTests : IDisposable
     [Fact]
     public void Excludes_confidential_child_other_beneficiary_and_future_jobs()
     {
-        var parent = Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("app", "outfits"));
+        var parent = Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("app", "outfits"),
+            cause: JobCauses.Beneficiary);
         var child = Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("app", "outfits"));
         child.ParentJobId = parent.Id;
         var confidential = Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("agent", "agent-nova"));
@@ -119,6 +121,56 @@ public sealed class UsageDailyCountsTests : IDisposable
             Service().GetDailyCounts("2026-11-23", "2026-11-23", User, "image-gen").Error);
     }
 
+    [Theory]
+    [InlineData(JobCauses.Beneficiary, "you")]
+    [InlineData(JobCauses.Agent, "agent")]
+    [InlineData(JobCauses.OtherPerson, "other")]
+    [InlineData(JobCauses.App, "other")]
+    [InlineData("you", "other")]
+    [InlineData("anything-else", "other")]
+    [InlineData(null, "other")]
+    public void Initiator_comes_only_from_the_recorded_cause(string? cause, string initiator)
+        => Assert.Equal(initiator, UsageCountsService.Initiator(cause));
+
+    [Theory]
+    [InlineData("app", "codered")]
+    [InlineData("app", "direct-redcompute-api")]
+    [InlineData("agent", "agent-nova")]
+    [InlineData("user", User)]
+    public void A_job_from_before_causes_counts_as_other_whatever_its_actor_was(string actorKind, string actorId)
+    {
+        var job = Job("ai-session", "Claude Code", JobStatus.Completed, Yesterday, null, Actor(actorKind, actorId));
+        var storedBefore = job.CreationProvenanceJson;
+        Assert.DoesNotContain("cause", storedBefore!, StringComparison.OrdinalIgnoreCase);
+        Seed(job);
+
+        var counts = Service().GetDailyCounts("2026-10-23", "2026-10-23", User, "ai-session").Counts!;
+
+        Assert.Equal("other", Assert.Single(Assert.Single(counts.Days).Groups).Initiator);
+        // Reading never rewrites what was stored.
+        using var db = Db();
+        Assert.Equal(storedBefore, db.Jobs.AsNoTracking().Single().CreationProvenanceJson);
+    }
+
+    [Fact]
+    public void Jobs_with_the_same_actor_are_told_apart_by_what_actually_started_them()
+    {
+        // All four come through Nova, with Nova as the actor: only the cause differs.
+        Seed(
+            Job("ai-session", "Claude Code", JobStatus.Completed, Yesterday, null, Actor("agent", "nova"), cause: JobCauses.Beneficiary),
+            Job("ai-session", "Claude Code", JobStatus.Completed, Yesterday, null, Actor("agent", "nova"), cause: JobCauses.Agent),
+            Job("ai-session", "Claude Code", JobStatus.Completed, Yesterday, null, Actor("agent", "nova"), cause: JobCauses.OtherPerson),
+            Job("ai-session", "Claude Code", JobStatus.Completed, Yesterday, null, Actor("agent", "nova"), cause: JobCauses.App),
+            // And a background app that nobody clicked is not the person just because it is an app.
+            Job("ai-session", "Claude Code", JobStatus.Completed, Yesterday, null, Actor("app", "context-graph"), cause: JobCauses.App));
+
+        var groups = Service().GetDailyCounts("2026-10-23", "2026-10-23", User, "ai-session").Counts!.Days.Single().Groups;
+
+        Assert.Equal(1, groups.Single(g => g.Initiator == "you").Jobs);
+        Assert.Equal(1, groups.Single(g => g.Initiator == "agent").Jobs);
+        Assert.Equal(3, groups.Single(g => g.Initiator == "other").Jobs);
+    }
+
     [Fact]
     public void Aggregation_drops_jobs_queued_after_now()
     {
@@ -129,7 +181,7 @@ public sealed class UsageDailyCountsTests : IDisposable
         };
 
         // A host clock running behind real time sees the second job in the future.
-        var counts = UsageCountsService.Aggregate(rows, User, new DateOnly(2026, 10, 23), new DateOnly(2026, 10, 24), Now);
+        var counts = UsageCountsService.Aggregate(rows, new DateOnly(2026, 10, 23), new DateOnly(2026, 10, 24), Now);
 
         Assert.Equal(1, counts.Days.Sum(d => d.Groups.Sum(g => g.Jobs)));
     }
@@ -174,7 +226,7 @@ public sealed class UsageDailyCountsTests : IDisposable
     }
 
     [Fact]
-    public void Generated_sql_reads_only_safe_columns_and_actor_paths()
+    public void Generated_sql_reads_only_safe_columns_and_the_cause()
     {
         Seed(Job("image-gen", "ComfyUI", JobStatus.Completed, Yesterday, "image/png", Actor("app", "outfits"),
             execution: TimeSpan.FromSeconds(3)));
@@ -190,10 +242,10 @@ public sealed class UsageDailyCountsTests : IDisposable
         Assert.All(referenced, column => Assert.Contains(column, AllowedColumns));
         Assert.Contains("ProviderStartedAt", referenced);
 
-        // The provenance snapshot is reachable only through the three actor scalars.
+        // The provenance snapshot is reachable only through the one cause scalar.
         var allowedProvenance = new Regex(
-            "json_extract\\(\"\\w+\"\\.\"CreationProvenanceJson\", '\\$\\.actor\\.(kind|id|entityId)'\\)");
-        Assert.Equal(3, allowedProvenance.Matches(sql).Count);
+            "json_extract\\(\"\\w+\"\\.\"CreationProvenanceJson\", '\\$\\.cause'\\)");
+        Assert.Equal(1, allowedProvenance.Matches(sql).Count);
         Assert.DoesNotContain("CreationProvenanceJson", allowedProvenance.Replace(sql, ""), StringComparison.Ordinal);
     }
 
@@ -282,7 +334,7 @@ public sealed class UsageDailyCountsTests : IDisposable
     }
 
     private static JobRecord Job(string capability, string provider, JobStatus status, DateTimeOffset queuedAt,
-        string? contentType, JobActor? actor, TimeSpan? execution = null)
+        string? contentType, JobActor? actor, TimeSpan? execution = null, string? cause = null)
     {
         var job = new JobRecord
         {
@@ -304,7 +356,7 @@ public sealed class UsageDailyCountsTests : IDisposable
         {
             job.CompletedAt = queuedAt.AddSeconds(1);
         }
-        if (actor != null) job.CreationProvenance = Provenance(actor);
+        if (actor != null) job.CreationProvenance = Provenance(actor) with { Cause = cause };
         return job;
     }
 
@@ -323,7 +375,7 @@ public sealed class UsageDailyCountsTests : IDisposable
         Yesterday);
 
     private static UsageJobRow Row(DateTimeOffset queuedAt) => new(
-        "image-gen", "ComfyUI", JobStatus.Completed, queuedAt, null, null, "image/png", "app", "outfits", null);
+        "image-gen", "ComfyUI", JobStatus.Completed, queuedAt, null, null, "image/png", JobCauses.Beneficiary);
 
     public void Dispose()
     {

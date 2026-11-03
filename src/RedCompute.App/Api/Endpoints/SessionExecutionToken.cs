@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using RedBamboo.AppHost.Auth;
+using RedCompute.Core.Jobs;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
@@ -9,6 +10,8 @@ internal static class SessionExecutionToken
 {
     internal static readonly TimeSpan StatelessCompletionGrace = TimeSpan.FromMinutes(5);
     internal const string SessionContextKind = "session";
+    private static readonly ExecutionContextReference AgentCause =
+        new(JobCauses.ContextKind, JobCauses.Agent);
 
     public static IDisposable Push(HttpContext context, string providerId, string providerName)
     {
@@ -80,7 +83,8 @@ internal static class SessionExecutionToken
             new ExecutionBeneficiaryIdentity("user", subject, context.User.FindFirst("name")?.Value),
             [new ExecutionContextReference("ai-session", sessionId), new ExecutionContextReference(SessionContextKind, sessionId),
                 new ExecutionContextReference("accepted-message", messageUid),
-                new ExecutionContextReference("ai-session-provider", providerId, Name: providerName)],
+                new ExecutionContextReference("ai-session-provider", providerId, Name: providerName),
+                AgentCause],
             Trace: new ExecutionTrace(context.TraceIdentifier));
         return context.RequestServices.GetRequiredService<IExecutionTokenIssuer>().Issue(child, context.User,
             context.RequestServices.GetRequiredService<JwtOptions>().SessionExecutionTokenLifetime).AccessToken;
@@ -119,6 +123,9 @@ internal static class SessionExecutionToken
     /// A session process names exactly one session: its own. Consumers such as leaf-discord bind
     /// authority to that entry, so a caller's session reference (the delegating parent, or the
     /// same id supplied again on resume) is replaced rather than repeated.
+    /// Whatever started the session, anything the process itself starts is the Agent's decision: a
+    /// person typing to it is not the person who chose its image tool call. The caller's cause is
+    /// replaced too, so it cannot pass through to work the process starts.
     /// </summary>
     internal static IReadOnlyList<ExecutionContextReference> ChildContext(
         IReadOnlyList<ExecutionContextReference> parent,
@@ -127,12 +134,14 @@ internal static class SessionExecutionToken
         string? sessionId)
     {
         var provider = new ExecutionContextReference("ai-session-provider", providerId, Name: providerName);
-        if (string.IsNullOrWhiteSpace(sessionId)) return [.. parent.Take(15), provider];
+        var inherited = parent.Where(item => item.Kind != JobCauses.ContextKind);
+        if (string.IsNullOrWhiteSpace(sessionId)) return [.. inherited.Take(14), provider, AgentCause];
         return
         [
-            .. parent.Where(item => !string.Equals(item.Kind, SessionContextKind, StringComparison.OrdinalIgnoreCase)).Take(14),
+            .. inherited.Where(item => !string.Equals(item.Kind, SessionContextKind, StringComparison.OrdinalIgnoreCase)).Take(13),
             new ExecutionContextReference(SessionContextKind, sessionId),
             provider,
+            AgentCause,
         ];
     }
 

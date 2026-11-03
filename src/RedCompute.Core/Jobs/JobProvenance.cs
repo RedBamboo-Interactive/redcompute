@@ -79,6 +79,12 @@ public sealed record JobProvenance(
 {
     public const int CurrentSchemaVersion = 1;
 
+    /// <summary>
+    /// Who actually started this work, one of <see cref="JobCauses"/>, as recorded by the door that
+    /// knew. Null means nobody recorded it, which is every job from before this field existed.
+    /// </summary>
+    public string? Cause { get; init; }
+
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -149,6 +155,33 @@ public sealed record JobProvenance(
             JobProvenanceAssurance.Asserted,
             DateTimeOffset.UtcNow);
     }
+}
+
+/// <summary>
+/// The values of <see cref="JobProvenance.Cause"/>, the same closed set as Leaf.Sdk's ComputeCauses.
+/// Actor kind cannot answer who started a job: a person typing to an Agent and an Agent acting alone
+/// both have an Agent actor, and an app button and an app's background work both have an app actor.
+/// </summary>
+public static class JobCauses
+{
+    /// <summary>The person the job is for directly caused it: they typed, clicked or spoke.</summary>
+    public const string Beneficiary = "beneficiary";
+
+    /// <summary>An Agent decided to start it: delegation, a tool call, a heartbeat or automation.</summary>
+    public const string Agent = "agent";
+
+    /// <summary>Someone other than the beneficiary, such as a non-owner in a Discord channel.</summary>
+    public const string OtherPerson = "other-person";
+
+    /// <summary>A background app or plugin with no person or Agent behind it.</summary>
+    public const string App = "app";
+
+    /// <summary>The signed execution context reference that carries the cause: kind this, id the value.</summary>
+    public const string ContextKind = "job-cause";
+
+    /// <summary>The value if it is one of the known causes, otherwise null: not recorded.</summary>
+    public static string? Normalize(string? cause)
+        => cause is Beneficiary or Agent or OtherPerson or App ? cause : null;
 }
 
 public sealed class JobProvenanceValidationException(string message) : Exception(message);

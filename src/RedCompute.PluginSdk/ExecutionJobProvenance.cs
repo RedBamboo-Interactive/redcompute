@@ -36,8 +36,14 @@ public static class ExecutionJobProvenance
 
         ValidateIdentity(identity, context.User.FindFirst("sub")?.Value);
 
-        var references = (identity.Context ?? []).Select(item => new JobContextReference(
-            item.Kind, item.Id, item.EntityId, item.Name, item.Route)).ToList();
+        // The cause travels as a signed context reference because the shared identity record has no
+        // field for it. On the job it is its own property, not one more piece of context.
+        var cause = JobCauses.Normalize((identity.Context ?? [])
+            .FirstOrDefault(item => item.Kind == JobCauses.ContextKind)?.Id);
+        var references = (identity.Context ?? [])
+            .Where(item => item.Kind != JobCauses.ContextKind)
+            .Select(item => new JobContextReference(
+                item.Kind, item.Id, item.EntityId, item.Name, item.Route)).ToList();
         references.Add(new JobContextReference("execution", identity.ExecutionId));
         if (!string.IsNullOrWhiteSpace(identity.ParentExecutionId))
             references.Add(new JobContextReference("parent-execution", identity.ParentExecutionId));
@@ -73,7 +79,10 @@ public static class ExecutionJobProvenance
                     ?? context.Request.Headers["X-Correlation-Id"].FirstOrDefault(),
                 identity.Trace?.ParentJobId),
             JobProvenanceAssurance.Verified,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        {
+            Cause = cause,
+        };
         provenance.ValidateForNewJob();
         return true;
     }

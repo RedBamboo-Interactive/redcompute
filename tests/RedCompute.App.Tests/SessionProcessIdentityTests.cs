@@ -13,6 +13,7 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.ClaudeCode;
 using RedCompute.PluginSdk;
@@ -61,7 +62,8 @@ public sealed class SessionProcessIdentityTests : IDisposable
         Assert.Equal(parent.ExecutionId, child.ParentExecutionId);
         Assert.Equal(sessionId, Assert.Single(child.Context, c => c.Kind == "session").Id);
         Assert.Equal(
-            [.. DiscordOpenContext, new("session", sessionId), new("ai-session-provider", "claude-code", Name: "Claude Code")],
+            [.. DiscordOpenContext, new("session", sessionId), new("ai-session-provider", "claude-code", Name: "Claude Code"),
+                new(JobCauses.ContextKind, JobCauses.Agent)],
             child.Context);
         Assert.Null(SessionScratch.Environment(null, sessionId: sessionId));
     }
@@ -93,7 +95,8 @@ public sealed class SessionProcessIdentityTests : IDisposable
         Assert.Equal(sessionId, Assert.Single(child.Context, c => c.Kind == "session").Id);
         Assert.Equal(
             [resumeContext[0], resumeContext[1], new("session", sessionId),
-                new("ai-session-provider", "claude-code", Name: "Claude Code")],
+                new("ai-session-provider", "claude-code", Name: "Claude Code"),
+                new(JobCauses.ContextKind, JobCauses.Agent)],
             child.Context);
     }
 
@@ -122,12 +125,31 @@ public sealed class SessionProcessIdentityTests : IDisposable
         var context = SessionExecutionToken.ChildContext(caller, "codex", "Codex", "own-session");
 
         Assert.Equal(16, context.Count);
-        Assert.Equal(caller.Where(c => c.Kind != "session").Take(14), context.Take(14));
-        Assert.Equal(new ExecutionContextReference("session", "own-session"), context[14]);
-        Assert.Equal("ai-session-provider", context[15].Kind);
+        Assert.Equal(caller.Where(c => c.Kind != "session").Take(13), context.Take(13));
+        Assert.Equal(new ExecutionContextReference("session", "own-session"), context[13]);
+        Assert.Equal("ai-session-provider", context[14].Kind);
+        Assert.Equal(new ExecutionContextReference(JobCauses.ContextKind, JobCauses.Agent), context[15]);
         // Without a session id (stateless execution) the caller context is untouched.
-        Assert.Equal([.. caller.Take(15), context[15]],
-            SessionExecutionToken.ChildContext(caller, "codex", "Codex", null));
+        var stateless = SessionExecutionToken.ChildContext(caller, "codex", "Codex", null);
+        Assert.Equal(16, stateless.Count);
+        Assert.Equal(caller.Take(14), stateless.Take(14));
+    }
+
+    [Theory]
+    [InlineData("own-session")]
+    [InlineData(null)]
+    public void What_a_session_process_starts_is_the_Agents_even_when_a_person_started_the_session(string? sessionId)
+    {
+        ExecutionContextReference[] started =
+        [
+            new("discussion", "discussion-1"),
+            new(JobCauses.ContextKind, JobCauses.Beneficiary),
+        ];
+
+        var context = SessionExecutionToken.ChildContext(started, "codex", "Codex", sessionId);
+
+        Assert.Equal(new ExecutionContextReference(JobCauses.ContextKind, JobCauses.Agent),
+            Assert.Single(context, item => item.Kind == JobCauses.ContextKind));
     }
 
     private static ExecutionIdentity Parent(IReadOnlyList<ExecutionContextReference> context) => new(

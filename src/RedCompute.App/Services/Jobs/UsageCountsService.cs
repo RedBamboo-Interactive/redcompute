@@ -14,8 +14,8 @@ namespace RedCompute.App.Services.Jobs;
 /// <item>filters: <c>UserId</c>, <c>Confidential</c>, <c>ParentJobId</c>, <c>QueuedAt</c>, <c>CapabilitySlug</c>;</item>
 /// <item>projection: <c>CapabilitySlug</c>, <c>ProviderName</c>, <c>Status</c>, <c>QueuedAt</c>,
 /// <c>ProviderStartedAt</c>, <c>CompletedAt</c>, <c>OutputContentType</c>;</item>
-/// <item>provenance: <c>json_extract(CreationProvenanceJson, '$.actor.kind' | '$.actor.id' | '$.actor.entityId')</c>,
-/// evaluated inside SQLite so the rest of the provenance snapshot never leaves the database.</item>
+/// <item>provenance: <c>json_extract(CreationProvenanceJson, '$.cause')</c>, evaluated inside SQLite so
+/// the rest of the provenance snapshot never leaves the database.</item>
 /// </list>
 /// Every returned value is a closed enum, a configured capability slug, a UTC day or a bounded count.
 /// </summary>
@@ -58,7 +58,7 @@ public sealed class UsageCountsService
 
         using var db = _dbFactory();
         var rows = Query(db, beneficiary.Trim(), slug, lower, upper).ToList();
-        return new UsageCountsResult(Aggregate(rows, beneficiary.Trim(), sinceDay, untilDay, now), null, null);
+        return new UsageCountsResult(Aggregate(rows, sinceDay, untilDay, now), null, null);
     }
 
     internal static IQueryable<UsageJobRow> Query(RedComputeDbContext db, string beneficiary,
@@ -80,12 +80,10 @@ public sealed class UsageCountsService
             j.ProviderStartedAt,
             j.CompletedAt,
             j.OutputContentType,
-            RedComputeDbContext.JsonExtract(j.CreationProvenanceJson, "$.actor.kind"),
-            RedComputeDbContext.JsonExtract(j.CreationProvenanceJson, "$.actor.id"),
-            RedComputeDbContext.JsonExtract(j.CreationProvenanceJson, "$.actor.entityId")));
+            RedComputeDbContext.JsonExtract(j.CreationProvenanceJson, "$.cause")));
     }
 
-    internal static UsageDailyCounts Aggregate(IEnumerable<UsageJobRow> rows, string beneficiary,
+    internal static UsageDailyCounts Aggregate(IEnumerable<UsageJobRow> rows,
         DateOnly since, DateOnly until, DateTimeOffset now)
     {
         var buckets = new Dictionary<(DateOnly Day, UsageGroupKey Key), (int Jobs, long Ticks)>();
@@ -99,7 +97,7 @@ public sealed class UsageCountsService
 
             var key = new UsageGroupKey(row.CapabilitySlug, NormalizeProvider(row.ProviderName),
                 NormalizeStatus(row.Status), MediaFamily(row.OutputContentType),
-                Initiator(row.ActorKind, row.ActorId, row.ActorEntityId, beneficiary));
+                Initiator(row.Cause));
             buckets.TryGetValue((day, key), out var bucket);
             buckets[(day, key)] = (bucket.Jobs + 1, bucket.Ticks + ExecutionTicks(row));
         }
@@ -154,18 +152,16 @@ public sealed class UsageCountsService
     }
 
     /// <summary>
-    /// <c>agent</c> for agent actors; <c>you</c> for a user-facing app acting for the beneficiary or
-    /// the beneficiary acting directly; <c>other</c> for legacy unknown, plugin, system and the rest.
+    /// Derived only from the recorded cause, never from the actor. Query already limits rows to jobs
+    /// for this beneficiary, so a cause of <c>beneficiary</c> is that person. Anything else, including
+    /// no cause at all, which is every job from before the cause was recorded, is <c>other</c>.
     /// </summary>
-    internal static string Initiator(string? actorKind, string? actorId, string? actorEntityId, string beneficiary)
-        => actorKind?.Trim().ToLowerInvariant() switch
-        {
-            "agent" => "agent",
-            "app" => "you",
-            "user" when string.Equals(actorId, beneficiary, StringComparison.Ordinal)
-                || string.Equals(actorEntityId, beneficiary, StringComparison.Ordinal) => "you",
-            _ => "other",
-        };
+    internal static string Initiator(string? cause) => cause switch
+    {
+        JobCauses.Beneficiary => "you",
+        JobCauses.Agent => "agent",
+        _ => "other",
+    };
 
     private static long ExecutionTicks(UsageJobRow row)
         => row.Status == JobStatus.Completed && row.ProviderStartedAt is { } started && row.CompletedAt is { } completed
@@ -186,9 +182,7 @@ internal sealed record UsageJobRow(
     DateTimeOffset? ProviderStartedAt,
     DateTimeOffset? CompletedAt,
     string? OutputContentType,
-    string? ActorKind,
-    string? ActorId,
-    string? ActorEntityId);
+    string? Cause);
 
 public sealed record UsageCountsResult(UsageDailyCounts? Counts, string? Error, string? Message)
 {
