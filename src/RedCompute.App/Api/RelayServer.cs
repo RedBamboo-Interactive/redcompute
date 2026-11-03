@@ -398,6 +398,7 @@ public class RelayServer
         _app.MapAppHostEndpoints(descriptor, new CloudflareTunnelService(logger: null), "RedCompute",
             () => new RedBamboo.AppHost.Tunnel.TunnelConfig { Enabled = false },
             App.LogService, mapRemoteAccess: false, mapAutoStart: false);
+        _app.MapFallback(context => ((IApplicationBuilder)_app).WriteNoRouteAsync(context, context.Request.Path.Value ?? "/"));
 
         // Quality tiers and modes are entity-owned. Load RedLeaf or the last-known-good
         // disk snapshot before accepting requests. If neither exists, tier-based requests
