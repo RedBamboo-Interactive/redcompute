@@ -31,6 +31,9 @@ internal sealed class CompletedTranscriptPublisher(
 
     private readonly ConcurrentDictionary<string, SessionState> _sessions = new();
 
+    /// <summary>Drops what is retained for a session whose transcript was rolled back.</summary>
+    public void Forget(string sessionId) => _sessions.TryRemove(sessionId, out _);
+
     public void Publish(IReadOnlyList<AiMessageSnapshot> messages)
     {
         if (messages.Count == 0) return;

@@ -5,7 +5,8 @@ namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeDbContext : DbContext
 {
-    private static readonly string DbPath;
+    // Settable so a test can never reach the real database.
+    internal static string DbPath { get; set; }
 
     public DbSet<ClaudeSessionRecord> Sessions => Set<ClaudeSessionRecord>();
     public DbSet<ClaudeMessageRecord> Messages => Set<ClaudeMessageRecord>();
@@ -108,7 +109,7 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
-        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson" })
+        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson", "ForkTargetJson" })
         {
             if (columns.Contains(column)) continue;
             using var alter = conn.CreateCommand();
@@ -151,11 +152,18 @@ public class ClaudeDbContext : DbContext
         }
 
         // Nullable: main-loop records and history written before background work was attributed.
-        foreach (var column in new[] { "ParentToolUseId", "TurnOriginJson" })
+        foreach (var column in new[] { "ParentToolUseId", "TurnOriginJson", "PromptUuid" })
         {
             if (msgColumns.Contains(column)) continue;
             using var alter = conn.CreateCommand();
             alter.CommandText = $"ALTER TABLE Messages ADD COLUMN {column} TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        if (!msgColumns.Contains("RolledBack"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Messages ADD COLUMN RolledBack INTEGER NOT NULL DEFAULT 0";
             alter.ExecuteNonQuery();
         }
     }

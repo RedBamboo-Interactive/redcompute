@@ -19,6 +19,10 @@ public interface IClaudeSessionStore
     string? FindToolUseMessageUid(string sessionId, string toolUseId)
         => GetMessages(sessionId).LastOrDefault(message =>
             message.EventType == "tool_use" && message.MessageId == toolUseId)?.MessageUid;
+    string? GetForkTarget(string sessionId) => null;
+    void SetForkTarget(string sessionId, string? targetJson) { }
+    /// <summary>Marks this user message and everything after it. They leave every read and stay on disk.</summary>
+    void MarkMessagesRolledBack(string sessionId, string messageUid) { }
     List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false);
     void SaveSession(ClaudeSessionRecord record);
     void DismissSession(string sessionId);

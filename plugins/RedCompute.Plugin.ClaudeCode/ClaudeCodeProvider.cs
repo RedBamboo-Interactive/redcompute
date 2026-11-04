@@ -43,7 +43,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.SendMessage | SessionCapabilities.PermissionMode |
         SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
         SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate | SessionCapabilities.GenerateVision |
-        SessionCapabilities.SupportsSteering | SessionCapabilities.SupportsBackgroundTaskStop;
+        SessionCapabilities.SupportsSteering | SessionCapabilities.SupportsBackgroundTaskStop |
+        SessionCapabilities.SupportsRollback;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
 
     public string? LastStartError => _claude.LastStartError;
@@ -241,6 +242,9 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public IReadOnlyList<PendingSessionQuestion> GetPendingQuestions(string sessionId)
         => _claude.GetPendingQuestions(sessionId);
 
+    public Task<SessionRollbackResult> RollbackAsync(SessionRollbackRequest request, CancellationToken ct = default)
+        => _claude.RollbackAsync(request, ct);
+
     // --- ISessionProvider: Configuration ---
 
     public bool SetPermissionMode(string sessionId, string mode) => _claude.SetPermissionMode(sessionId, mode);
@@ -388,6 +392,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         UserName = s.UserName,
         UserAvatarUrl = s.UserAvatarUrl,
         SupportsSteering = true,
+        SupportsRollback = true,
         BackgroundTasks = s.BackgroundTasks,
         LastTurnOutcome = s.LastTurnOutcome,
         LastTurnEndedAt = s.LastTurnEndedAt,

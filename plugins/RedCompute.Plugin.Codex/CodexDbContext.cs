@@ -5,7 +5,8 @@ namespace RedCompute.Plugin.Codex;
 
 public class CodexDbContext : DbContext
 {
-    private static readonly string DbPath;
+    // Settable so a test can never reach the real database.
+    internal static string DbPath { get; set; }
 
     public DbSet<CodexSessionRecord> Sessions => Set<CodexSessionRecord>();
     public DbSet<CodexMessageRecord> Messages => Set<CodexMessageRecord>();
@@ -49,6 +50,7 @@ public class CodexDbContext : DbContext
                          "ExecutionProfile TEXT NOT NULL DEFAULT 'default'",
                          "StopReason TEXT",
                          "StoppedAt TEXT",
+                         "HistoryMode TEXT",
                      })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";
@@ -56,7 +58,7 @@ public class CodexDbContext : DbContext
                 catch { }
             }
 
-            foreach (var col in new[] { "MessageUid TEXT", "AttachmentsJson TEXT", "Phase TEXT", "ParentToolUseId TEXT" })
+            foreach (var col in new[] { "ProviderTurnId TEXT", "RolledBack INTEGER NOT NULL DEFAULT 0", "MessageUid TEXT", "AttachmentsJson TEXT", "Phase TEXT", "ParentToolUseId TEXT" })
             {
                 cmd.CommandText = $"ALTER TABLE Messages ADD COLUMN {col}";
                 try { cmd.ExecuteNonQuery(); }

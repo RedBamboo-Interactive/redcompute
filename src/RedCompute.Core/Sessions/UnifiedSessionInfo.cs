@@ -38,6 +38,10 @@ public class UnifiedSessionInfo
     public bool Dismissed { get; set; }
     public Dictionary<string, object?>? ProviderMetadata { get; set; }
     public bool SupportsSteering { get; set; }
+    // Whether this session can be rolled back at all (provider capability plus any per-session
+    // limit, such as a Codex thread created before paginated history). Whether it can be rolled
+    // back right now also needs the session to be idle; the route reports what is in the way.
+    public bool SupportsRollback { get; set; }
     // Live background work (subagents, background shells) still running. It never makes the
     // session Active. Overlaid from the provider on every read; empty when nothing runs.
     public IReadOnlyList<BackgroundTaskInfo> BackgroundTasks { get; set; } = [];

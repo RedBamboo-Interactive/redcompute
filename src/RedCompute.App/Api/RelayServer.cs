@@ -336,7 +336,11 @@ public class RelayServer
         // (dual-write) until the verification window closes.
         var redLeafJwt = jwt;
         var redLeafReader = new RedLeafSessionReader(
-            _config.RedLeafUrl, redLeafJwt, _qualityModes) { Checkpoints = transcriptPipeline.Checkpoints };
+            _config.RedLeafUrl, redLeafJwt, _qualityModes)
+        {
+            Checkpoints = transcriptPipeline.Checkpoints,
+            Sequences = transcriptPipeline.Sequences,
+        };
         var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
@@ -353,6 +357,9 @@ public class RelayServer
             () => maintenance.IsDraining, redLeafReader.RecoverAuthorityAsync, maintenance.ReadVerificationTarget,
             _callbacks.ReconcileAsync);
         maintenance.AttachInputQueue(inputQueue);
+        var rollbacks = new SessionRollbackService(_registry, inputQueue, transcriptPipeline, redLeafReader,
+            new SessionRollbackLedger(), _log);
+        inputQueue.SettleRollback = rollbacks.SettleAsync;
         broadcaster.RegisterEvent(new WsEventSchema("maintenance.updated",
             "Deployment pause or active-turn count changed; aggregate operational progress only",
             Fields: ["state", "paused", "runId", "startedAt", "changedAt", "activeTurnCount"]));
@@ -369,6 +376,7 @@ public class RelayServer
                         ?? job.CreationProvenance?.Actor.Id,
                     confidential = true,
                 }, token));
+        SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
         CliVersionEndpoints.Map(registry, _registry);
         MaintenanceEndpoints.Map(registry, maintenance);
         VoiceSessionEndpoints.Map(registry, _registry, _voiceSessions);
@@ -376,6 +384,7 @@ public class RelayServer
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         RegisterWsEvents(broadcaster, transcriptPipeline, inputQueue);
+        _ = rollbacks.RecoverAsync(ct);
         _ = inputQueue.RunAsync(ct);
         // Always runs: its eligibility clock also tells completion callbacks a session settled.
         // A zero idle timeout disables only the parking itself.
@@ -432,10 +441,10 @@ public class RelayServer
             Fields: ["slug", "displayName", "status", "sleeping", "provider"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.created",
             "Fired when a new AI session is started", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering", "backgroundTasks", "workState"]));
+            ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering", "supportsRollback", "backgroundTasks", "workState"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.updated",
             "Fired when a session's status, tokens, cost, title, or live background tasks change (background progress coalesced to ~500 ms)", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "backgroundTasks", "workState", "lastTurnOutcome", "lastTurn"]));
+            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "supportsRollback", "backgroundTasks", "workState", "lastTurnOutcome", "lastTurn"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason", "stopReason"]));

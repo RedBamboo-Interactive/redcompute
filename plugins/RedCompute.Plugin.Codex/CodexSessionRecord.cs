@@ -45,4 +45,5 @@ public class CodexSessionRecord
     public string? UserAvatarUrl { get; set; }
     public string? StopReason { get; set; }
     public DateTimeOffset? StoppedAt { get; set; }
+    public string? HistoryMode { get; set; }
 }

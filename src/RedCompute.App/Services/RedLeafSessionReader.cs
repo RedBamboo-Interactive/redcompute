@@ -33,7 +33,7 @@ internal sealed class TranscriptPageTooLargeException : Exception
 /// instead of the plugin SQLite DBs. RedLeaf is a hard dependency here by
 /// decision — failures propagate to the caller, no local fallback.
 /// </summary>
-public sealed class RedLeafSessionReader
+public sealed class RedLeafSessionReader : ISessionRollbackTranscript
 {
     internal const int MaxTranscriptPageLimit = 500;
     internal const int MaxTranscriptBoundaryRecords = 10_000;
@@ -45,6 +45,64 @@ public sealed class RedLeafSessionReader
     private readonly JwtService? _recoveryJwt;
     private readonly QualityModeService _qualityModes;
     internal TranscriptCheckpointCoordinator? Checkpoints { get; init; }
+    internal ITranscriptSequenceStore? Sequences { get; init; }
+
+    internal string CurrentEpoch(string provider, string sessionId) =>
+        Sequences?.CurrentView(provider, sessionId)?.Epoch ?? TranscriptOrdering.Epoch(provider, sessionId);
+
+    internal TranscriptCursor Cursor(string provider, string sessionId, IReadOnlyList<UnifiedMessageRecord> history) =>
+        Sequences?.CurrentView(provider, sessionId) is { } view
+            ? TranscriptOrdering.Cursor(view, history)
+            : TranscriptOrdering.Cursor(provider, sessionId, history);
+
+    /// <summary>
+    /// A rolled-back session's records as one epoch: sequences keep their order across a rotation, so
+    /// a client only ever sees the current epoch, and records of a removed range stay out even if one
+    /// reached RedLeaf after it was marked.
+    /// </summary>
+    internal List<UnifiedMessageRecord> ProjectEpoch(string provider, string sessionId, IEnumerable<UnifiedMessageRecord> messages)
+    {
+        if (Sequences?.CurrentView(provider, sessionId) is not { } view) return messages.ToList();
+        var visible = new List<UnifiedMessageRecord>();
+        foreach (var message in messages)
+        {
+            if (view.IsRemoved(message.Sequence)) continue;
+            if (message.Epoch is not null) message.Epoch = view.Epoch;
+            visible.Add(message);
+        }
+        return visible;
+    }
+
+    async Task<(string? EntityId, List<UnifiedMessageRecord> History)> ISessionRollbackTranscript.ReadAsync(
+        string sessionId, CancellationToken ct)
+    {
+        var (info, entityId) = await GetSessionInfoAsync(sessionId);
+        if (info is null || entityId is null) return (null, []);
+        var (_, history) = await GetSessionAsync(sessionId);
+        return (entityId, history);
+    }
+
+    Task<bool> ISessionRollbackTranscript.CanMarkAsync(string entityId, CancellationToken ct) =>
+        CanMarkRolledBackAsync(entityId, ct);
+
+    Task ISessionRollbackTranscript.MarkAsync(string entityId, long fromRecordId, string rollbackId, CancellationToken ct) =>
+        MarkRolledBackAsync(entityId, fromRecordId, rollbackId, ct);
+
+    /// <summary>Marks a transcript's records as rolled back from one record on. RedLeaf keeps them.</summary>
+    internal async Task MarkRolledBackAsync(string entityId, long fromRecordId, string rollbackId, CancellationToken ct = default)
+    {
+        using var response = await _http.PostAsJsonAsync("api/streams/session-messages/records/rollback",
+            new { entity_id = entityId, from_id = fromRecordId, rollback_id = rollbackId }, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>False on a kernel without the mark route. A mark past every record changes nothing.</summary>
+    internal async Task<bool> CanMarkRolledBackAsync(string entityId, CancellationToken ct = default)
+    {
+        using var response = await _http.PostAsJsonAsync("api/streams/session-messages/records/rollback",
+            new { entity_id = entityId, from_id = long.MaxValue, rollback_id = "probe" }, ct);
+        return response.IsSuccessStatusCode;
+    }
 
     public RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService, QualityModeService qualityModes)
     {
@@ -371,7 +429,7 @@ public sealed class RedLeafSessionReader
         var history = Checkpoints is null
             ? await GetHistoryAsync(entityId, info.Id, tail)
             : await Checkpoints.ReadAsync(info.Id, () => GetHistoryAsync(entityId, info.Id, tail));
-        return (info, history);
+        return (info, ProjectEpoch(info.Provider, info.Id, history));
     }
 
     private async Task<List<UnifiedMessageRecord>> GetHistoryAsync(string entityId, string sessionId, int? tail)

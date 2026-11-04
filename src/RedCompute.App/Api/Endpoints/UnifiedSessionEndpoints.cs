@@ -91,6 +91,8 @@ public static class UnifiedSessionEndpoints
             var provider = registry.FindProviders<ISessionProvider>().FirstOrDefault(candidate =>
                 string.Equals(candidate.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase));
             session.SupportsSteering = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsSteering) == true;
+            session.SupportsRollback = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsRollback) == true
+                && provider.SupportsRollback(session.Id);
             try
             {
                 session.BackgroundTasks = provider?.GetBackgroundTasks(session.Id) ?? [];
@@ -516,7 +518,7 @@ public static class UnifiedSessionEndpoints
                 return ComputeResourceAccess.SessionDenied(info);
 
             var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
-            var transcript = TranscriptOrdering.Cursor(info.Provider, info.Id, history);
+            var transcript = _redLeafReader!.Cursor(info.Provider, info.Id, history);
             return Results.Json(new { session = WithLiveCapabilities(info), messages = history, inputQueue = queue, transcript,
                 pendingQuestions = PendingQuestions(info) });
         })
@@ -561,7 +563,7 @@ public static class UnifiedSessionEndpoints
             if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
-            var epoch = TranscriptOrdering.Epoch(info.Provider, info.Id);
+            var epoch = _redLeafReader!.CurrentEpoch(info.Provider, info.Id);
             TranscriptPageCursor? cursor = null;
             var direction = "newest";
             try
@@ -611,11 +613,13 @@ public static class UnifiedSessionEndpoints
                 return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
             }
 
-            var (fromSequence, throughSequence) = TranscriptPageSequenceRange(page.Messages, epoch);
+            var visible = _redLeafReader.ProjectEpoch(info.Provider, info.Id, page.Messages);
+            // The range describes these records and nothing else: the shared pager verifies it.
+            var (fromSequence, throughSequence) = TranscriptPageSequenceRange(visible, epoch);
             var response = new TranscriptPageResponse
             {
                 Session = WithLiveCapabilities(info),
-                Messages = page.Messages,
+                Messages = visible,
                 Page = new TranscriptPageMetadata
                 {
                     Epoch = epoch,
@@ -690,7 +694,7 @@ public static class UnifiedSessionEndpoints
             if (!CanReadSession(ctx, info))
                 return ComputeResourceAccess.SessionDenied(info);
 
-            var epoch = TranscriptOrdering.Epoch(info.Provider, info.Id);
+            var epoch = _redLeafReader!.CurrentEpoch(info.Provider, info.Id);
             (long Sequence, long RecordId, string Key)? after = null;
             if (!string.IsNullOrWhiteSpace(cursorText))
             {
@@ -906,7 +910,7 @@ public static class UnifiedSessionEndpoints
                 {
                     session = info,
                     messages = history,
-                    transcript = TranscriptOrdering.Cursor(info.Provider, info.Id, history),
+                    transcript = _redLeafReader!.Cursor(info.Provider, info.Id, history),
                 });
             return Results.Json(new ErrorResponse { Error = "not_found", Message = $"No session for job '{jobId}'" }, statusCode: 404);
         });
@@ -2984,6 +2988,7 @@ public static class UnifiedSessionEndpoints
                 properties = new
                 {
                     supportsSteering = new { type = "boolean" },
+                    supportsRollback = new { type = "boolean", description = "This session can be rewound with POST /ai-session/sessions/{id}/rollback when idle. Files are never changed." },
                     backgroundTasks = new
                     {
                         type = "array",

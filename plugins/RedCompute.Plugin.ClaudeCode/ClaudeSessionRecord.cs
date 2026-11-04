@@ -43,4 +43,9 @@ public class ClaudeSessionRecord
     /// Recovery reads it to settle tasks that died with their CLI process as `lost`.
     /// </summary>
     public string? BackgroundTasksJson { get; set; }
+    /// <summary>
+    /// A rollback the CLI has not applied yet (<see cref="ClaudeForkTarget"/>). Written only through
+    /// <see cref="IClaudeSessionStore.SetForkTarget"/>, so saving a session never clears it by accident.
+    /// </summary>
+    public string? ForkTargetJson { get; set; }
 }

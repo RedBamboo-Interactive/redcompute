@@ -19,7 +19,7 @@ namespace RedCompute.Plugin.Codex;
 /// Conversation-only sessions are a separate persisted security profile: they deny approvals,
 /// run read-only without network or suite identity, and never surface provider tool questions.
 /// </summary>
-public sealed class CodexInteractiveService : IAsyncDisposable
+public sealed partial class CodexInteractiveService : IAsyncDisposable
 {
     internal const string ConversationBaseInstructions =
         "You are a conversational intelligence. Respond directly to the user in natural language. " +
@@ -36,6 +36,8 @@ public sealed class CodexInteractiveService : IAsyncDisposable
 
         /// <summary>Id of the in-flight turn, needed by turn/interrupt.</summary>
         public string? ActiveTurnId { get; set; }
+        // A sent message whose provider turn is not known yet. Rollback needs it to find the turn.
+        public string? PendingTurnUid { get; set; }
 
         /// <summary>Questions parked awaiting a user answer, keyed by request id.</summary>
         public ConcurrentDictionary<string, PendingQuestion> Questions { get; } = new();
@@ -301,6 +303,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             info.ThreadId = result.TryGetProperty("thread", out var thread) && thread.TryGetProperty("id", out var tid)
                 ? tid.GetString()
                 : null;
+            info.HistoryMode = HistoryModeOf(result);
 
             if (info.ThreadId == null)
             {
@@ -374,8 +377,9 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                 spawned);
             try
             {
-                await conn.SendRequestAsync(
+                var resumedThread = await conn.SendRequestAsync(
                     "thread/resume", BuildThreadResumeParams(info), timeoutSeconds: 60);
+                info.HistoryMode = HistoryModeOf(resumedThread) ?? info.HistoryMode;
             }
             catch (Exception ex) when (CanRecreateMissingEmptyRollout(record, ex))
             {
@@ -391,6 +395,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                     $"{record.ThreadId} onto new thread {replacementThreadId}",
                     null);
                 info.ThreadId = replacementThreadId;
+                info.HistoryMode = HistoryModeOf(started);
             }
 
             info.ProcessId = conn.ProcessId;
@@ -628,6 +633,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         session.HasFinalOutput = false;
         session.HasCompletedFinalAnswer = false;
         session.InterruptRequested = false;
+        session.PendingTurnUid = messageUid;
 
         var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
         _store.AddMessage(new CodexMessageRecord
@@ -661,6 +667,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             // response. Never overwrite a newer active id with a late response from an older turn.
             if (info.Status == "Active" && session.ActiveTurnId == null)
                 session.ActiveTurnId = returnedTurnId;
+            RecordTurnId(session, returnedTurnId);
 
             return true;
         }
@@ -809,6 +816,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
             Content = pending.TranscriptContent,
             MessageId = nativeItemId,
             MessageUid = pending.MessageUid,
+            ProviderTurnId = pending.ExpectedTurnId,
             AttachmentsJson = pending.AttachmentsJson,
             Timestamp = DateTimeOffset.UtcNow,
         });
@@ -1087,6 +1095,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
                     startedTurnId.ValueKind == JsonValueKind.String)
                 {
                     session.ActiveTurnId = startedTurnId.GetString();
+                    RecordTurnId(session, session.ActiveTurnId);
                     session.Info.Status = "Active";
                     session.Info.LastActivity = DateTimeOffset.UtcNow;
                     Persist(session.Info);
@@ -1864,6 +1873,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         ProjectName = info.ProjectName,
         ProjectPath = info.ProjectPath,
         ScratchDirectory = info.ScratchDirectory,
+        HistoryMode = info.HistoryMode,
         RepositoryId = info.RepositoryId,
         Status = info.Status,
         StartedAt = info.StartedAt,
@@ -1899,6 +1909,7 @@ public sealed class CodexInteractiveService : IAsyncDisposable
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         ScratchDirectory = r.ScratchDirectory,
+        HistoryMode = r.HistoryMode,
         RepositoryId = r.RepositoryId,
         Status = r.Status,
         StartedAt = r.StartedAt,

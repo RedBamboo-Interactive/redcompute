@@ -40,6 +40,18 @@ For `PersistentSessions`, the provider owns one durable adapter state machine bu
 7. Confidential sessions, signed beneficiary provenance, repository identity, scratch-directory containment, attachments, and developer instructions must be enforced at the same boundary as existing providers.
 8. Use RedCompute's completed transcript/checkpoint publisher and store conventions. Do not mirror partial output directly into RedLeaf or invent another conversation store.
 
+### Optional: conversation rollback
+
+`SessionCapabilities.SupportsRollback` says a provider can drop one of the person's messages and everything after it from its own context, leaving files alone. Declare it only if it does exactly that; `ISessionProvider.SupportsRollback(sessionId)` narrows it per session, and `UnifiedSessionInfo.SupportsRollback` carries the answer to clients the way `SupportsSteering` does. Never roll back automatically: the only caller is `POST /ai-session/sessions/{id}/rollback`, which the person triggers.
+
+The shared `SessionRollbackService` owns the idle check, the durable ledger, marking RedLeaf's records and moving the transcript to a new epoch. The provider implements `RollbackAsync` and must treat a repeat of the same `RollbackId` as already done, because a restart re-issues it. Refuse what you cannot do exactly (`SessionRollbackResult.Refused`) rather than approximating. A `ContextCompaction` tool record after the target refuses as `target_before_compaction`, so an implementation never has to rewind across a compaction.
+
+A repeat also has to finish what a crash left undone, such as marking local messages, because the provider cannot tell whether the first attempt got that far.
+
+Rollback is a person's action, and the route enforces it, so a provider never checks who is asking. `/ai-session/sessions/{id}/rollback` answers `403 rollback_requires_person` to anything but a signed login used directly, a browser app's own token, or that token after one signed hop through a kernel service. An Agent, an automation, a service token, a session's own process and a tokenless loopback request are all refused, even with read access. Nothing in RedCompute rolls a conversation back on its own.
+
+Claude's fork target and Codex's `thread/revert` are the two worked examples.
+
 Read the current `ISessionProvider`, existing Codex/OpenCode implementations, and their tests before coding. The interface is the source of truth when this guide and source differ.
 
 ## Background work

@@ -25,4 +25,10 @@ public class CodexMessageRecord
 
     public string? AttachmentsJson { get; set; }
     public DateTimeOffset Timestamp { get; set; }
+
+    /// <summary>The provider turn that carried a user message: its revert boundary, unless it joined a running turn.</summary>
+    public string? ProviderTurnId { get; set; }
+
+    /// <summary>Rolled back: gone from every read, kept on disk.</summary>
+    public bool RolledBack { get; set; }
 }

@@ -29,4 +29,10 @@ public enum SessionCapabilities
     /// and delivers them to the model, including on a verified tool-free call.
     /// </summary>
     GenerateVision = 1 << 15,
+    /// <summary>
+    /// Rewinds the conversation to just before a chosen user message: that message and everything
+    /// after it leave the provider's context. Conversation only: files are never touched. A provider
+    /// that cannot do exactly this does not claim it.
+    /// </summary>
+    SupportsRollback = 1 << 16,
 }

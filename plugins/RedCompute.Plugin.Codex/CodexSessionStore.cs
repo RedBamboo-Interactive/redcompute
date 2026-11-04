@@ -111,6 +111,7 @@ public class CodexSessionStore : ICodexSessionStore
             existing.ProjectName = record.ProjectName;
             existing.ProjectPath = record.ProjectPath;
             existing.ScratchDirectory = record.ScratchDirectory;
+            existing.HistoryMode = record.HistoryMode;
             existing.RepositoryId = record.RepositoryId;
             existing.Status = record.Status;
             existing.StartedAt = record.StartedAt;
@@ -164,6 +165,41 @@ public class CodexSessionStore : ICodexSessionStore
         }
     }
 
+    public void SetUserTurnId(string sessionId, string messageUid, string turnId)
+    {
+        using var db = new CodexDbContext();
+        var message = db.Messages
+            .Where(m => m.SessionId == sessionId && m.Role == "user" && m.MessageUid == messageUid)
+            .OrderByDescending(m => m.Id)
+            .FirstOrDefault();
+        if (message is null) return;
+        message.ProviderTurnId = turnId;
+        db.SaveChanges();
+    }
+
+    public string? GetUserTurnId(string sessionId, string messageUid)
+    {
+        using var db = new CodexDbContext();
+        return db.Messages
+            .Where(m => m.SessionId == sessionId && m.Role == "user" && m.MessageUid == messageUid)
+            .OrderByDescending(m => m.Id)
+            .Select(m => m.ProviderTurnId)
+            .FirstOrDefault();
+    }
+
+    public void MarkMessagesRolledBack(string sessionId, string messageUid)
+    {
+        using var db = new CodexDbContext();
+        var from = db.Messages
+            .Where(m => m.SessionId == sessionId && m.Role == "user" && m.MessageUid == messageUid)
+            .Select(m => (long?)m.Id)
+            .Min();
+        if (from is null) return;
+        foreach (var message in db.Messages.Where(m => m.SessionId == sessionId && m.Id >= from && !m.RolledBack))
+            message.RolledBack = true;
+        db.SaveChanges();
+    }
+
     public void AddMessage(CodexMessageRecord message)
     {
         using var db = new CodexDbContext();
@@ -185,7 +221,7 @@ public class CodexSessionStore : ICodexSessionStore
     {
         using var db = new CodexDbContext();
         return db.Messages
-            .Where(m => m.SessionId == sessionId)
+            .Where(m => m.SessionId == sessionId && !m.RolledBack)
             .OrderByDescending(m => m.Id)
             .Take(limit)
             .ToList()

@@ -55,6 +55,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.Interrupt
         | SessionCapabilities.SendMessage
         | SessionCapabilities.SupportsSteering
+        | SessionCapabilities.SupportsRollback
         | SessionCapabilities.ImageAttachments
         | SessionCapabilities.FileAttachments
         | SessionCapabilities.ImageOutputs;
@@ -250,6 +251,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public IReadOnlyList<UnifiedSessionInfo> GetResidentIdleSessions()
         => _interactive.GetResidentIdleSessions().Select(ToUnified).ToArray();
+
+    public bool SupportsRollback(string sessionId) => _interactive.ThreadSupportsRollback(sessionId);
+
+    public Task<SessionRollbackResult> RollbackAsync(SessionRollbackRequest request, CancellationToken ct = default)
+        => _interactive.RollbackAsync(request, ct);
 
     public Task<bool> TryParkIdleSessionAsync(
         string sessionId, string stopReason, CancellationToken ct = default)
@@ -545,6 +551,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ProviderSessionId = s.ThreadId,
         ProviderMetadata = new() { ["executionProfile"] = s.ExecutionProfile },
         SupportsSteering = true,
+        SupportsRollback = CodexInteractiveService.SupportsRollback(s.HistoryMode),
         LastTurnOutcome = s.LastTurnOutcome,
         LastTurnEndedAt = s.LastTurnEndedAt,
     };

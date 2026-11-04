@@ -196,11 +196,39 @@ public class ClaudeSessionStore : IClaudeSessionStore
         SuiteMirror.PublishMessages(messages.Select(ToSnapshot).ToList());
     }
 
+    public string? GetForkTarget(string sessionId)
+    {
+        using var db = new ClaudeDbContext();
+        return db.Sessions.Where(s => s.Id == sessionId).Select(s => s.ForkTargetJson).FirstOrDefault();
+    }
+
+    public void SetForkTarget(string sessionId, string? targetJson)
+    {
+        using var db = new ClaudeDbContext();
+        var record = db.Sessions.Find(sessionId);
+        if (record is null) return;
+        record.ForkTargetJson = targetJson;
+        db.SaveChanges();
+    }
+
+    public void MarkMessagesRolledBack(string sessionId, string messageUid)
+    {
+        using var db = new ClaudeDbContext();
+        var from = db.Messages
+            .Where(m => m.SessionId == sessionId && m.Role == "user" && m.MessageUid == messageUid)
+            .Select(m => (long?)m.Id)
+            .Min();
+        if (from is null) return;
+        foreach (var message in db.Messages.Where(m => m.SessionId == sessionId && m.Id >= from && !m.RolledBack))
+            message.RolledBack = true;
+        db.SaveChanges();
+    }
+
     public List<ClaudeMessageRecord> GetMessages(string sessionId, int limit = 50_000)
     {
         using var db = new ClaudeDbContext();
         return db.Messages
-            .Where(m => m.SessionId == sessionId)
+            .Where(m => m.SessionId == sessionId && !m.RolledBack)
             .OrderByDescending(m => m.Id)
             .Take(limit)
             .ToList()
@@ -212,7 +240,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     {
         using var db = new ClaudeDbContext();
         return db.Messages
-            .Where(m => m.SessionId == sessionId)
+            .Where(m => m.SessionId == sessionId && !m.RolledBack)
             .OrderByDescending(m => m.Timestamp)
             .Select(m => m.Timestamp)
             .FirstOrDefault();

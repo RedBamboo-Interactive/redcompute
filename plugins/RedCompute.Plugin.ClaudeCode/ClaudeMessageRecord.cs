@@ -21,5 +21,9 @@ public class ClaudeMessageRecord
     // Serialized TurnOrigin for the first record of a turn the CLI started by itself.
     public string? TurnOriginJson { get; set; }
     public DateTimeOffset Timestamp { get; set; }
+    // The CLI chain entry a user message became; null for records written before it was recorded.
+    public string? PromptUuid { get; set; }
+    // Rolled back: gone from every read, kept on disk.
+    public bool RolledBack { get; set; }
     public string? AttachmentsJson { get; set; }
 }

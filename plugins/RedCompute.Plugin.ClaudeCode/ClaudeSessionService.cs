@@ -9,7 +9,7 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
-public class ClaudeSessionService
+public partial class ClaudeSessionService
 {
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     // Sessions whose process was killed for an automatic relaunch and is not yet replaced.
@@ -1189,6 +1189,15 @@ public class ClaudeSessionService
             return null;
         }
 
+        var (forkTarget, forkError) = PrepareForkForLaunch(sessionRecord, claudePath);
+        if (forkError is not null)
+        {
+            // The rewind stays pending: resuming without it would bring the removed turns back.
+            LastStartError = forkError;
+            _log($"[Claude] {forkError}", null);
+            return null;
+        }
+
         var info = new ClaudeSessionInfo
         {
             Id = sessionRecord.Id,
@@ -1236,6 +1245,7 @@ public class ClaudeSessionService
             string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
             sessionRecord.Model, sessionRecord.Effort,
             sessionRecord.DeveloperInstructions);
+        AddForkArgs(startInfo, forkTarget);
         if (SessionScratch.Environment(sessionRecord.ScratchDirectory, sessionId: sessionRecord.Id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
@@ -1317,12 +1327,16 @@ public class ClaudeSessionService
         {
             var content = SessionInputFormatting.UserText(input);
             var contentPayload = BuildContentPayload(input);
+            // Random per write, never derived from messageUid: the CLI swallows a uuid already on
+            // its chain and the turn would never end (checked against 2.1.318).
+            var promptUuid = Guid.NewGuid().ToString();
 
             var msg = new
             {
                 type = "user",
                 message = new { role = "user", content = contentPayload },
-                parent_tool_use_id = (string?)null
+                parent_tool_use_id = (string?)null,
+                uuid = promptUuid,
             };
             // Set before the write: the reader may see the CLI's replay before this method resumes.
             session.UserInputUnconsumed = true;
@@ -1338,7 +1352,7 @@ public class ClaudeSessionService
             session.CurrentAssistantUid = null;
             var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
             PersistMessage(sessionId, "user", "text", transcriptContent, null, null, null, null, attachmentsJson,
-                messageUid ?? Guid.NewGuid().ToString("N"));
+                messageUid ?? Guid.NewGuid().ToString("N"), promptUuid: promptUuid);
             EnsureTitle(session, transcriptContent);
 
             return true;
@@ -2654,7 +2668,7 @@ public class ClaudeSessionService
         session.Info.MessageCount++;
         session.CurrentAssistantUid = null;
         PersistMessage(session.Info.Id, "user", "text", pending.TranscriptContent,
-            null, null, null, null, pending.AttachmentsJson, pending.MessageUid);
+            null, null, null, null, pending.AttachmentsJson, pending.MessageUid, promptUuid: correlationId);
         PersistSessionRecord(session.Info);
         SessionUpdated?.Invoke(session.Info);
         pending.Completion.TrySetResult(SessionInputDeliveryResult.Accepted());
@@ -4005,7 +4019,7 @@ public class ClaudeSessionService
     private void PersistMessage(string sessionId, string role, string eventType, string? content,
         string? toolName, string? toolInput, string? toolResult, string? messageId,
         string? attachmentsJson = null, string? messageUid = null, string? phase = null,
-        string? parentToolUseId = null, TurnOrigin? turnOrigin = null)
+        string? parentToolUseId = null, TurnOrigin? turnOrigin = null, string? promptUuid = null)
     {
         try
         {
@@ -4029,6 +4043,7 @@ public class ClaudeSessionService
                 ToolResult = toolResult,
                 MessageId = messageId,
                 MessageUid = messageUid,
+                PromptUuid = promptUuid,
                 Phase = phase,
                 ParentToolUseId = parentToolUseId,
                 TurnOriginJson = turnOrigin is null ? null : JsonSerializer.Serialize(turnOrigin),

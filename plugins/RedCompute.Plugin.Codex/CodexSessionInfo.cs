@@ -29,6 +29,9 @@ public class CodexSessionInfo
     /// <summary>App-server thread id — what thread/resume needs to reattach.</summary>
     public string? ThreadId { get; set; }
 
+    /// <summary>The thread's history contract, fixed when it was created. Null until a start or resume reports it.</summary>
+    public string? HistoryMode { get; set; }
+
     public string? Effort { get; set; }
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }

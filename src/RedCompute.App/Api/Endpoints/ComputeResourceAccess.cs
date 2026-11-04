@@ -7,6 +7,8 @@ namespace RedCompute.App.Api.Endpoints;
 
 internal static class ComputeResourceAccess
 {
+    private const string LocalUserSubject = "local-user";
+
     public static bool CanReadSession(
         HttpContext context,
         UnifiedSessionInfo session,
@@ -42,6 +44,50 @@ internal static class ComputeResourceAccess
 
     public static IResult JobDenied()
         => Results.NotFound(new { error = "not_found", message = "Job not found" });
+
+    /// <summary>
+    /// Whether a person asked for this, rather than an Agent, an automation, a service or a process a
+    /// session started. Reading access says nothing about that: an Agent can read its own conversation.
+    /// Three things arrive here as a person, and nothing else does:
+    /// a signed login used directly; a browser app's own token, forwarded by the kernel's proxy (Code);
+    /// and that same token after one signed hop through a kernel service (Nova's route calling here).
+    /// The browser token counts for the loopback owner too, whose token benefits <c>system</c> and keeps
+    /// <c>local-user</c> as its subject. A session's own token also descends from a browser token, so the
+    /// context has to be exactly one of those shapes: it says which steps the call came through.
+    /// </summary>
+    internal static bool IsPersonAction(HttpContext context)
+    {
+        var subject = context.User.FindFirst("sub")?.Value;
+        if (context.User.Identity?.IsAuthenticated != true || string.IsNullOrWhiteSpace(subject)) return false;
+
+        var execution = ConfidentialResourcePolicy.ExecutionIdentity(context);
+        if (execution is null)
+            return ConfidentialResourcePolicy.IsExplicitHuman(context.User)
+                && context.User.FindFirst("client_id") is null
+                && subject is not (LocalUserSubject or "system")
+                && !subject.StartsWith("service:", StringComparison.OrdinalIgnoreCase);
+
+        if (!execution.Actor.Kind.Equals("app", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(execution.Actor.Id, execution.App.Id, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var beneficiary = execution.Beneficiary;
+        var isThePerson = beneficiary.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
+            ? subject != LocalUserSubject && string.Equals(beneficiary.Id, subject, StringComparison.OrdinalIgnoreCase)
+            : beneficiary.Kind.Equals("system", StringComparison.OrdinalIgnoreCase) && subject == LocalUserSubject;
+        if (!isThePerson) return false;
+
+        // A cause is a note about the call, wherever it sits, and not a step the call came through.
+        var steps = execution.Context.Where(item => item.Kind != JobCauses.ContextKind).ToList();
+        if (steps.Count == 0
+            || !steps[0].Kind.Equals("browser", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(steps[0].Route))
+            return false;
+        if (execution.ParentExecutionId is null) return steps.Count == 1;
+        return steps.Count == 2
+            && steps[1].Kind.Equals("redcompute-call", StringComparison.OrdinalIgnoreCase)
+            && steps[1].Id is null && steps[1].EntityId is null && steps[1].Name is null && steps[1].Route is null;
+    }
 
     internal static bool IsTrustedInfrastructure(HttpContext context)
         => string.Equals(context.User.FindFirst("client_id")?.Value, "redleaf",

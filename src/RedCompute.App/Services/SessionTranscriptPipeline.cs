@@ -33,6 +33,7 @@ public sealed class SessionTranscriptPipeline
     private readonly ITranscriptSequenceStore _sequences;
     private readonly CompletedTranscriptPublisher _completed;
     internal TranscriptCheckpointCoordinator Checkpoints { get; } = new();
+    internal ITranscriptSequenceStore Sequences => _sequences;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _livePayloads = new();
 
     public SessionTranscriptPipeline(
@@ -123,6 +124,25 @@ public sealed class SessionTranscriptPipeline
     }
 
     public void MirrorCompletedMessages(IReadOnlyList<AiMessageSnapshot> messages) => _completed.Publish(messages);
+
+    /// <summary>
+    /// Moves a session to the epoch this rollback owns and tells live clients. Nothing from before the
+    /// rollback may be written after it, so the publisher's retained turn state goes with it.
+    /// </summary>
+    internal TranscriptStamp ResetTranscript(
+        string provider, string sessionId, string rollbackId, string messageUid, long? removedFromSequence)
+    {
+        var stamp = _sequences.Rotate(provider, sessionId, rollbackId, removedFromSequence);
+        _completed.Forget(sessionId);
+        Broadcast(provider, sessionId, new UnifiedStreamEvent
+        {
+            Type = SessionRollbackService.TranscriptResetEvent,
+            MessageUid = messageUid,
+            Epoch = stamp.Epoch,
+            Sequence = stamp.Sequence,
+        });
+        return stamp;
+    }
 
     private TranscriptPayloadRef? PersistCompletedMessage(AiMessageSnapshot message, TranscriptStamp stamp)
     {

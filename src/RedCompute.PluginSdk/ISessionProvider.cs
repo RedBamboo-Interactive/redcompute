@@ -201,6 +201,22 @@ public interface ISessionProvider
     /// </summary>
     IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId) => [];
 
+    /// <summary>
+    /// Whether this one session can be rolled back. The capability says what the provider can do;
+    /// this narrows it for a session whose provider state cannot (it never widens it).
+    /// </summary>
+    bool SupportsRollback(string sessionId) => Capabilities.HasFlag(SessionCapabilities.SupportsRollback);
+
+    /// <summary>
+    /// Drops the target user message and everything after it from the provider's context, leaving
+    /// files alone. Called only by the shared rollback service, on an idle session, under the
+    /// session's delivery lock. Must be idempotent per <see cref="SessionRollbackRequest.RollbackId"/>
+    /// and must never retry a refusal. Providers without
+    /// <see cref="SessionCapabilities.SupportsRollback"/> stay side-effect-free.
+    /// </summary>
+    Task<SessionRollbackResult> RollbackAsync(SessionRollbackRequest request, CancellationToken ct = default)
+        => Task.FromResult(SessionRollbackResult.Unsupported());
+
     // Configuration
     bool SetPermissionMode(string sessionId, string mode);
 

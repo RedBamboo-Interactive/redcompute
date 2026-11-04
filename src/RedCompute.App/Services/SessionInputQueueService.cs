@@ -91,6 +91,8 @@ public sealed class SessionInputQueueService
     private readonly ConcurrentDictionary<string, int> _pendingStops = new(StringComparer.Ordinal);
     private bool HasStopIntent(string id) => _manualStops.ContainsKey(id) || _pendingStops.GetValueOrDefault(id) > 0;
     internal bool IsDeliveryPaused => _deliveryPaused();
+    /// <summary>True while this session must not receive input (an unfinished rollback).</summary>
+    internal Func<string, CancellationToken, Task<bool>>? SettleRollback { get; set; }
     private sealed record CallerRecovery(string Token, string Owner, string Scope)
     {
         public override string ToString() => "CallerRecovery { token = [redacted] }";
@@ -403,6 +405,7 @@ public sealed class SessionInputQueueService
     {
         var resumed = false;
         await WithSessionLockAsync(sessionId, async () => {
+            if (SettleRollback is not null) await SettleRollback(sessionId, ct);
             var (_, info) = FindSession(sessionId);
             if (info?.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(info.StopReason))
                 await _store.RequireSessionRecoveryAsync(sessionId, ct);
@@ -515,6 +518,8 @@ public sealed class SessionInputQueueService
         try
         {
             if (HasStopIntent(sessionId)) return;
+            // An unfinished rollback goes first. If it still can't finish, input stays queued for the next sweep.
+            if (SettleRollback is not null && await SettleRollback(sessionId, ct)) return;
             if (_deliveryPaused())
             {
                 var demoted = await _store.DemotePendingSteerAsync(sessionId, ct);
