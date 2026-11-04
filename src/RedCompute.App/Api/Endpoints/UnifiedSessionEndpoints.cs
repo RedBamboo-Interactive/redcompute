@@ -1245,6 +1245,46 @@ public static class UnifiedSessionEndpoints
             .WithParam("itemId", "string", required: true, location: ParamLocation.Path, description: "Failed queue item id")
             .WithResponse(QueueItemResponseSchema);
 
+        endpoints.MapPost("/ai-session/sessions/{id}/input-queue/{itemId}/steer",
+            "Ask one pending queued input to join the running turn instead of waiting for it to end. It never interrupts. Asking again, or asking about an input already steering or delivered, changes nothing. When steering is unavailable the answer says why (outcome unavailable, with reason) and the input stays queued; if the turn ended meanwhile the input runs as the next turn (deliveryReason no_active_turn), once.",
+            async (HttpContext ctx, string id, string itemId) =>
+        {
+            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
+            var userId = ResolveUserId(ctx);
+            if (!CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
+            var owner = userId ?? "local-user";
+            try
+            {
+                var promotion = await _inputQueue!.PromoteToSteerAsync(id, itemId, owner, ctx.RequestAborted);
+                return promotion is null
+                    ? Error(404, "queue_item_not_found", $"Queue item '{itemId}' was not found")
+                    : Results.Json(new
+                    {
+                        outcome = promotion.Outcome,
+                        reason = promotion.Reason,
+                        item = await PublicQueueItemAsync(promotion.Item, owner, ctx.RequestAborted),
+                        queue = promotion.Queue,
+                    });
+            }
+            catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("itemId", "string", required: true, location: ParamLocation.Path, description: "Pending queue item id")
+            .WithResponse(new
+            {
+                type = "object",
+                required = new[] { "outcome", "item", "queue" },
+                properties = new
+                {
+                    outcome = new { type = "string", @enum = new[] { SessionSteerOutcomes.Steering, SessionSteerOutcomes.Delivering, SessionSteerOutcomes.Delivered, SessionSteerOutcomes.Unavailable } },
+                    reason = new { type = new[] { "string", "null" }, description = "Why it is unavailable (steer_unavailable, steering_unsupported, session_not_running, user_stopped, maintenance_drain, failed_head, recovery_required), or the item's deliveryReason" },
+                    item = QueueItemResponseSchema,
+                    queue = QueueSummarySchema,
+                },
+            });
+
         endpoints.MapPost("/ai-session/sessions/{id}/input-queue/send-now",
             "Interrupt the active turn and deliver the durable queue in its own order once the provider reports a safe idle state: interrupt-current input first, then FIFO. The interrupt is attributed to the input that runs next.",
             async (HttpContext ctx, string id) =>
@@ -2841,7 +2881,7 @@ public static class UnifiedSessionEndpoints
         "attachment_not_found" or "attachment_missing" => Error(404, ex.Code, ex.Message),
         "attachment_expired" => Error(410, ex.Code, ex.Message),
         "idempotency_conflict" or "attachment_already_claimed" or "delivery_in_progress"
-            or "not_retryable_state" => Error(409, ex.Code, ex.Message),
+            or "not_retryable_state" or "not_promotable" => Error(409, ex.Code, ex.Message),
         "attachments_too_large" or "attachment_too_large" => Error(413, ex.Code, ex.Message),
         _ => Error(422, ex.Code, ex.Message),
     };
@@ -3114,7 +3154,7 @@ public static class UnifiedSessionEndpoints
             deliveredMessageUid = new { type = new[] { "string", "null" } },
             completedAt = new { type = new[] { "string", "null" }, format = "date-time" },
             requestedDelivery = new { type = "string", @enum = new[] { "after-current", "steer-current", "interrupt-current" }, description = "The policy the caller asked for; delivery is the effective one" },
-            deliveryReason = new { type = new[] { "string", "null" }, @enum = new[] { "steer_unavailable", "no_active_turn" }, description = "Why delivery differs from requestedDelivery" },
+            deliveryReason = new { type = new[] { "string", "null" }, @enum = new[] { "steer_unavailable", "no_active_turn", "promoted" }, description = "Why delivery differs from requestedDelivery" },
             turnId = new { type = new[] { "string", "null" }, description = "The provider turn that carried this input; every input one turn carried shares it" },
             interruptResult = new { type = new[] { "string", "null" }, description = "interrupt-current: what asking the running turn to stop returned" },
         },

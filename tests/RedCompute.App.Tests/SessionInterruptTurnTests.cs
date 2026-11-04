@@ -537,13 +537,62 @@ public sealed class SessionInterruptAdmissionEndpointTests
         Assert.Equal("also", item.GetProperty("turnId").GetString());
     }
 
+    [Fact]
+    public async Task The_steer_route_answers_the_item_and_the_outcome_and_its_siblings_access_rules()
+    {
+        using var f = new SessionInterruptTurnTests.Fixture();
+        await using var api = await Api.CreateAsync(f);
+        await f.DeliverAsync("p1");
+        var note = await f.AdmitAsync("note", SessionInputDeliveryPolicy.AfterCurrent);
+
+        var (status, reply) = await api.PostSteerAsync(note.Item.Id);
+
+        Assert.Equal(200, status);
+        Assert.Equal(SessionSteerOutcomes.Delivered, reply.GetProperty("outcome").GetString());
+        var item = reply.GetProperty("item");
+        Assert.Equal("delivered", item.GetProperty("state").GetString());
+        Assert.Equal("steer-current", item.GetProperty("delivery").GetString());
+        Assert.Equal("after-current", item.GetProperty("requestedDelivery").GetString());
+        Assert.Equal(SessionInputDeliveryReasons.Promoted, item.GetProperty("deliveryReason").GetString());
+        Assert.Equal(0, f.Runtime.Interrupts);
+
+        var (missing, _) = await api.PostSteerAsync("q_missing");
+        Assert.Equal(404, missing);
+
+        var cancelled = await f.AdmitAsync("cancelled", SessionInputDeliveryPolicy.AfterCurrent);
+        await f.Service.CancelAsync("session", cancelled.Item.Id, "owner");
+        var (refused, refusal) = await api.PostSteerAsync(cancelled.Item.Id);
+        Assert.Equal(409, refused);
+        Assert.Equal("not_promotable", refusal.GetProperty("error").GetString());
+
+        var other = await f.AdmitAsync("other", SessionInputDeliveryPolicy.AfterCurrent);
+        var (denied, _) = await api.PostSteerAsync(other.Item.Id, api.Stranger);
+        Assert.Equal(403, denied);
+        Assert.Equal(SessionInputDeliveryPolicy.AfterCurrent,
+            (await f.Store.GetAsync("session", other.Item.Id, "owner"))!.DeliveryPolicy);
+    }
+
     private sealed class Api : IAsyncDisposable
     {
         private readonly WebApplication _app;
         private readonly RouteEndpoint _message;
         private readonly ClaimsPrincipal _user;
 
+        private RouteEndpoint _steer = null!;
+        internal ClaimsPrincipal Stranger = null!;
+
         private Api(WebApplication app, RouteEndpoint message, ClaimsPrincipal user) { _app = app; _message = message; _user = user; }
+
+        internal async Task<(int Status, JsonElement Reply)> PostSteerAsync(string itemId, ClaimsPrincipal? user = null)
+        {
+            var ctx = new DefaultHttpContext { RequestServices = _app.Services, User = user ?? _user };
+            ctx.SetEndpoint(_steer); ctx.Request.RouteValues["id"] = "session"; ctx.Request.RouteValues["itemId"] = itemId;
+            ctx.Request.Method = "POST";
+            ctx.Response.Body = new MemoryStream();
+            await _steer.RequestDelegate!(ctx);
+            ctx.Response.Body.Position = 0;
+            return (ctx.Response.StatusCode, ctx.Response.Body.Length == 0 ? default : await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Response.Body));
+        }
 
         internal static async Task<Api> CreateAsync(SessionInterruptTurnTests.Fixture f)
         {
@@ -567,7 +616,10 @@ public sealed class SessionInterruptAdmissionEndpointTests
                 attachmentStore: f.Attachments, inputQueue: f.Service);
             var message = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
                 .Single(e => e.RoutePattern.RawText == "/ai-session/sessions/{id}/message");
-            return new Api(app, message, user);
+            var steer = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
+                .Single(e => e.RoutePattern.RawText == "/ai-session/sessions/{id}/input-queue/{itemId}/steer");
+            var stranger = jwt.ValidateToken(jwt.GenerateAccessToken("stranger", "stranger@test", "Stranger", ["operator"]))!;
+            return new Api(app, message, user) { _steer = steer, Stranger = stranger };
         }
 
         internal async Task<(int Status, JsonElement Reply)> PostMessageAsync(object body)

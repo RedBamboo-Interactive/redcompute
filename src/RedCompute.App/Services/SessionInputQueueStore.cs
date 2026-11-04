@@ -72,6 +72,8 @@ public static class SessionInputDeliveryReasons
     public const string SteerUnavailable = "steer_unavailable";
     /// <summary>No turn was running: the steer ran as the session's next turn.</summary>
     public const string NoActiveTurn = "no_active_turn";
+    /// <summary>Queued after the current turn, then explicitly asked to steer it.</summary>
+    public const string Promoted = "promoted";
 }
 
 /// <summary>What asking a running turn to stop returned.</summary>
@@ -738,6 +740,39 @@ public sealed class SessionInputQueueStore
         }
         await transaction.CommitAsync(ct);
         return claimed;
+    }
+
+    /// <summary>
+    /// Moves one pending after-current input to steer-current. The requested policy stays what the
+    /// caller asked for: it is the admission fact, and the idempotency fingerprint is recomputed from
+    /// it, so a keyed retry of the original request still matches. Returns null when the row is no
+    /// longer an after-current pending input (a claim or a cancel got there first).
+    /// </summary>
+    internal async Task<SessionInputQueueItem?> PromoteToSteerAsync(
+        string sessionId, string itemId, string ownerUserId, CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = """
+            UPDATE SessionQueuedInputs
+            SET RequestedDeliveryPolicy = COALESCE(RequestedDeliveryPolicy, DeliveryPolicy),
+                DeliveryReason = CASE WHEN COALESCE(RequestedDeliveryPolicy, DeliveryPolicy) = 'SteerCurrent' THEN NULL ELSE $reason END,
+                DeliveryPolicy = 'SteerCurrent',
+                ErrorMessage = CASE WHEN ErrorCode = 'steer_unavailable' THEN NULL ELSE ErrorMessage END,
+                ErrorCode = CASE WHEN ErrorCode = 'steer_unavailable' THEN NULL ELSE ErrorCode END,
+                UpdatedAt = $now
+            WHERE Id = $id AND SessionId = $sessionId AND OwnerUserId = $owner
+              AND State = 'Pending' AND DeliveryPolicy = 'AfterCurrent'
+            """;
+        Add(update, "$reason", SessionInputDeliveryReasons.Promoted);
+        Add(update, "$now", DateTimeOffset.UtcNow.ToString("O"));
+        Add(update, "$id", itemId); Add(update, "$sessionId", sessionId); Add(update, "$owner", ownerUserId);
+        if (await update.ExecuteNonQueryAsync(ct) != 1) return null;
+        var promoted = await GetCoreAsync(connection, transaction, sessionId, itemId, ownerUserId, ct);
+        await transaction.CommitAsync(ct);
+        return promoted;
     }
 
     public Task DemoteSteerAsync(IReadOnlyList<SessionInputQueueItem> batch, CancellationToken ct = default) =>

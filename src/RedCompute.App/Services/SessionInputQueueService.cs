@@ -27,6 +27,32 @@ public sealed record SessionInputAdmissionResult(
 /// <summary>send-now: whether anything was queued to send, and what interrupting the turn returned.</summary>
 public sealed record SessionSendNowResult(bool Requested, string? InterruptResult);
 
+/// <summary>What asking one queued input to steer the running turn came to.</summary>
+public static class SessionSteerOutcomes
+{
+    /// <summary>It is waiting to join the running turn.</summary>
+    public const string Steering = "steering";
+    /// <summary>It is being handed to the provider.</summary>
+    public const string Delivering = "delivering";
+    /// <summary>The provider has it. The item's deliveryReason says if it ran as the next turn.</summary>
+    public const string Delivered = "delivered";
+    /// <summary>Steering could not happen: the item stays queued, and the reason says why.</summary>
+    public const string Unavailable = "unavailable";
+}
+
+/// <summary>Why an input could not be asked to steer, beyond the item's own error.</summary>
+public static class SessionSteerRefusals
+{
+    public const string Unsupported = "steering_unsupported";
+    public const string SessionNotRunning = "session_not_running";
+    public const string UserStopped = "user_stopped";
+    public const string Maintenance = "maintenance_drain";
+    public const string FailedHead = "failed_head";
+    public const string RecoveryRequired = "recovery_required";
+}
+
+public sealed record SessionSteerPromotion(SessionInputQueueItem Item, string Outcome, string? Reason, SessionInputQueueSummary Queue);
+
 public sealed record SessionInputQueueChanged(
     string SessionId,
     IReadOnlyList<string> ItemIds,
@@ -280,6 +306,65 @@ public sealed class SessionInputQueueService
         Signal(sessionId);
         await PublishAsync(sessionId, items.Select(item => item.Id).ToArray(), "send_now_requested", ct);
         return new(true, interrupt);
+    }
+
+    /// <summary>
+    /// Asks one pending input to join the running turn. It never interrupts: the existing steer path
+    /// delivers it, so a parked question, a maintenance pause or a turn that ended meanwhile demotes
+    /// it or runs it as the next turn exactly as for an input admitted as a steer. Asking again is
+    /// harmless. When steering cannot happen at all the row is left as it was and the answer says so.
+    /// </summary>
+    /// <returns>Null when the session has no such item for this owner.</returns>
+    public async Task<SessionSteerPromotion?> PromoteToSteerAsync(
+        string sessionId, string itemId, string ownerUserId, CancellationToken ct = default)
+    {
+        var item = await _store.GetAsync(sessionId, itemId, ownerUserId, ct);
+        if (item is null) return null;
+        if (item.State is SessionInputQueueState.Failed or SessionInputQueueState.Cancelled
+            || (item.State == SessionInputQueueState.Pending && item.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent))
+            throw new SessionInputQueueStoreException("not_promotable", "Only a pending queued input can be asked to steer the running turn");
+
+        if (item.State == SessionInputQueueState.Pending && item.DeliveryPolicy == SessionInputDeliveryPolicy.AfterCurrent)
+        {
+            if (await SteerRefusalAsync(sessionId, item, ownerUserId, ct) is { } refusal)
+                return new(item, SessionSteerOutcomes.Unavailable, refusal, await GetSummaryAsync(sessionId, ownerUserId, ct));
+            // Null means a claim or a cancel won the race; the re-read below reports what happened.
+            if (await _store.PromoteToSteerAsync(sessionId, itemId, ownerUserId, ct) is not null)
+                await PublishAsync(sessionId, [itemId], "steer_requested", ct);
+        }
+        if (item.State == SessionInputQueueState.Pending)
+        {
+            await ProcessSessionAsync(sessionId, ct);
+            // The session gate may be held by a pass that already read the queue.
+            Signal(sessionId);
+        }
+
+        var current = await _store.GetAsync(sessionId, itemId, ownerUserId, ct) ?? item;
+        var summary = await GetSummaryAsync(sessionId, ownerUserId, ct);
+        return current.State switch
+        {
+            SessionInputQueueState.Delivered => new(current, SessionSteerOutcomes.Delivered, current.DeliveryReason, summary),
+            SessionInputQueueState.Delivering => new(current, SessionSteerOutcomes.Delivering, current.DeliveryReason, summary),
+            SessionInputQueueState.Pending when current.DeliveryPolicy == SessionInputDeliveryPolicy.SteerCurrent =>
+                new(current, SessionSteerOutcomes.Steering, null, summary),
+            _ => new(current, SessionSteerOutcomes.Unavailable, current.ErrorCode ?? current.DeliveryReason, summary),
+        };
+    }
+
+    private async Task<string?> SteerRefusalAsync(string sessionId, SessionInputQueueItem item, string ownerUserId, CancellationToken ct)
+    {
+        if (HasStopIntent(sessionId)) return SessionSteerRefusals.UserStopped;
+        if (_deliveryPaused()) return SessionSteerRefusals.Maintenance;
+        var (provider, info) = FindSession(sessionId);
+        if (provider is null || info is null || info.Status is not (SessionStatus.Active or SessionStatus.Idle))
+            return SessionSteerRefusals.SessionNotRunning;
+        if (!provider.Capabilities.HasFlag(SessionCapabilities.SupportsSteering)) return SessionSteerRefusals.Unsupported;
+        // The steer path checks neither: a failed head would block it silently, and an input waiting
+        // for its authority to be revalidated after a restart must not get past that by steering.
+        var items = await _store.ListAsync(sessionId, ownerUserId, includeTerminal: false, ct);
+        if (items.Any(active => active.State == SessionInputQueueState.Failed)) return SessionSteerRefusals.FailedHead;
+        if (await _store.RequiresRecoveryAsync(item.Id, ct)) return SessionSteerRefusals.RecoveryRequired;
+        return null;
     }
 
     public async Task<SessionInputQueueSummary> GetSummaryAsync(
