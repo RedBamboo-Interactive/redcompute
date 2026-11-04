@@ -2315,6 +2315,12 @@ public class ClaudeSessionService
                     var raw = new ClaudeStreamEvent { Type = "text", Content = line, IsPartial = false };
                     StreamEvent?.Invoke(session.Info.Id, raw);
                 }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // One event we could not read must not stop the reader: every later event,
+                    // interrupt acknowledgements included, arrives through this loop.
+                    HandleUnreadableOutputLine(session, line, ex);
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -2330,6 +2336,50 @@ public class ClaudeSessionService
         if (!_sessions.TryGetValue(sessionId, out var session)) return false;
         HandleOutputLine(session, line);
         return true;
+    }
+
+    /// <summary>Test seam: one line through the reader's failure handling, as the loop calls it.</summary>
+    internal bool ProcessUnreadableOutputLine(string sessionId, string line, Exception error)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return false;
+        HandleUnreadableOutputLine(session, line, error);
+        return true;
+    }
+
+    // Only a result ends a turn, so only a result we failed to read leaves one running forever.
+    private void HandleUnreadableOutputLine(ManagedSession session, string line, Exception error)
+    {
+        _log($"[Claude] Session {session.Info.Id}: could not process output event: {error.Message}", null);
+
+        string? terminalMessage;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            if (!doc.RootElement.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String
+                || type.GetString() != "result")
+                return;
+            terminalMessage = ReadTerminalResultError(doc.RootElement);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException) { return; }
+
+        if (session.Cts.IsCancellationRequested || session.RestartPending
+            || !_sessions.TryGetValue(session.Info.Id, out var current) || !ReferenceEquals(current, session))
+            return;
+
+        SettleTurnContent(session);
+        session.InterruptPending = false;
+        session.InterruptCompletion?.TrySetResult(true);
+        session.InterruptCompletion = null;
+        session.Info.Status = SessionStatus.Idle;
+        MarkTurnEnded(session, Core.Sessions.SessionTurnOutcomes.Failed);
+        PersistSessionRecord(session.Info);
+        SessionUpdated?.Invoke(session.Info);
+        Publish(session, new ClaudeStreamEvent
+        {
+            Type = "error",
+            Content = terminalMessage ?? "The turn ended, but RedCompute could not read how it ended.",
+        });
     }
 
     private void HandleOutputLine(ManagedSession session, string line)
@@ -2787,6 +2837,13 @@ public class ClaudeSessionService
 
             case "compact_boundary":
                 HandleCompactBoundary(root, session);
+                return;
+
+            // The turn's result carries the message the user sees. This one says why.
+            case "model_refusal_no_fallback":
+                _log($"[Claude] Session {session.Info.Id}: refused by model safeguards "
+                    + $"(category: {ReadOptionalString(root, "api_refusal_category") ?? "unknown"}, "
+                    + $"request: {ReadOptionalString(root, "request_id") ?? "unknown"})", null);
                 return;
 
             default:
@@ -3635,16 +3692,28 @@ public class ClaudeSessionService
                 return message;
         }
 
-        if (root.TryGetProperty("api_error_status", out var status) && status.TryGetInt32(out var code))
+        if (ReadApiErrorStatus(root) is { } code)
             return $"Claude API request failed with HTTP {code}";
 
         return "Claude request failed";
     }
 
+    // The CLI sends api_error_status: null on errors with no HTTP status, safeguards refusals among
+    // them, and TryGetInt32 throws on a JSON null rather than returning false.
+    private static int? ReadApiErrorStatus(JsonElement root)
+        => root.TryGetProperty("api_error_status", out var status)
+            && status.ValueKind == JsonValueKind.Number
+            && status.TryGetInt32(out var code)
+                ? code
+                : null;
+
+    private static string? ReadOptionalString(JsonElement root, string name)
+        => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
     private static bool IsAuthenticationError(JsonElement root, string error)
-        => (root.TryGetProperty("api_error_status", out var status)
-                && status.TryGetInt32(out var code)
-                && code is 401 or 403)
+        => ReadApiErrorStatus(root) is 401 or 403
             || error.Contains("authentication", StringComparison.OrdinalIgnoreCase)
             || error.Contains("authenticate", StringComparison.OrdinalIgnoreCase)
             || error.Contains("oauth", StringComparison.OrdinalIgnoreCase);
