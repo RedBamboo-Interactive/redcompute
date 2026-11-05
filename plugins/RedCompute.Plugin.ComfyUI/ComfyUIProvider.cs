@@ -2,8 +2,11 @@ using System.Diagnostics;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -37,6 +40,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     public int? ProcessId => _process is { HasExited: false } ? _process.Id : null;
 
     private readonly double _pollTimeoutSeconds;
+
+    internal TimeSpan CacheReleaseTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     public string Name => "ComfyUI";
     public string CapabilitySlug => _capabilitySlug;
@@ -558,7 +563,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     internal async Task<AcceleratorReleaseResult> ReleaseCachedModelsAsync(CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        timeout.CancelAfter(CacheReleaseTimeout);
         try
         {
             var queueResponse = await _http.GetAsync($"{BaseUrl}/queue", timeout.Token);
@@ -591,12 +596,51 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         }
         catch (OperationCanceledException)
         {
-            return AcceleratorReleaseResult.Refused("ComfyUI cache release timed out after 30 seconds");
+            return AcceleratorReleaseResult.Refused(
+                $"ComfyUI cache release timed out after {CacheReleaseTimeout.TotalSeconds:0.###} seconds");
+        }
+        catch (HttpRequestException ex) when (IsConnectionRefused(ex) && NothingListensOnBackendPort())
+        {
+            // No server means no cache: the prompt queue is in memory, and models only
+            // load from prompts, which need this port and RedCompute's own go through the
+            // accelerator gate the caller is holding. A ComfyUI still booting is therefore
+            // in the state /free would leave it in, and waiting for it would gain nothing.
+            _log($"[ComfyUI] Nothing to release: no server is listening at {BaseUrl}");
+            return AcceleratorReleaseResult.Released($"ComfyUI is not listening at {BaseUrl}, so it holds no cached models");
         }
         catch (Exception ex)
         {
             return AcceleratorReleaseResult.Refused($"ComfyUI cache release failed: {ex.Message}");
         }
+    }
+
+    private static bool IsConnectionRefused(Exception exception)
+    {
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            if (current is SocketException { SocketErrorCode: SocketError.ConnectionRefused })
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A refused connection alone does not prove the server is gone: Windows also refuses
+    /// connections when a listener's accept backlog is full, which is how a wedged ComfyUI
+    /// that may still hold the GPU can look. Only the local listener table can tell
+    /// them apart, so a remote or WSL backend is never reported as absent.
+    /// </summary>
+    private bool NothingListensOnBackendPort()
+    {
+        var isLocal = string.Equals(_host, "localhost", StringComparison.OrdinalIgnoreCase)
+            || (IPAddress.TryParse(_host, out var address) && IPAddress.IsLoopback(address));
+        if (!isLocal || _config.WslDistro != null)
+            return false;
+
+        return IPGlobalProperties.GetIPGlobalProperties()
+            .GetActiveTcpListeners()
+            .All(listener => listener.Port != _port);
     }
 
     private static bool TryReadQueueCount(JsonElement queue, string propertyName, out int count)

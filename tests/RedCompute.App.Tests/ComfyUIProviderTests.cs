@@ -268,9 +268,239 @@ public sealed class ComfyUIProviderTests
         }
     }
 
-    private static async Task ServeAsync(TcpListener listener, List<string> requests, params string[] responses)
+    [Fact]
+    public async Task Refused_connection_with_no_listener_has_nothing_to_release()
     {
-        foreach (var responseBody in responses)
+        var logs = new List<string>();
+        var provider = NewProvider(ClosedPort(), logs.Add);
+
+        try
+        {
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+
+            Assert.True(result.Success, result.Detail);
+            Assert.Contains("not listening", result.Detail);
+            Assert.Contains(logs, line => line.Contains("Nothing to release"));
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Local_model_is_admitted_while_comfyui_is_not_up_yet()
+    {
+        var coordinator = new AcceleratorAdmissionCoordinator();
+        var provider = NewProvider(ClosedPort(), acceleratorAdmission: coordinator);
+
+        try
+        {
+            await using var lease = await coordinator.AcquireAsync(
+                new AcceleratorWorkload("cuda:0", "ollama", "OpenCode ollama/gemma"));
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Refused_connection_from_a_listening_backend_still_refuses_release()
+    {
+        // A full accept backlog is how a wedged server refuses connections on Windows.
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start(1);
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var backlog = new List<TcpClient>();
+        var provider = NewProvider(port);
+
+        try
+        {
+            await FillAcceptBacklogAsync(port, backlog);
+
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+
+            Assert.False(result.Success);
+            Assert.Contains("cache release failed", result.Detail);
+        }
+        finally
+        {
+            backlog.ForEach(client => client.Dispose());
+            await provider.DisposeAsync();
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Refused_connection_on_a_wsl_backend_still_refuses_release()
+    {
+        var provider = new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            BackendPort = ClosedPort(),
+            WslDistro = "Ubuntu",
+            Extra = new Dictionary<string, object?> { ["Host"] = "127.0.0.1" },
+        }, "image-gen", _ => { });
+
+        try
+        {
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+
+            Assert.False(result.Success);
+            Assert.Contains("cache release failed", result.Detail);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Unresponsive_backend_times_out_and_refuses_release()
+    {
+        // The listener never accepts: TCP connects, then HTTP gets no answer.
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var provider = NewProvider(((IPEndPoint)listener.LocalEndpoint).Port, timeout: TimeSpan.FromMilliseconds(200));
+
+        try
+        {
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+
+            Assert.False(result.Success);
+            Assert.Contains("timed out", result.Detail);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_propagates_instead_of_reporting_a_timeout()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var provider = NewProvider(((IPEndPoint)listener.LocalEndpoint).Port);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => provider.ReleaseCachedModelsAsync(cts.Token));
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Queue_http_error_refuses_release_without_calling_free()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var requests = new List<string>();
+        var server = ServeStatusAsync(listener, requests, (500, "{}"));
+        var provider = NewProvider(((IPEndPoint)listener.LocalEndpoint).Port);
+
+        try
+        {
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+            await server;
+
+            Assert.False(result.Success);
+            Assert.Contains("queue check failed with HTTP 500", result.Detail);
+            Assert.Single(requests);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Free_http_error_refuses_release()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var requests = new List<string>();
+        var server = ServeStatusAsync(listener, requests,
+            (200, "{\"queue_running\":[],\"queue_pending\":[]}"), (503, "{}"));
+        var provider = NewProvider(((IPEndPoint)listener.LocalEndpoint).Port);
+
+        try
+        {
+            var result = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+            await server;
+
+            Assert.False(result.Success);
+            Assert.Contains("cache release failed with HTTP 503", result.Detail);
+            Assert.StartsWith("POST /free ", requests[1]);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            listener.Stop();
+        }
+    }
+
+    private static ComfyUIProvider NewProvider(
+        int port,
+        Action<string>? log = null,
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null,
+        TimeSpan? timeout = null)
+    {
+        return new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            BackendPort = port,
+            Extra = new Dictionary<string, object?> { ["Host"] = "127.0.0.1" },
+        }, "image-gen", log ?? (_ => { }), acceleratorAdmission)
+        {
+            CacheReleaseTimeout = timeout ?? TimeSpan.FromSeconds(30),
+        };
+    }
+
+    private static int ClosedPort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    private static async Task FillAcceptBacklogAsync(int port, List<TcpClient> backlog)
+    {
+        for (var attempt = 0; attempt < 256; attempt++)
+        {
+            var client = new TcpClient();
+            try
+            {
+                await client.ConnectAsync(IPAddress.Loopback, port);
+                backlog.Add(client);
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused)
+            {
+                client.Dispose();
+                return;
+            }
+        }
+
+        Assert.Fail("The accept backlog never filled");
+    }
+
+    private static Task ServeAsync(TcpListener listener, List<string> requests, params string[] responses)
+        => ServeStatusAsync(listener, requests, responses.Select(body => (200, body)).ToArray());
+
+    private static async Task ServeStatusAsync(TcpListener listener, List<string> requests, params (int Status, string Body)[] responses)
+    {
+        foreach (var (status, responseBody) in responses)
         {
             using var client = await listener.AcceptTcpClientAsync();
             await using var stream = client.GetStream();
@@ -298,7 +528,7 @@ public sealed class ComfyUIProviderTests
             requests.Add(Encoding.ASCII.GetString(buffer, 0, received));
             var body = Encoding.UTF8.GetBytes(responseBody);
             var headers = Encoding.ASCII.GetBytes(
-                $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+                $"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
             await stream.WriteAsync(headers);
             await stream.WriteAsync(body);
         }
