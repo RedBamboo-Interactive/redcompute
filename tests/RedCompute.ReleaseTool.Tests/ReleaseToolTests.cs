@@ -206,7 +206,7 @@ public sealed class ReleaseToolTests
             root, "release", "redcompute-source-dependencies.v1.json")));
         var appHost = Assert.Single(dependenciesDocument.RootElement.GetProperty("dependencies").EnumerateArray());
         Assert.Equal("redbamboo-apphost", appHost.GetProperty("id").GetString());
-        Assert.Equal("098edc7ac05b53792368300fc4469b2b73f367fb", appHost.GetProperty("commit").GetString());
+        Assert.Equal("fb1201af47275b4fbfc4aab2c2600459ba6127d6", appHost.GetProperty("commit").GetString());
 
         var schemaPath = Path.Combine(root, "schemas", "redleaf-release-tool-input.v1.schema.json");
         using var schemaDocument = JsonDocument.Parse(File.ReadAllText(schemaPath));
