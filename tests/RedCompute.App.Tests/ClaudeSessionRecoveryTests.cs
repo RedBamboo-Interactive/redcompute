@@ -98,6 +98,64 @@ public sealed class ClaudeSessionRecoveryTests
         }
     }
 
+    // Recovery runs in the constructor, before the app installs the suite mirror, and RedLeaf
+    // serves every session read. Without a republish the mirror kept the pre-restart row: a turn
+    // the restart killed read Active forever (6 Nov, session 3f02ef9566b2, discussion d0534d08).
+    [Fact]
+    public void Recovered_rows_are_republished_once_the_mirror_is_installed()
+    {
+        var path = CheckpointPath();
+        var stranded = Session("stranded-2", "Error", "completed");
+        var store = new FakeStore(
+            Session("active-1", "Active", "completed"),
+            stranded,
+            Session("stopped-3", "Stopped", "user_stopped"));
+        var deferred = new List<Action>();
+        try
+        {
+            PlannedRestartCheckpoint.Write(new PlannedRestartData(
+                "run-2",
+                DateTimeOffset.UtcNow,
+                [new PlannedRestartSession("claude-code", "active-1", null)]), path);
+            Assert.NotNull(PlannedRestartCheckpoint.LoadForStartup(path));
+
+            _ = CreateService(store, deferred);
+            var beforeMirror = store.Saved.Count;
+            foreach (var action in deferred) action();
+
+            var republished = store.Saved.Skip(beforeMirror).ToList();
+            Assert.Equal(["active-1", "stranded-2"], republished.Select(s => s.Id).Order().ToArray());
+            var active = republished.Single(s => s.Id == "active-1");
+            Assert.Equal(("Stopped", "maintenance_restart"), (active.Status, active.StopReason));
+            var repaired = republished.Single(s => s.Id == "stranded-2");
+            Assert.Equal(("Stopped", "orphaned_on_restart"), (repaired.Status, repaired.StopReason));
+            Assert.DoesNotContain(store.Saved, s => s.Id == "stopped-3");
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
+    [Fact]
+    public void Nothing_is_republished_when_no_row_needed_recovery()
+    {
+        var path = CheckpointPath();
+        var store = new FakeStore(Session("stopped-4", "Stopped", "user_stopped"));
+        var deferred = new List<Action>();
+        try
+        {
+            Assert.Null(PlannedRestartCheckpoint.LoadForStartup(path));
+            _ = CreateService(store, deferred);
+            foreach (var action in deferred) action();
+            Assert.Empty(store.Saved);
+        }
+        finally
+        {
+            Cleanup(path);
+        }
+    }
+
     [Fact]
     public void Construction_leaves_explicitly_stopped_session_terminal()
     {
@@ -180,13 +238,16 @@ public sealed class ClaudeSessionRecoveryTests
         Assert.Equal(expected, ClaudeSessionService.UnloadedStatus(stored, restarting).Status);
     }
 
-    private static ClaudeSessionService CreateService(FakeStore store) => new(
+    // Deferred mirror work is collected, never run against the process-wide SuiteMirror, so
+    // whether another test installed it cannot change what these tests observe.
+    private static ClaudeSessionService CreateService(FakeStore store, List<Action>? deferred = null) => new(
         new ClaudeConfig(),
         new NullJobTracker(),
         store,
         new NullQualityModes(),
         () => null,
-        (_, _) => { });
+        (_, _) => { },
+        (deferred ?? []).Add);
 
     private static ClaudeSessionRecord Session(string id, string status, string? stopReason) => new()
     {

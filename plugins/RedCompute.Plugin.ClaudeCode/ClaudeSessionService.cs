@@ -100,9 +100,11 @@ public partial class ClaudeSessionService
     {
         try
         {
+            var recovered = new List<string>();
             var active = _sessionStore.GetActiveSessions();
             foreach (var s in active)
             {
+                recovered.Add(s.Id);
                 var pid = s.ProcessId;
                 TryKillByPid(pid);
                 s.Status = "Stopped";
@@ -127,6 +129,7 @@ public partial class ClaudeSessionService
                 s.StoppedAt ??= DateTimeOffset.UtcNow;
                 s.ProcessId = null;
                 _sessionStore.SaveSession(s);
+                recovered.Add(s.Id);
             }
             if (stranded.Count > 0)
                 _log($"[Claude] Repaired {stranded.Count} session(s) stranded as Error/completed by an earlier idle process exit", null);
@@ -140,12 +143,30 @@ public partial class ClaudeSessionService
                 var tasks = ReadBackgroundTasks(s.BackgroundTasksJson);
                 _whenMirrorInstalled(() => SettleRecoveredBackgroundTasks(sessionId, tasks));
             }
+
+            // The saves above ran before the app installed the suite mirror, so RedLeaf, which
+            // serves every session read, still holds the pre-restart row: a turn the restart
+            // killed reads Active forever and its discussion shows thinking with nothing behind
+            // it (6 Nov, 3f02ef9566b2). Codex republishes for the same reason.
+            if (recovered.Count > 0)
+                _whenMirrorInstalled(() => RepublishRecoveredSessions(recovered));
         }
         catch (Exception ex)
         {
             _log($"[Claude] Failed to recover sessions: {ex.Message}", null);
         }
 
+    }
+
+    private void RepublishRecoveredSessions(IReadOnlyList<string> sessionIds)
+    {
+        foreach (var sessionId in sessionIds)
+        {
+            // A resumed process owns the row again and has published its own state.
+            if (_sessions.ContainsKey(sessionId)) continue;
+            if (_sessionStore.FindSession(sessionId) is { } record)
+                _sessionStore.SaveSession(record);
+        }
     }
 
     internal static IReadOnlyList<BackgroundTaskInfo> ReadBackgroundTasks(string? json)
