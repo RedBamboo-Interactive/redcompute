@@ -20,6 +20,10 @@ public static class DefenderExclusionService
 
     public static void EnsureExclusions(Action<string> log)
     {
+        // Windows Defender only; nothing to exclude anywhere else.
+        if (!OperatingSystem.IsWindows())
+            return;
+
         if (File.Exists(MarkerPath))
             return;
 

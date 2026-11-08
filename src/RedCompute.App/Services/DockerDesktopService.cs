@@ -12,6 +12,16 @@ public static class DockerDesktopService
 
     public static async Task EnsureRunningAsync(Action<string> log)
     {
+        // Docker Desktop is a Windows host concern. Elsewhere the daemon is a system service
+        // (systemd, rootless dockerd, Podman's socket) that RedCompute neither owns nor starts.
+        if (!OperatingSystem.IsWindows())
+        {
+            log(IsDaemonReady()
+                ? "[Docker] Docker daemon already running"
+                : "[Docker] Docker daemon is not reachable; start it through the system service manager");
+            return;
+        }
+
         if (!File.Exists(DockerDesktopPath))
         {
             log("[Docker] Docker Desktop not installed, skipping auto-start");

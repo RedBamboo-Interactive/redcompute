@@ -485,8 +485,7 @@
           "RedCompute.PluginSdk": "[1.0.0, )",
           "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )",
           "SkiaSharp": "[3.119.0, )",
-          "System.Diagnostics.PerformanceCounter": "[9.0.0, )",
-          "System.Drawing.Common": "[9.0.0, )"
+          "System.Diagnostics.PerformanceCounter": "[9.0.0, )"
         }
       },
       "redcompute.core": {
