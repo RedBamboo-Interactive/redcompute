@@ -13,4 +13,7 @@ public interface IBackendProvider : IAsyncDisposable
     Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default);
     TimeSpan HealthCheckInterval { get; }
     int? ProcessId => null;
+
+    /// <summary>Human-readable reason for the current status, when it needs one (always set for <see cref="BackendStatus.Unsupported"/>).</summary>
+    string? StatusDetail => null;
 }

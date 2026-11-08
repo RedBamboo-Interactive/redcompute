@@ -45,9 +45,22 @@ public class LocalWslProvider : IPluginProvider
         _log = log;
     }
 
+    public string? StatusDetail { get; private set; }
+
     public async Task<bool> StartAsync(CancellationToken ct = default)
     {
         if (_status == BackendStatus.Running) return true;
+
+        // Both launch paths (wsl.exe, and cmd.exe for LocalNative) are Windows-only. Fail fast
+        // with a typed status rather than spawning, probing a WSL host, or waiting on a timeout.
+        if (!PlatformSupport.CanLaunchLocalBackends)
+        {
+            _status = BackendStatus.Unsupported;
+            StatusDetail = PlatformSupport.LocalBackendUnsupported($"{_capabilitySlug} ({_providerType})");
+            _log($"[LocalWsl] {StatusDetail}");
+            return false;
+        }
+
         _status = BackendStatus.Starting;
 
         _backendHost = _config.WslDistro != null ? ResolveWslHost(_config.WslDistro) : "127.0.0.1";

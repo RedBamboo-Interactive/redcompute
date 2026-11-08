@@ -67,6 +67,7 @@ public static class GlobalEndpoints
                     {
                         item.name,
                         status = item.status.ToString(),
+                        statusDetail = item.provider.StatusDetail,
                     }),
                     executionMode = entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
                     sleeping = entry.IsSleeping,
@@ -511,6 +512,12 @@ public static class GlobalEndpoints
             var success = await entry.ActiveProvider.StartAsync();
             if (success)
                 return Results.Ok(new { slug, status = "Running" });
+            if (await entry.ActiveProvider.GetStatusAsync() == BackendStatus.Unsupported)
+                return Results.Json(new
+                {
+                    error = PlatformSupport.UnsupportedCode,
+                    message = entry.ActiveProvider.StatusDetail ?? $"The provider for '{slug}' is not supported on {PlatformSupport.PlatformName}",
+                }, statusCode: 503);
             return Results.Json(new { error = "start_failed", message = $"Failed to start provider for '{slug}'" }, statusCode: 500);
         });
 

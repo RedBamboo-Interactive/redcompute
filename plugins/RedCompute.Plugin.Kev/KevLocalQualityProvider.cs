@@ -203,6 +203,12 @@ public sealed class KevLocalQualityProvider :
             _status = BackendStatus.Stopped;
             throw;
         }
+        catch (PlatformNotSupportedException ex)
+        {
+            SetError(PlatformSupport.UnsupportedCode, ex.Message);
+            _status = BackendStatus.Unsupported;
+            return false;
+        }
         catch (Exception ex)
         {
             var resourceBusy = LooksLikeResourceBusy(ex.Message);
@@ -236,9 +242,12 @@ public sealed class KevLocalQualityProvider :
 
         var reachable = await ProbeAsync(ct);
         _status = reachable ? BackendStatus.Running :
-            _ownedProcess is not null ? BackendStatus.Error : BackendStatus.Stopped;
+            _ownedProcess is not null ? BackendStatus.Error :
+            _lastErrorCode == PlatformSupport.UnsupportedCode ? BackendStatus.Unsupported : BackendStatus.Stopped;
         return _status;
     }
+
+    public string? StatusDetail => _status == BackendStatus.Unsupported ? _lastError : null;
 
     public string? GetProxyTargetUrl() => null;
 

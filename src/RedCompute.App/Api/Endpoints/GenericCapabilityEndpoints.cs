@@ -90,7 +90,7 @@ public static class GenericCapabilityEndpoints
 
                 var status = await provider.GetStatusAsync();
                 if (status != BackendStatus.Running)
-                    return Error(503, "provider_not_running", $"Backend for '{slug}' is {status}. Start via POST /control/start/{slug}");
+                    return NotRunning(provider, status, $"Backend for '{slug}' is {status}. Start via POST /control/start/{slug}");
 
                 var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
 
@@ -485,7 +485,7 @@ public static class GenericCapabilityEndpoints
                 $"'{slug}' is sleeping. Wake it via POST /control/wake/{slug}");
 
         var status = await provider.GetStatusAsync(ctx.RequestAborted);
-        return Error(503, "provider_not_running",
+        return NotRunning(provider, status,
             $"Backend '{provider.Name}' for '{slug}' is {status} and cannot serve '/{slug}/{path}'. Start via POST /control/start/{slug}");
     }
 
@@ -510,8 +510,9 @@ public static class GenericCapabilityEndpoints
         if (provider is not IProviderSelfValidator validator)
             return Error(501, "validation_not_supported",
                 $"Provider '{provider?.Name}' does not expose bounded validation");
-        if (await provider.GetStatusAsync(ctx.RequestAborted) != BackendStatus.Running)
-            return Error(503, "provider_not_running",
+        var validationStatus = await provider.GetStatusAsync(ctx.RequestAborted);
+        if (validationStatus != BackendStatus.Running)
+            return NotRunning(provider, validationStatus,
                 $"Backend for '{slug}' is not running");
 
         JobProvenance provenance;
@@ -799,6 +800,13 @@ public static class GenericCapabilityEndpoints
     };
     private static IResult Error(int statusCode, string error, string message) =>
         Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: statusCode);
+
+    /// <summary>503 for a provider that is not running; a platform-unsupported one says so and why, since starting it cannot help.</summary>
+    internal static IResult NotRunning(IBackendProvider provider, BackendStatus status, string message) =>
+        status == BackendStatus.Unsupported
+            ? Error(503, PlatformSupport.UnsupportedCode,
+                provider.StatusDetail ?? $"Backend '{provider.Name}' is not supported on {PlatformSupport.PlatformName}")
+            : Error(503, "provider_not_running", message);
 
     private static string Truncate(string s, int maxLen) =>
         s.Length <= maxLen ? s : s[..maxLen] + "...";

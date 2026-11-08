@@ -101,6 +101,11 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
     public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => [];
 
+    private static readonly string UnsupportedDetail =
+        PlatformSupport.LocalBackendUnsupported("Launching a local ComfyUI");
+
+    public string? StatusDetail => _status == BackendStatus.Unsupported ? UnsupportedDetail : null;
+
     public async Task<bool> StartAsync(CancellationToken ct = default)
     {
         if (_status == BackendStatus.Running) return true;
@@ -112,6 +117,15 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             _status = BackendStatus.Running;
             _log($"[ComfyUI] Already running at {BaseUrl}");
             return true;
+        }
+
+        // Launching goes through wsl.exe or a Windows Python; elsewhere only an already-running
+        // ComfyUI (local or remote, reached over HTTP above) can serve.
+        if (!PlatformSupport.CanLaunchLocalBackends)
+        {
+            _status = BackendStatus.Unsupported;
+            _log($"[ComfyUI] {UnsupportedDetail} (no ComfyUI answered at {BaseUrl})");
+            return false;
         }
 
         // Launch process

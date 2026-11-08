@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using RedCompute.Core.Configuration;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Kev;
 
@@ -49,6 +50,10 @@ public sealed class KevProcessController : IKevProcessController
     {
         if (string.IsNullOrWhiteSpace(config.LaunchCommand))
             throw new InvalidOperationException("launchCommand is not configured");
+
+        // Both launch paths (wsl.exe and cmd.exe) are Windows-only.
+        if (!PlatformSupport.CanLaunchLocalBackends)
+            throw new PlatformNotSupportedException(PlatformSupport.LocalBackendUnsupported("Launching Kev"));
 
         if (string.IsNullOrWhiteSpace(config.WslDistro))
             return StartNative(config.LaunchCommand, log, config);

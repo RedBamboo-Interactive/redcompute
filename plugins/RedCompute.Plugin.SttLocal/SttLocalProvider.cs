@@ -35,6 +35,7 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
     public TimeSpan HealthCheckInterval => _inner.HealthCheckInterval;
     public int? ProcessId => _inner.ProcessId;
+    public string? StatusDetail => _inner.StatusDetail;
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
 
     // IPluginProvider properties

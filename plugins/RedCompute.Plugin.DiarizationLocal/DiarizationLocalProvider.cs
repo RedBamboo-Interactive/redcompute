@@ -33,6 +33,7 @@ public sealed class DiarizationLocalProvider : IPluginProvider, ICustomEndpointP
     public string ContractVersion => "diarization.v1";
     public TimeSpan HealthCheckInterval => _inner.HealthCheckInterval;
     public int? ProcessId => _inner.ProcessId;
+    public string? StatusDetail => _inner.StatusDetail;
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
