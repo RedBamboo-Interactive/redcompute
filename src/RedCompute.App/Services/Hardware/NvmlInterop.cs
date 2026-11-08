@@ -7,6 +7,34 @@ internal static class NvmlInterop
 {
     private const string NvmlLib = "nvml.dll";
 
+    /// <summary>The library the NVIDIA driver installs on Linux (the unversioned name needs the -devel package).</summary>
+    private static readonly string[] LinuxNvmlLibs = ["libnvidia-ml.so.1", "libnvidia-ml.so"];
+
+    private static int _resolverInstalled;
+
+    /// <summary>
+    /// Maps <see cref="NvmlLib"/> to the Linux driver library. Windows keeps the default
+    /// DllImport probing for nvml.dll. When no library loads, the first NVML call throws
+    /// DllNotFoundException, which callers treat as "no GPU".
+    /// </summary>
+    public static void EnsureResolver()
+    {
+        if (OperatingSystem.IsWindows() || Interlocked.Exchange(ref _resolverInstalled, 1) != 0)
+            return;
+
+        NativeLibrary.SetDllImportResolver(typeof(NvmlInterop).Assembly, (name, assembly, searchPath) =>
+        {
+            if (name != NvmlLib) return IntPtr.Zero;
+            foreach (var candidate in LinuxNvmlLibs)
+                if (NativeLibrary.TryLoad(candidate, assembly, searchPath, out var handle))
+                    return handle;
+            return IntPtr.Zero;
+        });
+    }
+
+    /// <summary>NVML's marker for a value it cannot report, such as per-process memory without permission.</summary>
+    public const ulong NVML_VALUE_NOT_AVAILABLE = ulong.MaxValue;
+
     public enum NvmlReturn
     {
         Success = 0,

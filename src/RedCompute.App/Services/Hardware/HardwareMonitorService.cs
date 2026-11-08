@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using RedCompute.Core.Hardware;
@@ -13,7 +14,7 @@ public class HardwareMonitorService : IDisposable
     private bool _nvmlAvailable;
     private uint _gpuCount;
     private HardwareSnapshot? _lastSnapshot;
-    private long _prevIdleTime, _prevKernelTime, _prevUserTime;
+    private long _prevIdleTime, _prevTotalTime;
     private bool _hasPrevCpuSample;
     private CapabilityRegistry? _registry;
 
@@ -21,6 +22,10 @@ public class HardwareMonitorService : IDisposable
 
     public void Start(CapabilityRegistry? registry = null)
     {
+        // Windows loads nvml.dll by its DllImport name. Elsewhere the NVIDIA driver ships
+        // libnvidia-ml.so.1; without it the init below throws DllNotFoundException and the
+        // snapshot simply carries no GPUs.
+        NvmlInterop.EnsureResolver();
         try
         {
             var result = nvmlInit_v2();
@@ -79,19 +84,18 @@ public class HardwareMonitorService : IDisposable
     private CpuInfo CollectCpu()
     {
         double usage = 0;
-        if (GetSystemTimes(out long idle, out long kernel, out long user))
+        if (TryReadCpuTimes(out long idle, out long total))
         {
             if (_hasPrevCpuSample)
             {
                 var idleDelta = idle - _prevIdleTime;
-                var totalDelta = (kernel - _prevKernelTime) + (user - _prevUserTime);
+                var totalDelta = total - _prevTotalTime;
                 if (totalDelta > 0)
                     usage = (1.0 - (double)idleDelta / totalDelta) * 100.0;
             }
 
             _prevIdleTime = idle;
-            _prevKernelTime = kernel;
-            _prevUserTime = user;
+            _prevTotalTime = total;
             _hasPrevCpuSample = true;
         }
 
@@ -102,27 +106,73 @@ public class HardwareMonitorService : IDisposable
         };
     }
 
+    /// <summary>
+    /// Cumulative idle and total CPU time, in platform units; only deltas are used. Windows:
+    /// GetSystemTimes, whose kernel time already includes idle time. Linux: the aggregate line
+    /// of /proc/stat. Any other platform reports no CPU usage.
+    /// </summary>
+    private static bool TryReadCpuTimes(out long idle, out long total)
+    {
+        idle = total = 0;
+        if (OperatingSystem.IsWindows())
+        {
+            if (!GetSystemTimes(out idle, out long kernel, out long user))
+                return false;
+            total = kernel + user;
+            return true;
+        }
+
+        if (!OperatingSystem.IsLinux()) return false;
+        try
+        {
+            return LinuxProc.TryParseCpuTimes(File.ReadLines("/proc/stat").FirstOrDefault(), out idle, out total);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     private static RamInfo CollectRam()
     {
-        var mem = new MEMORYSTATUSEX { dwLength = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MEMORYSTATUSEX>() };
-        if (GlobalMemoryStatusEx(ref mem))
+        if (OperatingSystem.IsWindows())
         {
-            var used = mem.ullTotalPhys - mem.ullAvailPhys;
-            return new RamInfo
+            var mem = new MEMORYSTATUSEX { dwLength = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MEMORYSTATUSEX>() };
+            if (GlobalMemoryStatusEx(ref mem))
+                return Ram(mem.ullTotalPhys, mem.ullAvailPhys);
+            return new RamInfo();
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            try
             {
-                TotalBytes = mem.ullTotalPhys,
-                UsedBytes = used,
-                AvailableBytes = mem.ullAvailPhys,
-                UsagePercent = mem.ullTotalPhys > 0 ? Math.Round(used * 100.0 / mem.ullTotalPhys, 1) : 0
-            };
+                if (LinuxProc.TryParseMemInfo(File.ReadAllText("/proc/meminfo"), out var total, out var available))
+                    return Ram(total, available);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
         return new RamInfo();
+    }
+
+    private static RamInfo Ram(ulong total, ulong available)
+    {
+        var used = total - available;
+        return new RamInfo
+        {
+            TotalBytes = total,
+            UsedBytes = used,
+            AvailableBytes = available,
+            UsagePercent = total > 0 ? Math.Round(used * 100.0 / total, 1) : 0
+        };
     }
 
     private List<GpuInfo> CollectGpus()
     {
         var gpus = new List<GpuInfo>();
-        var perProcessVram = CollectPerProcessGpuMemory();
+        var perProcessVram = OperatingSystem.IsWindows()
+            ? CollectPerProcessGpuMemory()
+            : CollectPerProcessGpuMemoryFromNvml();
         var pidToSlug = BuildPidToCapabilityMap();
 
         foreach (var proc in perProcessVram)
@@ -246,6 +296,18 @@ public class HardwareMonitorService : IDisposable
 
     private static int GetParentProcessId(int pid)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                return OperatingSystem.IsLinux()
+                       && LinuxProc.TryParseParentPid(File.ReadAllText($"/proc/{pid}/stat"), out var parent)
+                    ? parent
+                    : 0;
+            }
+            catch { return 0; }
+        }
+
         try
         {
             using var proc = Process.GetProcessById(pid);
@@ -260,6 +322,7 @@ public class HardwareMonitorService : IDisposable
 
     private static readonly Regex PidPattern = new(@"^pid_(\d+)_", RegexOptions.Compiled);
 
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     private static List<GpuProcessInfo> CollectPerProcessGpuMemory()
     {
         var byPid = new Dictionary<uint, ulong>();
@@ -309,13 +372,77 @@ public class HardwareMonitorService : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Linux has no "GPU Process Memory" performance counters; NVML lists each device's compute
+    /// and graphics processes instead. Memory is summed per PID across devices, as the Windows
+    /// counter is, and the same list is attached to every GPU.
+    /// </summary>
+    private List<GpuProcessInfo> CollectPerProcessGpuMemoryFromNvml()
+    {
+        var byPid = new Dictionary<uint, ulong>();
+        try
+        {
+            for (uint i = 0; i < _gpuCount; i++)
+            {
+                if (nvmlDeviceGetHandleByIndex_v2(i, out var device) != NvmlReturn.Success)
+                    continue;
+                // A process using a device for compute and graphics is listed twice with the
+                // same allocation; count it once per device.
+                var onDevice = new Dictionary<uint, ulong>();
+                foreach (var info in ReadNvmlProcesses(device, compute: true)
+                             .Concat(ReadNvmlProcesses(device, compute: false)))
+                {
+                    var bytes = info.UsedGpuMemory == NVML_VALUE_NOT_AVAILABLE ? 0UL : info.UsedGpuMemory;
+                    onDevice[info.Pid] = onDevice.TryGetValue(info.Pid, out var seen) ? Math.Max(seen, bytes) : bytes;
+                }
+                foreach (var (pid, bytes) in onDevice)
+                    byPid[pid] = byPid.TryGetValue(pid, out var existing) ? existing + bytes : bytes;
+            }
+        }
+        catch { return []; }
+
+        var result = new List<GpuProcessInfo>();
+        foreach (var (pid, bytes) in byPid)
+        {
+            string procName;
+            try { procName = Process.GetProcessById((int)pid).ProcessName; }
+            catch { continue; }
+
+            result.Add(new GpuProcessInfo
+            {
+                Pid = pid,
+                ProcessName = procName,
+                UsedMemoryBytes = bytes
+            });
+        }
+
+        return result;
+    }
+
+    private static NvmlProcessInfo[] ReadNvmlProcesses(IntPtr device, bool compute)
+    {
+        // Ask for the count first, then read with headroom: processes can start in between.
+        uint count = 0;
+        var status = compute
+            ? nvmlDeviceGetComputeRunningProcesses_v3(device, ref count, null)
+            : nvmlDeviceGetGraphicsRunningProcesses_v3(device, ref count, null);
+        if (status != NvmlReturn.InsufficientSize || count == 0)
+            return [];
+
+        var infos = new NvmlProcessInfo[count + 8];
+        count = (uint)infos.Length;
+        status = compute
+            ? nvmlDeviceGetComputeRunningProcesses_v3(device, ref count, infos)
+            : nvmlDeviceGetGraphicsRunningProcesses_v3(device, ref count, infos);
+        return status == NvmlReturn.Success ? infos[..(int)Math.Min(count, (uint)infos.Length)] : [];
+    }
+
     private void SampleCpuTimes()
     {
-        if (GetSystemTimes(out long idle, out long kernel, out long user))
+        if (TryReadCpuTimes(out long idle, out long total))
         {
             _prevIdleTime = idle;
-            _prevKernelTime = kernel;
-            _prevUserTime = user;
+            _prevTotalTime = total;
             _hasPrevCpuSample = true;
         }
     }
