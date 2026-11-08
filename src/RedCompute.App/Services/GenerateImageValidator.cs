@@ -2,9 +2,8 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using RedCompute.Core.Sessions;
+using SkiaSharp;
 
 namespace RedCompute.App.Services;
 
@@ -17,22 +16,23 @@ namespace RedCompute.App.Services;
 /// <item>a byte-size cap, checked before base64 decoding or reading a staged file;</item>
 /// <item>a format sniff that must agree with the declared media type;</item>
 /// <item>a structural walk of the container (PNG chunk CRCs through IEND, JPEG markers ending in EOI,
-/// every GIF block through the trailer, WebP RIFF size), because WIC silently fills in truncated PNG
-/// and JPEG data and decodes a GIF frame at its own declared size, not the canvas size;</item>
+/// every GIF block through the trailer, WebP RIFF size), because platform decoders tolerate
+/// truncated data and accept GIF frames that disagree with the canvas;</item>
 /// <item>dimension caps on the canvas and on every GIF frame, read from the headers, so a
 /// decompression bomb is refused before any pixel buffer is allocated;</item>
-/// <item>a full WIC decode of the first frame whose size must match the headers.</item>
+/// <item>a full Skia decode of the first frame whose canvas and frame rectangle must match the
+/// headers, and which must complete without error.</item>
 /// </list>
 ///
 /// Nothing the caller sent is forwarded. Every image is re-encoded as a fresh PNG from its decoded
 /// pixels (after applying any EXIF orientation), which drops EXIF/GPS, text chunks, APPn/COM/XMP
 /// segments, polyglot payloads and anything after the image data. A GIF or animated PNG contributes
 /// its first frame, composited onto its canvas. If the PNG exceeds <see cref="MaxImageBytes"/> it
-/// is downscaled until it fits. Animated WebP is refused (WIC on Windows cannot decode it).
+/// is downscaled until it fits. Animated WebP is refused.
 ///
-/// WebP is decoded in-process by the WebP codec Windows provides through WIC (the libwebp-based
-/// "WebP Image Extensions" package). Without that codec WebP images are refused. Moving decoding
-/// into an isolated helper process is a candidate follow-up; see docs/tool-free-generate.md.
+/// Decoding runs in-process through SkiaSharp (libpng, libjpeg-turbo, libwebp and Skia's GIF
+/// decoder), identically on every platform. Moving decoding into an isolated helper process is a
+/// candidate follow-up; see docs/tool-free-generate.md.
 /// </summary>
 public static class GenerateImageValidator
 {
@@ -90,60 +90,72 @@ public static class GenerateImageValidator
     }
 
     /// <summary>
-    /// Decodes the first frame and re-encodes it as PNG. Internal so tests can drive WIC with bytes
-    /// the structural walk would refuse; any non-fatal failure is a refusal, never an exception.
+    /// Decodes the first frame and re-encodes it as PNG. Internal so tests can drive the decoder
+    /// with bytes the structural walk would refuse; any non-fatal failure is a refusal, never an
+    /// exception.
     /// </summary>
     internal static (GenerateImage? Image, string? Error) Decode(byte[] bytes, Header header)
     {
         try
         {
             using var stream = new MemoryStream(bytes, writable: false);
-            var decoder = BitmapDecoder.Create(stream,
-                BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile,
-                BitmapCacheOption.OnLoad);
-            if (decoder.Frames.Count == 0) return (null, "image has no frames");
-            var frame = decoder.Frames[0];
+            using var codec = SKCodec.Create(stream, out var created);
+            if (codec is null) return (null, $"image could not be decoded ({created})");
+
+            // Skia composites the first GIF frame onto its canvas itself, so the canvas must
+            // match the header canvas and the frame rectangle the header's first-frame region.
             var region = header.FirstFrame;
-            if (frame.PixelWidth != region.Width || frame.PixelHeight != region.Height)
-                return (null, $"decoded size {frame.PixelWidth}x{frame.PixelHeight} does not match the header {region.Width}x{region.Height}");
-
-            // Force a full decode of every pixel row into a fixed 32-bit layout; a corrupt stream
-            // throws here.
-            var converted = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
-            var frameStride = checked(region.Width * 4);
-            var framePixels = new byte[checked(frameStride * region.Height)];
-            converted.CopyPixels(framePixels, frameStride, 0);
-
-            // A GIF frame may be smaller than its canvas: place it where the descriptor says,
-            // over a transparent background, exactly as a viewer would show the first frame.
-            var stride = checked(header.Width * 4);
-            var pixels = framePixels;
-            if (region.Width != header.Width || region.Height != header.Height)
+            var canvas = codec.Info;
+            if (canvas.Width != header.Width || canvas.Height != header.Height)
+                return (null, $"decoded size {canvas.Width}x{canvas.Height} does not match the header {header.Width}x{header.Height}");
+            if (codec.EncodedFormat == SKEncodedImageFormat.Gif)
             {
-                pixels = new byte[checked(stride * header.Height)];
-                for (var row = 0; row < region.Height; row++)
-                    Buffer.BlockCopy(framePixels, row * frameStride, pixels,
-                        (region.Top + row) * stride + region.Left * 4, frameStride);
+                // FrameCount parses the frame headers; frame info is unavailable before it.
+                if (codec.FrameCount < 1 || !codec.GetFrameInfo(0, out var frameInfo))
+                    return (null, "image has no frames");
+                var rect = frameInfo.FrameRect;
+                if (rect.Left != region.Left || rect.Top != region.Top || rect.Width != region.Width || rect.Height != region.Height)
+                    return (null, $"decoded size {rect.Width}x{rect.Height} does not match the header {region.Width}x{region.Height}");
             }
 
-            BitmapSource image = BitmapSource.Create(header.Width, header.Height, 96, 96,
-                PixelFormats.Bgra32, null, pixels, stride);
-            image = Orient(image, ReadOrientation(frame));
+            // Decode every pixel row into a fixed, unpremultiplied 32-bit BGRA layout with no
+            // colour management; a corrupt or incomplete stream is refused here. The buffer
+            // starts zeroed, so canvas outside a smaller GIF frame stays transparent.
+            var stride = checked(header.Width * 4);
+            var pixels = new byte[checked(stride * header.Height)];
+            var target = new SKImageInfo(header.Width, header.Height, SKColorType.Bgra8888, SKAlphaType.Unpremul);
+            var handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            SKCodecResult decoded;
+            try
+            {
+                decoded = codec.GetPixels(target, handle.AddrOfPinnedObject(), stride, new SKCodecOptions(0));
+            }
+            finally
+            {
+                handle.Free();
+            }
+            if (decoded != SKCodecResult.Success)
+                return (null, $"image could not be decoded ({decoded})");
+
+            var image = Orient(new Bgra(header.Width, header.Height, pixels), (int)codec.EncodedOrigin);
             return EncodeWithinLimit(image, bytes);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // WIC reports hostile input through many exception types (ArithmeticException for a
-            // frame whose size overflows, COMException, FileFormatException, ...). All are refusals.
+            // Hostile input can surface as many exception types (arithmetic overflow, native
+            // allocation failure, ...). All are refusals.
             return (null, $"image could not be decoded ({ex.GetType().Name})");
         }
     }
+
+    /// <summary>Unpremultiplied BGRA pixels, tightly packed (stride = width * 4).</summary>
+    internal sealed record Bgra(int Width, int Height, byte[] Pixels);
 
     /// <summary>
     /// Fresh PNG from decoded pixels only, so no metadata or trailing data from the source survives.
     /// Downscales (at most four times) until the PNG fits <see cref="MaxImageBytes"/>.
     /// </summary>
-    private static (GenerateImage? Image, string? Error) EncodeWithinLimit(BitmapSource image, byte[] source)
+    private static (GenerateImage? Image, string? Error) EncodeWithinLimit(Bgra image, byte[] source)
     {
         var scale = 1.0;
         var candidate = image;
@@ -151,57 +163,84 @@ public static class GenerateImageValidator
         {
             var png = EncodePng(candidate);
             if (png.Length <= MaxImageBytes)
-                return (new GenerateImage("image/png", png, candidate.PixelWidth, candidate.PixelHeight,
+                return (new GenerateImage("image/png", png, candidate.Width, candidate.Height,
                     Sha256(png), Sha256(source)), null);
             scale *= Math.Sqrt((double)MaxImageBytes / png.Length) * 0.9;
-            candidate = new TransformedBitmap(image, new ScaleTransform(scale, scale));
+            candidate = Scale(image, scale);
         }
         return (null, $"image does not fit {MaxImageBytes} bytes as PNG even after downscaling");
     }
 
-    private static byte[] EncodePng(BitmapSource image)
+    private static byte[] EncodePng(Bgra image)
     {
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(image));
-        using var png = new MemoryStream();
-        encoder.Save(png);
-        return png.ToArray();
-    }
-
-    /// <summary>EXIF orientation (1-8) when the codec exposes it; anything unreadable is upright.</summary>
-    private static int ReadOrientation(BitmapFrame frame)
-    {
+        var handle = GCHandle.Alloc(image.Pixels, GCHandleType.Pinned);
         try
         {
-            return frame.Metadata is BitmapMetadata metadata
-                   && metadata.GetQuery("System.Photo.Orientation") is ushort orientation
-                   && orientation is >= 1 and <= 8
-                ? orientation
-                : 1;
+            using var pixmap = new SKPixmap(Info(image), handle.AddrOfPinnedObject(), image.Width * 4);
+            using var png = pixmap.Encode(new SKPngEncoderOptions(SKPngEncoderFilterFlags.AllFilters, 6))
+                            ?? throw new InvalidOperationException("PNG encoding failed");
+            return png.ToArray();
         }
-        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException
-                                       or ArgumentException or COMException)
+        finally
         {
-            return 1;
+            handle.Free();
         }
     }
 
-    /// <summary>Applies an EXIF orientation so dropping the metadata does not turn the image sideways.</summary>
-    private static BitmapSource Orient(BitmapSource image, int orientation)
+    private static Bgra Scale(Bgra image, double scale)
     {
-        if (orientation == 1) return image;
-        var transform = new TransformGroup();
-        switch (orientation)
+        var width = Math.Max(1, (int)Math.Round(image.Width * scale));
+        var height = Math.Max(1, (int)Math.Round(image.Height * scale));
+        var scaled = new Bgra(width, height, new byte[checked(width * height * 4)]);
+        var source = GCHandle.Alloc(image.Pixels, GCHandleType.Pinned);
+        var target = GCHandle.Alloc(scaled.Pixels, GCHandleType.Pinned);
+        try
         {
-            case 2: transform.Children.Add(new ScaleTransform(-1, 1)); break;
-            case 3: transform.Children.Add(new RotateTransform(180)); break;
-            case 4: transform.Children.Add(new ScaleTransform(1, -1)); break;
-            case 5: transform.Children.Add(new ScaleTransform(-1, 1)); transform.Children.Add(new RotateTransform(270)); break;
-            case 6: transform.Children.Add(new RotateTransform(90)); break;
-            case 7: transform.Children.Add(new ScaleTransform(-1, 1)); transform.Children.Add(new RotateTransform(90)); break;
-            case 8: transform.Children.Add(new RotateTransform(270)); break;
+            using var from = new SKPixmap(Info(image), source.AddrOfPinnedObject(), image.Width * 4);
+            using var to = new SKPixmap(Info(scaled), target.AddrOfPinnedObject(), width * 4);
+            if (!from.ScalePixels(to, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear)))
+                throw new InvalidOperationException("downscaling failed");
+            return scaled;
         }
-        return new TransformedBitmap(image, transform);
+        finally
+        {
+            source.Free();
+            target.Free();
+        }
+    }
+
+    private static SKImageInfo Info(Bgra image) =>
+        new(image.Width, image.Height, SKColorType.Bgra8888, SKAlphaType.Unpremul);
+
+    /// <summary>
+    /// Applies an EXIF orientation (1-8, as Skia reports it; anything else is upright) so dropping
+    /// the metadata does not turn the image sideways. Pixels are moved exactly, never resampled.
+    /// </summary>
+    internal static Bgra Orient(Bgra image, int orientation)
+    {
+        if (orientation is < 2 or > 8) return image;
+        int w = image.Width, h = image.Height;
+        var ow = orientation >= 5 ? h : w;
+        var oh = orientation >= 5 ? w : h;
+        var source = MemoryMarshal.Cast<byte, uint>(image.Pixels.AsSpan());
+        var result = new byte[image.Pixels.Length];
+        var target = MemoryMarshal.Cast<byte, uint>(result.AsSpan());
+        for (var y = 0; y < h; y++)
+        for (var x = 0; x < w; x++)
+        {
+            var (tx, ty) = orientation switch
+            {
+                2 => (w - 1 - x, y),          // mirror horizontally
+                3 => (w - 1 - x, h - 1 - y),  // rotate 180
+                4 => (x, h - 1 - y),          // mirror vertically
+                5 => (y, x),                  // transpose
+                6 => (h - 1 - y, x),          // rotate 90 clockwise
+                7 => (h - 1 - y, w - 1 - x),  // transverse
+                _ => (y, w - 1 - x),          // 8: rotate 270 clockwise
+            };
+            target[ty * ow + tx] = source[y * w + x];
+        }
+        return new Bgra(ow, oh, result);
     }
 
     private static string Sha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

@@ -196,7 +196,7 @@ public sealed class ClaudeToolAvailabilityTests
 
     private static GenerateImage TestImage()
     {
-        var bytes = GenerateImageValidatorTests.Encode(new System.Windows.Media.Imaging.PngBitmapEncoder(), 8, 8);
+        var bytes = TestImages.Png(8, 8);
         return new GenerateImage("image/png", bytes, 8, 8, "test");
     }
 

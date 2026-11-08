@@ -98,19 +98,21 @@ text call, and providers only receive bytes RedCompute has validated.
 - Validation (`GenerateImageValidator`): the format sniff must match the declared media type; the
   container is walked structurally (PNG chunk CRCs through `IEND` with nothing after it, JPEG
   markers to a scan with the data ending in `EOI`, WebP RIFF size, and every GIF block from the
-  colour table to the trailer, at most 4096 blocks), because the Windows decoder (WIC) silently fills
-  in truncated PNG and JPEG data. Dimensions come from the headers and are checked before any pixel
-  buffer exists: the canvas, and for GIF every frame's image descriptor, which must be at most
-  4096 px per side and lie inside the canvas. (WIC decodes a GIF frame at its own declared size: a
-  1.3 KB GIF with a 2x2 canvas and a 20000x20000 frame made it allocate about 530 MB, and at 40000 it
-  threw `ArithmeticException`.) WIC then fully decodes the first frame, one decode at a time, and
-  its size must match the headers. A GIF whose first frame is smaller than the canvas is composited
-  at its offset onto a transparent canvas.
+  colour table to the trailer, at most 4096 blocks), because platform decoders tolerate truncated
+  PNG and JPEG data (WIC silently fills it in). Dimensions come from the headers and are checked
+  before any pixel buffer exists: the canvas, and for GIF every frame's image descriptor, which must
+  be at most 4096 px per side and lie inside the canvas. (WIC, the decoder used before SkiaSharp,
+  decoded a GIF frame at its own declared size: a 1.3 KB GIF with a 2x2 canvas and a 20000x20000
+  frame made it allocate about 530 MB, and at 40000 it threw `ArithmeticException`.) SkiaSharp then
+  fully decodes the first frame into unpremultiplied BGRA without colour management, one decode at
+  a time; its canvas and (for GIF) frame rectangle must match the headers and the decode must report
+  success. A GIF whose first frame is smaller than the canvas is composited at its offset onto a
+  transparent canvas.
 - Nothing the caller sent is forwarded. Every image, whatever its format, is re-encoded as a fresh
   PNG from its decoded pixels, after applying any EXIF orientation. That drops EXIF/GPS, PNG text
   chunks, JPEG APPn/COM/XMP segments, polyglot payloads and anything after the image data. If the
   PNG exceeds 5 MiB it is downscaled (at most four times) until it fits, else refused. Animated
-  WebP is refused: WIC cannot decode it.
+  WebP is refused.
 - `GenerateImage.Sha256` hashes the forwarded PNG (the Codex relay's evidence records the same
   hash); `SourceSha256` hashes the caller's original. Jobs record media type, size, dimensions and
   both hashes, never the bytes. An attachment owned by another caller reads the same as a missing
@@ -121,11 +123,11 @@ text call, and providers only receive bytes RedCompute has validated.
   client that streams the whole body first may see a reset connection instead; send
   `Expect: 100-continue` with large bodies to read the 413 reliably. Large images are best sent by
   `attachmentId`.
-- Follow-up candidate, not built: WebP is decoded in-process by the libwebp-based codec Windows
-  provides to WIC through the Store "WebP Image Extensions" package (`Microsoft.WebpImageExtension`, 1.2.31.0 on the development machine; PNG, JPEG and GIF use WIC's
-  built-in codecs). A hostile WebP therefore exercises a third-party native decoder inside the
-  RedCompute process. Decoding untrusted images in an isolated, resource-limited helper process
-  (returning only validated pixels) would contain that; without the codec, WebP images are refused.
+- Follow-up candidate, not built: images are decoded in-process by SkiaSharp's native library
+  (libpng, libjpeg-turbo, libwebp and Skia's GIF decoder; the same code on Windows and Linux). A
+  hostile image therefore exercises native decoders inside the RedCompute process. Decoding
+  untrusted images in an isolated, resource-limited helper process (returning only validated
+  pixels) would contain that.
 
 Claude Code: images travel inline as base64 `image` blocks in one stream-json user message on stdin
 (`--input-format stream-json`); nothing is written to disk. The launch keeps `--tools ""`,

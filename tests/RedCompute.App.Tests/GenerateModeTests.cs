@@ -255,8 +255,7 @@ public sealed class GenerateModeTests
     private static object Base64Png(int width = 24, int height = 12) => new
     {
         mediaType = "image/png",
-        base64 = Convert.ToBase64String(GenerateImageValidatorTests.Encode(
-            new System.Windows.Media.Imaging.PngBitmapEncoder(), width, height)),
+        base64 = Convert.ToBase64String(TestImages.Png(width, height)),
     };
 
     [Fact]
@@ -298,7 +297,7 @@ public sealed class GenerateModeTests
     [Fact]
     public async Task GenerateEndpoint_ResolvesStagedImageAttachments()
     {
-        var png = GenerateImageValidatorTests.Encode(new System.Windows.Media.Imaging.PngBitmapEncoder(), 16, 16);
+        var png = TestImages.Png(16, 16);
         var result = await InvokeGenerateAsync(Vision, requireToolFree: null,
             stage: async (store, extra) =>
             {
@@ -332,8 +331,7 @@ public sealed class GenerateModeTests
         { new object[] { new { mediaType = "image/png", base64 = "AAAA", attachmentId = "x" } }, "exactly one of" },
         { new object[] { new { mediaType = "image/png", base64 = new string('A', GenerateImageValidator.MaxBase64Length + 4) } }, "exceeds" },
         { new object[] { Base64Png(), new { mediaType = "image/png", base64 = Convert.ToBase64String(new byte[64]) } }, "images[1]: image is not PNG" },
-        { new object[] { new { mediaType = "image/jpeg", base64 = Convert.ToBase64String(GenerateImageValidatorTests.Encode(
-            new System.Windows.Media.Imaging.PngBitmapEncoder(), 4, 4)) } }, "does not match the image data" },
+        { new object[] { new { mediaType = "image/jpeg", base64 = Convert.ToBase64String(TestImages.Png(4, 4)) } }, "does not match the image data" },
     };
 
     [Theory]
@@ -367,7 +365,7 @@ public sealed class GenerateModeTests
     [Fact]
     public async Task GenerateEndpoint_TurnsAnUnexpectedImageReadFailureIntoInvalidImages()
     {
-        var png = GenerateImageValidatorTests.Encode(new System.Windows.Media.Imaging.PngBitmapEncoder(), 8, 8);
+        var png = TestImages.Png(8, 8);
         var result = await InvokeGenerateAsync(Vision,
             stage: async (store, extra) =>
             {
@@ -469,12 +467,7 @@ public sealed class GenerateModeTests
 
     private static byte[] GifWithHugeFrame(int side)
     {
-        var encoder = new System.Windows.Media.Imaging.GifBitmapEncoder();
-        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(System.Windows.Media.Imaging.BitmapSource.Create(
-            2, 2, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, new byte[16], 8)));
-        using var stream = new MemoryStream();
-        encoder.Save(stream);
-        var gif = stream.ToArray();
+        var gif = TestImages.Gif(2, 2, SkiaSharp.SKColors.Transparent);
         var offset = 13 + ((gif[10] & 0x80) != 0 ? 3 << ((gif[10] & 7) + 1) : 0);
         while (gif[offset] == 0x21)
         {
