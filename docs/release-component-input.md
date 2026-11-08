@@ -45,7 +45,9 @@ dotnet restore RedCompute.sln --locked-mode --runtime win-x64 --artifacts-path a
 dotnet publish src/RedCompute.App/RedCompute.App.csproj --configuration Release --runtime win-x64 --self-contained true --no-restore --artifacts-path artifacts/win-x64 --output artifacts/publish -p:RedBambooPackagesRoot=<exact-redbamboo-packages-checkout>
 ```
 
-The sibling AppHost project uses the consumer-owned lock at `release/locks/redbamboo-apphost/packages.lock.json`. The App project-reference restore metadata routes AppHost to that lock and declares the neutral plus `win-x64` restore graph; the lock is never copied into or generated inside the sibling checkout. The locked-restore gate compares every lock hash before and after both restore modes and verifies that the AppHost checkout did not change.
+The sibling AppHost project uses the consumer-owned lock at `release/locks/redbamboo-apphost/packages.lock.json`. The App project-reference restore metadata routes AppHost to that lock and declares the neutral plus `win-x64` restore graph; the lock is never copied into or generated inside the sibling checkout. The locked-restore gate compares every lock hash before and after its restore modes and verifies that the AppHost checkout did not change.
+
+The Linux preview (`LeafTargetOs=linux`) has its own graph: each project keeps a `packages.linux.lock.json` beside its `packages.lock.json` (AppHost: `release/locks/redbamboo-apphost/packages.linux.lock.json`) with the neutral plus `linux-x64` graph, and the gate also restores `-p:LeafTargetOs=linux` and `--runtime linux-x64`. This component input and its evidence still describe only the win-x64 release, so they list only the `packages.lock.json` files.
 
 ## RedLeaf acquisition boundary
 

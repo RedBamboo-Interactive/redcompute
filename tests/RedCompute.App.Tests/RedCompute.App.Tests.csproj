@@ -1,6 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
+  <!-- Follows the host it tests (LeafTargetOs, see Directory.Build.props). -->
+  <PropertyGroup Condition="'$(LeafTargetOs)' == 'windows'">
     <TargetFramework>net9.0-windows</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(LeafTargetOs)' == 'linux'">
+    <TargetFramework>net9.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>

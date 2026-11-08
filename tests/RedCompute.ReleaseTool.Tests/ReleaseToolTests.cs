@@ -326,9 +326,16 @@ public sealed class ReleaseToolTests
     [Fact]
     public void PublishCopyTargetsUseRuntimeSpecificPluginOutputs()
     {
+        // Publish copies the provider DLLs the plugin projects built in that same build, asked
+        // for through the project-reference protocol, so a -r publish gets the RID-specific
+        // outputs (and an artifacts-path build its own) rather than whatever a path glob finds.
         var project = File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "RedCompute.App", "RedCompute.App.csproj"));
-        Assert.Contains("net9.0\\$(RuntimeIdentifier)\\RedCompute.Plugin.*.dll", project, StringComparison.Ordinal);
-        Assert.Contains("Condition=\"'$(RuntimeIdentifier)' != ''\"", project, StringComparison.Ordinal);
+        Assert.Contains("<Target Name=\"ResolvePluginOutputs\" DependsOnTargets=\"PrepareProjectReferences\"", project, StringComparison.Ordinal);
+        Assert.Contains("Targets=\"GetTargetPath\"", project, StringComparison.Ordinal);
+        Assert.Contains("%(_PluginProjectReference.SetTargetFramework)", project, StringComparison.Ordinal);
+        Assert.Contains("<Target Name=\"CopyRuntimeContentToPublish\" AfterTargets=\"Publish\" DependsOnTargets=\"ResolvePluginOutputs\">", project, StringComparison.Ordinal);
+        Assert.Contains("<PublishedPluginFiles Include=\"@(PluginFiles)\" />", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("plugins\\*\\bin\\", project, StringComparison.Ordinal);
     }
 
     [Theory]

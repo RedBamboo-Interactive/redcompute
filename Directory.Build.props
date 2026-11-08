@@ -1,9 +1,27 @@
 <Project>
+  <!-- The OS RedCompute is built for: windows (net9.0-windows, WPF shell, RedCompute.exe)
+       or linux (net9.0, headless Program.Main). It follows an explicit
+       -p:LeafTargetOs=..., else the runtime identifier being built or restored, else the
+       build machine. An ordinary Windows build is exactly what it always was, and a
+       Windows machine can still restore, build or publish linux-x64 with -r linux-x64.
+       One target framework per build. -->
+  <PropertyGroup>
+    <LeafTargetOs Condition="'$(LeafTargetOs)' == '' and ($(RuntimeIdentifier.StartsWith('linux-')) or $(RuntimeIdentifiers.StartsWith('linux-')))">linux</LeafTargetOs>
+    <LeafTargetOs Condition="'$(LeafTargetOs)' == '' and ($(RuntimeIdentifier.StartsWith('win-')) or $(RuntimeIdentifiers.StartsWith('win-')))">windows</LeafTargetOs>
+    <LeafTargetOs Condition="'$(LeafTargetOs)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">windows</LeafTargetOs>
+    <LeafTargetOs Condition="'$(LeafTargetOs)' == ''">linux</LeafTargetOs>
+  </PropertyGroup>
+
   <PropertyGroup>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <!-- Keep one coherent restore graph per project. Ordinary builds remain
-         RID-neutral, while the same lock also covers the Phase 1B win-x64 publish. -->
-    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- Keep one coherent restore graph per project and target OS. Ordinary builds
+         remain RID-neutral, while the same lock also covers that OS's runtime-specific
+         restore and publish (dotnet restore -r sets RuntimeIdentifiers to exactly that
+         RID, so a lock must list only it). Linux graphs use their own lock files and
+         never disturb the Windows ones. -->
+    <RuntimeIdentifiers Condition="'$(LeafTargetOs)' == 'windows'">win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifiers Condition="'$(LeafTargetOs)' == 'linux'">linux-x64</RuntimeIdentifiers>
+    <NuGetLockFilePath Condition="'$(LeafTargetOs)' == 'linux'">packages.linux.lock.json</NuGetLockFilePath>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>

@@ -1,0 +1,10 @@
+# MSBuild reads this for every build, restore, test and publish of a project under this
+# directory (dotnet build/restore/test/publish included).
+#
+# The shared RedBamboo.AppHost (../redbamboo-packages) multi-targets net9.0 and
+# net9.0-windows. Off Windows, NuGet restore refuses the Windows target framework unless
+# Windows targeting is enabled, even though the Linux host only builds and uses AppHost's
+# net9.0 flavour. Restore walks project references with global properties only (it ignores
+# ProjectReference AdditionalProperties), so this cannot be scoped to that one reference
+# from here. On Windows the property has no effect. Same mechanism as RedLeaf.
+-p:EnableWindowsTargeting=true

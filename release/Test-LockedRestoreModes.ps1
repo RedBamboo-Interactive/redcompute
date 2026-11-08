@@ -24,7 +24,7 @@ if (-not (Test-Path -LiteralPath $appHostProject -PathType Leaf)) {
 }
 
 function Get-LockSnapshot {
-    Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter packages.lock.json -File |
+    Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter 'packages*.lock.json' -File |
         Where-Object { $_.FullName -notmatch '[\\/](?:\.git|bin|obj|artifacts|\.release-deps)[\\/]' } |
         Sort-Object FullName |
         ForEach-Object {
@@ -41,7 +41,7 @@ function Assert-LocksUnchanged([object[]] $Before) {
     $beforeText = $Before | ConvertTo-Json -Compress
     $afterText = $after | ConvertTo-Json -Compress
     if ($beforeText -cne $afterText) {
-        throw 'A committed NuGet lock file was added, removed, or changed during the dual-mode restore gate.'
+        throw 'A committed NuGet lock file was added, removed, or changed during the locked restore gate.'
     }
 }
 
@@ -74,8 +74,12 @@ if ($LASTEXITCODE -ne 0) {
 
 $restoreFailure = $null
 try {
-    Invoke-LockedRestore -Mode 'neutral' -ExtraArguments @()
+    # One graph per host OS (LeafTargetOs, see Directory.Build.props), RID-neutral and
+    # runtime-specific. The linux graphs restore from any build machine.
+    Invoke-LockedRestore -Mode 'windows-neutral' -ExtraArguments @('-p:LeafTargetOs=windows')
     Invoke-LockedRestore -Mode 'win-x64' -ExtraArguments @('--runtime', 'win-x64')
+    Invoke-LockedRestore -Mode 'linux-neutral' -ExtraArguments @('-p:LeafTargetOs=linux')
+    Invoke-LockedRestore -Mode 'linux-x64' -ExtraArguments @('--runtime', 'linux-x64')
 } catch {
     $restoreFailure = $_
 }
@@ -86,10 +90,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Unable to re-inspect the AppHost source checkout at '$RedBambooPackagesRoot'."
 }
 if (($siblingStatusBefore -join "`n") -cne ($siblingStatusAfter -join "`n")) {
-    throw 'The dual-mode restore changed the AppHost source checkout.'
+    throw 'The locked restore changed the AppHost source checkout.'
 }
 if ($null -ne $restoreFailure) {
     throw $restoreFailure
 }
 
-Write-Host "Locked restore gate passed for RID-neutral and win-x64 graphs; $($locksBefore.Count) lock files were unchanged."
+Write-Host "Locked restore gate passed for the windows, win-x64, linux and linux-x64 graphs; $($locksBefore.Count) lock files were unchanged."

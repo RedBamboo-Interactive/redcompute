@@ -1,18 +1,40 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" InitialTargets="ValidateLeafTargetOs">
 
-  <PropertyGroup>
+  <!-- LeafTargetOs (Directory.Build.props) picks the host shell. windows is the
+       unchanged WPF build; linux is a headless console host driven by Program.Main.
+       Each OS restores against its own lock files (Directory.Build.props), so neither
+       graph disturbs the other. -->
+  <PropertyGroup Condition="'$(LeafTargetOs)' == 'windows'">
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Resources\redcompute.ico</ApplicationIcon>
+    <RedBambooAppHostLockFileName>packages.lock.json</RedBambooAppHostLockFileName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(LeafTargetOs)' == 'linux'">
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <RedBambooAppHostLockFileName>packages.linux.lock.json</RedBambooAppHostLockFileName>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RedCompute.App</RootNamespace>
     <AssemblyName>RedCompute</AssemblyName>
     <PlatformTarget>x64</PlatformTarget>
-    <ApplicationIcon>Resources\redcompute.ico</ApplicationIcon>
     <RedBambooPackagesRoot Condition="'$(RedBambooPackagesRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\redbamboo-packages</RedBambooPackagesRoot>
-    <RedBambooAppHostLockFile>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\release\locks\redbamboo-apphost\packages.lock.json'))</RedBambooAppHostLockFile>
+    <RedBambooAppHostLockFile>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\release\locks\redbamboo-apphost\$(RedBambooAppHostLockFileName)'))</RedBambooAppHostLockFile>
   </PropertyGroup>
+
+  <Target Name="ValidateLeafTargetOs">
+    <Error Condition="'$(LeafTargetOs)' != 'windows' and '$(LeafTargetOs)' != 'linux'"
+           Text="LeafTargetOs must be 'windows' or 'linux', not '$(LeafTargetOs)'." />
+    <Error Condition="'$(RuntimeIdentifier)' != '' and !$(RuntimeIdentifier.StartsWith('win-')) and '$(LeafTargetOs)' == 'windows'"
+           Text="LeafTargetOs=windows cannot be built for runtime '$(RuntimeIdentifier)'." />
+    <Error Condition="'$(RuntimeIdentifier)' != '' and !$(RuntimeIdentifier.StartsWith('linux-')) and '$(LeafTargetOs)' == 'linux'"
+           Text="LeafTargetOs=linux cannot be built for runtime '$(RuntimeIdentifier)'." />
+  </Target>
 
   <ItemGroup>
     <InternalsVisibleTo Include="RedCompute.App.Tests" />
@@ -29,6 +51,10 @@
   <ItemGroup>
     <PackageReference Include="Markdig" Version="0.41.3" />
     <PackageReference Include="SkiaSharp" Version="3.119.0" />
+    <!-- SkiaSharp ships Windows and macOS natives; Linux needs its own. NoDependencies
+         links libSkiaSharp without fontconfig, which the image validator never uses. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.0"
+                      Condition="'$(LeafTargetOs)' == 'linux'" />
     <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.18" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
@@ -42,9 +68,12 @@
     <ProjectReference Include="..\RedCompute.PluginSdk\RedCompute.PluginSdk.csproj" />
     <!-- One level deeper than the standalone repo: compute/ lives inside the Leaf monorepo now. -->
     <!-- AppHost is a source input owned by RedBamboo. Give its consumer restore
-         graph the same neutral + win-x64 shape and keep its lock in this repo. -->
+         graph the same neutral + host-RID shape and keep its lock in this repo, one
+         per LeafTargetOs (on Windows this is exactly the historical reference).
+         Off Windows, restoring AppHost's net9.0-windows TFM needs EnableWindowsTargeting,
+         set by Directory.Build.rsp; only its net9.0 build is referenced and compiled. -->
     <ProjectReference Include="$(RedBambooPackagesRoot)\dotnet\RedBamboo.AppHost\RedBamboo.AppHost.csproj"
-                      AdditionalProperties="RuntimeIdentifiers=win-x64;RestorePackagesWithLockFile=true;NuGetLockFilePath=$(RedBambooAppHostLockFile)" />
+                      AdditionalProperties="RuntimeIdentifiers=$(RuntimeIdentifiers);RestorePackagesWithLockFile=true;NuGetLockFilePath=$(RedBambooAppHostLockFile)" />
     <!-- Plugin projects: referenced so they build and copy to output. Not a hard dependency. -->
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ComfyUI\RedCompute.Plugin.ComfyUI.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
@@ -84,13 +113,26 @@
 
   <!-- CopyFrontend target removed: the dashboard is the compute-dashboard Leaf plugin now. -->
 
-  <Target Name="CopyPlugins" AfterTargets="Build">
+  <!-- The provider DLLs exactly as the referenced plugin projects built them in this
+       build: the same configuration, runtime identifier and output layout (including an
+       artifacts path), asked through the same project-reference protocol MSBuild used
+       to build them. A path glob would miss artifacts output and could pick up stale
+       DLLs from another build. -->
+  <Target Name="ResolvePluginOutputs" DependsOnTargets="PrepareProjectReferences" Returns="@(PluginFiles)">
     <ItemGroup>
-      <PluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\RedCompute.Plugin.*.dll"
-                   Condition="'$(RuntimeIdentifier)' == ''" />
-      <PluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\$(RuntimeIdentifier)\RedCompute.Plugin.*.dll"
-                   Condition="'$(RuntimeIdentifier)' != ''" />
+      <_PluginProjectReference Include="@(_MSBuildProjectReferenceExistent)"
+                               Condition="$([System.String]::Copy('%(Filename)').StartsWith('RedCompute.Plugin.'))" />
     </ItemGroup>
+    <MSBuild Projects="@(_PluginProjectReference)"
+             Targets="GetTargetPath"
+             BuildInParallel="$(BuildInParallel)"
+             Properties="%(_PluginProjectReference.SetConfiguration); %(_PluginProjectReference.SetPlatform); %(_PluginProjectReference.SetTargetFramework)"
+             RemoveProperties="%(_PluginProjectReference.GlobalPropertiesToRemove)$(_GlobalPropertiesToRemoveFromProjectReferences)">
+      <Output TaskParameter="TargetOutputs" ItemName="PluginFiles" />
+    </MSBuild>
+  </Target>
+
+  <Target Name="CopyPlugins" AfterTargets="Build" DependsOnTargets="ResolvePluginOutputs">
     <MakeDir Directories="$(OutputPath)plugins" />
     <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(OutputPath)plugins" SkipUnchangedFiles="true" />
   </Target>
@@ -115,12 +157,9 @@
 
   <!-- Publish has a separate output root. Keep the installed runtime graph identical
        to the normal build by copying the same provider binaries and capability files. -->
-  <Target Name="CopyRuntimeContentToPublish" AfterTargets="Publish">
+  <Target Name="CopyRuntimeContentToPublish" AfterTargets="Publish" DependsOnTargets="ResolvePluginOutputs">
     <ItemGroup>
-      <PublishedPluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\RedCompute.Plugin.*.dll"
-                            Condition="'$(RuntimeIdentifier)' == ''" />
-      <PublishedPluginFiles Include="..\..\plugins\*\bin\$(Configuration)\net9.0\$(RuntimeIdentifier)\RedCompute.Plugin.*.dll"
-                            Condition="'$(RuntimeIdentifier)' != ''" />
+      <PublishedPluginFiles Include="@(PluginFiles)" />
       <PublishedCapabilityFiles Include="..\..\capabilities\*.json" />
       <PublishedBackendFiles Include="..\..\backends\**\*"
                              Exclude="..\..\backends\**\__pycache__\**;..\..\backends\**\*.pyc" />
