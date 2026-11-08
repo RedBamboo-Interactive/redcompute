@@ -48,7 +48,7 @@ public sealed class ComfyUIProviderTests
         }
     }
 
-    [Fact]
+    [WindowsFact("launching ComfyUI builds Windows python.exe paths; launching is unsupported elsewhere")]
     public void Explicit_venv_wins_over_portable_embedded_python()
     {
         var config = new ProviderConfig
@@ -62,7 +62,7 @@ public sealed class ComfyUIProviderTests
             ComfyUIProvider.ResolveNativePythonExecutable(config));
     }
 
-    [Fact]
+    [WindowsFact("launching ComfyUI builds Windows python.exe paths; launching is unsupported elsewhere")]
     public void Native_start_arguments_support_external_storage_and_paths_with_spaces()
     {
         var provider = new ComfyUIProvider(new ProviderConfig
@@ -305,7 +305,7 @@ public sealed class ComfyUIProviderTests
         }
     }
 
-    [Fact]
+    [WindowsFact("relies on Windows refusing connections once a listener's accept backlog is full; Linux leaves them pending")]
     public async Task Refused_connection_from_a_listening_backend_still_refuses_release()
     {
         // A full accept backlog is how a wedged server refuses connections on Windows.

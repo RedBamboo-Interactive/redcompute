@@ -613,15 +613,11 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
             ProcessStartInfo start;
             if (capturePath is null)
             {
-                start = new ProcessStartInfo { FileName = Path.Combine(Environment.SystemDirectory, "more.com") };
+                start = new ProcessStartInfo { FileName = TestProcesses.StdinSink };
             }
             else
             {
-                start = new ProcessStartInfo { FileName = "powershell.exe" };
-                start.Environment["STDIN_CAPTURE_PATH"] = capturePath;
-                start.ArgumentList.Add("-NoProfile");
-                start.ArgumentList.Add("-Command");
-                start.ArgumentList.Add("while ($null -ne ($line = [Console]::In.ReadLine())) { [IO.File]::AppendAllText($env:STDIN_CAPTURE_PATH, $line + [Environment]::NewLine) }");
+                start = TestProcesses.AppendStdinTo(capturePath, "STDIN_CAPTURE_PATH");
             }
             start.CreateNoWindow = true;
             start.UseShellExecute = false;

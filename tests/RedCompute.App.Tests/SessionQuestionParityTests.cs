@@ -42,10 +42,11 @@ public sealed class SessionQuestionParityTests : IDisposable
 
     public SessionQuestionParityTests() => Directory.CreateDirectory(_root);
 
-    public static TheoryData<string> Providers => new() { "claude-code", "codex" };
+    private const string CodexFake = "the fake Codex app-server is a PowerShell script";
 
     [Theory]
-    [MemberData(nameof(Providers))]
+    [InlineData("claude-code")]
+    [WindowsInlineData(CodexFake, "codex")]
     public async Task Question_parks_is_read_notified_once_answered_cleared_and_the_turn_still_completes(string provider)
     {
         using var h = Harness(provider);
@@ -91,13 +92,13 @@ public sealed class SessionQuestionParityTests : IDisposable
 
     [Theory]
     [InlineData("claude-code", "decline", "declined")]
-    [InlineData("codex", "decline", "declined")]
+    [WindowsInlineData(CodexFake, "codex", "decline", "declined")]
     [InlineData("claude-code", "cancel", "cancelled")]
-    [InlineData("codex", "cancel", "cancelled")]
+    [WindowsInlineData(CodexFake, "codex", "cancel", "cancelled")]
     [InlineData("claude-code", "turn_end", "cancelled")]
-    [InlineData("codex", "turn_end", "cancelled")]
+    [WindowsInlineData(CodexFake, "codex", "turn_end", "cancelled")]
     [InlineData("claude-code", "session_end", "session_ended")]
-    [InlineData("codex", "session_end", "session_ended")]
+    [WindowsInlineData(CodexFake, "codex", "session_end", "session_ended")]
     public async Task Every_resolution_path_clears_the_question_with_an_outcome_and_no_new_transcript_record(
         string provider, string path, string outcome)
     {
@@ -136,7 +137,8 @@ public sealed class SessionQuestionParityTests : IDisposable
     }
 
     [Theory]
-    [MemberData(nameof(Providers))]
+    [InlineData("claude-code")]
+    [WindowsInlineData(CodexFake, "codex")]
     public async Task Registrant_without_question_url_gets_exactly_one_terminal_callback_and_no_question(string provider)
     {
         using var h = Harness(provider);
@@ -158,7 +160,8 @@ public sealed class SessionQuestionParityTests : IDisposable
     }
 
     [Theory]
-    [MemberData(nameof(Providers))]
+    [InlineData("claude-code")]
+    [WindowsInlineData(CodexFake, "codex")]
     public async Task Parked_question_blocks_steering_and_the_answer_lets_queued_input_deliver(string provider)
     {
         using var h = Harness(provider);
@@ -194,13 +197,13 @@ public sealed class SessionQuestionParityTests : IDisposable
 
     [Theory]
     [InlineData("claude-code", "answer", new[] { "working" })]
-    [InlineData("codex", "answer", new[] { "working" })]
+    [WindowsInlineData(CodexFake, "codex", "answer", new[] { "working" })]
     [InlineData("claude-code", "decline", new[] { "working" })]
-    [InlineData("codex", "decline", new[] { "working" })]
+    [WindowsInlineData(CodexFake, "codex", "decline", new[] { "working" })]
     [InlineData("claude-code", "cancel", new[] { "working" })]
-    [InlineData("codex", "cancel", new[] { "idle" })] // an interrupt ends the Codex turn: one update
+    [WindowsInlineData(CodexFake, "codex", "cancel", new[] { "idle" })] // an interrupt ends the Codex turn: one update
     [InlineData("claude-code", "turn_end", new[] { "working", "idle" })] // CLI cancel, then result
-    [InlineData("codex", "turn_end", new[] { "idle" })]
+    [WindowsInlineData(CodexFake, "codex", "turn_end", new[] { "idle" })]
     public void Parking_and_resolving_publish_exactly_one_session_update_per_transition(string provider, string path, string[] after)
     {
         using var h = Harness(provider);
@@ -239,7 +242,8 @@ public sealed class SessionQuestionParityTests : IDisposable
     }
 
     [Theory]
-    [MemberData(nameof(Providers))]
+    [InlineData("claude-code")]
+    [WindowsInlineData(CodexFake, "codex")]
     public async Task Session_read_keeps_messages_and_their_order_while_a_question_is_pending(string provider)
     {
         using var h = Harness(provider);
@@ -436,7 +440,7 @@ public sealed class SessionQuestionParityTests : IDisposable
             _service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, jobs, _store,
                 new ClaudeBackgroundWorkTests.NullQualityModes(), () => null, (_, _) => { }, action => action());
             _service.LaunchSessionProcess = _ => owner.StartProcess(new ProcessStartInfo
-                { FileName = Path.Combine(Environment.SystemDirectory, "more.com") });
+                { FileName = TestProcesses.StdinSink });
             _provider = new ClaudeCodeProvider("ai-session", _service, _store, jobs, (_, _) => { });
             Observe();
             var info = _service.StartSession(owner._root, "haiku", "owner", null, null, "high", null, null, null,

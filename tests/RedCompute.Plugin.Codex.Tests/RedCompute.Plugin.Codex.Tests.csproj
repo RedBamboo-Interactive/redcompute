@@ -20,4 +20,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <!-- Platform-aware test attributes and stand-in processes, shared by every test project. -->
+    <Compile Include="..\Shared\PlatformFacts.cs" Link="Shared\PlatformFacts.cs" />
+    <Using Include="RedCompute.Tests" />
+  </ItemGroup>
 </Project>

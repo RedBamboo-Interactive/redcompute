@@ -21,7 +21,7 @@ public sealed class CodexRollbackTests : IDisposable
 
     public CodexRollbackTests() => Directory.CreateDirectory(_root);
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task Rollback_reverts_before_the_turn_that_carried_the_message_and_marks_from_it()
     {
         await using var f = await Fixture.Start(this);
@@ -40,7 +40,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Equal(1, f.Session.MessageCount);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task The_next_message_runs_on_the_kept_thread()
     {
         await using var f = await Fixture.Start(this);
@@ -54,7 +54,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Equal(["u1", "u4"], f.Store.GetMessages(f.Id).Where(m => m.Role == "user").Select(m => m.MessageUid));
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_parked_session_is_resumed_on_a_fresh_server_before_the_revert()
     {
         await using var f = await Fixture.Start(this);
@@ -70,7 +70,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Contains("thread/resume", methods);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_legacy_thread_does_not_advertise_and_is_refused()
     {
         await using var f = await Fixture.Start(this, historyMode: "legacy");
@@ -83,7 +83,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Empty(f.Sent("thread/revert"));
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_thread_reporting_no_mode_does_not_advertise()
     {
         await using var f = await Fixture.Start(this, historyMode: "");
@@ -91,7 +91,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.False(f.Service.ThreadSupportsRollback(f.Id));
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_paginated_thread_advertises()
     {
         await using var f = await Fixture.Start(this);
@@ -103,7 +103,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.False(CodexInteractiveService.SupportsRollback(null));
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_turn_from_before_this_feature_is_refused_rather_than_guessed()
     {
         await using var f = await Fixture.Start(this);
@@ -119,7 +119,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Empty(f.Sent("thread/revert"));
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_steered_message_has_no_boundary_of_its_own()
     {
         await using var f = await Fixture.Start(this);
@@ -139,7 +139,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Equal(SessionRollbackStatus.Applied, start.Status);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_provider_refusal_with_the_turn_still_present_changes_nothing()
     {
         await using var f = await Fixture.Start(this, revert: "reject");
@@ -153,7 +153,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Equal(1, f.Session.MessageCount);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_retry_after_the_provider_already_applied_it_is_proved_by_the_turn_being_gone()
     {
         await using var f = await Fixture.Start(this, revert: "already-gone");
@@ -165,7 +165,7 @@ public sealed class CodexRollbackTests : IDisposable
         Assert.Contains(f.Store.All, m => m.MessageUid == "u1" && m.RolledBack);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a PowerShell script")]
     public async Task A_failed_revert_with_an_unreadable_history_is_not_claimed_as_applied()
     {
         await using var f = await Fixture.Start(this, revert: "unreadable");

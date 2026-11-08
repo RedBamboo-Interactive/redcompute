@@ -48,8 +48,10 @@ public sealed class OwnedProcessKillerTests
         Assert.False(OwnedProcessKiller.TryKill(null, "claude"));
     }
 
+    // A harmless process that lives about 30 seconds and is named "ping" on both OSes: ping's
+    // count flag is -n on Windows and -c elsewhere.
     private static Process StartPing()
-        => Process.Start(new ProcessStartInfo("ping", "-n 30 127.0.0.1")
+        => Process.Start(new ProcessStartInfo("ping", OperatingSystem.IsWindows() ? "-n 30 127.0.0.1" : "-c 30 -i 1 127.0.0.1")
         {
             CreateNoWindow = true,
             UseShellExecute = false,

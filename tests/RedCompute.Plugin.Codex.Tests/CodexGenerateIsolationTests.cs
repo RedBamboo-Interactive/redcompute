@@ -56,19 +56,12 @@ public sealed class CodexGenerateIsolationTests : IDisposable
 
     internal static Process StartOutputProcess(string output)
     {
-        var fake = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        fake.ArgumentList.Add("-NoProfile");
-        fake.ArgumentList.Add("-Command");
-        fake.ArgumentList.Add("[Console]::Out.Write($env:RED_COMPUTE_TEST_OUTPUT)");
-        fake.Environment["RED_COMPUTE_TEST_OUTPUT"] = output;
+        var fake = TestProcesses.WriteToStdout("RED_COMPUTE_TEST_OUTPUT", output);
+        fake.CreateNoWindow = true;
+        fake.UseShellExecute = false;
+        fake.RedirectStandardInput = true;
+        fake.RedirectStandardOutput = true;
+        fake.RedirectStandardError = true;
         return Process.Start(fake)!;
     }
 

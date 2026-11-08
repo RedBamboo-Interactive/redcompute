@@ -20,7 +20,13 @@ The rebuild script uses the shared `redbamboo-packages/dotnet/rebuild.ps1`. It s
 
 The kernel locates `RedCompute.exe` through the `compute` path in `leaf.workspace.json` (in the `redleaf` repo), which points at this checkout; `src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe` is the probed build output. `computeExePath` in the kernel config overrides it.
 
-There are no tests and no CI pipeline.
+Tests live in `tests/` (`RedCompute.App.Tests`, `RedCompute.Plugin.Codex.Tests`, `RedCompute.ReleaseTool.Tests`); run them with `dotnet test` and an `--artifacts-path` outside the checkout when a live RedCompute runs from it. `release/Test-LockedRestoreModes.ps1` checks that every committed lock file restores in locked mode.
+
+### Linux (preview)
+
+`LeafTargetOs` (in `Directory.Build.props`) selects the host: `windows` builds the unchanged `net9.0-windows` WPF shell and `RedCompute.exe`; `linux` builds a headless `net9.0` console host (`Program.cs`) that maps SIGINT/SIGTERM to the normal shutdown. It defaults to the build machine's OS and follows `-r linux-x64`/`-r win-x64`, so `dotnet publish src/RedCompute.App/RedCompute.App.csproj -c Release -r linux-x64 --self-contained` works from either OS. Linux graphs restore from `packages.linux.lock.json` beside each `packages.lock.json`; regenerate both with `dotnet restore RedCompute.sln --force-evaluate` and again with `-p:LeafTargetOs=linux`. `Directory.Build.rsp` enables Windows targeting so Linux can restore AppHost's `net9.0-windows` TFM.
+
+Off Windows, the WSL/Python GPU providers (TtsLocal, SttLocal, DiarizationLocal, launching ComfyUI or Kev) report `BackendStatus.Unsupported` with a reason instead of spawning `wsl.exe`/`cmd.exe`; tests that need Windows use `[WindowsFact("reason")]`.
 
 ## Architecture
 

@@ -27,7 +27,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
 
     public ClaudeTextPhaseTests() => Directory.CreateDirectory(_root);
 
-    [Fact]
+    [WindowsFact("the fake Claude CLI is a PowerShell script")]
     public async Task SteeringWaitsForExactReplayUuidAndPersistsUserInsideActiveTurn()
     {
         const string script = """
@@ -521,17 +521,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
             Result(),
         ]);
         // A stand-in CLI: prints one recorded turn on stdout, then waits on stdin like the real one.
-        var (service, store, live, id) = StartSession(_ => Track(Process.Start(new ProcessStartInfo
-        {
-            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-            // Arguments verbatim: cmd.exe does not understand ArgumentList's \" escaping.
-            Arguments = $"/d /c type \"{fixture}\" & more",
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        })!));
+        var (service, store, live, id) = StartSession(_ => Track(Process.Start(Redirected(TestProcesses.PrintThenEchoStdin(fixture)))!));
 
         await WaitUntil(() => store.Assistant(id).Any(m => m.EventType == "status"));
 
@@ -553,16 +543,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     {
         var captured = Path.Combine(_root, "stdin.jsonl");
         Process? cli = null;
-        var (service, store, _, id) = StartSession(_ => cli = Track(Process.Start(new ProcessStartInfo
-        {
-            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-            Arguments = $"/d /c more > \"{captured}\"",
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        })!));
+        var (service, store, _, id) = StartSession(_ => cli = Track(Process.Start(Redirected(TestProcesses.WriteStdinTo(captured)))!));
         const string envelope = "Discord envelope JSON (untrusted data):\n<discord-input-json>{\"message\":\"hello\"}</discord-input-json>";
 
         Assert.True(await service.SendInput(id, [SessionInputPart.TextPart(envelope)],
@@ -679,16 +660,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     public async Task Terminal_turn_paths_persist_partial_thinking_once(string ending)
     {
         var (service, store, _, id) = StartSession(ending == "stop"
-            ? _ => Track(Process.Start(new ProcessStartInfo
-            {
-                FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-                Arguments = "/d /q /c set /p input=",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            })!)
+            ? _ => Track(Process.Start(Redirected(TestProcesses.ReadOneLine()))!)
             : null);
 
         Feed(service, id,
@@ -745,7 +717,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         Process? cli = null;
         var (service, store, _, id) = StartSession(_ => cli = Track(Process.Start(new ProcessStartInfo
         {
-            FileName = Path.Combine(Environment.SystemDirectory, "more.com"),
+            FileName = TestProcesses.StdinSink,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -837,6 +809,16 @@ public sealed class ClaudeTextPhaseTests : IDisposable
 
     // --- harness ---
 
+    private static ProcessStartInfo Redirected(ProcessStartInfo start)
+    {
+        start.CreateNoWindow = true;
+        start.UseShellExecute = false;
+        start.RedirectStandardInput = true;
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
+        return start;
+    }
+
     private (ClaudeSessionService Service, RecordingStore Store, List<ClaudeStreamEvent> Live, string Id) StartSession(
         Func<ProcessStartInfo, Process?>? launch = null)
     {
@@ -844,7 +826,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         var service = CreateService(store);
         service.LaunchSessionProcess = launch ?? (_ => Track(Process.Start(new ProcessStartInfo
         {
-            FileName = Path.Combine(Environment.SystemDirectory, "more.com"),
+            FileName = TestProcesses.StdinSink,
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -865,16 +847,12 @@ public sealed class ClaudeTextPhaseTests : IDisposable
         var capturePath = Path.Combine(_root, $"stdin-{Guid.NewGuid():N}.jsonl");
         var session = StartSession(_ =>
         {
-            var fake = new ProcessStartInfo
-            {
-                FileName = "powershell.exe", CreateNoWindow = true, UseShellExecute = false,
-                RedirectStandardInput = true, RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            fake.Environment["STEER_CAPTURE_PATH"] = capturePath;
-            fake.ArgumentList.Add("-NoProfile");
-            fake.ArgumentList.Add("-Command");
-            fake.ArgumentList.Add("while ($null -ne ($line = [Console]::In.ReadLine())) { [IO.File]::AppendAllText($env:STEER_CAPTURE_PATH, $line + [Environment]::NewLine) }");
+            var fake = TestProcesses.AppendStdinTo(capturePath, "STEER_CAPTURE_PATH");
+            fake.CreateNoWindow = true;
+            fake.UseShellExecute = false;
+            fake.RedirectStandardInput = true;
+            fake.RedirectStandardOutput = true;
+            fake.RedirectStandardError = true;
             return Track(Process.Start(fake)!);
         });
         return (session.Service, session.Store, session.Live, session.Id, capturePath);

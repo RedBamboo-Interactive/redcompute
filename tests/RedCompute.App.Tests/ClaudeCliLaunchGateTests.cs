@@ -45,7 +45,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         _service.LaunchOneshotProcess = _ => StartOutputProcess(OneshotOutput);
     }
 
-    [Fact]
+    [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task Running_agent_does_not_block_a_oneshot_a_session_start_or_a_session_resume()
     {
         using var cancel = new CancellationTokenSource();
@@ -77,7 +77,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         await _service.StopAllAsync();
     }
 
-    [Fact]
+    [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task Install_is_refused_while_an_agent_runs_and_allowed_once_cancellation_killed_it()
     {
         using var cancel = new CancellationTokenSource();
@@ -95,7 +95,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         await AssertInstallCompletesAsync();
     }
 
-    [Fact]
+    [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task Agent_timeout_kills_the_process_and_ends_the_run()
     {
         var (agent, observer) = await StartLongRunningAgentAsync(CancellationToken.None, timeoutSeconds: 1);
@@ -109,7 +109,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         await AssertInstallCompletesAsync();
     }
 
-    [Fact]
+    [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task CancelExecution_still_reaches_a_running_agent_outside_the_gate()
     {
         var (agent, observer) = await StartLongRunningAgentAsync(CancellationToken.None, streamKey: "agent-key");
@@ -123,7 +123,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         await AssertInstallCompletesAsync();
     }
 
-    [Fact]
+    [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task Cancelled_oneshot_kills_its_process_before_it_stops_keeping_installs_out()
     {
         Process? observer = null;
@@ -147,7 +147,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         await AssertInstallCompletesAsync();
     }
 
-    [Fact]
+    [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task Launches_during_an_install_wait_before_spawning()
     {
         _runner.HoldInstall();
@@ -177,7 +177,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         Assert.Equal(2, Volatile.Read(ref launches));
     }
 
-    [Fact]
+    [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task Agent_that_fails_to_start_releases_the_gate()
     {
         _service.LaunchAgentProcess = _ => null;

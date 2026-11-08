@@ -159,7 +159,7 @@ public sealed class ClaudeRefusalResultTests : IDisposable
         {
             var process = Process.Start(new ProcessStartInfo
             {
-                FileName = Path.Combine(Environment.SystemDirectory, "more.com"),
+                FileName = TestProcesses.StdinSink,
                 CreateNoWindow = true,
                 UseShellExecute = false,
                 RedirectStandardInput = true,

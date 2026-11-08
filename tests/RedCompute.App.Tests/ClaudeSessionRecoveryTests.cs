@@ -42,11 +42,10 @@ public sealed class ClaudeSessionRecoveryTests
     {
         var path = CheckpointPath();
         // Stand-in for an unrelated process that has since reused the dead session's PID.
-        using var bystander = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = "powershell.exe", ArgumentList = { "-NoProfile", "-Command", "Start-Sleep -Seconds 30" },
-            CreateNoWindow = true, UseShellExecute = false,
-        })!;
+        var sleeper = TestProcesses.Sleep(30);
+        sleeper.CreateNoWindow = true;
+        sleeper.UseShellExecute = false;
+        using var bystander = System.Diagnostics.Process.Start(sleeper)!;
         var stranded = Session("stranded-1", "Error", "completed");
         stranded.ProcessId = bystander.Id;
         var store = new FakeStore(

@@ -74,7 +74,7 @@ public sealed class ClaudeToolAvailabilityTests
         Assert.Equal("Read", ValueAfter(args, "--allowed-tools"));
     }
 
-    [Fact]
+    [WindowsFact("the fake Claude CLI is a PowerShell script")]
     public async Task Generate_uses_exact_no_tool_arguments_and_deletes_empty_working_directory()
     {
         using var fixture = new OneshotFixture(ToolFreeOutput([]));
@@ -100,7 +100,7 @@ public sealed class ClaudeToolAvailabilityTests
         Assert.True(ClaudeCodeProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.ToolFreeGenerate));
     }
 
-    [Fact]
+    [WindowsFact("the fake Claude CLI is a PowerShell script")]
     public async Task Generate_fails_closed_and_returns_no_text_when_init_reports_a_tool()
     {
         using var fixture = new OneshotFixture(ToolFreeOutput(["Read"]));
@@ -120,7 +120,7 @@ public sealed class ClaudeToolAvailabilityTests
     public void Generate_fails_closed_when_init_cannot_prove_the_tool_surface(string stream, string error)
         => Assert.Contains(error, ClaudeSessionService.ToolFreeInitError(stream));
 
-    [Fact]
+    [WindowsFact("the fake Claude CLI is a PowerShell script")]
     public async Task Generate_with_images_keeps_every_tool_free_flag_and_sends_images_inline_not_as_files()
     {
         using var fixture = new OneshotFixture(ToolFreeOutput([]));
@@ -156,7 +156,7 @@ public sealed class ClaudeToolAvailabilityTests
         Assert.True(ClaudeCodeProvider.DeclaredCapabilities.HasFlag(SessionCapabilities.GenerateVision));
     }
 
-    [Fact]
+    [WindowsFact("the fake Claude CLI is a PowerShell script")]
     public async Task Generate_with_images_still_fails_closed_when_init_reports_a_tool()
     {
         using var fixture = new OneshotFixture(ToolFreeOutput(["Read"]));

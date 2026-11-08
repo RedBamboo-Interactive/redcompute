@@ -188,7 +188,7 @@ public sealed class ReleaseToolTests
         Assert.DoesNotContain("pull_request_target", yaml, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [PowerShellFact("runs the release-input resolver script")]
     public void ProducerAcquisitionContract_IsMinimalPinnedAndFailClosed()
     {
         var root = RepositoryRoot();

@@ -12,7 +12,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
     private readonly string _root = Path.Combine(
         Path.GetTempPath(), $"redcompute-codex-launch-gate-{Guid.NewGuid():N}");
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Idle_parking_releases_app_server_without_terminal_event()
     {
         Directory.CreateDirectory(_root);
@@ -55,7 +55,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Empty(interactive.GetResidentIdleSessions());
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task SendInput_on_parked_session_waits_for_install_before_spawning_app_server()
     {
         Directory.CreateDirectory(_root);
@@ -135,7 +135,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
     private readonly List<Process> _longRunning = [];
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Running_exec_does_not_block_another_exec_and_keeps_installs_out_until_it_ends()
     {
         var (exec, manager) = CreateExec();
@@ -196,7 +196,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(1, Volatile.Read(ref launches));
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Each_exec_retry_passes_the_gate_for_its_own_spawn()
     {
         var (exec, _) = CreateExec();
@@ -212,7 +212,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(3, gate.Spawns);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Slow_session_handshake_does_not_block_exec_and_keeps_installs_out()
     {
         var (exec, manager) = CreateExec();
@@ -244,7 +244,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(0, (await manager.GetStatusAsync().WaitAsync(Patience)).ActiveRunCount);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Concurrent_resumes_of_one_session_still_spawn_one_app_server()
     {
         var (exec, manager) = CreateExec();
@@ -275,7 +275,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(1, Volatile.Read(ref spawned));
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Slow_model_catalog_fetch_does_not_block_exec_and_keeps_installs_out()
     {
         var (exec, manager) = CreateExec();
@@ -302,7 +302,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(0, (await manager.GetStatusAsync().WaitAsync(Patience)).ActiveRunCount);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Slow_account_usage_read_does_not_block_exec_and_keeps_installs_out()
     {
         var (exec, manager) = CreateExec();
@@ -329,7 +329,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(0, (await manager.GetStatusAsync().WaitAsync(Patience)).ActiveRunCount);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task Abandoned_app_server_handshake_leaves_no_process_behind()
     {
         Directory.CreateDirectory(_root);
@@ -505,7 +505,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             => throw new InvalidOperationException("exec must signal its spawn");
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task App_server_token_is_issued_for_the_session_it_serves_on_start_and_resume()
     {
         Directory.CreateDirectory(_root);
@@ -550,7 +550,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal([$"token-for-{session.Id}", "token-for-parked-session"], launchedTokens);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task MatchingSteerResponseCommitsBeforeUserItemAndItemPersistsInEventOrder()
     {
         await using var fixture = await CreateSteeringFixtureAsync("item");
@@ -568,7 +568,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal("item-steer", persisted.MessageId);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task CompletedBeforeUserItemPersistsCommittedSteerWithoutRedelivery()
     {
         await using var fixture = await CreateSteeringFixtureAsync("completed");
@@ -585,7 +585,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Null(persisted.MessageId);
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task TimeoutAfterSendIsNonRetryableAndNeverBlindlyRedelivered()
     {
         await using var fixture = await CreateSteeringFixtureAsync("timeout");
@@ -601,7 +601,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.DoesNotContain(fixture.Store.Messages, message => message.MessageUid == "steer-timeout");
     }
 
-    [Fact]
+    [WindowsFact("the fake codex app-server is a .cmd shim around a PowerShell script")]
     public async Task MismatchedTurnResponseRemainsDemotable()
     {
         await using var fixture = await CreateSteeringFixtureAsync("mismatch");
