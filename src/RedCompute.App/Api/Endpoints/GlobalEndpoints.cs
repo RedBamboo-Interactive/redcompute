@@ -579,8 +579,8 @@ public static class GlobalEndpoints
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
             if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
 
-            var logs = App.Logger.GetLogsForJob(id, tag, limit ?? 100, offset ?? 0);
-            var totalCount = App.Logger.GetLogCountForJob(id);
+            var logs = RedComputeHost.Logger.GetLogsForJob(id, tag, limit ?? 100, offset ?? 0);
+            var totalCount = RedComputeHost.Logger.GetLogCountForJob(id);
 
             return Results.Ok(new
             {

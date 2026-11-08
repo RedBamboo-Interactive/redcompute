@@ -138,7 +138,7 @@ public class RelayServer
         // by the kernel and talking through the /compute/* proxy.
 
         var jwt = BadgeSigning.Shared;
-        _ = BadgeSigningBootstrap.ConfirmInBackground(jwt, redSuiteDir, "redcompute", m => App.LogService.Log(RedBamboo.AppHost.Logging.LogLevel.Info, "auth", m));
+        _ = BadgeSigningBootstrap.ConfirmInBackground(jwt, redSuiteDir, "redcompute", m => RedComputeHost.LogService.Log(RedBamboo.AppHost.Logging.LogLevel.Info, "auth", m));
         var authFactory = _app.Services.GetRequiredService<AuthenticatedHttpClientFactory>();
         _callbacks = new SessionCallbackRegistry(_log, authFactory);
         _voiceSessions = new VoiceSessionCoordinator(
@@ -152,7 +152,7 @@ public class RelayServer
         _streamClient = new RedLeafStreamClient(
             _config.RedLeafUrl, "redcompute",
             jwt,
-            App.LogService);
+            RedComputeHost.LogService);
         _streamClient.DefineStream(new StreamDefinition(
             "compute-logs", "Compute Logs",
             "Structured RedCompute job and app logs", RetentionDays: 30, ParentType: "compute-job"));
@@ -170,7 +170,7 @@ public class RelayServer
             is_error = entry.Level >= RedBamboo.AppHost.Logging.LogLevel.Error,
             job_id = entry.JobId,
         }, entityId: entry.JobId is { } jid && Guid.TryParse(jid, out var jobGuid) ? jobGuid : null);
-        App.LogService.OnLogEntry += _logForwarder;
+        RedComputeHost.LogService.OnLogEntry += _logForwarder;
 
         var telemetry = _app.Services.GetRequiredService<TelemetryService>();
         _telemetryForwarder = e => _streamClient.Enqueue("api-telemetry", new
@@ -403,10 +403,10 @@ public class RelayServer
         // Tunnel and autostart endpoints are skipped: the Leaf kernel owns the one tunnel
         // and the one autostart entry. The dormant tunnel service only satisfies the
         // discovery endpoint's signature.
-        var descriptor = new RedComputeServiceDescriptor(_config, _registry, App.LogService, registry);
+        var descriptor = new RedComputeServiceDescriptor(_config, _registry, RedComputeHost.LogService, registry);
         _app.MapAppHostEndpoints(descriptor, new CloudflareTunnelService(logger: null), "RedCompute",
             () => new RedBamboo.AppHost.Tunnel.TunnelConfig { Enabled = false },
-            App.LogService, mapRemoteAccess: false, mapAutoStart: false);
+            RedComputeHost.LogService, mapRemoteAccess: false, mapAutoStart: false);
         _app.MapFallback(context => ((IApplicationBuilder)_app).WriteNoRouteAsync(context, context.Request.Path.Value ?? "/"));
 
         // Quality tiers and modes are entity-owned. Load RedLeaf or the last-known-good
@@ -646,7 +646,7 @@ public class RelayServer
 
         if (_logForwarder != null)
         {
-            App.LogService.OnLogEntry -= _logForwarder;
+            RedComputeHost.LogService.OnLogEntry -= _logForwarder;
             _logForwarder = null;
         }
         if (_telemetryForwarder != null && _app != null)

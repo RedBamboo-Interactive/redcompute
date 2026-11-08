@@ -66,7 +66,7 @@ public static class SettingsEndpoints
             {
                 if (!IsRedLeafService(ctx.User))
                     return Results.Json(new { error = "forbidden" }, statusCode: 403);
-                var changed = await App.RefreshProviderSecretsAsync(ctx.RequestAborted);
+                var changed = await RedComputeHost.RefreshProviderSecretsAsync(ctx.RequestAborted);
                 return Results.Ok(new { changed });
             });
 

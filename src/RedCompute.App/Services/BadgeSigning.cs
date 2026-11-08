@@ -17,7 +17,7 @@ internal static class BadgeSigning
 
     private static readonly Lazy<JwtOptions> LazyOptions = new(() =>
         BadgeSigningBootstrap.Resolve(SuiteDirectory, "redcompute",
-            log: message => App.LogService.Log(RedBamboo.AppHost.Logging.LogLevel.Info, "auth", message)).ToJwtOptions());
+            log: message => RedComputeHost.LogService.Log(RedBamboo.AppHost.Logging.LogLevel.Info, "auth", message)).ToJwtOptions());
 
     private static readonly Lazy<JwtService> LazyShared = new(() => new JwtService(Options));
 
