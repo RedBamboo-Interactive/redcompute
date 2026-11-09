@@ -45,22 +45,8 @@ internal static class ComputeResourceAccess
     public static IResult JobDenied()
         => Results.NotFound(new { error = "not_found", message = "Job not found" });
 
-    /// <summary>
-    /// Whether a person asked for a rollback: <see cref="IsPersonPresent"/>, or the loopback owner's
-    /// own browser token (beneficiary <c>system</c>, subject <c>local-user</c>), which rollback has
-    /// always accepted. Access levels and approvals do not: on loopback any local process can mint
-    /// that token tokenless, so it says nothing about a person being there.
-    /// </summary>
-    internal static bool IsPersonAction(HttpContext context)
-    {
-        if (IsPersonPresent(context)) return true;
-        if (context.User.Identity?.IsAuthenticated != true
-            || context.User.FindFirst("sub")?.Value != LocalUserSubject
-            || ConfidentialResourcePolicy.ExecutionIdentity(context) is not { } execution)
-            return false;
-        return execution.Beneficiary.Kind.Equals("system", StringComparison.OrdinalIgnoreCase)
-            && IsBrowserAppToken(execution);
-    }
+    /// <summary>Whether a person asked for a rollback: exactly <see cref="IsPersonPresent"/>.</summary>
+    internal static bool IsPersonAction(HttpContext context) => IsPersonPresent(context);
 
     /// <summary>
     /// The access-level contract's person-present predicate, and the one implementation of it:
@@ -71,6 +57,11 @@ internal static class ComputeResourceAccess
     /// <item>An ordinary user session of a real account is a person. The anonymous loopback
     /// principal (<c>LocalDefault</c>, <c>local-user</c>), <c>system</c> and <c>service:*</c>
     /// subjects are not: an Agent that drops its bearer on loopback lands there.</item>
+    /// <item>Nothing derived from LocalDefault is a person either. RedLeaf's
+    /// <c>POST /api/auth/execution-token</c> mints a browser token for a tokenless loopback caller
+    /// (beneficiary <c>system</c>, subject <c>local-user</c>, its route taken from request headers
+    /// anyone can set), so an Agent with a shell can obtain one. The subject and beneficiary checks
+    /// below refuse it, and there is deliberately no loopback-owner exception.</item>
     /// <item>An execution token is a person only when it is a browser app's own token, minted by
     /// RedLeaf's <c>POST /api/auth/execution-token</c> from a user session: actor kind <c>app</c>
     /// naming that same app, beneficiary kind <c>user</c> equal to the token subject, and a

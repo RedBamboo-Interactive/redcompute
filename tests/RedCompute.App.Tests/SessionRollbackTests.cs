@@ -461,7 +461,7 @@ public sealed class SessionRollbackTests
     internal static readonly string[] PeopleCallers =
     [
         "signed login", "code browser", "code browser with page cause", "nova browser", "nova through the kernel",
-        "nova through the kernel with cause", "loopback browser", "loopback nova through the kernel",
+        "nova through the kernel with cause",
     ];
 
     public static TheoryData<string> People => new(PeopleCallers);
@@ -476,6 +476,16 @@ public sealed class SessionRollbackTests
         "one step that is not a browser", "browser with no route", "system browser token for a named subject",
         "kernel proxy without a token", "browser for someone else", "local subject claiming a user",
         "infrastructure service token", "service subject", "system subject", "loopback without a token",
+        // Minted by RedLeaf's execution-token endpoint for a tokenless loopback caller: any local process.
+        "loopback browser", "loopback nova through the kernel", "loopback browser under LocalDefault",
+        "loopback browser with page cause",
+    ];
+
+    /// <summary>The identities a tokenless loopback caller can obtain from RedLeaf.</summary>
+    internal static readonly string[] LocalDefaultCallers =
+    [
+        "loopback without a token", "loopback browser", "loopback nova through the kernel",
+        "loopback browser under LocalDefault", "loopback browser with page cause", "local subject claiming a user",
     ];
 
     [Theory]
@@ -555,6 +565,13 @@ public sealed class SessionRollbackTests
             case "nova through the kernel": Execution(App("nova", person, "browser-token", Browser("nova"), hop), subject); break;
             case "nova through the kernel with cause": Execution(App("nova", person, "browser-token", Browser("nova"), hop, cause), subject); break;
             case "loopback browser": Execution(App("codered", local, null, Browser("codered")), "local-user"); break;
+            case "loopback browser with page cause": Execution(App("nova", local, null, Browser("nova"), cause), "local-user"); break;
+            case "loopback browser under LocalDefault":
+                Execution(App("codered", local, null, Browser("codered")), "local-user");
+                context.User = new ClaimsPrincipal(new ClaimsIdentity(
+                    [new Claim("sub", "local-user"), new Claim(ExecutionIdentityClaims.TokenUseClaim, ExecutionIdentityClaims.TokenUse)],
+                    ConfidentialResourcePolicy.LocalDefaultAuthenticationType));
+                break;
             case "loopback nova through the kernel": Execution(App("nova", local, "browser-token", Browser("nova"), hop), "local-user"); break;
 
             case "agent": Execution(Actor("agent", person, null, new ExecutionContextReference("discussion", "d1")), subject); break;

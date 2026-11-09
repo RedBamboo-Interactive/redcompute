@@ -27,11 +27,9 @@ public sealed class SessionAccessEndpointTests
     private const string Plan = SessionAccessLevels.Plan, Ask = SessionAccessLevels.Ask,
         Auto = SessionAccessLevels.Auto, Full = SessionAccessLevels.Full;
 
-    // Rollback accepts the loopback owner's browser token; access levels and approvals do not, since
-    // any local process can mint it tokenless on loopback.
-    private static readonly string[] LoopbackOwner = ["loopback browser", "loopback nova through the kernel"];
-    public static TheoryData<string> People => Callers(SessionRollbackTests.PeopleCallers.Except(LoopbackOwner));
-    public static TheoryData<string> NotPeople => Callers(SessionRollbackTests.NotPeopleCallers.Concat(LoopbackOwner));
+    public static TheoryData<string> People => Callers(SessionRollbackTests.PeopleCallers);
+    public static TheoryData<string> NotPeople => Callers(SessionRollbackTests.NotPeopleCallers);
+    public static TheoryData<string> LocalDefault => Callers(SessionRollbackTests.LocalDefaultCallers);
 
     private static TheoryData<string> Callers(IEnumerable<string> callers)
     {
@@ -194,6 +192,48 @@ public sealed class SessionAccessEndpointTests
 
         Assert.Equal(200, status);
         Assert.Equal(Ask, body.GetProperty("accessLevel").GetString());
+    }
+
+    // ---- LocalDefault: what an Agent with a shell can get on loopback ----
+
+    [Theory]
+    [MemberData(nameof(LocalDefault))]
+    public async Task A_localdefault_identity_cannot_raise_approve_or_leave_plan(string caller)
+    {
+        // Unowned session, Full enabled, no cap: only the person rule can refuse.
+        var raise = new Fixture(Ask, fullEnabled: true) { Readable = true };
+        var raised = await raise.PostAsync("access-level", new { level = Full }, caller, subject: "local-user");
+        var aliased = await raise.PostAsync("permission-mode", new { mode = "bypassPermissions" }, caller, subject: "local-user");
+
+        var plan = new Fixture(Plan, fullEnabled: true) { Readable = true };
+        plan.Provider.State = new SessionAccessState(Plan, AccessLevelBeforePlan: Full);
+        var left = await plan.PostAsync("access-level", new { level = (string?)null }, caller, subject: "local-user");
+
+        var approve = new Fixture(Ask) { Readable = true };
+        approve.Provider.Pending.Add(Permission("perm-1"));
+        var approved = await approve.PostQuestionAsync(new { requestId = "perm-1", decision = "allow_session" }, caller, subject: "local-user");
+
+        Assert.Equal((403, SessionAccessResolver.RaiseRequiresPerson), (raised.Status, raised.Body.GetProperty("error").GetString()));
+        Assert.Equal((403, SessionAccessResolver.RaiseRequiresPerson), (aliased.Status, aliased.Body.GetProperty("error").GetString()));
+        Assert.Equal((403, SessionAccessResolver.RaiseRequiresPerson), (left.Status, left.Body.GetProperty("error").GetString()));
+        Assert.Equal((403, "approval_requires_person"), (approved.Status, approved.Body.GetProperty("error").GetString()));
+        Assert.Equal(Ask, raise.Provider.State.AccessLevel);
+        Assert.Equal(Plan, plan.Provider.State.AccessLevel);
+        Assert.Equal(0, raise.Provider.Sets + plan.Provider.Sets);
+        Assert.Empty(approve.Provider.Answers);
+        Assert.Single(approve.Provider.Pending);
+    }
+
+    [Theory]
+    [MemberData(nameof(LocalDefault))]
+    public async Task A_localdefault_identity_can_still_lower(string caller)
+    {
+        var f = new Fixture(Full) { Readable = true };
+
+        var (status, _) = await f.PostAsync("access-level", new { level = Plan }, caller, subject: "local-user");
+
+        Assert.Equal(200, status);
+        Assert.Equal(Plan, f.Provider.State.AccessLevel);
     }
 
     // ---- permission-mode: the compat alias, same rules ----
@@ -537,14 +577,14 @@ public sealed class SessionAccessEndpointTests
             return await InvokeAsync(app, "/ai-session/access-policy/changed", "{}", caller, "owner", null);
         }
 
-        internal async Task<(int Status, JsonElement Body)> PostQuestionAsync(object body, string caller, bool invalid = false)
+        internal async Task<(int Status, JsonElement Body)> PostQuestionAsync(object body, string caller, bool invalid = false, string subject = "owner")
         {
             Provider.RejectDecision = invalid;
             using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
             await using var app = WebApplication.CreateSlimBuilder().Build();
             UnifiedSessionEndpoints.Map(new EndpointRegistry(app), Registry, new ClaudeBackgroundWorkTests.MemoryJobTracker(), (_, _) => { },
                 f.Config, attachmentStore: f.Attachments, inputQueue: f.Service(), access: Access);
-            return await InvokeAsync(app, "/ai-session/sessions/{id}/question", JsonSerializer.Serialize(body), caller, "owner", "session-1");
+            return await InvokeAsync(app, "/ai-session/sessions/{id}/question", JsonSerializer.Serialize(body), caller, subject, "session-1");
         }
 
         private static async Task<(int Status, JsonElement Body)> InvokeAsync(WebApplication app, string pattern, string json,
