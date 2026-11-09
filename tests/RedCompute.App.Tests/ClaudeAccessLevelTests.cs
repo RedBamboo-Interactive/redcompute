@@ -272,20 +272,51 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Equal("acceptEdits", _service.GetSession(id).Info!.PermissionMode);
     }
 
-    [Fact]
-    public void A_refused_reconcile_never_raises_the_level_to_a_higher_reported_mode()
+    // Fail closed: a CLI running above the level the person set, that will not switch down, is
+    // stopped; the recorded level stands for its next launch. A mode that is not a level counts as above.
+    [Theory]
+    [InlineData(Ask, "bypassPermissions", "acceptEdits")]
+    [InlineData(Plan, "auto", "plan")]
+    [InlineData(Ask, "someFutureMode", "acceptEdits")]
+    public async Task A_cli_above_its_level_that_will_not_switch_down_is_stopped_at_the_recorded_level(
+        string level, string reported, string expected)
     {
-        var id = Start(new SessionAccessState(Ask));
+        var id = Start(new SessionAccessState(level));
         _cliModeError = _ => "no";
         _written.Clear();
 
-        for (var turn = 0; turn < 3; turn++)
-            Assert.True(_service.ProcessOutputLine(id,
-                """{"type":"system","subtype":"init","session_id":"claude-1","permissionMode":"bypassPermissions","tools":[]}"""));
+        Assert.True(_service.ProcessOutputLine(id,
+            $$"""{"type":"system","subtype":"init","session_id":"claude-1","permissionMode":"{{reported}}","tools":[]}"""));
+        await WaitUntil(() => _service.GetSession(id).Info?.Status.ToString() == "Stopped");
+
+        var attempt = Assert.Single(Written("set_permission_mode"));
+        Assert.Equal(expected, attempt["request"]!["mode"]!.GetValue<string>());
+        var record = _store.FindSession(id)!;
+        Assert.Equal(level, record.AccessLevel);
+        Assert.Equal(SessionStopReasons.AboveAccessLevel, record.StopReason);
+        Assert.Equal(level, _service.GetAccessState(id)!.AccessLevel);
+        var notice = Assert.Single(Live(), e => e.Type == "error");
+        Assert.Contains("Stopped this session", notice.Content);
+        Assert.Contains($"'{reported}'", notice.Content);
+        Assert.Contains("Claude Code said: \"no\"", notice.Content);
+        Assert.False(_service.ProcessOutputLine(id,
+            $$"""{"type":"system","subtype":"init","session_id":"claude-1","permissionMode":"{{reported}}","tools":[]}"""));
+    }
+
+    [Fact]
+    public async Task A_cli_that_switches_down_when_asked_keeps_running()
+    {
+        var id = Start(new SessionAccessState(Ask));
+        _written.Clear();
+
+        Assert.True(_service.ProcessOutputLine(id,
+            """{"type":"system","subtype":"init","session_id":"claude-1","permissionMode":"bypassPermissions","tools":[]}"""));
+        await Task.Delay(100);
 
         Assert.Single(Written("set_permission_mode"));
-        Assert.Equal(Ask, _service.GetAccessState(id)!.AccessLevel);
-        Assert.Equal(Ask, _store.FindSession(id)!.AccessLevel);
+        Assert.NotEqual("Stopped", _service.GetSession(id).Info!.Status.ToString());
+        Assert.Equal("acceptEdits", _service.GetSession(id).Info!.PermissionMode);
+        Assert.DoesNotContain(Live(), e => e.Type == "error");
     }
 
     [Fact]

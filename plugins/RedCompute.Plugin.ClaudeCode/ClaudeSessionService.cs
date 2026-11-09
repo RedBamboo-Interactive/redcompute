@@ -3665,11 +3665,13 @@ public partial class ClaudeSessionService
                 return;
             }
 
+            // Fail closed: a process never keeps running above the level the person set. A mode that
+            // is not a known level cannot be shown to be at or below it, so it counts as above.
+            var held = level ?? Core.Sessions.SessionAccessLevels.Ask;
             if (!Core.Sessions.SessionAccessLevels.TryFromPermissionMode(reportedMode, out var actual)
-                || level is null || Core.Sessions.SessionAccessLevels.IsAbove(actual, level))
+                || Core.Sessions.SessionAccessLevels.IsAbove(actual, held))
             {
-                _log($"[Claude] Session {session.Info.Id}: the CLI stays in '{reportedMode}' ({refusal}); " +
-                     $"its level stays '{level ?? "unset"}' because that mode is not a level at or below it", null);
+                await StopAboveLevelAsync(session, reportedMode, held, refusal);
                 return;
             }
             session.Info.Access = session.Info.Access with
@@ -3693,6 +3695,35 @@ public partial class ClaudeSessionService
             session.AccessGate.Release();
         }
     }
+
+    /// <summary>
+    /// The CLI runs in a mode above the session's level and would not switch down: stop it, with
+    /// one log line and a visible notice. The recorded level stays, so the next launch (the next
+    /// message resumes it) runs at the level the person set.
+    /// </summary>
+    private async Task StopAboveLevelAsync(ManagedSession session, string reportedMode, string level, string refusal)
+    {
+        var id = session.Info.Id;
+        _log($"[Claude] Session {id}: the CLI runs in '{reportedMode}', above access level {level}, and would not " +
+             $"switch down ({refusal}); stopping it, the level stays {level}", null);
+        StreamEvent?.Invoke(id, new ClaudeStreamEvent
+        {
+            Type = "error",
+            Content = $"Stopped this session: Claude Code was running with more access than {LevelName(level)} " +
+                      $"(mode '{reportedMode}') and would not switch down. {refusal} The session stays at " +
+                      $"{LevelName(level)}; send a message to resume it there.",
+        });
+        await StopSession(id, Core.Sessions.SessionStopReasons.AboveAccessLevel);
+    }
+
+    private static string LevelName(string level) => level switch
+    {
+        Core.Sessions.SessionAccessLevels.Plan => "Plan",
+        Core.Sessions.SessionAccessLevels.Ask => "Ask",
+        Core.Sessions.SessionAccessLevels.Auto => "Auto",
+        Core.Sessions.SessionAccessLevels.Full => "Full",
+        _ => level,
+    };
 
     /// <summary>How long a live switch waits for the CLI's control_response before it counts as refused.</summary>
     internal TimeSpan PermissionModeConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
