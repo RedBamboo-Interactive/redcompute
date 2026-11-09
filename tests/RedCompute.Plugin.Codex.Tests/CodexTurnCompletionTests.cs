@@ -20,6 +20,26 @@ public sealed class CodexTurnCompletionTests
     }
 
     [Theory]
+    // Below Full the sandbox is what Ask means: project writes, no network, never unsandboxed.
+    [InlineData("danger-full-access", "ask", "workspaceWrite", false)]
+    [InlineData("danger-full-access", null, "workspaceWrite", false)]
+    [InlineData("workspace-write", "ask", "workspaceWrite", false)]
+    [InlineData("danger-full-access", "full", "dangerFullAccess", null)]
+    [InlineData("workspace-write", "full", "workspaceWrite", true)]
+    [InlineData("read-only", "full", "readOnly", false)]
+    public void TheTurnSandboxFollowsTheAccessLevel(string configured, string? level, string type, bool? network)
+    {
+        var service = new CodexInteractiveService(new CodexConfig { SandboxMode = configured }, new RecordingStore(),
+            null!, null!, null!, null!, null!, () => null, (_, _) => { });
+        var info = new CodexSessionInfo { Id = "session-1", ProjectName = "Test", ProjectPath = ".", ThreadId = "thread-1", AccessLevel = level };
+
+        var policy = JsonSerializer.SerializeToElement(service.BuildTurnStartParams(info, [])).GetProperty("sandboxPolicy");
+
+        Assert.Equal(type, policy.GetProperty("type").GetString());
+        Assert.Equal(network, policy.TryGetProperty("networkAccess", out var value) ? value.GetBoolean() : null);
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData(" \t\n")]
     public void ExplicitSilentFinalSnapshotCompletesWithoutDisplayText(string text)
