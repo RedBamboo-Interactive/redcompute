@@ -54,6 +54,7 @@ public static class UnifiedSessionEndpoints
     private static SessionInputQueueService? _inputQueue;
     private static SessionArtifactIndex _artifactIndex = new();
     private static MaintenanceDeploymentCoordinator? _maintenance;
+    private static SessionAccessService? _access;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
@@ -63,8 +64,14 @@ public static class UnifiedSessionEndpoints
         SessionInputQueueService? inputQueue = null,
         RepositoryReferenceValidator? repositoryValidator = null,
         MaintenanceDeploymentCoordinator? maintenance = null,
-        Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null)
+        Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null,
+        SessionAccessService? access = null)
     {
+        // Without a policy source (tests, hosts with no RedLeaf) the contract's no-record defaults
+        // apply: ask, Full disabled.
+        access ??= new SessionAccessService(new StaticSessionAccessPolicySource(SessionAccessPolicy.NoRecord),
+            () => registry.FindProviders<ISessionProvider>(), id => jobTracker.GetJob(id), log);
+        _access = access;
         _docker = docker;
         _callbacks = callbacks;
         _quality = quality;
@@ -105,6 +112,7 @@ public static class UnifiedSessionEndpoints
             }
             session.WorkState = SessionWorkStates.Derive(session.Status, PendingQuestions(session).Count, session.BackgroundTasks);
             session.LastTurn = _inputQueue!.LastTurn(session.Id);
+            SessionAccessService.Overlay(session, provider);
             return session;
         }
 
@@ -306,7 +314,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
 
         endpoints.MapPost("/ai-session/sessions",
-            "Start a new persistent session. The optional conversation-only profile uses an isolated empty workspace, read-only/no-network execution, denied approvals, and no derived suite credential.", async (HttpContext ctx) =>
+            "Start a new persistent session. The optional conversation-only profile uses an isolated empty workspace, read-only/no-network execution, denied approvals, and no derived suite credential. " +
+            "The response carries accessLevel, maxAccessLevel, supportedAccessLevels and unattended.", async (HttpContext ctx) =>
         {
             if (_maintenance?.IsDraining == true)
                 return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
@@ -408,6 +417,27 @@ public static class UnifiedSessionEndpoints
             if (conversationOnly && confidential)
                 return Error(422, "validation_failed",
                     "conversation-only and confidential are separate ownership contracts and cannot be combined");
+            string? requestedAccessLevel = null, maxAccessLevel = null;
+            foreach (var (name, assign) in new (string, Action<string>)[]
+                     {
+                         ("accessLevel", value => requestedAccessLevel = value),
+                         ("maxAccessLevel", value => maxAccessLevel = value),
+                     })
+            {
+                if (!body.TryGetProperty(name, out var levelValue) || levelValue.ValueKind == JsonValueKind.Null) continue;
+                if (levelValue.ValueKind != JsonValueKind.String
+                    || !SessionAccessLevels.TryNormalize(levelValue.GetString(), out var normalizedLevel))
+                    return Error(422, SessionAccessResolver.InvalidAccessLevel,
+                        $"{name} must be one of {string.Join(", ", SessionAccessLevels.All)}");
+                assign(normalizedLevel);
+            }
+            var unattended = false;
+            if (body.TryGetProperty("unattended", out var unattendedValue) && unattendedValue.ValueKind != JsonValueKind.Null)
+            {
+                if (unattendedValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    return Error(422, "validation_failed", "unattended must be a boolean when supplied");
+                unattended = unattendedValue.GetBoolean();
+            }
             int? thinkingBudget = body.TryGetProperty("thinkingBudget", out var tb) && tb.ValueKind == JsonValueKind.Number ? tb.GetInt32() : null;
             thinkingBudget ??= q.ThinkingBudget;
             var (uId, uName, uAvatar) = await UserInfoHelper.ResolveFromContext(ctx);
@@ -438,10 +468,16 @@ public static class UnifiedSessionEndpoints
                     ],
                 };
             }
+            // The session's Agent comes from the verified start identity, never from the body.
+            var accessStart = await _access!.ResolveStartAsync(provider, requestedAccessLevel, maxAccessLevel, unattended,
+                ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted);
+            if (accessStart.Error is not null)
+                return Error(422, accessStart.Error, accessStart.Message ?? accessStart.Error);
             UnifiedSessionInfo? session;
             try
             {
                 using (SessionExecutionProfile.Push(executionProfile))
+                using (SessionAccessScope.Push(accessStart.State))
                 {
                     if (conversationOnly)
                     {
@@ -473,7 +509,7 @@ public static class UnifiedSessionEndpoints
             }
             if (keepResident) jobTracker.SetKeepResident(jobId, true);
 
-            return Results.Json(session);
+            return Results.Json(SessionAccessService.Overlay(session, provider));
         })
             .WithParam("projectPath", "string", description: "Path to the project directory. Omit for conversation-only sessions, which receive an isolated workspace.", location: ParamLocation.Body)
             .WithParam("repositoryId", "string", description: "Stable RedLeaf Repository entity UUID. When supplied, projectPath must be the Repository's active local_path (exact match) or the root of a git worktree of it (proved with git, usually <local_path>.worktrees/<branch>). Rejected with 422 when the Repository's branch_work is main-only, the worktree folder is missing, or the path is unrelated; the message names the failed rule.", location: ParamLocation.Body)
@@ -486,12 +522,21 @@ public static class UnifiedSessionEndpoints
             .WithParam("developerInstructions", "string", description: "Provider-native developer instructions applied to the persistent session. Unsupported providers reject the request.", location: ParamLocation.Body)
             .WithParam("executionProfile", "string", description: "Persisted provider execution restrictions. conversation-only is currently supported by Codex.", enumValues: [SessionExecutionProfile.Default, SessionExecutionProfile.ConversationOnly], defaultValue: SessionExecutionProfile.Default, location: ParamLocation.Body)
             .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body)
-            .WithParam("keepResident", "boolean", description: "Exempt the session from idle parking. For always-on presence sessions only.", defaultValue: false, location: ParamLocation.Body);
+            .WithParam("keepResident", "boolean", description: "Exempt the session from idle parking. For always-on presence sessions only.", defaultValue: false, location: ParamLocation.Body)
+            .WithParam("accessLevel", "string", description: "Requested access level. " + SessionAccessEndpoints.LevelDescription
+                + " Defaults to the Agent's configured level from RedLeaf policy, else the global default, else ask. A caller that is not a person "
+                + "is clamped to that default; full needs Full enabled (else auto); maxAccessLevel clamps last. The session's Agent is taken from the "
+                + "verified start identity.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+            .WithParam("maxAccessLevel", "string", description: "Hard cap for the session's lifetime: nothing raises it above this level. "
+                + "422 access_level_cap_unsupported when the provider supports no level at or below it.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+            .WithParam("unattended", "boolean", description: "No person watches this session (automations, Discord): permission asks are denied at once "
+                + "with a visible notice and never park.", defaultValue: false, location: ParamLocation.Body);
 
 
         endpoints.MapGet("/ai-session/sessions/{id}",
             "Get session details and message history. pendingQuestions lists the structured questions the live session is parked on " +
-            "(Claude AskUserQuestion, Codex requestUserInput) with requestId, options, askedAt and expiresAt; answer one with " +
+            "(Claude AskUserQuestion, Codex requestUserInput) and the tool calls waiting for a person's approval (kind permission, with permission.toolName, " +
+            "summary, input and options), with requestId, askedAt and expiresAt; answer one with " +
             "POST /ai-session/sessions/{id}/question. Empty when nothing is pending. Claude questions expire after 30 minutes (the session is told to proceed " +
             "on its own judgement); Codex questions have no deadline (expiresAt null). " + WorkStateDescription, async (HttpContext ctx, string id) =>
         {
@@ -1402,7 +1447,11 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/question",
             "Answer a structured question the session is parked on (Claude Code's AskUserQuestion). " +
             "The requestId comes from the 'question' stream event; unlike /answer this is not a " +
-            "conversation turn — it unblocks the tool call the session is waiting on.",
+            "conversation turn — it unblocks the tool call the session is waiting on. " +
+            "A pendingQuestions entry of kind permission (a tool call waiting for approval) is answered with {requestId, decision}: " +
+            "allow_once, allow_session (remember it for this session) or deny, from the entry's permission.options. Only a person may decide: " +
+            "an Agent's, automation's or service's token gets 403 approval_requires_person, even with read access. " +
+            "Unanswered permissions are denied after 30 minutes.",
             async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
@@ -1422,6 +1471,50 @@ public static class UnifiedSessionEndpoints
                 ? r.GetString() : null;
             if (string.IsNullOrWhiteSpace(requestId))
                 return Error(422, "validation_failed", "requestId is required");
+
+            // A permission is answered with a decision, and only by a person: an Agent must never
+            // approve its own tool call. A decision with no parked entry is judged the same way, so
+            // a race with the pending list cannot let one through.
+            string? decision = null;
+            if (body.TryGetProperty("decision", out var decisionValue) && decisionValue.ValueKind != JsonValueKind.Null)
+            {
+                decision = decisionValue.ValueKind == JsonValueKind.String ? decisionValue.GetString() : null;
+                if (!SessionPermissionDecisions.IsKnown(decision))
+                    return Error(422, "validation_failed",
+                        $"decision must be one of {string.Join(", ", SessionPermissionDecisions.All)}");
+            }
+            var parked = PendingQuestions(info).FirstOrDefault(q => q.RequestId == requestId);
+            var isPermission = parked?.Kind == PendingSessionQuestion.PermissionKind || (parked is null && decision is not null);
+            if (isPermission)
+            {
+                if (!ComputeResourceAccess.IsPersonPresent(ctx))
+                    return Results.Json(new
+                    {
+                        error = "approval_requires_person",
+                        message = "Approving a tool call is a person's decision. This request does not come from a person.",
+                    }, statusCode: StatusCodes.Status403Forbidden);
+                if (decision is null)
+                    return Error(422, "validation_failed",
+                        $"This request is a permission: decision ({string.Join(", ", SessionPermissionDecisions.All)}) is required");
+                var permissionResult = provider.SubmitQuestionAnswer(id, new SessionQuestionAnswer { RequestId = requestId, Decision = decision });
+                return permissionResult switch
+                {
+                    QuestionAnswerResult.Allowed or QuestionAnswerResult.Denied => Results.Json(new
+                    {
+                        answered = true,
+                        outcome = SessionPermissionDecisions.Outcome(decision),
+                        kind = PendingSessionQuestion.PermissionKind,
+                    }),
+                    QuestionAnswerResult.InvalidDecision
+                        => Error(422, "validation_failed", $"'{decision}' is not offered for this request"),
+                    QuestionAnswerResult.SessionNotFound => Error(404, "not_found", $"Session '{id}' is not running"),
+                    QuestionAnswerResult.RequestNotFound
+                        => Error(409, "request_not_pending", $"No permission is pending for request '{requestId}'"),
+                    _ => Error(500, "answer_failed", "Failed to deliver the decision to the session"),
+                };
+            }
+            if (decision is not null)
+                return Error(422, "validation_failed", "decision answers a permission; this request is a question");
 
             var decline = body.TryGetProperty("decline", out var d) && d.ValueKind == JsonValueKind.True;
 
@@ -1471,7 +1564,7 @@ public static class UnifiedSessionEndpoints
             return result switch
             {
                 QuestionAnswerResult.Answered or QuestionAnswerResult.Declined
-                    => Results.Json(new { answered = true, outcome = result.ToString().ToLowerInvariant() }),
+                    => Results.Json(new { answered = true, outcome = result.ToString().ToLowerInvariant(), kind = PendingSessionQuestion.QuestionKind }),
                 QuestionAnswerResult.SessionNotFound
                     => Error(404, "not_found", $"Session '{id}' is not running"),
                 // Already answered, expired, or cancelled by the CLI — the question is gone
@@ -1485,7 +1578,9 @@ public static class UnifiedSessionEndpoints
             .WithParam("answers", "object", description: "Chosen option labels, either keyed by question text or as an array in question order. Multi-select answers are a single comma-separated string.", location: ParamLocation.Body)
             .WithParam("response", "string", description: "Freeform text the user typed instead of picking an option", location: ParamLocation.Body)
             .WithParam("decline", "boolean", description: "Dismiss the question instead of answering it", location: ParamLocation.Body)
-            .WithParam("reason", "string", description: "Message shown to the model when decline is true", location: ParamLocation.Body);
+            .WithParam("reason", "string", description: "Message shown to the model when decline is true", location: ParamLocation.Body)
+            .WithParam("decision", "string", description: "For a permission (kind permission): the person's decision. Rejected on an ordinary question.",
+                enumValues: [.. SessionPermissionDecisions.All], location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/interrupt",
             "Interrupt the session's current operation", (HttpContext ctx, string id) =>
@@ -1549,6 +1644,7 @@ public static class UnifiedSessionEndpoints
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
             UnifiedSessionInfo? session = null;
             await _inputQueue!.ExplicitResumeAsync(id, async () => {
+                await _access!.EnsureLaunchStateAsync(provider, id, ctx.RequestAborted);
                 using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
                     session = await provider.ResumeSessionAsync(id, provenance);
                 return session?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
@@ -1559,7 +1655,7 @@ public static class UnifiedSessionEndpoints
             if (session == null)
                 return Error(500, "resume_failed", provider.LastStartError ?? "Failed to resume session");
 
-            return Results.Json(session);
+            return Results.Json(SessionAccessService.Overlay(session, provider));
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/stop",
@@ -1688,7 +1784,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("callbackId", "string", description: "Optional logical completion operation identity, echoed unchanged across retries", location: ParamLocation.Body)
             .WithParam("promptMessageUid", "string", description: "Opt in to durable exact-prompt completion; separate from callbackId. May pre-register before admission.", location: ParamLocation.Body)
             .WithParam("questionUrl", "string", description: "Opt in to question notifications: POSTed once per requestId when the session parks on a question, with " +
-                "{event: session.question, sessionId, callbackId, title, provider, requestId, toolName, toolUseId, questions, input, askedAt, expiresAt, answer}. " +
+                "{event: session.question, sessionId, callbackId, title, provider, requestId, kind, permission, toolName, toolUseId, questions, input, askedAt, expiresAt, answer}. " +
+                "kind permission means a tool call waits for the person's approval: only a person may answer it (403 approval_requires_person), so a delegating Agent relays it rather than deciding. " +
                 "Delivered and retried like the completion callback; never consumes it. The opt-in is session-scoped (session, questionUrl, owner), " +
                 "independent of prompts, and lasts until the session ends (a resumable stop keeps it; re-registering is idempotent). It also reports, once, " +
                 "the end of any turn the session started without a queued input (peer message, self-wake) while no prompt registration covered it: " +
@@ -1711,33 +1808,6 @@ public static class UnifiedSessionEndpoints
                 return Error(422, "validation_failed", "Exact callbackId, promptMessageUid and definitiveAdmissionFailure are required");
             return Results.Json(new { removed = _callbacks is not null && await _callbacks.RemoveUnacceptedAsync(id, callbackId, promptMessageUid, owner, ctx.RequestAborted) });
         });
-
-        endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
-            "Set the session's permission mode", async (HttpContext ctx, string id) =>
-        {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
-            if (info == null)
-                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
-            var userId = ResolveUserId(ctx);
-            if (!CanReadSession(ctx, info))
-                return ComputeResourceAccess.SessionDenied(info);
-            if (!provider!.Capabilities.HasFlag(SessionCapabilities.PermissionMode))
-                return NotSupported(provider.ProviderId, "permission modes");
-
-            JsonElement body;
-            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
-            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
-
-            var mode = body.TryGetProperty("mode", out var mm) ? mm.GetString() : null;
-            if (string.IsNullOrWhiteSpace(mode))
-                return Error(422, "validation_failed", "mode is required");
-
-            var ok = provider.SetPermissionMode(id, mode);
-            return Results.Json(new { mode, ok });
-        })
-            .WithParam("mode", "string", required: true, description: "Permission mode",
-                enumValues: ["default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"],
-                location: ParamLocation.Body);
 
         endpoints.MapDelete("/ai-session/sessions/{id}",
             "Force-kill a session", async (HttpContext ctx, string id) =>
@@ -1891,7 +1961,9 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapPost("/ai-session/execute",
-            "Run an agent task with full tool access (default 30min timeout, max 2h). Use ?async for fire-and-forget with job tracking. Signed execution identity is derived for the admitted one-shot lifetime and passed to the provider process in REDLEAF_EXECUTION_TOKEN.", async (HttpContext ctx) =>
+            "Run an agent task (default 30min timeout, max 2h). Without an explicit tools grant, Claude runs at the resolved access level " +
+            "(accessLevel, clamped like a session start; ask runs non-interactively with file tools only, auto uses Claude's classifier, full skips every prompt); " +
+            "an explicit tools grant keeps its exact tool set unprompted. Use ?async for fire-and-forget with job tracking. Signed execution identity is derived for the admitted one-shot lifetime and passed to the provider process in REDLEAF_EXECUTION_TOKEN.", async (HttpContext ctx) =>
         {
             var userId = ResolveUserId(ctx);
             if (userId == null)
@@ -1987,6 +2059,23 @@ public static class UnifiedSessionEndpoints
             JobProvenance provenance;
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/execute"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+
+            // Resolved server-side and handed over under a key the body cannot set (only the keys
+            // listed above are copied), so a caller cannot name its own level past the rules.
+            string? requestedAccessLevel = null;
+            if (body.TryGetProperty("accessLevel", out var accessValue) && accessValue.ValueKind != JsonValueKind.Null)
+            {
+                if (accessValue.ValueKind != JsonValueKind.String || !SessionAccessLevels.TryNormalize(accessValue.GetString(), out var normalizedAccess))
+                    return Error(422, SessionAccessResolver.InvalidAccessLevel,
+                        $"accessLevel must be one of {string.Join(", ", SessionAccessLevels.All)}");
+                requestedAccessLevel = normalizedAccess;
+            }
+            var oneshotAccess = await _access!.ResolveOneshotAsync(provider, requestedAccessLevel,
+                ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted);
+            if (oneshotAccess.Error is not null)
+                return Error(422, oneshotAccess.Error, oneshotAccess.Message ?? oneshotAccess.Error);
+            if (oneshotAccess.State?.AccessLevel is { } oneshotLevel)
+                providerParams[ProviderParamAccessLevel] = oneshotLevel;
             JobRecord job;
             try
             {
@@ -2101,6 +2190,12 @@ public static class UnifiedSessionEndpoints
                     sandbox = new { type = "string", description = "Sandbox mode (provider-specific, e.g. read-only, workspace-write, danger-full-access)" },
                     networkAccess = new { type = "boolean", description = "Enable command network access for workspace-write executions" },
                     suiteAccess = new { type = "boolean", description = "Pass a derived REDLEAF_EXECUTION_TOKEN to the provider process", @default = true },
+                    accessLevel = new
+                    {
+                        type = "string", @enum = SessionAccessLevels.All.ToArray(),
+                        description = "Requested access level when no explicit tools grant is given (Claude). Defaults to the Agent's policy level; "
+                            + "a caller that is not a person is clamped to it, and full needs Full enabled (else auto).",
+                    },
                 },
             });
 
@@ -3041,9 +3136,12 @@ public static class UnifiedSessionEndpoints
         },
     };
 
+    /// <summary>The resolved one-shot access level in providerParams. Never copied from a request body.</summary>
+    internal const string ProviderParamAccessLevel = "accessLevel";
+
     private const string WorkStateDescription =
         "Each session carries workState, derived in one place from the turn status, parked questions and background tasks: " +
-        "working (a turn is running), awaiting_answer (the turn is parked on a question), background (the turn ended Idle while background tasks still run), " +
+        "working (a turn is running), awaiting_answer (the turn is parked on a question or a permission), background (the turn ended Idle while background tasks still run), " +
         "idle (nothing running). status stays the turn state. Only Claude Code sessions have background tasks; Codex has no background work concept, " +
         "so a Codex session never reports background.";
 
@@ -3061,7 +3159,27 @@ public static class UnifiedSessionEndpoints
         properties = new
         {
             requestId = new { type = "string", description = "Correlation id for POST /ai-session/sessions/{id}/question" },
-            toolName = new { type = "string", description = "AskUserQuestion (Claude) or requestUserInput (Codex)" },
+            kind = new
+            {
+                type = "string", @enum = new[] { PendingSessionQuestion.QuestionKind, PendingSessionQuestion.PermissionKind },
+                description = "question: the model asked something, answer with answers/response/decline. permission: a tool call waits for a person's " +
+                    "approval, answer with decision. Absent means question.",
+            },
+            permission = new
+            {
+                type = new[] { "object", "null" },
+                description = "Set for kind permission: what waits for approval",
+                properties = new
+                {
+                    toolName = new { type = "string" },
+                    toolUseId = new { type = new[] { "string", "null" }, description = "The transcript tool call this approval belongs to" },
+                    summary = new { type = "string", description = "One line saying what the tool is about to do" },
+                    input = new { type = "object", description = "The tool input, verbatim" },
+                    cwd = new { type = new[] { "string", "null" } },
+                    options = new { type = "array", items = new { type = "string", @enum = SessionPermissionDecisions.All.ToArray() } },
+                },
+            },
+            toolName = new { type = "string", description = "AskUserQuestion (Claude) or requestUserInput (Codex); for a permission, the tool waiting for approval" },
             toolUseId = new { type = new[] { "string", "null" }, description = "Transcript tool call or item carrying the question" },
             questions = new { type = "array", items = new { type = "object" }, description = "Questions with their options, verbatim from the provider" },
             input = new { type = "object", description = "The provider's original question input, verbatim" },
@@ -3076,7 +3194,20 @@ public static class UnifiedSessionEndpoints
         required = new[] { "session", "messages", "inputQueue", "transcript", "pendingQuestions" },
         properties = new
         {
-            session = new { type = "object", properties = new { workState = WorkStateSchema } },
+            session = new
+            {
+                type = "object",
+                properties = new
+                {
+                    workState = WorkStateSchema,
+                    accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray(),
+                        description = "The session's access level; null for a session persisted before access levels and not yet relaunched" },
+                    maxAccessLevel = new { type = new[] { "string", "null" }, description = "Hard cap; null when uncapped" },
+                    supportedAccessLevels = new { type = "array", items = new { type = "string" } },
+                    unattended = new { type = "boolean", description = "Permission asks are denied at once and never park" },
+                    permissionMode = new { type = new[] { "string", "null" }, description = "Provider-native mode string" },
+                },
+            },
             messages = new { type = "array", items = new { type = "object" } },
             inputQueue = new { type = "object" },
             transcript = new { type = "object" },

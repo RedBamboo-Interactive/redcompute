@@ -93,6 +93,8 @@ public sealed class SessionInputQueueService
     internal bool IsDeliveryPaused => _deliveryPaused();
     /// <summary>True while this session must not receive input (an unfinished rollback).</summary>
     internal Func<string, CancellationToken, Task<bool>>? SettleRollback { get; set; }
+    /// <summary>Runs before a recovery resume launches a provider: resolves a legacy session's access level, demotes a revoked Full.</summary>
+    internal Func<ISessionProvider, string, CancellationToken, Task>? BeforeResume { get; set; }
     private sealed record CallerRecovery(string Token, string Owner, string Scope)
     {
         public override string ToString() => "CallerRecovery { token = [redacted] }";
@@ -666,6 +668,7 @@ public sealed class SessionInputQueueService
                     || !provider.Capabilities.HasFlag(SessionCapabilities.Resume)) return;
                 try
                 {
+                    if (BeforeResume is not null) await BeforeResume(provider, sessionId, ct);
                     using (SessionScratch.PushExecutionToken(authority!.AccessToken!))
                         info = await provider.ResumeSessionAsync(sessionId, InvocationProvenance(head));
                 }

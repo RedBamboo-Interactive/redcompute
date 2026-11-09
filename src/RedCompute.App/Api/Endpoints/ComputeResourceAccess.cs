@@ -55,7 +55,20 @@ internal static class ComputeResourceAccess
     /// <c>local-user</c> as its subject. A session's own token also descends from a browser token, so the
     /// context has to be exactly one of those shapes: it says which steps the call came through.
     /// </summary>
-    internal static bool IsPersonAction(HttpContext context)
+    internal static bool IsPersonAction(HttpContext context) => IsPersonPresent(context);
+
+    /// <summary>
+    /// The access-level contract's person-present predicate, and the one implementation of it:
+    /// raising a session's access level, approving a permission and rolling back all require it.
+    /// True for an ordinary human access token, and for an execution token RedLeaf minted at
+    /// <c>POST /api/auth/execution-token</c> for a browser app the person is using: actor kind
+    /// <c>app</c> naming that same app, beneficiary the token's own subject (or <c>system</c> for the
+    /// loopback owner), and a first context step <c>browser</c> with the page route, optionally after
+    /// exactly one signed <c>redcompute-call</c> hop through a kernel service. False for every Agent
+    /// (<c>actor.kind: agent</c>) and automation token, every token a session process holds, service and
+    /// infrastructure tokens, and a tokenless loopback request.
+    /// </summary>
+    internal static bool IsPersonPresent(HttpContext context)
     {
         var subject = context.User.FindFirst("sub")?.Value;
         if (context.User.Identity?.IsAuthenticated != true || string.IsNullOrWhiteSpace(subject)) return false;

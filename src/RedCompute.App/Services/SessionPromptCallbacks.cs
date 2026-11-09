@@ -207,6 +207,9 @@ internal sealed class SessionPromptCallbacks
             title = session?.Title,
             provider = session?.Provider,
             requestId = question.RequestId,
+            // permission: a person's approval, which a delegating Agent must not give itself.
+            kind = question.Kind,
+            permission = question.Permission,
             toolName = question.ToolName,
             toolUseId = question.ToolUseId,
             questions = question.Questions,

@@ -511,7 +511,7 @@ public sealed class SessionRollbackTests
         Assert.Equal("forbidden", answer.Body.GetProperty("error").GetString());
     }
 
-    private static void Identify(DefaultHttpContext context, string caller, string subject = "owner")
+    internal static void Identify(DefaultHttpContext context, string caller, string subject = "owner")
     {
         ExecutionContextReference Browser(string app) => new("browser", Route: $"/apps/{app}");
         var hop = new ExecutionContextReference("redcompute-call");

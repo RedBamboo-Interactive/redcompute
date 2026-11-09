@@ -1,0 +1,177 @@
+using System.Text.Json;
+using Microsoft.AspNetCore.Http;
+using RedBamboo.AppHost.Auth;
+using RedBamboo.AppHost.Discovery;
+using RedCompute.App.Services;
+using RedCompute.Core.Discovery;
+using RedCompute.Core.Jobs;
+using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk;
+
+namespace RedCompute.App.Api.Endpoints;
+
+/// <summary>
+/// Changing a session's access level, the legacy permission-mode alias, and RedLeaf's policy-change
+/// signal. Every change goes through <see cref="SessionAccessService"/> and the same rules.
+/// </summary>
+public static class SessionAccessEndpoints
+{
+    internal const string LevelDescription =
+        "Access levels, lowest first: plan (read and plan only), ask (workspace edits run; anything else parks as a permission card a person answers), "
+        + "auto (the provider's own classifier decides; Claude only), full (everything runs unprompted). A level the provider cannot enforce becomes ask; "
+        + "session.supportedAccessLevels lists what it can.";
+
+    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, IJobTracker jobTracker, SessionAccessService access)
+    {
+        endpoints.MapPost("/ai-session/sessions/{id}/access-level",
+            "Change the session's access level. " + LevelDescription + " Lowering is open to anyone with write access to the session. "
+            + "Raising needs a person (an Agent's or automation's token gets 403 raise_requires_person), Full enabled in RedLeaf "
+            + "(403 full_access_not_enabled) and stays at or below the session's maxAccessLevel (403 above_session_cap). "
+            + "Entering plan remembers the level it left; omit level (or send null) to leave plan for that level. "
+            + "A live session changes at once; a stopped one launches at the new level. Unknown levels are 422.",
+            async (HttpContext ctx, string id) =>
+        {
+            var (provider, info, error) = Find(ctx, registry, jobTracker, id);
+            if (error is not null) return error;
+
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            if (body.ValueKind != JsonValueKind.Object)
+                return Error(400, "invalid_body", "Request body must be a JSON object");
+
+            string? level = null;
+            if (body.TryGetProperty("level", out var value) && value.ValueKind != JsonValueKind.Null)
+            {
+                if (value.ValueKind != JsonValueKind.String || !SessionAccessLevels.TryNormalize(value.GetString(), out var normalized))
+                    return Error(422, SessionAccessResolver.InvalidAccessLevel,
+                        $"level must be one of {string.Join(", ", SessionAccessLevels.All)}");
+                level = normalized;
+            }
+
+            return await ChangeAsync(ctx, access, provider!, info!, level, legacyMode: null);
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("level", "string", description: "The new level. Omit or null to leave plan for the level it was entered from.",
+                enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+            .WithResponse(new
+            {
+                type = "object",
+                required = new[] { "accessLevel", "ok" },
+                properties = new
+                {
+                    accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray() },
+                    ok = new { type = "boolean", description = "False when the provider could not apply it; accessLevel is then the unchanged level" },
+                },
+            });
+
+        endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
+            "Compatibility alias of POST /ai-session/sessions/{id}/access-level, under exactly the same rules. Legacy mode names map to levels: "
+            + "bypassPermissions -> full; acceptEdits, default, manual, dontAsk -> ask; plan; auto. Responds with the provider-native mode now in force.",
+            async (HttpContext ctx, string id) =>
+        {
+            var (provider, info, error) = Find(ctx, registry, jobTracker, id);
+            if (error is not null) return error;
+
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+
+            var mode = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("mode", out var mm)
+                && mm.ValueKind == JsonValueKind.String ? mm.GetString() : null;
+            if (string.IsNullOrWhiteSpace(mode))
+                return Error(422, "validation_failed", "mode is required");
+            if (!SessionAccessLevels.TryFromPermissionMode(mode, out var level))
+                return Error(422, SessionAccessResolver.InvalidAccessLevel,
+                    $"mode must be one of {string.Join(", ", LegacyModes)}");
+
+            return await ChangeAsync(ctx, access, provider!, info!, level, legacyMode: mode);
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("mode", "string", required: true, description: "Legacy permission mode, mapped to an access level",
+                enumValues: LegacyModes, location: ParamLocation.Body);
+
+        endpoints.MapPost("/ai-session/access-policy/changed",
+            "RedLeaf calls this after it writes the Agent permission policy. RedCompute reads the policy fresh and, when Full access is no longer "
+            + "enabled, demotes every session holding full to its resolved default. Authenticated service callers (RedLeaf's kernel) and people only; "
+            + "an Agent or automation token gets 403. Idempotent.",
+            async (HttpContext ctx) =>
+        {
+            if (!MayAnnouncePolicyChange(ctx))
+                return Error(403, "service_caller_required", "Only RedLeaf announces a policy change");
+            var demoted = await access.PolicyChangedAsync(ctx.RequestAborted);
+            var policy = await access.Policy.GetAsync(ct: ctx.RequestAborted);
+            return Results.Json(new
+            {
+                refreshed = true,
+                policyAvailable = policy.Available,
+                fullAccessEnabled = policy.FullAccessEnabled,
+                demotedSessions = demoted,
+            });
+        })
+            .WithResponse(new
+            {
+                type = "object",
+                properties = new
+                {
+                    refreshed = new { type = "boolean" },
+                    policyAvailable = new { type = "boolean", description = "False when RedLeaf could not be read; RedCompute then runs fail-closed (ask, Full disabled)" },
+                    fullAccessEnabled = new { type = "boolean" },
+                    demotedSessions = new { type = "array", items = new { type = "string" } },
+                },
+            });
+    }
+
+    internal static readonly string[] LegacyModes =
+        ["plan", "default", "acceptEdits", "manual", "dontAsk", "auto", "bypassPermissions", .. SessionAccessLevels.All.Where(l => l is not ("plan" or "auto"))];
+
+    private static async Task<IResult> ChangeAsync(HttpContext ctx, SessionAccessService access,
+        ISessionProvider provider, UnifiedSessionInfo info, string? level, string? legacyMode)
+    {
+        var result = await access.ChangeAsync(provider, info, level,
+            ComputeResourceAccess.IsPersonPresent(ctx), ctx.RequestAborted);
+        if (result.Error is not null)
+            return Error(result.Status, result.Error, result.Message ?? result.Error);
+        if (legacyMode is null)
+            return Results.Json(new { accessLevel = result.AccessLevel, ok = result.Ok });
+        var native = provider.GetSession(info.Id).Info?.PermissionMode;
+        return Results.Json(new { mode = native ?? legacyMode, ok = result.Ok, accessLevel = result.AccessLevel });
+    }
+
+    /// <summary>
+    /// The kernel's infrastructure token, a person, or a signed service or system subject. Agents,
+    /// automations, session processes and tokenless loopback requests are refused. The route only
+    /// re-reads RedLeaf's own policy, so it can never raise anything.
+    /// </summary>
+    internal static bool MayAnnouncePolicyChange(HttpContext ctx)
+    {
+        if (ctx.User.Identity?.IsAuthenticated != true
+            || ctx.User.Identity.AuthenticationType == ConfidentialResourcePolicy.LocalDefaultAuthenticationType)
+            return false;
+        if (ComputeResourceAccess.IsTrustedInfrastructure(ctx) || ComputeResourceAccess.IsPersonPresent(ctx)) return true;
+        if (ConfidentialResourcePolicy.ExecutionIdentity(ctx) is not null) return false;
+        var subject = ctx.User.FindFirst("sub")?.Value;
+        return subject == "system" || subject?.StartsWith("service:", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static (ISessionProvider? Provider, UnifiedSessionInfo? Info, IResult? Error) Find(
+        HttpContext ctx, CapabilityRegistry registry, IJobTracker jobTracker, string id)
+    {
+        foreach (var candidate in registry.FindProviders<ISessionProvider>())
+        {
+            var info = candidate.GetSession(id).Info;
+            if (info is null) continue;
+            var job = info.Confidential && info.JobId is { } jobId ? jobTracker.GetJob(jobId) : null;
+            if (!ComputeResourceAccess.CanReadSession(ctx, info, job))
+                return (null, null, ComputeResourceAccess.SessionDenied(info));
+            if (candidate.SupportedAccessLevels.Count == 0)
+                return (null, null, Error(422, "access_levels_not_supported",
+                    $"Provider '{candidate.ProviderId}' does not support access levels"));
+            return (candidate, info, null);
+        }
+        return (null, null, Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404));
+    }
+
+    private static IResult Error(int status, string error, string message)
+        => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
+}

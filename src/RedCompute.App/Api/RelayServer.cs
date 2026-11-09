@@ -357,6 +357,10 @@ public class RelayServer
             () => maintenance.IsDraining, redLeafReader.RecoverAuthorityAsync, maintenance.ReadVerificationTarget,
             _callbacks.ReconcileAsync);
         maintenance.AttachInputQueue(inputQueue);
+        var access = new SessionAccessService(
+            new RedLeafSessionAccessPolicyClient(_config.RedLeafUrl, redLeafJwt, _log),
+            () => _registry.FindProviders<ISessionProvider>(), id => _jobTracker.GetJob(id), _log);
+        inputQueue.BeforeResume = access.EnsureLaunchStateAsync;
         var rollbacks = new SessionRollbackService(_registry, inputQueue, transcriptPipeline, redLeafReader,
             new SessionRollbackLedger(), _log);
         inputQueue.SettleRollback = rollbacks.SettleAsync;
@@ -375,7 +379,9 @@ public class RelayServer
                     owner_agent_id = job.CreationProvenance?.Actor.EntityId
                         ?? job.CreationProvenance?.Actor.Id,
                     confidential = true,
-                }, token));
+                }, token),
+            access);
+        SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access);
         SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
         CliVersionEndpoints.Map(registry, _registry);
         MaintenanceEndpoints.Map(registry, maintenance);
