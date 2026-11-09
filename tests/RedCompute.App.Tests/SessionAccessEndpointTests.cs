@@ -968,6 +968,38 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(Full, noParent.State!.AccessLevel);
     }
 
+    [Theory]
+    [MemberData(nameof(LocalDefault))]
+    [InlineData("kernel proxy without a token")]
+    [InlineData("system browser token for a named subject")]
+    public void A_caller_with_no_identity_of_its_own_never_starts_above_ask(string caller)
+    {
+        var context = new DefaultHttpContext();
+        SessionRollbackTests.Identify(context, caller);
+
+        Assert.True(ComputeResourceAccess.IsAnonymous(context));
+        Assert.Equal(Ask, ComputeResourceAccess.AnonymousCap(context, null));
+        Assert.Equal(Ask, ComputeResourceAccess.AnonymousCap(context, Full));
+        Assert.Equal(SessionAccessLevels.Plan, ComputeResourceAccess.AnonymousCap(context, SessionAccessLevels.Plan));
+    }
+
+    [Theory]
+    [InlineData("agent")]
+    [InlineData("automation")]
+    [InlineData("code browser")]
+    [InlineData("nova through the kernel")]
+    [InlineData("session process of an agent")]
+    [InlineData("infrastructure service token")]
+    [InlineData("signed login")]
+    public void A_caller_with_its_own_identity_keeps_the_cap_it_asked_for(string caller)
+    {
+        var context = new DefaultHttpContext();
+        SessionRollbackTests.Identify(context, caller);
+
+        Assert.False(ComputeResourceAccess.IsAnonymous(context));
+        Assert.Null(ComputeResourceAccess.AnonymousCap(context, null));
+    }
+
     [Fact]
     public void The_found_parent_carries_whether_it_is_unattended()
     {
@@ -978,16 +1010,19 @@ public sealed class SessionAccessEndpointTests
     }
 
     [Fact]
-    public void The_parent_is_found_only_when_exactly_one_readable_session_with_a_level_is_named()
+    public void A_named_parent_that_cannot_be_established_reads_as_ask_never_the_policy_default()
     {
         var f = new Fixture(Auto);
 
         Assert.Equal(new SessionAccessParent("test", "session-1", Auto), f.Access.FindParent(["session-1"], _ => true));
-        Assert.Null(f.Access.FindParent(["session-1"], _ => false));
-        Assert.Null(f.Access.FindParent(["session-1", "session-2"], _ => true));
-        Assert.Null(f.Access.FindParent(["missing"], _ => true));
         Assert.Null(f.Access.FindParent([], _ => true));
-        Assert.Null(new Fixture(level: null).Access.FindParent(["session-1"], _ => true));
+        Assert.Null(f.Access.FindParent([null, " "], _ => true));
+        // Named but not established: never the policy default (Full on an owner's install), Ask.
+        var unresolved = SessionAccessService.UnresolvedParentProvider;
+        Assert.Equal(new SessionAccessParent(unresolved, "session-1", Ask), f.Access.FindParent(["session-1"], _ => false));
+        Assert.Equal(new SessionAccessParent(unresolved, "session-1,session-2", Ask), f.Access.FindParent(["session-1", "session-2"], _ => true));
+        Assert.Equal(new SessionAccessParent(unresolved, "missing", Ask), f.Access.FindParent(["missing"], _ => true));
+        Assert.Equal(new SessionAccessParent("test", "session-1", Ask), new Fixture(level: null).Access.FindParent(["session-1"], _ => true));
     }
 
     [Fact]

@@ -16,9 +16,9 @@ public interface ISessionAccessPolicySource
 /// <summary>
 /// Reads <c>GET /api/agent-permissions/policy</c> from RedLeaf and keeps it at most
 /// <see cref="CacheLifetime"/>. Fails closed: an unreachable RedLeaf, an error status or a body it
-/// cannot read all mean default <c>ask</c> with Full disabled. No policy record (404, an empty
-/// answer, or revision 0) means RedLeaf's no-record default (<c>auto</c>, Full disabled, see
-/// <see cref="SessionAccessPolicy.NoRecord"/>). Failures are cached only briefly, so a
+/// cannot read (404, an empty answer included) all mean default <c>ask</c> with Full disabled.
+/// No policy record is RedLeaf's positive answer, revision 0, with its no-record default
+/// (<c>auto</c>, Full disabled, see <see cref="SessionAccessPolicy.NoRecord"/>). Failures are cached only briefly, so a
 /// recovered RedLeaf is seen quickly.
 /// </summary>
 public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySource
@@ -68,17 +68,27 @@ public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySourc
         try
         {
             using var response = await _http.GetAsync("api/agent-permissions/policy", ct);
-            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.NoContent) return SessionAccessPolicy.NoRecord;
-            if (!response.IsSuccessStatusCode)
+            // Only RedLeaf's own positive answer (200, revision 0) means "no record". A 404, an
+            // empty body or an empty object is something else answering on RedLeaf's URL (an older
+            // RedLeaf, a process holding the port during a restart): never a reason to run at Auto.
+            if (!response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NoContent)
             {
                 _log($"[Access] Policy read returned HTTP {(int)response.StatusCode}; failing closed (ask, Full disabled)", null);
                 return SessionAccessPolicy.FailClosed;
             }
             var text = await response.Content.ReadAsStringAsync(ct);
-            if (string.IsNullOrWhiteSpace(text)) return SessionAccessPolicy.NoRecord;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _log("[Access] Policy read returned an empty body; failing closed (ask, Full disabled)", null);
+                return SessionAccessPolicy.FailClosed;
+            }
             using var document = JsonDocument.Parse(text);
             var root = Unwrap(document.RootElement);
-            if (IsEmpty(root)) return SessionAccessPolicy.NoRecord;
+            if (IsEmpty(root))
+            {
+                _log("[Access] Policy read returned an empty policy; failing closed (ask, Full disabled)", null);
+                return SessionAccessPolicy.FailClosed;
+            }
             var policy = Parse(root);
             if (!policy.Available) return policy;
             // A RedLeaf that sends its revision also sends the right default for every case (auto

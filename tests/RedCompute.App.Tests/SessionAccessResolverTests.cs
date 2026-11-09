@@ -451,9 +451,11 @@ public sealed class SessionAccessResolverTests
     [InlineData(HttpStatusCode.InternalServerError, false, Ask)]
     [InlineData(HttpStatusCode.Unauthorized, false, Ask)]
     [InlineData(HttpStatusCode.ServiceUnavailable, false, Ask)]
-    [InlineData(HttpStatusCode.NotFound, true, Auto)]    // no record: auto, read successfully
-    [InlineData(HttpStatusCode.NoContent, true, Auto)]   // no record, said with an empty answer
-    public async Task Error_statuses_fail_closed_and_no_record_reads_as_auto(HttpStatusCode status, bool available, string level)
+    // Not RedLeaf's positive no-record answer (200, revision 0): something else on its URL, an
+    // older RedLeaf, a process holding the port during a restart. Never a reason to run at Auto.
+    [InlineData(HttpStatusCode.NotFound, false, Ask)]
+    [InlineData(HttpStatusCode.NoContent, false, Ask)]
+    public async Task Error_statuses_and_non_answers_fail_closed(HttpStatusCode status, bool available, string level)
     {
         var policy = await Client(_ => new HttpResponseMessage(status)).GetAsync();
 
@@ -469,13 +471,13 @@ public sealed class SessionAccessResolverTests
     [InlineData("null")]
     [InlineData("{}")]
     [InlineData("""{"policy":{}}""")]
-    public async Task An_empty_answer_is_no_record(string body)
+    public async Task An_empty_answer_fails_closed(string body)
     {
         var policy = await Client(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) }).GetAsync();
 
-        Assert.True(policy.Available);
+        Assert.False(policy.Available);
         Assert.False(policy.Stored);
-        Assert.Equal(Auto, policy.DefaultFor(null));
+        Assert.Equal(Ask, policy.DefaultFor(null));
         Assert.False(policy.FullAccessEnabled);
     }
 

@@ -471,6 +471,8 @@ public static class UnifiedSessionEndpoints
             // The session's Agent comes from the verified start identity, never from the body; so does
             // the session delegating this one, whose level the new session inherits as level and cap.
             var parent = _access!.FindParent(SignedSessionReferences(ctx), info => CanReadSession(ctx, info));
+            // A caller with no identity of its own (any process on this machine) never starts above Ask.
+            maxAccessLevel = ComputeResourceAccess.AnonymousCap(ctx, maxAccessLevel);
             var accessStart = await _access.ResolveStartAsync(provider, requestedAccessLevel, maxAccessLevel, unattended,
                 ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted, parent);
             if (accessStart.Error is not null)
@@ -2095,7 +2097,7 @@ public static class UnifiedSessionEndpoints
             var oneshotParent = _access!.FindParent(SignedSessionReferences(ctx), info => CanReadSession(ctx, info));
             var oneshotAccess = await _access.ResolveOneshotAsync(provider, requestedAccessLevel,
                 ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted,
-                oneshotParent);
+                oneshotParent, ComputeResourceAccess.AnonymousCap(ctx, null));
             if (oneshotAccess.Error is not null)
                 return Error(422, oneshotAccess.Error, oneshotAccess.Message ?? oneshotAccess.Error);
             if (oneshotAccess.State?.AccessLevel is { } oneshotLevel)

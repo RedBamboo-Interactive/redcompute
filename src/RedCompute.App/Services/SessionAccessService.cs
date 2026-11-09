@@ -60,15 +60,19 @@ public sealed class SessionAccessService(
 
     /// <summary>
     /// The session delegating a new one, read from the start identity's signed context alone (never
-    /// a request field): a session process's token names exactly one session, its own. Null, so the
-    /// start resolves from policy, unless exactly one session is named, it exists on a provider with
-    /// access levels, <paramref name="canRead"/> lets this caller read it, and it holds a known level.
+    /// a request field): a session process's token names exactly one session, its own. Null (the
+    /// start resolves from policy) when no session is named. When sessions are named but the parent
+    /// cannot be established (several, unknown, unreadable to this caller), the start must not fall
+    /// back to the policy default, which may be Full: it gets a stand-in parent at Ask
+    /// (<see cref="UnresolvedParentProvider"/>). A parent persisted before access levels (no level)
+    /// reads as Ask.
     /// </summary>
     public SessionAccessParent? FindParent(IEnumerable<string?> signedSessionReferences,
         Func<UnifiedSessionInfo, bool> canRead)
     {
         var named = signedSessionReferences.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).ToList();
-        if (named.Count != 1) return null;
+        if (named.Count == 0) return null;
+        if (named.Count > 1) return Unresolved(string.Join(",", named), "several sessions are named");
         var id = named[0]!;
         foreach (var provider in providers())
         {
@@ -76,17 +80,29 @@ public sealed class SessionAccessService(
             {
                 if (provider.SupportedAccessLevels.Count == 0 || provider.GetAccessState(id) is not { } state) continue;
                 if (provider.GetSession(id).Info is not { } info) continue;
-                if (!canRead(info)) return null;
-                return state.AccessLevel is { } level && SessionAccessLevels.IsKnown(level)
-                    ? new SessionAccessParent(provider.ProviderId, id, level, state.Unattended)
-                    : null;
+                if (!canRead(info)) return Unresolved(id, "this caller cannot read it");
+                // Every launch since access levels records one, so a running parent has a level;
+                // one without is a stopped legacy row, and Ask is the safe reading.
+                return new SessionAccessParent(provider.ProviderId, id,
+                    state.AccessLevel is { } level && SessionAccessLevels.IsKnown(level) ? level : SessionAccessLevels.Ask,
+                    state.Unattended);
             }
             catch (Exception ex)
             {
                 log($"[Access] Could not read {provider.ProviderId} session {id} as a delegating parent: {ex.Message}", null);
+                return Unresolved(id, "it could not be read");
             }
         }
-        return null;
+        return Unresolved(id, "no session with access levels has that id");
+    }
+
+    /// <summary>The provider id of a stand-in parent whose real session could not be established.</summary>
+    public const string UnresolvedParentProvider = "unresolved";
+
+    private SessionAccessParent Unresolved(string id, string why)
+    {
+        log($"[Access] The caller's signed identity names session {id} but {why}; the new work starts at Ask, not the policy default", null);
+        return new SessionAccessParent(UnresolvedParentProvider, id, SessionAccessLevels.Ask);
     }
 
     /// <summary>
@@ -95,23 +111,24 @@ public sealed class SessionAccessService(
     /// session's level, so a Discord session capped at Auto cannot get a Full one-shot.
     /// </summary>
     public async Task<SessionAccessStart> ResolveOneshotAsync(ISessionProvider provider, string? requested,
-        bool personPresent, string? agentEntityId, CancellationToken ct = default, SessionAccessParent? parent = null)
+        bool personPresent, string? agentEntityId, CancellationToken ct = default, SessionAccessParent? parent = null,
+        string? cap = null)
     {
         var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0) return new SessionAccessStart(null);
         var current = await ReadPolicyAsync(ct);
         if (parent is not null)
         {
-            var inherited = SessionAccessResolver.ResolveFromParent(requested, parent.AccessLevel, current, supported, null);
+            var inherited = SessionAccessResolver.ResolveFromParent(requested, parent.AccessLevel, current, supported, cap);
             return inherited.Level is null
                 ? new SessionAccessStart(null, inherited.Error, inherited.Message)
                 : new SessionAccessStart(new SessionAccessState(inherited.Level, inherited.Cap, Unattended: true,
                     AccessLevelSource: SessionAccessLevelSources.Parent));
         }
-        var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, null);
+        var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, cap);
         return resolved.Level is null
             ? new SessionAccessStart(null, resolved.Error, resolved.Message)
-            : new SessionAccessStart(new SessionAccessState(resolved.Level, Unattended: true));
+            : new SessionAccessStart(new SessionAccessState(resolved.Level, cap, Unattended: true));
     }
 
     /// <summary>

@@ -25,6 +25,34 @@ internal static class ComputeResourceAccess
             || string.Equals(session.UserId, userId, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A caller with no identity of its own: no token, the tokenless loopback principal
+    /// (LocalDefault, <c>local-user</c>), or an identity RedLeaf signed on such a caller's behalf
+    /// (beneficiary <c>system</c>: a browser token, or the compute proxy). Any process on this
+    /// machine can be one, so what it starts never runs above Ask, whatever the policy default.
+    /// </summary>
+    internal static bool IsAnonymous(HttpContext context)
+    {
+        var user = context.User;
+        if (user.Identity?.IsAuthenticated != true
+            || string.Equals(user.Identity.AuthenticationType, ConfidentialResourcePolicy.LocalDefaultAuthenticationType, StringComparison.Ordinal))
+            return true;
+        if (string.Equals(user.FindFirst("sub")?.Value, LocalUserSubject, StringComparison.OrdinalIgnoreCase)) return true;
+        // RedLeaf turns a tokenless loopback caller into a signed system-beneficiary identity in two
+        // places: the browser-token mint and the compute proxy. Both say so in the signed reason.
+        if (ConfidentialResourcePolicy.ExecutionIdentity(context) is { } execution)
+            return execution.Beneficiary.Kind.Equals("system", StringComparison.OrdinalIgnoreCase)
+                && (execution.Context.Any(item => item.Kind.Equals("browser", StringComparison.OrdinalIgnoreCase))
+                    || execution.Beneficiary.Reason?.Contains("LocalDefault", StringComparison.OrdinalIgnoreCase) == true);
+        return false;
+    }
+
+    /// <summary>The cap an anonymous caller's session or one-shot gets on top of any it asked for.</summary>
+    internal static string? AnonymousCap(HttpContext context, string? requestedCap)
+        => IsAnonymous(context)
+            ? requestedCap is null ? SessionAccessLevels.Ask : SessionAccessLevels.Lower(requestedCap, SessionAccessLevels.Ask)
+            : requestedCap;
+
     public static bool CanReadJob(HttpContext context, JobRecord job)
     {
         if (IsTrustedInfrastructure(context)) return true;
