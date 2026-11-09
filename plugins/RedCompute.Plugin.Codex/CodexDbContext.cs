@@ -51,6 +51,8 @@ public class CodexDbContext : DbContext
                          "StopReason TEXT",
                          "StoppedAt TEXT",
                          "HistoryMode TEXT",
+                         "AccessLevel TEXT", "MaxAccessLevel TEXT", "AccessLevelBeforePlan TEXT",
+                         "Unattended INTEGER NOT NULL DEFAULT 0",
                      })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";

@@ -58,9 +58,18 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.SupportsRollback
         | SessionCapabilities.ImageAttachments
         | SessionCapabilities.FileAttachments
-        | SessionCapabilities.ImageOutputs;
+        | SessionCapabilities.ImageOutputs
+        | SessionCapabilities.PermissionMode;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
-    // Not claimed: PermissionMode (approvals are always auto-accepted, there is nothing to switch).
+
+    /// <summary>
+    /// ask: approvalPolicy on-request in the workspace-write sandbox, every approval parks as a
+    /// permission card. full: the same launch, approvals accepted for the session. Codex has no
+    /// plan or auto, which resolve to ask.
+    /// </summary>
+    public IReadOnlyList<string> SupportedAccessLevels { get; } = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Full];
+    public Core.Sessions.SessionAccessState? GetAccessState(string sessionId) => _interactive.GetAccessState(sessionId);
+    public bool SetAccessState(string sessionId, Core.Sessions.SessionAccessState state) => _interactive.SetAccessState(sessionId, state);
 
     public string? LastStartError => Volatile.Read(ref _lastStartError) ?? _interactive.LastStartError;
     public string? LastStartErrorCode => Volatile.Read(ref _lastStartError) is null ? _interactive.LastStartErrorCode : null;
@@ -191,7 +200,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         if (!await ValidateRequestedModelAsync(model)) return null;
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current);
+            scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current, access: SessionAccessScope.Current);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -204,7 +213,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         if (!await ValidateRequestedModelAsync(model)) return null;
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current);
+            scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current, SessionAccessScope.Current);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -330,7 +339,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         => _interactive.GetPendingQuestions(sessionId);
 
     public Core.Sessions.QuestionAnswerResult SubmitQuestionAnswer(string sessionId, Core.Sessions.SessionQuestionAnswer answer)
-        => !_interactive.SubmitQuestionAnswer(sessionId, answer) ? Core.Sessions.QuestionAnswerResult.RequestNotFound
+        => _interactive.SubmitApprovalDecision(sessionId, answer.RequestId, answer.Decision) is { } approval ? approval
+            : answer.Decision is not null ? Core.Sessions.QuestionAnswerResult.RequestNotFound
+            : !_interactive.SubmitQuestionAnswer(sessionId, answer) ? Core.Sessions.QuestionAnswerResult.RequestNotFound
             : answer.Decline ? Core.Sessions.QuestionAnswerResult.Declined
             : Core.Sessions.QuestionAnswerResult.Answered;
 
@@ -341,11 +352,16 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         => _interactive.InterruptSession(sessionId);
 
     /// <summary>
-    /// Not supported, and deliberately not faked. Sessions run with command and file approvals
-    /// auto-accepted, matching Claude Code's --permission-mode bypassPermissions; there are no
-    /// other modes to switch between, so returning true would be a lie the UI acts on.
+    /// Legacy entry point: a mode maps to an access level (plan and auto become ask). RedCompute's
+    /// routes authorize changes and call <see cref="SetAccessState"/>; this applies no rules itself.
     /// </summary>
-    public bool SetPermissionMode(string sessionId, string mode) => false;
+    public bool SetPermissionMode(string sessionId, string mode)
+        => Core.Sessions.SessionAccessLevels.TryFromPermissionMode(mode, out var level)
+            && GetAccessState(sessionId) is { } current
+            && SetAccessState(sessionId, current with
+            {
+                AccessLevel = Core.Sessions.SessionAccessResolver.ClampToSupported(level, SupportedAccessLevels),
+            });
 
     public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
@@ -540,6 +556,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         QualityTier = s.QualityTier,
         Source = s.Source,
         ExecutionProfile = s.ExecutionProfile,
+        AccessLevel = s.AccessLevel,
+        MaxAccessLevel = s.MaxAccessLevel,
+        AccessLevelBeforePlan = s.AccessLevelBeforePlan,
+        Unattended = s.Unattended,
+        SupportedAccessLevels = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Full],
         UserId = s.UserId,
         UserName = s.UserName,
         UserAvatarUrl = s.UserAvatarUrl,
@@ -568,6 +589,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         Phase = e.Phase,
         MessageUid = e.MessageUid,
         RequestId = e.RequestId,
+        Kind = e.Kind,
+        Permission = e.Permission,
         Attachments = e.Attachments?.Select(a => new UnifiedAttachment
         {
             Type = a.Type,

@@ -23,6 +23,9 @@ public class CodexStreamEvent
     /// POST /ai-session/sessions/{id}/question. Set only on question / question_resolved.
     /// </summary>
     public string? RequestId { get; init; }
+    /// <summary>On question events: question or permission. Permission cards are live-only, never transcript.</summary>
+    public string? Kind { get; init; }
+    public Core.Sessions.PendingPermissionRequest? Permission { get; init; }
     public List<CodexAttachment>? Attachments { get; init; }
 }
 

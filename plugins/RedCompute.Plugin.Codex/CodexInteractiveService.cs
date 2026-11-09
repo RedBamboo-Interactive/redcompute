@@ -42,6 +42,9 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         /// <summary>Questions parked awaiting a user answer, keyed by request id.</summary>
         public ConcurrentDictionary<string, PendingQuestion> Questions { get; } = new();
 
+        /// <summary>Approvals parked as permission cards (access level ask), keyed by request id.</summary>
+        public ConcurrentDictionary<string, PendingApproval> Approvals { get; } = new();
+
         /// <summary>
         /// Ids of items whose text arrived as deltas. Codex sends both the stream *and* the whole
         /// item again on completion; the client appends partials, so re-emitting the full text
@@ -71,6 +74,23 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions,
         JsonElement Params = default, DateTimeOffset AskedAt = default);
+
+    /// <summary>One app-server approval request waiting for a person, answered by its JSON-RPC id.</summary>
+    public sealed class PendingApproval : IDisposable
+    {
+        public required JsonElement RpcId { get; init; }
+        public required string Method { get; init; }
+        public required string RequestId { get; init; }
+        public required JsonElement Params { get; init; }
+        public required Core.Sessions.PendingPermissionRequest Permission { get; init; }
+        public required DateTimeOffset AskedAt { get; init; }
+        public required DateTimeOffset ExpiresAt { get; init; }
+        public Timer? Expiry { get; set; }
+        public void Dispose() => Expiry?.Dispose();
+    }
+
+    /// <summary>A parked approval is denied when no one answers it within this window.</summary>
+    internal TimeSpan ApprovalTimeout { get; set; } = TimeSpan.FromMinutes(30);
     private sealed class PendingSteer
     {
         public required string ExpectedTurnId { get; init; }
@@ -222,11 +242,12 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory = null, bool confidential = false,
         string? developerInstructions = null,
-        string executionProfile = SessionExecutionProfile.Default)
+        string executionProfile = SessionExecutionProfile.Default,
+        Core.Sessions.SessionAccessState? access = null)
         => RunSessionLaunchAsync(spawned => StartSessionCoreAsync(
             projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratchDirectory, confidential,
-            developerInstructions, executionProfile, spawned));
+            developerInstructions, executionProfile, spawned, access));
 
     private async Task<CodexSessionInfo?> RunSessionLaunchAsync(
         Func<Action, Task<CodexSessionInfo?>> launch)
@@ -249,7 +270,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         string? scratchDirectory, bool confidential,
         string? developerInstructions,
         string executionProfile,
-        Action spawned)
+        Action spawned,
+        Core.Sessions.SessionAccessState? access)
     {
         SetStartFailure(null, null);
         if (_sessions.Count >= _config.MaxSessions)
@@ -286,6 +308,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
             LastActivity = DateTimeOffset.UtcNow,
+            // Not started through RedCompute's access rules: ask, the fail-closed level.
+            Access = access is { AccessLevel: not null } ? access : new Core.Sessions.SessionAccessState(Core.Sessions.SessionAccessLevels.Ask),
         };
 
         CodexAppServerConnection? conn = null;
@@ -1496,9 +1520,16 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 }
             }
 
+            if (session.Info.AccessLevel != Core.Sessions.SessionAccessLevels.Full && IsApprovalMethod(method))
+            {
+                // ask (and a row with no resolved level, which fails closed to ask): a person decides.
+                await HandleApprovalRequestAsync(session, id, method, @params);
+                return;
+            }
+
             switch (method)
             {
-                // Parity with Claude Code's bypassPermissions: these never reach the user.
+                // full: parity with Claude Code's bypassPermissions, these never reach the user.
                 case "item/commandExecution/requestApproval":
                 case "item/fileChange/requestApproval":
                 case "applyPatchApproval":
@@ -1525,6 +1556,195 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         {
             _log($"[Codex] Failed to answer server request '{method}': {ex.Message}", null);
         }
+    }
+
+    internal static bool IsApprovalMethod(string method) => method is "item/commandExecution/requestApproval"
+        or "item/fileChange/requestApproval" or "applyPatchApproval" or "execCommandApproval" or "item/permissions/requestApproval";
+
+    /// <summary>
+    /// Parks one approval as a permission card, or declines it at once when the session is
+    /// unattended. Live control state: the card is never a transcript record.
+    /// </summary>
+    private async Task HandleApprovalRequestAsync(ManagedSession session, JsonElement id, string method, JsonElement @params)
+    {
+        var requestId = "approval-" + id.GetRawText().Trim('"');
+        var permission = new Core.Sessions.PendingPermissionRequest
+        {
+            ToolName = ApprovalToolName(method),
+            ToolUseId = Str(@params, "itemId") ?? Str(@params, "callId"),
+            Summary = ApprovalSummary(method, @params),
+            Input = @params.ValueKind == JsonValueKind.Object ? @params.Clone() : EmptyJsonObject,
+            Cwd = Str(@params, "cwd") ?? session.Info.ProjectPath,
+        };
+
+        if (session.Info.Unattended)
+        {
+            _log($"[Codex] Session {session.Info.Id} is unattended; declined {method} ({permission.Summary})", null);
+            await session.Connection.RespondAsync(id, ApprovalResponse(method, @params, Core.Sessions.SessionPermissionDecisions.Deny));
+            StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
+            {
+                Type = "permission_denied", Kind = Core.Sessions.PendingSessionQuestion.PermissionKind,
+                RequestId = requestId, ToolName = permission.ToolName, MessageId = permission.ToolUseId,
+                Content = $"This session is unattended, so no person could approve {permission.ToolName} ({permission.Summary}); it was declined.",
+                Permission = permission, MessageUid = session.CurrentTurnUid,
+            });
+            return;
+        }
+
+        var askedAt = DateTimeOffset.UtcNow;
+        var pending = new PendingApproval
+        {
+            RpcId = id.Clone(), Method = method, RequestId = requestId, Params = permission.Input,
+            Permission = permission, AskedAt = askedAt, ExpiresAt = askedAt + ApprovalTimeout,
+        };
+        if (!session.Approvals.TryAdd(requestId, pending)) return;
+        pending.Expiry = new Timer(_ => ExpireApproval(session, requestId), null, ApprovalTimeout, Timeout.InfiniteTimeSpan);
+
+        _log($"[Codex] Session {session.Info.Id} parked on a permission for {method} (request {requestId})", null);
+        StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
+        {
+            Type = "question", Kind = Core.Sessions.PendingSessionQuestion.PermissionKind,
+            RequestId = requestId, ToolName = permission.ToolName, ToolInput = permission.Input.ToString(),
+            MessageId = permission.ToolUseId, Permission = permission, MessageUid = session.CurrentTurnUid,
+        });
+        session.Info.Status = "Waiting";
+        Persist(session.Info);
+        SessionUpdated?.Invoke(session.Info);
+    }
+
+    /// <summary>
+    /// Writes a person's decision on a parked approval. Null when the request is not an approval
+    /// of this session (an ordinary question goes through <see cref="SubmitQuestionAnswer"/>).
+    /// </summary>
+    public Core.Sessions.QuestionAnswerResult? SubmitApprovalDecision(string sessionId, string requestId, string? decision)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return null;
+        if (!session.Approvals.ContainsKey(requestId)) return null;
+        if (!Core.Sessions.SessionPermissionDecisions.IsKnown(decision))
+            return Core.Sessions.QuestionAnswerResult.InvalidDecision;
+        if (!session.Approvals.TryRemove(requestId, out var pending))
+            return Core.Sessions.QuestionAnswerResult.RequestNotFound;
+        pending.Dispose();
+
+        _ = session.Connection.RespondAsync(pending.RpcId, ApprovalResponse(pending.Method, pending.Params, decision!));
+        _log($"[Codex] Permission {requestId} ({pending.Method}) {decision} on session {sessionId}", null);
+        ResolveApproval(session, requestId, Core.Sessions.SessionPermissionDecisions.Outcome(decision!));
+        return decision == Core.Sessions.SessionPermissionDecisions.Deny
+            ? Core.Sessions.QuestionAnswerResult.Denied
+            : Core.Sessions.QuestionAnswerResult.Allowed;
+    }
+
+    private void ExpireApproval(ManagedSession session, string requestId)
+    {
+        if (!session.Approvals.TryRemove(requestId, out var pending)) return;
+        pending.Dispose();
+        _log($"[Codex] Permission {requestId} on session {session.Info.Id} went unanswered for " +
+             $"{ApprovalTimeout.TotalMinutes:0} minutes, declining", null);
+        _ = session.Connection.RespondAsync(pending.RpcId,
+            ApprovalResponse(pending.Method, pending.Params, Core.Sessions.SessionPermissionDecisions.Deny));
+        ResolveApproval(session, requestId, "timeout");
+    }
+
+    private void ResolveApproval(ManagedSession session, string requestId, string outcome)
+    {
+        StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
+        {
+            Type = "question_resolved", RequestId = requestId, Content = outcome,
+            Kind = Core.Sessions.PendingSessionQuestion.PermissionKind, MessageUid = session.CurrentTurnUid,
+        });
+        if (session.Info.Status == "Waiting" && session.Approvals.IsEmpty && session.Questions.IsEmpty)
+            session.Info.Status = "Active";
+        Persist(session.Info);
+        SessionUpdated?.Invoke(session.Info);
+    }
+
+    /// <summary>
+    /// The decision in each request's own vocabulary (codex-cli 0.163.0 app-server schema):
+    /// v2 command and file approvals accept / acceptForSession / decline; the legacy v1 requests
+    /// approved / approved_for_session / denied; a permissions request grants what it asked for,
+    /// for the turn or the session, or nothing.
+    /// </summary>
+    internal static object ApprovalResponse(string method, JsonElement @params, string decision)
+    {
+        var allow = decision != Core.Sessions.SessionPermissionDecisions.Deny;
+        var forSession = decision == Core.Sessions.SessionPermissionDecisions.AllowSession;
+        return method switch
+        {
+            "applyPatchApproval" or "execCommandApproval" => new
+            {
+                decision = !allow ? "denied" : forSession ? "approved_for_session" : "approved",
+            },
+            "item/permissions/requestApproval" => new
+            {
+                permissions = allow && @params.ValueKind == JsonValueKind.Object
+                    && @params.TryGetProperty("permissions", out var requested) && requested.ValueKind == JsonValueKind.Object
+                        ? requested
+                        : EmptyJsonObject,
+                scope = forSession ? "session" : "turn",
+            },
+            _ => new { decision = !allow ? "decline" : forSession ? "acceptForSession" : "accept" },
+        };
+    }
+
+    private static string ApprovalToolName(string method) => method switch
+    {
+        "item/commandExecution/requestApproval" or "execCommandApproval" => "commandExecution",
+        "item/fileChange/requestApproval" or "applyPatchApproval" => "fileChange",
+        _ => "permissions",
+    };
+
+    internal static string ApprovalSummary(string method, JsonElement @params)
+    {
+        var reason = Str(@params, "reason");
+        var summary = method switch
+        {
+            "item/commandExecution/requestApproval" => Str(@params, "command") ?? reason ?? "Run a command",
+            "execCommandApproval" => @params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("command", out var argv)
+                && argv.ValueKind == JsonValueKind.Array
+                    ? string.Join(' ', argv.EnumerateArray().Select(part => part.ToString()))
+                    : reason ?? "Run a command",
+            "item/fileChange/requestApproval" or "applyPatchApproval" => reason
+                ?? (Str(@params, "grantRoot") is { } root ? $"Write files under {root}" : "Apply file changes"),
+            _ => reason ?? "Grant additional permissions",
+        };
+        return summary.Length > 300 ? summary[..297] + "..." : summary;
+    }
+
+    private static string? Str(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString() : null;
+
+    public Core.Sessions.SessionAccessState? GetAccessState(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session)) return session.Info.Access;
+        return _store.FindSession(sessionId) is { } record
+            ? new(record.AccessLevel, record.MaxAccessLevel, record.Unattended, record.AccessLevelBeforePlan)
+            : null;
+    }
+
+    /// <summary>
+    /// Persists an access state RedCompute already authorized. Codex launches the same way at ask
+    /// and full (on-request, workspace-write); the level decides how approvals are answered, so a
+    /// live change applies to the next approval request.
+    /// </summary>
+    public bool SetAccessState(string sessionId, Core.Sessions.SessionAccessState state)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+        {
+            session.Info.Access = state;
+            Persist(session.Info);
+            SessionUpdated?.Invoke(session.Info);
+            return true;
+        }
+        var record = _store.FindSession(sessionId);
+        if (record is null) return false;
+        record.AccessLevel = state.AccessLevel;
+        record.MaxAccessLevel = state.MaxAccessLevel;
+        record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
+        record.Unattended = state.Unattended;
+        _store.SaveSession(record);
+        return true;
     }
 
     private void HandleUserInputRequest(ManagedSession session, JsonElement id, JsonElement @params)
@@ -1555,6 +1775,16 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// </summary>
     private void DiscardQuestions(ManagedSession session, string outcome)
     {
+        foreach (var requestId in session.Approvals.Keys)
+        {
+            if (!session.Approvals.TryRemove(requestId, out var approval)) continue;
+            approval.Dispose();
+            StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
+            {
+                Type = "question_resolved", RequestId = requestId, Content = outcome,
+                Kind = Core.Sessions.PendingSessionQuestion.PermissionKind, MessageUid = session.CurrentTurnUid,
+            });
+        }
         foreach (var itemId in session.Questions.Keys)
         {
             if (!session.Questions.TryRemove(itemId, out _)) continue;
@@ -1574,7 +1804,6 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     {
         if (!_sessions.TryGetValue(sessionId, out var session)) return [];
         return session.Questions.Values
-            .OrderBy(q => q.AskedAt)
             .Select(q => new Core.Sessions.PendingSessionQuestion
             {
                 RequestId = q.ItemId,
@@ -1584,6 +1813,19 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 Input = q.Params.ValueKind == JsonValueKind.Undefined ? EmptyJsonObject : q.Params,
                 AskedAt = q.AskedAt,
             })
+            .Concat(session.Approvals.Values.Select(a => new Core.Sessions.PendingSessionQuestion
+            {
+                RequestId = a.RequestId,
+                Kind = Core.Sessions.PendingSessionQuestion.PermissionKind,
+                Permission = a.Permission,
+                ToolName = a.Permission.ToolName,
+                ToolUseId = a.Permission.ToolUseId,
+                Questions = EmptyJsonArray,
+                Input = a.Params,
+                AskedAt = a.AskedAt,
+                ExpiresAt = a.ExpiresAt,
+            }))
+            .OrderBy(q => q.AskedAt)
             .ToArray();
     }
 
@@ -1894,6 +2136,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         ProviderEntity = info.ProviderEntity,
         DeveloperInstructions = info.DeveloperInstructions,
         ExecutionProfile = info.ExecutionProfile,
+        AccessLevel = info.AccessLevel,
+        MaxAccessLevel = info.MaxAccessLevel,
+        AccessLevelBeforePlan = info.AccessLevelBeforePlan,
+        Unattended = info.Unattended,
         Source = info.Source,
         ContextWindow = info.ContextWindow,
         UserId = info.UserId,
@@ -1930,6 +2176,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         ProviderEntity = r.ProviderEntity,
         DeveloperInstructions = r.DeveloperInstructions,
         ExecutionProfile = r.ExecutionProfile,
+        AccessLevel = r.AccessLevel,
+        MaxAccessLevel = r.MaxAccessLevel,
+        AccessLevelBeforePlan = r.AccessLevelBeforePlan,
+        Unattended = r.Unattended,
         Source = r.Source,
         ContextWindow = r.ContextWindow,
         UserId = r.UserId,

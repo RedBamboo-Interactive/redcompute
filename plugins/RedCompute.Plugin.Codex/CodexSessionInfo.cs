@@ -37,6 +37,26 @@ public class CodexSessionInfo
     public string? ProviderEntity { get; set; }
     public string? DeveloperInstructions { get; set; }
     public string ExecutionProfile { get; set; } = SessionExecutionProfile.Default;
+    /// <summary>
+    /// Access level: ask (approvals park as permission cards) or full (approvals accepted for the
+    /// session, the behaviour before access levels). Null on a row written before access levels.
+    /// </summary>
+    public string? AccessLevel { get; set; }
+    public string? MaxAccessLevel { get; set; }
+    public string? AccessLevelBeforePlan { get; set; }
+    public bool Unattended { get; set; }
+
+    public Core.Sessions.SessionAccessState Access
+    {
+        get => new(AccessLevel, MaxAccessLevel, Unattended, AccessLevelBeforePlan);
+        set
+        {
+            AccessLevel = value.AccessLevel;
+            MaxAccessLevel = value.MaxAccessLevel;
+            Unattended = value.Unattended;
+            AccessLevelBeforePlan = value.AccessLevelBeforePlan;
+        }
+    }
     public string? Source { get; set; }
     public int? ContextWindow { get; set; }
     public int? ProcessId { get; set; }

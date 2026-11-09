@@ -38,6 +38,15 @@ public class CodexSessionRecord
     public string? ProviderEntity { get; set; }
     public string? DeveloperInstructions { get; set; }
     public string ExecutionProfile { get; set; } = SessionExecutionProfile.Default;
+    /// <summary>
+    /// Access level: ask (approvals park as permission cards) or full (approvals accepted for the
+    /// session, the behaviour before access levels). Null on a row written before access levels.
+    /// </summary>
+    public string? AccessLevel { get; set; }
+    public string? MaxAccessLevel { get; set; }
+    public string? AccessLevelBeforePlan { get; set; }
+    public bool Unattended { get; set; }
+
     public string? Source { get; set; }
     public int? ContextWindow { get; set; }
     public string? UserId { get; set; }

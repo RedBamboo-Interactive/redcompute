@@ -137,6 +137,10 @@ public class CodexSessionStore : ICodexSessionStore
             existing.ProviderEntity = record.ProviderEntity;
             existing.DeveloperInstructions = record.DeveloperInstructions;
             existing.ExecutionProfile = record.ExecutionProfile;
+            existing.AccessLevel = record.AccessLevel;
+            existing.MaxAccessLevel = record.MaxAccessLevel;
+            existing.AccessLevelBeforePlan = record.AccessLevelBeforePlan;
+            existing.Unattended = record.Unattended;
             existing.Source = record.Source;
             existing.ContextWindow = record.ContextWindow;
             existing.UserId = record.UserId;
