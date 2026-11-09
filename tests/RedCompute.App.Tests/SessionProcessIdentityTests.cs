@@ -15,6 +15,7 @@ using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
 using RedCompute.PluginSdk;
 using Xunit;
@@ -152,6 +153,105 @@ public sealed class SessionProcessIdentityTests : IDisposable
             Assert.Single(context, item => item.Kind == JobCauses.ContextKind));
     }
 
+    // ---- a delegated session inherits its parent's level, which is also its cap ----
+    // The parent is read from the start identity's signed context: a session process's token names
+    // its own session, so whatever that process starts is delegated by it.
+
+    private static readonly SessionAccessPolicy FullEnabled = new()
+    {
+        DefaultLevel = SessionAccessLevels.Ask,
+        FullAccess = new FullAccessAcknowledgement(true, 1),
+    };
+
+    [Theory]
+    [InlineData(SessionAccessLevels.Full, "bypassPermissions")]
+    [InlineData(SessionAccessLevels.Auto, "auto")]
+    [InlineData(SessionAccessLevels.Ask, "acceptEdits")]
+    public async Task A_delegated_session_inherits_its_parents_level_as_level_and_cap(string level, string mode)
+    {
+        await using var host = Host.Create(this, FullEnabled);
+        var parentId = await StartParentAsync(host, level);
+
+        var (status, body) = await host.InvokeAsync("/ai-session/sessions",
+            Parent([.. DiscordOpenContext, new("session", parentId)]), new { projectPath = _root, provider = "claude-code" });
+
+        Assert.True(status == 200, $"{status}: {body}");
+        var child = JsonDocument.Parse(body).RootElement;
+        Assert.Equal(level, child.GetProperty("accessLevel").GetString());
+        Assert.Equal(level, child.GetProperty("maxAccessLevel").GetString());
+        Assert.Equal(SessionAccessLevelSources.Parent, child.GetProperty("accessLevelSource").GetString());
+        var args = _launches[^1].ArgumentList.ToList();
+        Assert.Equal(mode, args[args.IndexOf("--permission-mode") + 1]);
+    }
+
+    [Fact]
+    public async Task A_child_of_an_auto_parent_cannot_be_raised_above_auto_even_by_a_person()
+    {
+        await using var host = Host.Create(this, FullEnabled);
+        var parentId = await StartParentAsync(host, SessionAccessLevels.Auto);
+        var (_, body) = await host.InvokeAsync("/ai-session/sessions",
+            Parent([new("session", parentId)]), new { projectPath = _root, provider = "claude-code" });
+        var childId = JsonDocument.Parse(body).RootElement.GetProperty("id").GetString()!;
+        // Stopped, so a change is persisted without a CLI to confirm it (this fake never answers).
+        await host.Claude.ForceKill(childId);
+        var child = host.Provider.GetSession(childId).Info!;
+
+        var raise = await host.Access.ChangeAsync(host.Provider, child, SessionAccessLevels.Full, personPresent: true);
+        var lower = await host.Access.ChangeAsync(host.Provider, child, SessionAccessLevels.Ask, personPresent: true);
+        var back = await host.Access.ChangeAsync(host.Provider, child, SessionAccessLevels.Auto, personPresent: true);
+
+        Assert.Equal(403, raise.Status);
+        Assert.Equal(SessionAccessResolver.AboveSessionCap, raise.Error);
+        Assert.Equal(200, lower.Status);
+        Assert.Equal(200, back.Status);
+        Assert.Equal(new SessionAccessState(SessionAccessLevels.Auto, SessionAccessLevels.Auto,
+            AccessLevelSource: SessionAccessLevelSources.Explicit), host.Provider.GetAccessState(childId));
+    }
+
+    [Fact]
+    public async Task A_request_body_naming_a_parent_is_ignored()
+    {
+        await using var host = Host.Create(this, FullEnabled);
+        var parentId = await StartParentAsync(host, SessionAccessLevels.Full);
+
+        var (status, body) = await host.InvokeAsync("/ai-session/sessions", Parent(DiscordOpenContext), new
+        {
+            projectPath = _root, provider = "claude-code",
+            parentSessionId = parentId, parentSession = parentId, session = parentId, accessLevelSource = "parent",
+        });
+
+        Assert.True(status == 200, $"{status}: {body}");
+        var child = JsonDocument.Parse(body).RootElement;
+        Assert.Equal(SessionAccessLevels.Ask, child.GetProperty("accessLevel").GetString());
+        Assert.Equal(JsonValueKind.Null, child.GetProperty("maxAccessLevel").ValueKind);
+        Assert.Equal(SessionAccessLevelSources.Policy, child.GetProperty("accessLevelSource").GetString());
+    }
+
+    [Fact]
+    public async Task An_unknown_parent_falls_back_to_the_policy()
+    {
+        await using var host = Host.Create(this, FullEnabled with { DefaultLevel = SessionAccessLevels.Auto });
+
+        var (status, body) = await host.InvokeAsync("/ai-session/sessions",
+            Parent([.. DiscordOpenContext, new("session", "no-such-session")]), new { projectPath = _root, provider = "claude-code" });
+
+        Assert.True(status == 200, $"{status}: {body}");
+        var child = JsonDocument.Parse(body).RootElement;
+        Assert.Equal(SessionAccessLevels.Auto, child.GetProperty("accessLevel").GetString());
+        Assert.Equal(SessionAccessLevelSources.Policy, child.GetProperty("accessLevelSource").GetString());
+    }
+
+    /// <summary>A person starts the delegating session at an explicit level.</summary>
+    private async Task<string> StartParentAsync(Host host, string level)
+    {
+        var (status, body) = await host.InvokeAsync("/ai-session/sessions", parent: null,
+            new { projectPath = _root, provider = "claude-code", accessLevel = level });
+        Assert.True(status == 200, $"{status}: {body}");
+        var root = JsonDocument.Parse(body).RootElement;
+        Assert.Equal(level, root.GetProperty("accessLevel").GetString());
+        return root.GetProperty("id").GetString()!;
+    }
+
     private static ExecutionIdentity Parent(IReadOnlyList<ExecutionContextReference> context) => new(
         ExecutionIdentity.CurrentSchemaVersion,
         Guid.NewGuid().ToString(),
@@ -204,8 +304,10 @@ public sealed class SessionProcessIdentityTests : IDisposable
         }
 
         public ClaudeSessionService Claude { get; }
+        public ClaudeCodeProvider Provider { get; private set; } = null!;
+        public SessionAccessService Access { get; private set; } = null!;
 
-        public static Host Create(SessionProcessIdentityTests test)
+        public static Host Create(SessionProcessIdentityTests test, SessionAccessPolicy? policy = null)
         {
             var fixture = new SessionRecoveryTests.Fixture("maintenance_restart");
             var dbPath = Path.Combine(fixture.Root, "jobs.db");
@@ -231,9 +333,11 @@ public sealed class SessionProcessIdentityTests : IDisposable
             var builder = WebApplication.CreateSlimBuilder();
             builder.Services.AddSingleton(options).AddSingleton<IExecutionTokenIssuer>(new ExecutionTokenIssuer(jwt, options));
             var app = builder.Build();
+            var access = new SessionAccessService(new StaticSessionAccessPolicySource(policy ?? SessionAccessPolicy.NoRecord),
+                () => registry.FindProviders<ISessionProvider>(), jobs.GetJob, (_, _) => { });
             UnifiedSessionEndpoints.Map(new EndpointRegistry(app), registry, jobs, (_, _) => { }, fixture.Config,
-                attachmentStore: fixture.Attachments, inputQueue: fixture.Service());
-            return new Host(fixture, app, jwt, options, claude);
+                attachmentStore: fixture.Attachments, inputQueue: fixture.Service(), access: access);
+            return new Host(fixture, app, jwt, options, claude) { Provider = provider, Access = access };
         }
 
         public async Task<(int Status, string Body)> InvokeAsync(string route, ExecutionIdentity? parent,
@@ -251,6 +355,8 @@ public sealed class SessionProcessIdentityTests : IDisposable
                     ? _jwt.GenerateAccessToken("owner", "owner@test", "Owner", ["operator"])
                     : new ExecutionTokenIssuer(_jwt, _options).Issue(parent, principal).AccessToken)!,
             };
+            // As AuthMiddleware does for a verified execution token.
+            if (parent is not null) ctx.Items[ExecutionIdentityClaims.HttpContextItemKey] = parent;
             ctx.SetEndpoint(endpoint);
             if (routeId is not null) ctx.Request.RouteValues["id"] = routeId;
             ctx.Request.Method = "POST";

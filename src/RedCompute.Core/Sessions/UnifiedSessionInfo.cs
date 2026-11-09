@@ -41,7 +41,8 @@ public class UnifiedSessionInfo
     // The level the session returns to when it leaves plan without naming one.
     public string? AccessLevelBeforePlan { get; set; }
     // SessionAccessLevelSources: "policy" when the level came from the Agent's or global default
-    // (the session follows that default when it changes), "explicit" when someone chose it.
+    // (the session follows that default when it changes), "explicit" when someone chose it,
+    // "parent" when it was inherited at start from the delegating session (and caps it).
     public string? AccessLevelSource { get; set; }
     public string? Source { get; set; }
     public string? ExecutionProfile { get; set; }

@@ -468,11 +468,16 @@ public static class UnifiedSessionEndpoints
                     ],
                 };
             }
-            // The session's Agent comes from the verified start identity, never from the body.
-            var accessStart = await _access!.ResolveStartAsync(provider, requestedAccessLevel, maxAccessLevel, unattended,
-                ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted);
+            // The session's Agent comes from the verified start identity, never from the body; so does
+            // the session delegating this one, whose level the new session inherits as level and cap.
+            var parent = _access!.FindParent(SignedSessionReferences(ctx), info => CanReadSession(ctx, info));
+            var accessStart = await _access.ResolveStartAsync(provider, requestedAccessLevel, maxAccessLevel, unattended,
+                ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted, parent);
             if (accessStart.Error is not null)
                 return Error(422, accessStart.Error, accessStart.Message ?? accessStart.Error);
+            if (parent is not null)
+                log($"[Access] New {provider.ProviderId} session inherits {accessStart.State?.AccessLevel} (cap {accessStart.State?.MaxAccessLevel}) "
+                    + $"from delegating session {parent.ProviderId}/{parent.SessionId} at {parent.AccessLevel}", null);
             UnifiedSessionInfo? session;
             try
             {
@@ -527,7 +532,10 @@ public static class UnifiedSessionEndpoints
                 + " Defaults to the Agent's configured level from RedLeaf policy, else the global default, else ask. A caller that is not a person "
                 + "is clamped to that default; full needs Full enabled (else auto); maxAccessLevel clamps last. The session's Agent is taken from the "
                 + "verified start identity. A level named here is explicit (accessLevelSource explicit) and policy changes keep it; without one the level "
-                + "comes from the default (accessLevelSource policy) and follows it on every launch and policy change.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+                + "comes from the default (accessLevelSource policy) and follows it on every launch and policy change. A session started by another "
+                + "session's process (its signed execution identity names that session; never a body field) inherits that session's current level "
+                + "instead: level = min(parent level, provider support), maxAccessLevel = min(parent level, any requested cap), accessLevelSource "
+                + "parent, and policy changes keep it except a revoked Full. An unknown or unreadable parent falls back to the policy.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
             .WithParam("maxAccessLevel", "string", description: "Hard cap for the session's lifetime: nothing raises it above this level. "
                 + "422 access_level_cap_unsupported when the provider supports no level at or below it.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
             .WithParam("unattended", "boolean", description: "No person watches this session (automations, Discord): permission asks are denied at once "
@@ -3154,6 +3162,13 @@ public static class UnifiedSessionEndpoints
     /// <summary>The resolved one-shot access level in providerParams. Never copied from a request body.</summary>
     internal const string ProviderParamAccessLevel = "accessLevel";
 
+    /// <summary>The session ids the caller's signed execution identity names (a session process names its own).</summary>
+    internal static IEnumerable<string?> SignedSessionReferences(HttpContext ctx)
+        => ConfidentialResourcePolicy.ExecutionIdentity(ctx)?.Context
+            .Where(reference => string.Equals(reference.Kind, SessionAccessService.ParentContextKind, StringComparison.OrdinalIgnoreCase))
+            .Select(reference => reference.Id)
+            ?? [];
+
     private const string WorkStateDescription =
         "Each session carries workState, derived in one place from the turn status, parked questions and background tasks: " +
         "working (a turn is running), awaiting_answer (the turn is parked on a question or a permission), background (the turn ended Idle while background tasks still run), " +
@@ -3218,10 +3233,11 @@ public static class UnifiedSessionEndpoints
                     accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray(),
                         description = "The session's access level; null for a session persisted before access levels and not yet relaunched" },
                     maxAccessLevel = new { type = new[] { "string", "null" }, description = "Hard cap; null when uncapped" },
-                    accessLevelSource = new { type = new[] { "string", "null" }, @enum = new object?[] { SessionAccessLevelSources.Policy, SessionAccessLevelSources.Explicit, null },
+                    accessLevelSource = new { type = new[] { "string", "null" }, @enum = new object?[] { SessionAccessLevelSources.Policy, SessionAccessLevelSources.Explicit, SessionAccessLevelSources.Parent, null },
                         description = "policy: the level came from the Agent's or global default and follows it when it changes (shown as \"default\"); "
                             + "explicit: someone chose it (a start request's accessLevel, a change, entering or leaving plan) and policy changes keep it, "
-                            + "except a revoked Full. Null for a provider without access levels" },
+                            + "except a revoked Full; parent: inherited at start from the delegating session, which is also its cap, and kept like explicit. "
+                            + "Null for a provider without access levels" },
                     supportedAccessLevels = new { type = "array", items = new { type = "string" } },
                     unattended = new { type = "boolean", description = "Permission asks are denied at once and never park" },
                     permissionMode = new { type = new[] { "string", "null" }, description = "Provider-native mode string" },

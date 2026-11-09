@@ -84,10 +84,10 @@ public sealed record SessionAccessState(
     public static readonly SessionAccessState Legacy = new((string?)null);
 
     /// <summary>The level came from the configured default, so it follows that default when it changes.</summary>
-    public bool FollowsPolicy => AccessLevelSource != SessionAccessLevelSources.Explicit;
+    public bool FollowsPolicy => SessionAccessLevelSources.Normalize(AccessLevelSource) == SessionAccessLevelSources.Policy;
 
-    /// <summary>The source as reported on session reads: always one of the two names.</summary>
-    public string Source => FollowsPolicy ? SessionAccessLevelSources.Policy : SessionAccessLevelSources.Explicit;
+    /// <summary>The source as reported on session reads: always one of the three names.</summary>
+    public string Source => SessionAccessLevelSources.Normalize(AccessLevelSource);
 
     /// <summary>The same state, marked as chosen by someone rather than taken from the default.</summary>
     public SessionAccessState AsExplicit() => this with { AccessLevelSource = SessionAccessLevelSources.Explicit };
@@ -97,16 +97,24 @@ public sealed record SessionAccessState(
 /// Where a session's access level came from. A <see cref="Policy"/> level was resolved from the
 /// Agent's or global default and is re-resolved from the current policy on every launch and policy
 /// change. An <see cref="Explicit"/> level was chosen: a start request's <c>accessLevel</c>, any
-/// change through <c>/access-level</c> or <c>/permission-mode</c>, or entering or leaving plan. It
-/// is kept across policy changes, except that a revoked Full is still demoted.
+/// change through <c>/access-level</c> or <c>/permission-mode</c>, or entering or leaving plan. A
+/// <see cref="Parent"/> level was inherited at start from the session that delegated this one (named
+/// by the start identity's signed context), and that level is also the session's cap. Explicit and
+/// parent levels are kept across policy changes, except that a revoked Full is still demoted.
 /// </summary>
 public static class SessionAccessLevelSources
 {
     public const string Policy = "policy";
     public const string Explicit = "explicit";
+    public const string Parent = "parent";
 
-    /// <summary>The persisted form: <see cref="Explicit"/> or <see cref="Policy"/>, anything else as policy.</summary>
-    public static string Normalize(string? source) => source == Explicit ? Explicit : Policy;
+    /// <summary>The persisted form: <see cref="Explicit"/>, <see cref="Parent"/> or <see cref="Policy"/>, anything else as policy.</summary>
+    public static string Normalize(string? source) => source switch
+    {
+        Explicit => Explicit,
+        Parent => Parent,
+        _ => Policy,
+    };
 }
 
 /// <summary>

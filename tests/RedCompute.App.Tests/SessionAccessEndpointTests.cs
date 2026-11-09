@@ -26,7 +26,8 @@ public sealed class SessionAccessEndpointTests
 {
     private const string Plan = SessionAccessLevels.Plan, Ask = SessionAccessLevels.Ask,
         Auto = SessionAccessLevels.Auto, Full = SessionAccessLevels.Full;
-    private const string Policy = SessionAccessLevelSources.Policy, Explicit = SessionAccessLevelSources.Explicit;
+    private const string Policy = SessionAccessLevelSources.Policy, Explicit = SessionAccessLevelSources.Explicit,
+        ParentSource = SessionAccessLevelSources.Parent;
 
     public static TheoryData<string> People => Callers(SessionRollbackTests.PeopleCallers);
     public static TheoryData<string> NotPeople => Callers(SessionRollbackTests.NotPeopleCallers);
@@ -581,6 +582,64 @@ public sealed class SessionAccessEndpointTests
         Assert.Null(chosen);
         Assert.Null(same);
         Assert.Null(codex);   // auto is not Codex's, so its default resolves to ask: unchanged
+    }
+
+    // ---- inheriting from a delegating parent (accessLevelSource parent) ----
+
+    [Fact]
+    public async Task A_codex_child_of_an_auto_parent_resolves_ask_capped_at_auto()
+    {
+        var f = new Fixture(Ask) { Provider = { Supported = [Ask, Full] } };
+
+        var start = await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, false, personPresent: false, null,
+            parent: new SessionAccessParent("claude-code", "parent", Auto));
+
+        Assert.Equal(new SessionAccessState(Ask, Auto, AccessLevelSource: ParentSource), start.State);
+    }
+
+    [Fact]
+    public async Task A_requested_level_or_cap_only_lowers_what_the_parent_gives()
+    {
+        var f = new Fixture(Ask, fullEnabled: true);
+        var parent = new SessionAccessParent("claude-code", "parent", Full);
+
+        var higher = await f.Access.ResolveStartAsync(f.Provider.Proxy, Full, null, false, false, null, parent: parent with { AccessLevel = Auto });
+        var lowerLevel = await f.Access.ResolveStartAsync(f.Provider.Proxy, Ask, null, false, false, null, parent: parent);
+        var lowerCap = await f.Access.ResolveStartAsync(f.Provider.Proxy, null, Auto, true, false, null, parent: parent);
+
+        Assert.Equal(new SessionAccessState(Auto, Auto, AccessLevelSource: ParentSource), higher.State);
+        Assert.Equal(new SessionAccessState(Ask, Full, AccessLevelSource: ParentSource), lowerLevel.State);
+        Assert.Equal(new SessionAccessState(Auto, Auto, Unattended: true, AccessLevelSource: ParentSource), lowerCap.State);
+    }
+
+    [Fact]
+    public void The_parent_is_found_only_when_exactly_one_readable_session_with_a_level_is_named()
+    {
+        var f = new Fixture(Auto);
+
+        Assert.Equal(new SessionAccessParent("test", "session-1", Auto), f.Access.FindParent(["session-1"], _ => true));
+        Assert.Null(f.Access.FindParent(["session-1"], _ => false));
+        Assert.Null(f.Access.FindParent(["session-1", "session-2"], _ => true));
+        Assert.Null(f.Access.FindParent(["missing"], _ => true));
+        Assert.Null(f.Access.FindParent([], _ => true));
+        Assert.Null(new Fixture(level: null).Access.FindParent(["session-1"], _ => true));
+    }
+
+    [Fact]
+    public async Task A_parent_sourced_session_ignores_policy_changes_except_a_revoked_full()
+    {
+        var kept = new Fixture(Ask, source: ParentSource);
+        kept.Policy.Policy = kept.Policy.Policy with { DefaultLevel = Full, FullAccess = new FullAccessAcknowledgement(true, 1) };
+        await kept.PostPolicyChangedAsync("infrastructure service token");
+        await kept.Access.EnsureLaunchStateAsync(kept.Provider.Proxy, "session-1");
+        Assert.Equal(Ask, kept.Provider.State.AccessLevel);
+        Assert.Equal(0, kept.Provider.Sets);
+
+        var revoked = new Fixture(Full, fullEnabled: true, cap: Full, source: ParentSource);
+        revoked.Policy.Policy = revoked.Policy.Policy with { FullAccess = new FullAccessAcknowledgement(false, 1) };
+        var (_, body) = await revoked.PostPolicyChangedAsync("infrastructure service token");
+        Assert.Equal(["session-1"], body.GetProperty("demotedSessions").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(new SessionAccessState(Ask, Full, AccessLevelSource: ParentSource), revoked.Provider.State);
     }
 
     // ---- approving a parked permission ----

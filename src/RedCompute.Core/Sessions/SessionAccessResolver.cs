@@ -41,6 +41,32 @@ public static class SessionAccessResolver
     }
 
     /// <summary>
+    /// The level a delegated session starts at: its parent session's current level, which is also
+    /// its cap (lowered further by a requested cap). A requested level can only lower it. The parent
+    /// stands in for the configured default, so the person-present rule does not apply; full still
+    /// needs Full enabled (else auto), a level the provider cannot enforce becomes ask, and the cap
+    /// clamps last. Fails only when the cap is below every level the provider supports.
+    /// </summary>
+    public static SessionAccessResolution ResolveFromParent(
+        string? requested,
+        string parentLevel,
+        SessionAccessPolicy policy,
+        IReadOnlyCollection<string> supported,
+        string? maxAccessLevel)
+    {
+        if (requested is not null && !SessionAccessLevels.IsKnown(requested))
+            return SessionAccessResolution.Refused(InvalidAccessLevel, $"'{requested}' is not an access level");
+        if (maxAccessLevel is not null && !SessionAccessLevels.IsKnown(maxAccessLevel))
+            return SessionAccessResolution.Refused(InvalidAccessLevel, $"'{maxAccessLevel}' is not an access level");
+        if (!SessionAccessLevels.IsKnown(parentLevel))
+            return SessionAccessResolution.Refused(InvalidAccessLevel, $"'{parentLevel}' is not an access level");
+
+        var cap = maxAccessLevel is null ? parentLevel : SessionAccessLevels.Lower(parentLevel, maxAccessLevel);
+        var level = requested is null ? parentLevel : SessionAccessLevels.Lower(requested, parentLevel);
+        return Clamp(level, policy, supported, cap) with { Cap = cap };
+    }
+
+    /// <summary>
     /// The level a session is demoted to when Full stops being enabled, and the level a legacy
     /// session resolves to: its configured default, clamped like a start.
     /// </summary>
@@ -184,7 +210,8 @@ public static class SessionAccessResolver
         => SessionAccessLevels.All.Where(supported.Contains);
 }
 
-public sealed record SessionAccessResolution(string? Level, string? Error = null, string? Message = null)
+/// <param name="Cap">The cap the resolution imposes, when it sets one (a delegated session's parent level).</param>
+public sealed record SessionAccessResolution(string? Level, string? Error = null, string? Message = null, string? Cap = null)
 {
     public static SessionAccessResolution Resolved(string level) => new(level);
     public static SessionAccessResolution Refused(string error, string message) => new(null, error, message);

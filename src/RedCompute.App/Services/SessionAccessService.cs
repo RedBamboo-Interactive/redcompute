@@ -20,21 +20,65 @@ public sealed class SessionAccessService(
     public ISessionAccessPolicySource Policy => policy;
 
     /// <summary>
-    /// The state a new session starts with; null for a provider without access levels. A requested
-    /// level is explicit and kept across policy changes; without one the level comes from the policy
-    /// and follows it.
+    /// The state a new session starts with; null for a provider without access levels. A session
+    /// delegated by another (<paramref name="parent"/>) inherits that session's level as its level
+    /// and cap (source parent). Otherwise a requested level is explicit and kept across policy
+    /// changes, and without one the level comes from the policy and follows it.
     /// </summary>
     public async Task<SessionAccessStart> ResolveStartAsync(ISessionProvider provider, string? requested,
-        string? maxAccessLevel, bool unattended, bool personPresent, string? agentEntityId, CancellationToken ct = default)
+        string? maxAccessLevel, bool unattended, bool personPresent, string? agentEntityId, CancellationToken ct = default,
+        SessionAccessParent? parent = null)
     {
         var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0) return new SessionAccessStart(null);
         var current = await policy.GetAsync(ct: ct);
+        if (parent is not null)
+        {
+            var inherited = SessionAccessResolver.ResolveFromParent(requested, parent.AccessLevel, current, supported, maxAccessLevel);
+            return inherited.Level is null
+                ? new SessionAccessStart(null, inherited.Error, inherited.Message)
+                : new SessionAccessStart(new SessionAccessState(inherited.Level, inherited.Cap, unattended,
+                    AccessLevelSource: SessionAccessLevelSources.Parent));
+        }
         var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, maxAccessLevel);
         return resolved.Level is null
             ? new SessionAccessStart(null, resolved.Error, resolved.Message)
             : new SessionAccessStart(new SessionAccessState(resolved.Level, maxAccessLevel, unattended,
                 AccessLevelSource: requested is null ? SessionAccessLevelSources.Policy : SessionAccessLevelSources.Explicit));
+    }
+
+    /// <summary>The context kind a session process's signed identity uses to name its own session.</summary>
+    public const string ParentContextKind = "session";
+
+    /// <summary>
+    /// The session delegating a new one, read from the start identity's signed context alone (never
+    /// a request field): a session process's token names exactly one session, its own. Null, so the
+    /// start resolves from policy, unless exactly one session is named, it exists on a provider with
+    /// access levels, <paramref name="canRead"/> lets this caller read it, and it holds a known level.
+    /// </summary>
+    public SessionAccessParent? FindParent(IEnumerable<string?> signedSessionReferences,
+        Func<UnifiedSessionInfo, bool> canRead)
+    {
+        var named = signedSessionReferences.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).ToList();
+        if (named.Count != 1) return null;
+        var id = named[0]!;
+        foreach (var provider in providers())
+        {
+            try
+            {
+                if (provider.SupportedAccessLevels.Count == 0 || provider.GetAccessState(id) is not { } state) continue;
+                if (provider.GetSession(id).Info is not { } info) continue;
+                if (!canRead(info)) return null;
+                return state.AccessLevel is { } level && SessionAccessLevels.IsKnown(level)
+                    ? new SessionAccessParent(provider.ProviderId, id, level)
+                    : null;
+            }
+            catch (Exception ex)
+            {
+                log($"[Access] Could not read {provider.ProviderId} session {id} as a delegating parent: {ex.Message}", null);
+            }
+        }
+        return null;
     }
 
     /// <summary>The level a one-shot runs at: requested, clamped exactly like a session start.</summary>
@@ -274,6 +318,9 @@ public sealed class SessionAccessService(
 /// <param name="Demoted">Sessions moved off full because Full is no longer enabled.</param>
 /// <param name="Followed">Sessions whose level came from the policy and changed to follow it (raised or lowered).</param>
 public sealed record SessionAccessPolicyChangeResult(IReadOnlyList<string> Demoted, IReadOnlyList<string> Followed);
+
+/// <summary>The session that delegated a new one, and the level it held when it did.</summary>
+public sealed record SessionAccessParent(string ProviderId, string SessionId, string AccessLevel);
 
 public sealed record SessionAccessStart(SessionAccessState? State, string? Error = null, string? Message = null);
 
