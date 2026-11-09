@@ -82,8 +82,13 @@ public class SessionQuestionAnswer
     /// <summary>Dismiss the question instead of answering it.</summary>
     public bool Decline { get; init; }
     public string? DeclineReason { get; init; }
+    /// <summary>
+    /// For a parked permission (<see cref="PendingSessionQuestion.PermissionKind"/>): one of
+    /// <see cref="SessionPermissionDecisions"/>. Null for an ordinary question.
+    /// </summary>
+    public string? Decision { get; init; }
 }
 
-public enum QuestionAnswerResult { Answered, Declined, SessionNotFound, RequestNotFound, Error }
+public enum QuestionAnswerResult { Answered, Declined, SessionNotFound, RequestNotFound, Error, Allowed, Denied, InvalidDecision }
 
 public record ImageAttachment(string MediaType, string Base64);

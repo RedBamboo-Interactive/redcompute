@@ -220,6 +220,26 @@ public interface ISessionProvider
     // Configuration
     bool SetPermissionMode(string sessionId, string mode);
 
+    /// <summary>
+    /// The access levels (<see cref="SessionAccessLevels"/>) this provider can enforce, lowest
+    /// first. Empty for a provider that predates access levels; RedCompute then leaves its
+    /// sessions' levels unset and refuses level changes.
+    /// </summary>
+    IReadOnlyList<string> SupportedAccessLevels => [];
+
+    /// <summary>
+    /// The session's persisted access state, live or stopped; null when the session is unknown.
+    /// <see cref="SessionAccessState.Legacy"/> (null level) for a session persisted before access levels.
+    /// </summary>
+    SessionAccessState? GetAccessState(string sessionId) => null;
+
+    /// <summary>
+    /// Persists a new access state and, for a live session, applies it at once. RedCompute has
+    /// already authorized and clamped it; the provider only maps it. The state is applied again on
+    /// every later launch of the session. False when the session is unknown or cannot change.
+    /// </summary>
+    bool SetAccessState(string sessionId, SessionAccessState state) => false;
+
     // Querying
     List<UnifiedSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false);
     (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSession(string sessionId);

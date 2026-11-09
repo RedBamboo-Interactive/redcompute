@@ -26,7 +26,20 @@ public class UnifiedSessionInfo
     public string? Effort { get; set; }
     public string? QualityTier { get; set; }
     public Guid? JobId { get; set; }
+    // Provider-native mode string (Claude: plan, acceptEdits, auto, bypassPermissions). Describes
+    // what the provider runs; AccessLevel is the provider-neutral setting it was derived from.
     public string? PermissionMode { get; set; }
+    // SessionAccessLevels: plan, ask, auto or full. Persisted with the provider session and applied
+    // on every launch. Null for a session persisted before access levels and not yet relaunched.
+    public string? AccessLevel { get; set; }
+    // Hard cap set at start; nothing raises the session above it. Null when uncapped.
+    public string? MaxAccessLevel { get; set; }
+    // The levels this session's provider can enforce, lowest first.
+    public IReadOnlyList<string> SupportedAccessLevels { get; set; } = [];
+    // No person watches this session: permission asks are denied at once and never park.
+    public bool Unattended { get; set; }
+    // The level the session returns to when it leaves plan without naming one.
+    public string? AccessLevelBeforePlan { get; set; }
     public string? Source { get; set; }
     public string? ExecutionProfile { get; set; }
     public string? UserId { get; set; }
