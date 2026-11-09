@@ -60,7 +60,7 @@ public static class SessionRollbackEndpoints
                 return Results.Json(new
                 {
                     error = "rollback_requires_person",
-                    message = "Rewinding a conversation is a person's action, from the message menu. This request does not come from a person.",
+                    message = "Rewinding a conversation needs you, signed in, from the message menu. Agents can't do it, and neither can automatic local access, because any program on this computer can use that.",
                     reasons = Array.Empty<string>(),
                 }, statusCode: StatusCodes.Status403Forbidden);
 

@@ -1493,7 +1493,7 @@ public static class UnifiedSessionEndpoints
                     return Results.Json(new
                     {
                         error = "approval_requires_person",
-                        message = "Approving a tool call is a person's decision. This request does not come from a person.",
+                        message = "Approving a tool call needs you, signed in. Agents can't approve it, and neither can automatic local access, because any program on this computer can use that.",
                     }, statusCode: StatusCodes.Status403Forbidden);
                 if (decision is null)
                     return Error(422, "validation_failed",

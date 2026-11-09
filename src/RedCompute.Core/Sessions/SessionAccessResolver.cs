@@ -86,7 +86,7 @@ public static class SessionAccessResolver
         {
             if (!personPresent)
                 return SessionAccessChange.Refused(RaiseRequiresPerson,
-                    "Raising a session's access level is a person's decision. This request does not come from a person.");
+                    "Raising a session's access level needs you, signed in. Agents can't raise it, and neither can automatic local access, because any program on this computer can use that.");
             if (target == SessionAccessLevels.Full && !policy.FullAccessEnabled)
                 return SessionAccessChange.Refused(FullAccessNotEnabled,
                     "Full access is not enabled. Turn it on in RedLeaf Settings, Agent permissions.");
