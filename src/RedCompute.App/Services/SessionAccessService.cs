@@ -49,10 +49,16 @@ public sealed class SessionAccessService(
                     AccessLevelSource: SessionAccessLevelSources.Parent));
         }
         var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, maxAccessLevel);
-        return resolved.Level is null
-            ? new SessionAccessStart(null, resolved.Error, resolved.Message)
-            : new SessionAccessStart(new SessionAccessState(resolved.Level, maxAccessLevel, unattended,
-                AccessLevelSource: requested is null ? SessionAccessLevelSources.Policy : SessionAccessLevelSources.Explicit));
+        if (resolved.Level is null) return new SessionAccessStart(null, resolved.Error, resolved.Message);
+        // Started in plan: approving the plan returns to what the session would have run at
+        // without it, as entering plan later remembers the level it left. Without this, an
+        // approved plan landed on Ask and pinned the session there.
+        var beforePlan = resolved.Level == SessionAccessLevels.Plan
+            ? SessionAccessResolver.ResolveStart(null, agentEntityId, personPresent, current, supported, maxAccessLevel).Level
+            : null;
+        return new SessionAccessStart(new SessionAccessState(resolved.Level, maxAccessLevel, unattended,
+            beforePlan == SessionAccessLevels.Plan ? null : beforePlan,
+            requested is null ? SessionAccessLevelSources.Policy : SessionAccessLevelSources.Explicit));
     }
 
     /// <summary>The context kind a session process's signed identity uses to name its own session.</summary>

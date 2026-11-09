@@ -1001,6 +1001,19 @@ public sealed class SessionAccessEndpointTests
     }
 
     [Fact]
+    public async Task A_session_started_in_plan_returns_to_its_default_when_the_plan_is_approved()
+    {
+        var f = new Fixture(Ask, fullEnabled: true);
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full };
+
+        var start = await f.Access.ResolveStartAsync(f.Provider.Proxy, SessionAccessLevels.Plan, null, false, personPresent: true, null);
+        var capped = await f.Access.ResolveStartAsync(f.Provider.Proxy, SessionAccessLevels.Plan, Auto, false, personPresent: true, null);
+
+        Assert.Equal(new SessionAccessState(SessionAccessLevels.Plan, AccessLevelBeforePlan: Full, AccessLevelSource: Explicit), start.State);
+        Assert.Equal(Auto, capped.State!.AccessLevelBeforePlan);
+    }
+
+    [Fact]
     public void The_found_parent_carries_whether_it_is_unattended()
     {
         var f = new Fixture(Auto);
