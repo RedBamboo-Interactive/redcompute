@@ -445,8 +445,12 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Empty(_service.GetPendingQuestions(id));
         var verdict = Response(requestId);
         Assert.Equal("deny", verdict["behavior"]!.GetValue<string>());
-        Assert.Contains("unattended", verdict["message"]!.GetValue<string>());
+        // The model is told why and where a person changes it.
+        Assert.Equal("Denied: this session runs at Ask with nobody to approve 'Bash'. The installation owner can change this in "
+            + "RedLeaf Settings > Agent permissions, or raise this session in its Info panel. Continue without it.",
+            verdict["message"]!.GetValue<string>());
         var notice = Assert.Single(Live(), e => e.Type == "permission_denied");
+        Assert.Equal(verdict["message"]!.GetValue<string>(), notice.Content);
         Assert.Equal(requestId, notice.RequestId);
         Assert.Equal("Bash", notice.ToolName);
         Assert.DoesNotContain(Live(), e => e.Type == "question");
@@ -465,7 +469,10 @@ public sealed class ClaudeAccessLevelTests : IDisposable
 
         var verdict = Response(requestId);
         Assert.Equal("deny", verdict["behavior"]!.GetValue<string>());
-        Assert.Contains("No one approved 'Bash'", verdict["message"]!.GetValue<string>());
+        var message = verdict["message"]!.GetValue<string>();
+        Assert.StartsWith("Denied: this session runs at Ask and nobody approved 'Bash' within 1 minute.", message);
+        Assert.Contains("RedLeaf Settings > Agent permissions", message);
+        Assert.Contains("Info panel", message);
         Assert.Contains(Live(), e => e is { Type: "question_resolved", Content: "timeout", Decision: "deny" } && e.RequestId == requestId);
     }
 
@@ -681,6 +688,38 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Contains("--dangerously-skip-permissions", args);
         Assert.DoesNotContain("--permission-mode", args);
         Assert.Equal("Read", args[args.IndexOf("--tools") + 1]);
+    }
+
+    [Theory]
+    [InlineData(Ask, "Permissions: this session runs at Ask.")]
+    [InlineData(null, "Permissions: this session runs at Ask.")]
+    [InlineData(Auto, "Permissions: this session runs at Auto.")]
+    [InlineData(Plan, null)]
+    [InlineData(Full, null)]
+    public void Oneshot_that_can_be_denied_is_told_why_and_where_to_change_it(string? level, string? opening)
+    {
+        var args = new List<string>();
+        ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: null, allowedTools: null, addDirs: null, accessLevel: level);
+
+        if (opening is null)
+        {
+            Assert.DoesNotContain("--append-system-prompt", args);
+            return;
+        }
+        Assert.Single(args, a => a == "--append-system-prompt");
+        Assert.DoesNotContain("--system-prompt", args);
+        var note = args[args.IndexOf("--append-system-prompt") + 1];
+        Assert.StartsWith(opening + " Nobody watches it, so anything that needs approval is denied at once.", note);
+        Assert.Contains("RedLeaf Settings > Agent permissions", note);
+    }
+
+    [Fact]
+    public void Oneshot_with_a_tools_grant_gets_no_access_note()
+    {
+        var args = new List<string>();
+        ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: ["Read"], allowedTools: null, addDirs: null, accessLevel: Ask);
+
+        Assert.DoesNotContain("--append-system-prompt", args);
     }
 
     [Fact]

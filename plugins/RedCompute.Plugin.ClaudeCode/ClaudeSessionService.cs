@@ -539,6 +539,14 @@ public partial class ClaudeSessionService
     /// </summary>
     internal static readonly string[] OneshotAskFileTools = ["Read", "Glob", "Grep", "Edit", "Write", "NotebookEdit"];
 
+    /// <summary>
+    /// A one-shot has nobody to approve anything, and the CLI's own denial does not say why or
+    /// where a person changes that, so ask and auto runs are told up front (appended to Claude
+    /// Code's system prompt, never replacing it).
+    /// </summary>
+    private static void AddOneshotAccessNote(List<string> args, string level)
+        => args.AddRange(["--append-system-prompt", Core.Sessions.SessionAccessNotices.LaunchNote(level, unattended: true)]);
+
     /// <param name="accessLevel">
     /// The resolved one-shot level. An explicit <paramref name="tools"/> grant keeps today's flags
     /// (that exact tool set, unprompted); otherwise plan runs in plan mode, ask non-interactively
@@ -561,6 +569,7 @@ public partial class ClaudeSessionService
                     break;
                 case Core.Sessions.SessionAccessLevels.Auto:
                     args.AddRange(["--permission-mode", "auto"]);
+                    AddOneshotAccessNote(args, accessLevel);
                     break;
                 case Core.Sessions.SessionAccessLevels.Plan:
                     args.AddRange(["--permission-mode", "plan"]);
@@ -568,6 +577,7 @@ public partial class ClaudeSessionService
                 default:
                     args.AddRange(["--permission-mode", "dontAsk"]);
                     preApproved.AddRange(OneshotAskFileTools);
+                    AddOneshotAccessNote(args, Core.Sessions.SessionAccessLevels.Ask);
                     break;
             }
         if (tools is not null)
@@ -3279,8 +3289,7 @@ public partial class ClaudeSessionService
 
         if (session.Info.Access.Unattended)
         {
-            var reason = $"This session is unattended, so no person can approve '{toolName}' and it was denied. " +
-                         "Continue without it, or say what you would need a person to allow.";
+            var reason = Core.Sessions.SessionAccessNotices.UnattendedDenial(session.Info.Access.AccessLevel, $"'{toolName}'");
             _log($"[Claude] Session {session.Info.Id} is unattended; denied '{toolName}' ({permission.Summary})", null);
             RespondPermissionDeny(session, requestId, reason);
             // Live notice; the denial message is also the tool result the transcript keeps.
@@ -3385,8 +3394,8 @@ public partial class ClaudeSessionService
         RespondPermissionDeny(session, requestId, pending.Permission is null
             ? "The question timed out with no answer from the user. Proceed with your best judgement " +
               "and state the assumption you made."
-            : $"No one approved '{pending.ToolName}' within {QuestionAnswerTimeout.TotalMinutes:0} minutes, so it was denied. " +
-              "Continue without it, or ask again when the user is back.");
+            : Core.Sessions.SessionAccessNotices.ExpiredDenial(session.Info.Access.AccessLevel, $"'{pending.ToolName}'",
+                QuestionAnswerTimeout));
 
         if (pending.Permission is not null)
             EmitPermissionResolved(session, requestId, Core.Sessions.SessionPermissionDecisions.Deny, "timeout");

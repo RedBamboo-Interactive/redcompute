@@ -349,7 +349,7 @@ public class OpenCodeSessionService
         if (SessionScratch.Environment(scratchDirectory, sessionId: info.Id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
-        ApplyDeveloperInstructions(startInfo, info.Id, developerInstructions);
+        ApplyDeveloperInstructions(startInfo, info.Id, WithAccessNote(info, developerInstructions));
         ApplyConfiguredDataHome(startInfo, _config.OpenCodeDataHome);
 
         var resolvedModel = model ?? _config.Model;
@@ -1075,7 +1075,7 @@ public class OpenCodeSessionService
             {
                 Type = "permission_denied", Kind = PendingSessionQuestion.PermissionKind, RequestId = requestId,
                 ToolName = permission.ToolName, MessageId = permission.ToolUseId, MessageUid = session.CurrentAssistantUid,
-                Content = $"This session is unattended, so no person could approve {permission.ToolName} ({permission.Summary}); it was rejected.",
+                Content = SessionAccessNotices.UnattendedDenial(session.Info.AccessLevel, $"{permission.ToolName} ({permission.Summary})"),
                 Permission = permission,
             });
             return;
@@ -2350,6 +2350,16 @@ public class OpenCodeSessionService
         Unattended = r.Unattended,
         AccessLevelSource = r.AccessLevelSource,
     };
+
+    /// <summary>
+    /// The launch's developer instructions plus, below full, the access note: an ACP rejection
+    /// carries no message to the model, so the reason and where a person changes the level are
+    /// given up front. Applied on every spawn, so it names the level the process launches at.
+    /// </summary>
+    internal static string? WithAccessNote(OpenCodeSessionInfo info, string? developerInstructions)
+        => info.AccessLevel is { } level && SessionAccessLevels.IsKnown(level) && level != SessionAccessLevels.Full
+            ? SessionAccessNotices.WithLaunchNote(developerInstructions, SessionAccessNotices.LaunchNote(level, info.Unattended))
+            : developerInstructions;
 
     internal static void ApplyDeveloperInstructions(
         ProcessStartInfo startInfo, string sessionId, string? developerInstructions)

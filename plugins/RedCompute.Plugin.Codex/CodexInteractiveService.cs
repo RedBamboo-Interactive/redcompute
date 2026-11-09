@@ -940,11 +940,25 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         sandboxPolicy = BuildSandboxPolicy(info),
     };
 
+    /// <summary>
+    /// The session's developer instructions plus, when its approvals can be declined (any level
+    /// below full, outside conversation-only), the access note: a declined Codex approval carries
+    /// no message to the model, so the reason and where a person changes the level are given up
+    /// front. Re-sent on every thread start and resume, so it names the level the thread launches at.
+    /// </summary>
+    internal static string? DeveloperInstructionsWithAccessNote(CodexSessionInfo info)
+        => info.AccessLevel is { } level && Core.Sessions.SessionAccessLevels.IsKnown(level)
+            && level != Core.Sessions.SessionAccessLevels.Full
+            && !SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+                ? Core.Sessions.SessionAccessNotices.WithLaunchNote(info.DeveloperInstructions,
+                    Core.Sessions.SessionAccessNotices.LaunchNote(level, info.Unattended))
+                : info.DeveloperInstructions;
+
     internal static object BuildThreadStartParams(CodexSessionInfo info) => new
     {
         cwd = info.ProjectPath,
         model = info.Model,
-        developerInstructions = info.DeveloperInstructions,
+        developerInstructions = DeveloperInstructionsWithAccessNote(info),
         baseInstructions = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
             ? ConversationBaseInstructions
             : null,
@@ -964,7 +978,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         threadId = info.ThreadId,
         cwd = info.ProjectPath,
         model = info.Model,
-        developerInstructions = info.DeveloperInstructions,
+        developerInstructions = DeveloperInstructionsWithAccessNote(info),
         baseInstructions = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
             ? ConversationBaseInstructions
             : null,
@@ -1587,7 +1601,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             {
                 Type = "permission_denied", Kind = Core.Sessions.PendingSessionQuestion.PermissionKind,
                 RequestId = requestId, ToolName = permission.ToolName, MessageId = permission.ToolUseId,
-                Content = $"This session is unattended, so no person could approve {permission.ToolName} ({permission.Summary}); it was declined.",
+                Content = Core.Sessions.SessionAccessNotices.UnattendedDenial(session.Info.AccessLevel,
+                    $"{permission.ToolName} ({permission.Summary})"),
                 Permission = permission, MessageUid = session.CurrentTurnUid,
             });
             return;

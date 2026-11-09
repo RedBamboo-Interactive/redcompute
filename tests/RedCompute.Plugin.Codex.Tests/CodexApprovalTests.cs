@@ -92,7 +92,8 @@ public sealed class CodexApprovalTests : IDisposable
         Assert.Equal("decline", Assert.Single(await h.ResponsesAsync())["result"]!["decision"]!.GetValue<string>());
         var notice = Assert.Single(h.Events, e => e.Type == "permission_denied");
         Assert.Equal("approval-5", notice.RequestId);
-        Assert.Contains("unattended", notice.Content);
+        Assert.StartsWith("Denied: this session runs at Ask with nobody to approve commandExecution (", notice.Content);
+        Assert.Contains("RedLeaf Settings > Agent permissions", notice.Content);
         Assert.DoesNotContain(h.Events, e => e.Type == "question");
         Assert.NotEqual("Waiting", h.Info.Status);
     }

@@ -51,6 +51,37 @@ public sealed class CodexConversationProfileTests
         Assert.Equal(JsonValueKind.Null, value.GetProperty("config").ValueKind);
     }
 
+    [Theory]
+    [InlineData(SessionAccessLevels.Ask, false, "Anything that needs approval waits for a person and is denied if nobody approves it within 30 minutes.")]
+    [InlineData(SessionAccessLevels.Ask, true, "Nobody watches it, so anything that needs approval is denied at once.")]
+    public void A_thread_that_can_be_declined_is_told_why_and_where_to_change_it(string level, bool unattended, string rule)
+    {
+        var info = Session(SessionExecutionProfile.Default);
+        info.AccessLevel = level;
+        info.Unattended = unattended;
+
+        foreach (var parameters in new[] { CodexInteractiveService.BuildThreadStartParams(info), CodexInteractiveService.BuildThreadResumeParams(info) })
+        {
+            var instructions = JsonSerializer.SerializeToElement(parameters).GetProperty("developerInstructions").GetString()!;
+            Assert.StartsWith("trusted SHIN instructions\n\nPermissions: this session runs at Ask. " + rule, instructions);
+            Assert.Contains("The installation owner can change this in RedLeaf Settings > Agent permissions, or raise this session in its Info panel.", instructions);
+        }
+    }
+
+    [Theory]
+    [InlineData(SessionAccessLevels.Full, SessionExecutionProfile.Default)]
+    [InlineData(null, SessionExecutionProfile.Default)]
+    [InlineData(SessionAccessLevels.Ask, SessionExecutionProfile.ConversationOnly)]
+    public void A_thread_nothing_is_declined_on_keeps_its_instructions(string? level, string profile)
+    {
+        var info = Session(profile);
+        info.AccessLevel = level;
+
+        var value = JsonSerializer.SerializeToElement(CodexInteractiveService.BuildThreadStartParams(info));
+
+        Assert.Equal("trusted SHIN instructions", value.GetProperty("developerInstructions").GetString());
+    }
+
     [Fact]
     public void ConversationInputAllowsTextAndRejectsAttachments()
     {

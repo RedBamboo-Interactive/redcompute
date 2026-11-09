@@ -102,7 +102,8 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
         Assert.Equal("reject", Assert.Single(await h.ResponsesAsync())["result"]!["outcome"]!["optionId"]!.GetValue<string>());
         var notice = Assert.Single(h.Events, e => e.Type == "permission_denied");
         Assert.Equal("permission-24", notice.RequestId);
-        Assert.Contains("unattended", notice.Content);
+        Assert.StartsWith("Denied: this session runs at Ask with nobody to approve ", notice.Content);
+        Assert.Contains("RedLeaf Settings > Agent permissions", notice.Content);
         Assert.DoesNotContain(h.Events, e => e.Type == "question");
     }
 
