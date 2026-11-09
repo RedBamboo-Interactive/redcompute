@@ -171,7 +171,7 @@ public sealed class SessionAccessService(
         var current = await policy.GetAsync(refresh: true, ct);
         log($"[Access] RedLeaf announced a policy change{(revision is { } r ? $" (revision {r})" : "")}; "
             + (current.Available
-                ? $"default {current.DefaultFor(null)}, Full access {(current.FullAccessEnabled ? "enabled" : "disabled")}"
+                ? $"default {current.DefaultFor(null)}{(current.Stored ? "" : " (no policy saved)")}, Full access {(current.FullAccessEnabled ? "enabled" : "disabled")}"
                 : "policy unavailable, failing closed"), null);
         var demoted = new List<string>();
         var followed = new List<string>();

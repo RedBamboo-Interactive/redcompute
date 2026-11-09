@@ -16,8 +16,10 @@ public interface ISessionAccessPolicySource
 /// <summary>
 /// Reads <c>GET /api/agent-permissions/policy</c> from RedLeaf and keeps it at most
 /// <see cref="CacheLifetime"/>. Fails closed: an unreachable RedLeaf, an error status or a body it
-/// cannot read all mean default <c>ask</c> with Full disabled. A 404 is the "no record" answer and
-/// reads the same. Failures are cached only briefly, so a recovered RedLeaf is seen quickly.
+/// cannot read all mean default <c>ask</c> with Full disabled. No policy record (404, an empty
+/// answer, or RedLeaf's own no-record shape confirmed by revision 0) means default <c>auto</c> with
+/// Full disabled (<see cref="SessionAccessPolicy.NoRecord"/>). Failures are cached only briefly, so a
+/// recovered RedLeaf is seen quickly.
 /// </summary>
 public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySource
 {
@@ -66,14 +68,23 @@ public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySourc
         try
         {
             using var response = await _http.GetAsync("api/agent-permissions/policy", ct);
-            if (response.StatusCode == HttpStatusCode.NotFound) return SessionAccessPolicy.NoRecord;
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.NoContent) return SessionAccessPolicy.NoRecord;
             if (!response.IsSuccessStatusCode)
             {
                 _log($"[Access] Policy read returned HTTP {(int)response.StatusCode}; failing closed (ask, Full disabled)", null);
                 return SessionAccessPolicy.FailClosed;
             }
-            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-            return Parse(document.RootElement);
+            var text = await response.Content.ReadAsStringAsync(ct);
+            if (string.IsNullOrWhiteSpace(text)) return SessionAccessPolicy.NoRecord;
+            using var document = JsonDocument.Parse(text);
+            var root = Unwrap(document.RootElement);
+            if (IsEmpty(root)) return SessionAccessPolicy.NoRecord;
+            var policy = Parse(root);
+            if (!policy.Available || !LooksLikeNoRecord(root)) return policy;
+            // RedLeaf answers "no record" with the same compact shape as an owner's saved plain Ask.
+            // Its revision tells them apart: 0 is no record, a saved policy is 1 or more.
+            var revision = Revision(root) ?? await ReadRevisionAsync(ct);
+            return revision == 0 ? SessionAccessPolicy.NoRecord : policy;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -83,15 +94,80 @@ public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySourc
     }
 
     /// <summary>
+    /// The policy's revision from RedLeaf's Settings view (<c>GET /api/agent-permissions</c>), read
+    /// only when the compact policy looks like RedLeaf's no-record answer. Null when it cannot be
+    /// read, which keeps the compact reading (the stricter ask).
+    /// </summary>
+    private async Task<long?> ReadRevisionAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var response = await _http.GetAsync("api/agent-permissions", ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                _log($"[Access] Policy revision read returned HTTP {(int)response.StatusCode}; reading the policy as saved (ask)", null);
+                return null;
+            }
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return document.RootElement.ValueKind == JsonValueKind.Object ? Revision(document.RootElement) : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _log($"[Access] Policy revision unavailable ({ex.Message}); reading the policy as saved (ask)", null);
+            return null;
+        }
+    }
+
+    private static JsonElement Unwrap(JsonElement root)
+        => root.ValueKind == JsonValueKind.Object && root.TryGetProperty("policy", out var wrapped)
+            && wrapped.ValueKind == JsonValueKind.Object
+                ? wrapped
+                : root;
+
+    /// <summary>An empty answer: JSON null or an object with nothing in it.</summary>
+    private static bool IsEmpty(JsonElement root)
+        => root.ValueKind == JsonValueKind.Null
+            || (root.ValueKind == JsonValueKind.Object && !root.EnumerateObject().Any());
+
+    private static long? Revision(JsonElement root)
+        => root.TryGetProperty("revision", out var revision) && revision.ValueKind == JsonValueKind.Number
+            && revision.TryGetInt64(out var value) ? value : null;
+
+    /// <summary>
+    /// RedLeaf's <c>AgentAccessPolicy.None</c> in the compact shape: default ask, no Agent entries,
+    /// Full access never accepted. A saved policy can look the same, so this alone proves nothing.
+    /// </summary>
+    internal static bool LooksLikeNoRecord(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return false;
+        if (!root.TryGetProperty("defaultLevel", out var level) || level.ValueKind != JsonValueKind.String
+            || level.GetString() != SessionAccessLevels.Ask)
+            return false;
+        if (root.TryGetProperty("agents", out var agents)
+            && !(agents.ValueKind == JsonValueKind.Null
+                 || (agents.ValueKind == JsonValueKind.Object && !agents.EnumerateObject().Any())))
+            return false;
+        if (!root.TryGetProperty("fullAccess", out var full) || full.ValueKind == JsonValueKind.Null) return true;
+        if (full.ValueKind != JsonValueKind.Object) return false;
+        foreach (var property in full.EnumerateObject())
+        {
+            var unset = property.Name == "enabled"
+                ? property.Value.ValueKind is JsonValueKind.False or JsonValueKind.Null
+                : property.Value.ValueKind == JsonValueKind.Null;
+            if (!unset) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// <c>{version, defaultLevel, agents: {agentEntityId: level}, fullAccess: {enabled, textVersion,
-    /// acknowledgedAt, acknowledgedBy}}</c>, bare or under <c>policy</c>. Unknown levels are ignored,
-    /// which leaves the stricter default in place.
+    /// acknowledgedAt, acknowledgedBy}}</c>, bare or under <c>policy</c>, as a saved policy. Unknown
+    /// levels are ignored, which leaves the stricter default in place. Whether RedLeaf holds a
+    /// record at all is decided before this, in <see cref="FetchAsync"/>.
     /// </summary>
     internal static SessionAccessPolicy Parse(JsonElement root)
     {
-        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("policy", out var wrapped)
-            && wrapped.ValueKind == JsonValueKind.Object)
-            root = wrapped;
+        root = Unwrap(root);
         if (root.ValueKind != JsonValueKind.Object) return SessionAccessPolicy.FailClosed;
 
         var agents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

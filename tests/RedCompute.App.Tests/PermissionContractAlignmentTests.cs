@@ -57,6 +57,18 @@ public sealed class PermissionContractAlignmentTests : IDisposable
     /// <summary>The default web encoder escapes '+' as a backslash-u002B sequence, as RedLeaf's response does.</summary>
     private static string Wire(string json) => json.Replace("+", @"\u002B", StringComparison.Ordinal);
 
+    /// <summary>
+    /// GET /api/agent-permissions (the Settings view) on an install with no stored policy, trimmed to
+    /// the fields RedCompute reads plus their neighbours: ViewAsync writes the compact policy under
+    /// <c>policy</c> and the stored revision (0 for AgentAccessPolicy.None) beside it.
+    /// </summary>
+    private const string RedLeafViewNoRecord =
+        """{"policy":{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null}},"levels":["plan","ask","auto","full"],"revision":0,"updatedAt":null,"fullAccess":{"enabled":false,"effective":false,"needsReacceptance":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null,"acknowledgedByName":null,"revokedAt":null},"agents":[],"canChange":false,"blockedReason":"agent_permissions_require_person","blockedMessage":"x"}""";
+
+    /// <summary>The same view after the owner saved a plain Ask once: same compact policy, revision 1.</summary>
+    private const string RedLeafViewSavedAsk =
+        """{"policy":{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null}},"levels":["plan","ask","auto","full"],"revision":1,"updatedAt":"2026-11-09T18:00:00+00:00","agents":[]}""";
+
     /// <summary>NotifyComputeAsync's body after a write.</summary>
     private const string RedLeafChangeNotification = """{"version":1,"revision":3}""";
 
@@ -115,13 +127,27 @@ public sealed class PermissionContractAlignmentTests : IDisposable
     }
 
     [Fact]
-    public async Task The_client_reads_redleafs_no_record_as_ask_with_full_off()
+    public async Task The_client_reads_redleafs_no_record_as_auto_with_full_off()
     {
-        var policy = await ReadThroughClientAsync(RedLeafNoRecord);
+        // Krhom's install, 2026-11-09: RedLeaf on main, nobody ever saved Agent permissions.
+        var policy = await ReadThroughClientAsync(RedLeafNoRecord, RedLeafViewNoRecord);
 
         Assert.True(policy.Available);
+        Assert.False(policy.Stored);
         Assert.False(policy.FullAccessEnabled);
-        Assert.Null(policy.FullAccess!.TextVersion);
+        Assert.Equal(SessionAccessLevels.Auto, policy.DefaultFor("anyone"));
+        Assert.Equal(SessionAccessLevels.Auto, SessionAccessResolver.ResolveStart(null, "anyone", false, policy,
+            SessionAccessLevels.All, null).Level);
+        Assert.Equal(SessionAccessLevels.Ask, SessionAccessResolver.ResolveStart(null, "anyone", false, policy,
+            [SessionAccessLevels.Ask, SessionAccessLevels.Full], null).Level);
+    }
+
+    [Fact]
+    public async Task The_client_reads_a_saved_plain_ask_as_ask()
+    {
+        var policy = await ReadThroughClientAsync(RedLeafNoRecord, RedLeafViewSavedAsk);
+
+        Assert.True(policy.Stored);
         Assert.Equal(SessionAccessLevels.Ask, policy.DefaultFor("anyone"));
     }
 
@@ -136,21 +162,29 @@ public sealed class PermissionContractAlignmentTests : IDisposable
             SessionAccessLevels.All, null).Level);
     }
 
-    private static async Task<SessionAccessPolicy> ReadThroughClientAsync(string json)
+    private static async Task<SessionAccessPolicy> ReadThroughClientAsync(string json, string? view = null)
     {
-        var http = new HttpClient(new FixedResponse(json)) { BaseAddress = new Uri("http://redleaf/") };
+        var http = new HttpClient(new FixedResponse(json, view)) { BaseAddress = new Uri("http://redleaf/") };
         return await new RedLeafSessionAccessPolicyClient(http, (_, _) => { }).GetAsync();
     }
 
-    private sealed class FixedResponse(string json) : HttpMessageHandler
+    /// <param name="view">The Settings view, served only to a client that asks for it; null fails the test if it does.</param>
+    private sealed class FixedResponse(string json, string? view) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Assert.Equal(HttpMethod.Get, request.Method);
-            Assert.Equal("/api/agent-permissions/policy", request.RequestUri!.AbsolutePath);
+            var path = request.RequestUri!.AbsolutePath;
+            var body = json;
+            if (path == "/api/agent-permissions")
+            {
+                Assert.NotNull(view);
+                body = view!;
+            }
+            else Assert.Equal("/api/agent-permissions/policy", path);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
             });
         }
     }
@@ -260,7 +294,7 @@ public sealed class PermissionContractAlignmentTests : IDisposable
 
         Assert.True(status == 200, body.ToString());
         var call = Assert.Single(provider.Calls);
-        Assert.Equal(SessionAccessLevels.Ask, call["accessLevel"]);   // nothing requested: the policy default
+        Assert.Equal(SessionAccessLevels.Auto, call["accessLevel"]);  // nothing requested, no policy saved: auto
         Assert.False(call.ContainsKey("unattended"));                  // never copied from the body
     }
 

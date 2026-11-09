@@ -142,7 +142,7 @@ public sealed class SessionAccessResolverTests
         Assert.Equal(Ask, policy.DefaultFor("broken"));
         Assert.Equal(Ask, policy.DefaultFor("someone-else"));
         Assert.Equal(Ask, policy.DefaultFor(null));
-        Assert.Equal(Ask, SessionAccessPolicy.NoRecord.DefaultFor("nova"));
+        Assert.Equal(Auto, SessionAccessPolicy.NoRecord.DefaultFor("nova"));
         Assert.Equal(Ask, SessionAccessPolicy.FailClosed.DefaultFor("nova"));
     }
 
@@ -155,13 +155,25 @@ public sealed class SessionAccessResolverTests
         => Assert.Equal(counts, Policy(full: enabled, textVersion: textVersion).FullAccessEnabled);
 
     [Fact]
-    public void No_record_and_fail_closed_mean_ask_with_full_disabled()
+    public void Fail_closed_means_ask_and_no_record_means_auto_both_with_full_disabled()
     {
         Assert.False(SessionAccessPolicy.NoRecord.FullAccessEnabled);
+        Assert.True(SessionAccessPolicy.NoRecord.Available);
+        Assert.False(SessionAccessPolicy.NoRecord.Stored);
         Assert.False(SessionAccessPolicy.FailClosed.FullAccessEnabled);
         Assert.False(SessionAccessPolicy.FailClosed.Available);
         Assert.Equal(Ask, SessionAccessResolver.ResolveStart(null, "nova", false, SessionAccessPolicy.FailClosed, Claude, null).Level);
         Assert.Equal(Auto, SessionAccessResolver.ResolveStart(Full, "nova", true, SessionAccessPolicy.FailClosed, Claude, null).Level);
+
+        // No record: auto for anyone, person or not; Full stays off; a provider without auto gets ask.
+        Assert.Equal(Auto, SessionAccessResolver.ResolveStart(null, "nova", false, SessionAccessPolicy.NoRecord, Claude, null).Level);
+        Assert.Equal(Auto, SessionAccessResolver.ResolveStart(null, null, true, SessionAccessPolicy.NoRecord, Claude, null).Level);
+        Assert.Equal(Auto, SessionAccessResolver.ResolveStart(Full, "nova", true, SessionAccessPolicy.NoRecord, Claude, null).Level);
+        Assert.Equal(Auto, SessionAccessResolver.ResolveStart(Full, "nova", false, SessionAccessPolicy.NoRecord, Claude, null).Level);
+        Assert.Equal(Ask, SessionAccessResolver.ResolveStart(null, "nova", false, SessionAccessPolicy.NoRecord, AskAndFull, null).Level);
+        Assert.Equal(Ask, SessionAccessResolver.ResolveStart(Full, "nova", true, SessionAccessPolicy.NoRecord, AskAndFull, null).Level);
+        Assert.Equal(Ask, SessionAccessResolver.ResolveStart(null, "nova", false, SessionAccessPolicy.NoRecord, Claude, Ask).Level);
+        Assert.Equal(Plan, SessionAccessResolver.ResolveStart(Plan, "nova", false, SessionAccessPolicy.NoRecord, Claude, null).Level);
     }
 
     public static IEnumerable<object?[]> ChangeCombinations()
@@ -357,16 +369,114 @@ public sealed class SessionAccessResolverTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.InternalServerError, false)]
-    [InlineData(HttpStatusCode.Unauthorized, false)]
-    [InlineData(HttpStatusCode.NotFound, true)]   // no record: the defaults, read successfully
-    public async Task Error_statuses_read_as_the_defaults(HttpStatusCode status, bool available)
+    [InlineData(HttpStatusCode.InternalServerError, false, Ask)]
+    [InlineData(HttpStatusCode.Unauthorized, false, Ask)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, false, Ask)]
+    [InlineData(HttpStatusCode.NotFound, true, Auto)]    // no record: auto, read successfully
+    [InlineData(HttpStatusCode.NoContent, true, Auto)]   // no record, said with an empty answer
+    public async Task Error_statuses_fail_closed_and_no_record_reads_as_auto(HttpStatusCode status, bool available, string level)
     {
         var policy = await Client(_ => new HttpResponseMessage(status)).GetAsync();
 
         Assert.Equal(available, policy.Available);
+        Assert.False(policy.Stored);
         Assert.False(policy.FullAccessEnabled);
-        Assert.Equal(Ask, policy.DefaultFor("nova"));
+        Assert.Equal(level, policy.DefaultFor("nova"));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("""{"policy":{}}""")]
+    public async Task An_empty_answer_is_no_record(string body)
+    {
+        var policy = await Client(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) }).GetAsync();
+
+        Assert.True(policy.Available);
+        Assert.False(policy.Stored);
+        Assert.Equal(Auto, policy.DefaultFor(null));
+        Assert.False(policy.FullAccessEnabled);
+    }
+
+    private const string RedLeafNoRecordShape =
+        """{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null}}""";
+
+    [Theory]
+    [InlineData(0, Auto, false)]   // RedLeaf's AgentAccessPolicy.None: nothing saved
+    [InlineData(1, Ask, true)]     // the owner saved a plain Ask
+    [InlineData(7, Ask, true)]
+    public async Task Redleafs_no_record_shape_is_told_apart_by_its_revision(long revision, string level, bool stored)
+    {
+        var paths = new List<string>();
+        var policy = await AnyPathClient(request =>
+        {
+            paths.Add(request.RequestUri!.AbsolutePath);
+            return request.RequestUri.AbsolutePath == "/api/agent-permissions"
+                ? Json(new { policy = JsonDocument.Parse(RedLeafNoRecordShape).RootElement, revision, updatedAt = (string?)null })
+                : Text(RedLeafNoRecordShape);
+        }).GetAsync();
+
+        Assert.Equal(["/api/agent-permissions/policy", "/api/agent-permissions"], paths);
+        Assert.Equal(level, policy.DefaultFor("nova"));
+        Assert.Equal(stored, policy.Stored);
+        Assert.True(policy.Available);
+        Assert.False(policy.FullAccessEnabled);
+    }
+
+    [Theory]
+    [InlineData(0, Auto)]
+    [InlineData(2, Ask)]
+    public async Task A_revision_in_the_compact_policy_needs_no_second_read(long revision, string level)
+    {
+        var reads = 0;
+        var body = RedLeafNoRecordShape[..^1] + $$""","revision":{{revision}}}""";
+        var policy = await AnyPathClient(request =>
+        {
+            reads++;
+            Assert.Equal("/api/agent-permissions/policy", request.RequestUri!.AbsolutePath);
+            return Text(body);
+        }).GetAsync();
+
+        Assert.Equal(1, reads);
+        Assert.Equal(level, policy.DefaultFor(null));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(null)]   // the view read throws
+    public async Task When_the_revision_cannot_be_read_the_no_record_shape_stays_ask(HttpStatusCode? viewStatus)
+    {
+        var policy = await AnyPathClient(request => request.RequestUri!.AbsolutePath == "/api/agent-permissions"
+            ? viewStatus is { } status ? new HttpResponseMessage(status) : throw new HttpRequestException("reset")
+            : Text(RedLeafNoRecordShape)).GetAsync();
+
+        Assert.True(policy.Available);
+        Assert.True(policy.Stored);
+        Assert.Equal(Ask, policy.DefaultFor(null));
+    }
+
+    [Theory]
+    [InlineData("""{"version":1,"defaultLevel":"auto","agents":{},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null}}""", Auto)]
+    [InlineData("""{"version":1,"defaultLevel":"ask","agents":{"0b9e1d2c-5a4f-4e3b-9c8d-7f6a5b4c3d2e":"auto"},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null}}""", Ask)]
+    [InlineData("""{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":false,"textVersion":1,"acknowledgedAt":null,"acknowledgedBy":null}}""", Ask)]
+    [InlineData("""{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":"2026-11-09T10:00:00.0000000Z","acknowledgedBy":"x"}}""", Ask)]
+    [InlineData("""{"version":1,"defaultLevel":"plan","agents":{},"fullAccess":null}""", Plan)]
+    public async Task A_policy_that_cannot_be_redleafs_no_record_is_read_as_saved_in_one_request(string body, string level)
+    {
+        var reads = 0;
+        var policy = await AnyPathClient(request =>
+        {
+            reads++;
+            Assert.Equal("/api/agent-permissions/policy", request.RequestUri!.AbsolutePath);
+            return Text(body);
+        }).GetAsync();
+
+        Assert.Equal(1, reads);
+        Assert.True(policy.Stored);
+        Assert.Equal(level, policy.DefaultFor(null));
     }
 
     [Fact]
@@ -394,6 +504,20 @@ public sealed class SessionAccessResolverTests
     private static RedLeafSessionAccessPolicyClient Client(Func<HttpRequestMessage, HttpResponseMessage> send,
         Func<DateTimeOffset>? now = null)
         => new(new HttpClient(new Handler(send)) { BaseAddress = new Uri("http://redleaf/") }, (_, _) => { }, now);
+
+    private static RedLeafSessionAccessPolicyClient AnyPathClient(Func<HttpRequestMessage, HttpResponseMessage> send)
+        => new(new HttpClient(new AnyPath(send)) { BaseAddress = new Uri("http://redleaf/") }, (_, _) => { });
+
+    private static HttpResponseMessage Text(string json) => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(json, Encoding.UTF8, "application/json"),
+    };
+
+    private sealed class AnyPath(Func<HttpRequestMessage, HttpResponseMessage> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(send(request));
+    }
 
     private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK)
     {

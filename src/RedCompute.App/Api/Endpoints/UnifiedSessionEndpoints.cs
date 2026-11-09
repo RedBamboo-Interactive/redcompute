@@ -68,7 +68,7 @@ public static class UnifiedSessionEndpoints
         SessionAccessService? access = null)
     {
         // Without a policy source (tests, hosts with no RedLeaf) the contract's no-record defaults
-        // apply: ask, Full disabled.
+        // apply: auto (ask where the provider has no auto), Full disabled.
         access ??= new SessionAccessService(new StaticSessionAccessPolicySource(SessionAccessPolicy.NoRecord),
             () => registry.FindProviders<ISessionProvider>(), id => jobTracker.GetJob(id), log);
         _access = access;
@@ -529,7 +529,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body)
             .WithParam("keepResident", "boolean", description: "Exempt the session from idle parking. For always-on presence sessions only.", defaultValue: false, location: ParamLocation.Body)
             .WithParam("accessLevel", "string", description: "Requested access level. " + SessionAccessEndpoints.LevelDescription
-                + " Defaults to the Agent's configured level from RedLeaf policy, else the global default, else ask. A caller that is not a person "
+                + " Defaults to the Agent's configured level from RedLeaf policy, else the global default; with no policy saved in RedLeaf the default is auto (ask where the provider has no auto, Full disabled), and with RedLeaf unreachable it is ask. A caller that is not a person "
                 + "is clamped to that default; full needs Full enabled (else auto); maxAccessLevel clamps last. The session's Agent is taken from the "
                 + "verified start identity. A level named here is explicit (accessLevelSource explicit) and policy changes keep it; without one the level "
                 + "comes from the default (accessLevelSource policy) and follows it on every launch and policy change. A session started by another "

@@ -15,7 +15,8 @@ public static class SessionAccessResolver
 
     /// <summary>
     /// The level a session starts at (and a legacy session resumes at, with no request):
-    /// requested ?? the Agent's default ?? the global default ?? ask; then a caller who is not a
+    /// requested ?? the Agent's default ?? the global default ?? ask (a policy RedLeaf has no record
+    /// of carries the global default auto, <see cref="SessionAccessPolicy.NoRecord"/>); then a caller who is not a
     /// person is clamped to that configured default; full needs Full enabled (else auto); a level the
     /// provider cannot enforce becomes ask; and the cap clamps last, to the highest supported level
     /// at or below it. Nothing here ever raises a level. Fails only when the cap is below every
