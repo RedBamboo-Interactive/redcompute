@@ -1530,11 +1530,13 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             switch (method)
             {
                 // full: parity with Claude Code's bypassPermissions, these never reach the user.
+                // Accepted for the session, each in its own schema word (codex-cli 0.163.0): v2
+                // acceptForSession, the legacy v1 ReviewDecision approved_for_session.
                 case "item/commandExecution/requestApproval":
                 case "item/fileChange/requestApproval":
                 case "applyPatchApproval":
                 case "execCommandApproval":
-                    await conn.RespondAsync(id, new { decision = "acceptForSession" });
+                    await conn.RespondAsync(id, ApprovalResponse(method, @params, Core.Sessions.SessionPermissionDecisions.AllowSession));
                     return;
 
                 case "item/permissions/requestApproval":

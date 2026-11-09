@@ -112,6 +112,23 @@ public sealed class CodexApprovalTests : IDisposable
     }
 
     [Theory]
+    [InlineData("applyPatchApproval", "approved_for_session")]
+    [InlineData("execCommandApproval", "approved_for_session")]
+    [InlineData("item/commandExecution/requestApproval", "acceptForSession")]
+    [InlineData("item/fileChange/requestApproval", "acceptForSession")]
+    public async Task Full_accepts_for_the_session_in_each_requests_schema_word(string method, string expected)
+    {
+        var h = new Harness(this, SessionAccessLevels.Full);
+
+        await h.RequestAsync(13, method, new { conversationId = "thread-1", callId = "call-1", command = new[] { "npm", "test" } });
+
+        Assert.Empty(h.Service.GetPendingQuestions("session-1"));
+        var response = Assert.Single(await h.ResponsesAsync());
+        Assert.Equal(13, response["id"]!.GetValue<int>());
+        Assert.Equal(expected, response["result"]!["decision"]!.GetValue<string>());
+    }
+
+    [Theory]
     [InlineData(SessionAccessLevels.Ask)]
     [InlineData(SessionAccessLevels.Full)]
     public async Task Conversation_only_declines_whatever_the_level(string level)
