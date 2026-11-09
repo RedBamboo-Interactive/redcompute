@@ -34,6 +34,8 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
         "--input-format", "stream-json", "--include-partial-messages", "--replay-user-messages",
         // No resolved access level reached these launches, so they fail closed to ask.
         "--permission-mode", "acceptEdits",
+        // Lets a person's later raise to full switch live; the launch mode is still acceptEdits.
+        "--allow-dangerously-skip-permissions",
         "--permission-prompt-tool", "stdio",
         "--thinking-display", "summarized",
     ];

@@ -2281,6 +2281,13 @@ public partial class ClaudeSessionService
             // The session's persisted access level, mapped (PermissionModeFor). Every launch passes
             // it: start, resume, rollback and forced-interrupt recovery all come through here.
             "--permission-mode", permissionMode,
+            // Makes bypassPermissions reachable by a later set_permission_mode without starting in
+            // it (CLI 2.1.318: "Enable bypassing all permission checks as an option, without it
+            // being enabled by default"). Without it the CLI refuses a live raise to full with
+            // "...not launched with --dangerously-skip-permissions". The mode in force is still
+            // --permission-mode above; only RedCompute writes set_permission_mode, and only for a
+            // level it authorized (person-present raise, policy, cap), so this widens nothing.
+            "--allow-dangerously-skip-permissions",
             // Routes tool asks to us as inbound `control_request`s instead of letting the CLI
             // self-deny them: under ask and auto those become the permission cards a person
             // answers. Under bypassPermissions the evaluator allows Bash/Edit/etc before the ask
