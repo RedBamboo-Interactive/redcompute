@@ -96,6 +96,23 @@ public sealed class MaintenanceSessionDrainTests
         Assert.Equal(0, provider.ForceKillCalls);
     }
 
+    [Fact]
+    public async Task A_parked_approval_is_denied_with_why_instead_of_holding_the_restart()
+    {
+        var (registry, provider) = RegistryWithSession(SessionStatus.Active);
+        provider.Pending.Add(SessionAccessEndpointTests.Permission("perm-1"));
+        provider.Pending.Add(SessionQuestionCallbackTests.Question("q-1"));
+        provider.IdleOnDeny = true;
+        var drain = CreateDrain(registry, []);
+
+        await drain.DrainAsync(_ => Task.CompletedTask);
+
+        var answer = Assert.Single(provider.Answers);
+        Assert.Equal(("perm-1", SessionPermissionDecisions.Deny, MaintenanceSessionDrain.RestartDenial),
+            (answer.RequestId, answer.Decision, answer.DeclineReason));
+        Assert.Equal(0, provider.ForceKillCalls);
+    }
+
     private static MaintenanceSessionDrain CreateDrain(
         CapabilityRegistry registry,
         List<string> logs,
@@ -139,6 +156,9 @@ public sealed class MaintenanceSessionDrainTests
         };
 
         public int? IdleAfterReads { get; set; }
+        public List<PendingSessionQuestion> Pending { get; } = [];
+        public List<SessionQuestionAnswer> Answers { get; } = [];
+        public bool IdleOnDeny { get; set; }
         public bool IgnoreForceKill { get; set; }
         public int ForceKillCalls { get; private set; }
         public string? ForceKillReason { get; private set; }
@@ -151,6 +171,17 @@ public sealed class MaintenanceSessionDrainTests
                 if (IdleAfterReads is { } target && _reads >= target)
                     Session.Status = SessionStatus.Idle;
                 return new List<UnifiedSessionInfo> { Session };
+            }
+
+            if (method.Name == nameof(ISessionProvider.GetPendingQuestions))
+                return (IReadOnlyList<PendingSessionQuestion>)[.. Pending];
+            if (method.Name == nameof(ISessionProvider.SubmitQuestionAnswer))
+            {
+                var answer = (SessionQuestionAnswer)args![1]!;
+                Answers.Add(answer);
+                Pending.RemoveAll(q => q.RequestId == answer.RequestId);
+                if (IdleOnDeny) Session.Status = SessionStatus.Idle;
+                return QuestionAnswerResult.Denied;
             }
 
             if (method.Name == nameof(ISessionProvider.ForceKillAsync))

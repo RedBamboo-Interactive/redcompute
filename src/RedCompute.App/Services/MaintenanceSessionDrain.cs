@@ -91,6 +91,7 @@ internal sealed class MaintenanceSessionDrain
         {
             var sessions = CurrentSessions(restartSessions);
             var blockers = sessions.Where(IsBlocking).ToArray();
+            ReleaseParkedApprovals(blockers);
             _reportBlockers?.Invoke(blockers.Length);
             if (blockers.Length == 0)
             {
@@ -160,6 +161,50 @@ internal sealed class MaintenanceSessionDrain
             });
 
         await Task.WhenAll(attempts);
+    }
+
+    /// <summary>The reason a model reads when the restart denies what it was waiting on.</summary>
+    internal const string RestartDenial =
+        "Denied: RedCompute is restarting for a planned update and this was not approved before it. "
+        + "Nothing ran. Finish what you can without it; ask again after the restart if it is still needed.";
+
+    private readonly HashSet<string> _releasedApprovals = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A session parked on an approval holds the drain until the forced stop (15 minutes), which
+    /// then kills its turn. Its approvals are denied at once with a reason the model can read, so
+    /// it finishes its turn cleanly and the restart is not held hostage. Ordinary questions stay.
+    /// </summary>
+    private void ReleaseParkedApprovals(IEnumerable<SessionEntry> blockers)
+    {
+        foreach (var entry in blockers)
+        {
+            IReadOnlyList<PendingSessionQuestion> parked;
+            try { parked = entry.Provider.GetPendingQuestions(entry.Session.Id); }
+            catch (Exception) { continue; }
+            foreach (var question in parked)
+            {
+                if (question.Kind != PendingSessionQuestion.PermissionKind
+                    || !_releasedApprovals.Add($"{entry.Session.Provider}/{entry.Session.Id}/{question.RequestId}"))
+                    continue;
+                try
+                {
+                    var result = entry.Provider.SubmitQuestionAnswer(entry.Session.Id, new SessionQuestionAnswer
+                    {
+                        RequestId = question.RequestId,
+                        Decision = SessionPermissionDecisions.Deny,
+                        DeclineReason = RestartDenial,
+                    });
+                    _log($"[Maintenance] Denied approval {question.RequestId} ({question.Permission?.ToolName ?? "tool"}) parked on "
+                        + $"{entry.Session.Provider}/{entry.Session.Id} so the restart does not wait on it: {result}", entry.Session.JobId);
+                }
+                catch (Exception ex)
+                {
+                    _log($"[Maintenance] Could not deny approval {question.RequestId} on {entry.Session.Provider}/{entry.Session.Id}: {ex.Message}",
+                        entry.Session.JobId);
+                }
+            }
+        }
     }
 
     private static bool IsBlocking(SessionEntry entry)
