@@ -67,7 +67,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     /// permission card. full: the same launch, approvals accepted for the session. Codex has no
     /// plan or auto, which resolve to ask.
     /// </summary>
-    public IReadOnlyList<string> SupportedAccessLevels { get; } = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Full];
+    public IReadOnlyList<string> SupportedAccessLevels { get; } = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Auto, Core.Sessions.SessionAccessLevels.Full];
     public Core.Sessions.SessionAccessState? GetAccessState(string sessionId) => _interactive.GetAccessState(sessionId);
     public bool SetAccessState(string sessionId, Core.Sessions.SessionAccessState state) => _interactive.SetAccessState(sessionId, state);
 
@@ -482,8 +482,11 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             if (providerParams.TryGetValue("networkAccess", out var na) && na is bool enabled)
                 networkAccess = enabled;
         }
-        sandbox = OneshotSandbox(sandbox ?? _defaultSandbox,
-            providerParams is not null && providerParams.TryGetValue("accessLevel", out var lv) ? lv as string : null);
+        var oneshotLevel = providerParams is not null && providerParams.TryGetValue("accessLevel", out var lv) ? lv as string : null;
+        sandbox = OneshotSandbox(sandbox ?? _defaultSandbox, oneshotLevel);
+        // The network is what separates Auto from Ask on Codex: a caller cannot turn it on below Auto.
+        if (oneshotLevel is not (Core.Sessions.SessionAccessLevels.Auto or Core.Sessions.SessionAccessLevels.Full))
+            networkAccess = false;
 
         var result = await _codex.ExecuteExecAsync(prompt, container, workingDir, model, sandbox,
             timeout, ct, streamKey, env, networkAccess, effort);
@@ -574,7 +577,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         AccessLevelBeforePlan = s.AccessLevelBeforePlan,
         Unattended = s.Unattended,
         AccessLevelSource = s.Access.Source,
-        SupportedAccessLevels = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Full],
+        SupportedAccessLevels = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Auto, Core.Sessions.SessionAccessLevels.Full],
         UserId = s.UserId,
         UserName = s.UserName,
         UserAvatarUrl = s.UserAvatarUrl,

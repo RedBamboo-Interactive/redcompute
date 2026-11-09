@@ -909,9 +909,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// <summary>
     /// The per-turn sandbox, by level (sent every turn, so a live change applies from the next one).
     /// At Full the configured sandbox applies as before. Below Full Codex runs only what its
-    /// sandbox allows and asks (on-request) for anything more, so the sandbox is what Ask means:
-    /// workspaceWrite scoped to the project with no network, never the configured
-    /// danger-full-access (with nothing left to escalate, that made Ask the same as Full). The
+    /// sandbox allows and asks (on-request) for anything more, so the sandbox is what the level
+    /// means: Auto is workspaceWrite on the project with the network (Codex's sandbox is its safety
+    /// check, as the classifier is Claude's), Ask the same without the network. Never the configured
+    /// danger-full-access below Full (with nothing left to escalate, that made Ask the same as Full). The
     /// sandbox param on thread/start is a *string* enum and is ignored here; the per-turn policy is
     /// an object, and without writableRoots every edit is refused as "writing outside of the project".
     /// </summary>
@@ -926,7 +927,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         {
             type = "workspaceWrite",
             writableRoots = new[] { info.ProjectPath },
-            networkAccess = full,
+            networkAccess = full || info.AccessLevel == Core.Sessions.SessionAccessLevels.Auto,
         };
     }
 

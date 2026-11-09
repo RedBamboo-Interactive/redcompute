@@ -24,6 +24,8 @@ public sealed class CodexTurnCompletionTests
     [InlineData("danger-full-access", "ask", "workspaceWrite", false)]
     [InlineData("danger-full-access", null, "workspaceWrite", false)]
     [InlineData("workspace-write", "ask", "workspaceWrite", false)]
+    [InlineData("workspace-write", "auto", "workspaceWrite", true)]
+    [InlineData("danger-full-access", "auto", "workspaceWrite", true)]
     [InlineData("danger-full-access", "full", "dangerFullAccess", null)]
     [InlineData("workspace-write", "full", "workspaceWrite", true)]
     [InlineData("read-only", "full", "readOnly", false)]
