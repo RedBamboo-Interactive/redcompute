@@ -179,7 +179,7 @@ public partial class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
-        PopulateSessionArgs(startInfo, record.ClaudeSessionId, record.Model, record.Effort, record.DeveloperInstructions);
+        PopulateSessionArgs(startInfo, PermissionModeFor(record.AccessLevel), record.ClaudeSessionId, record.Model, record.Effort, record.DeveloperInstructions);
         AddForkArgs(startInfo, target);
         return startInfo;
     }

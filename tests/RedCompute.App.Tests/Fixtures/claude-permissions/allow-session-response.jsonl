@@ -1,0 +1,1 @@
+{"behavior":"allow","updatedInput":{"command":"node -e \"console.log(6*7)\"","description":"Run node to print 6*7"},"updatedPermissions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"node -e \"console.log(6*7)\""}],"behavior":"allow","destination":"session"}]}

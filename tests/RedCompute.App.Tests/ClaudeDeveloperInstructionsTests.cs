@@ -32,7 +32,8 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
     [
         "--output-format", "stream-json", "--verbose",
         "--input-format", "stream-json", "--include-partial-messages", "--replay-user-messages",
-        "--permission-mode", "bypassPermissions",
+        // No resolved access level reached these launches, so they fail closed to ask.
+        "--permission-mode", "acceptEdits",
         "--permission-prompt-tool", "stdio",
         "--thinking-display", "summarized",
     ];

@@ -249,6 +249,11 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     public bool SetPermissionMode(string sessionId, string mode) => _claude.SetPermissionMode(sessionId, mode);
 
+    /// <summary>plan, ask (acceptEdits plus approval cards), auto and full (bypassPermissions).</summary>
+    public IReadOnlyList<string> SupportedAccessLevels => ClaudeSessionService.SupportedAccessLevels;
+    public SessionAccessState? GetAccessState(string sessionId) => _claude.GetAccessState(sessionId);
+    public bool SetAccessState(string sessionId, SessionAccessState state) => _claude.SetAccessState(sessionId, state);
+
     // --- ISessionProvider: Querying ---
 
     public List<UnifiedSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false)
@@ -284,9 +289,12 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         string[]? allowedTools = null;
         string[]? addDirs = null;
         string? container = null;
+        string? accessLevel = null;
 
         if (providerParams != null)
         {
+            // Set by RedCompute's execute route after resolution; never copied from a request body.
+            if (providerParams.TryGetValue("accessLevel", out var level) && level is string levelName) accessLevel = levelName;
             if (providerParams.TryGetValue("effort", out var e) && e is string es) effort = es;
             if (providerParams.TryGetValue("maxTurns", out var mt) && mt is int mti) maxTurns = mti;
             if (providerParams.TryGetValue("tools", out var toolsValue) && toolsValue is string[] toolNames) tools = toolNames;
@@ -296,26 +304,35 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         }
 
         var result = await _claude.ExecuteAgentAsync(prompt, container, workingDir, model, effort,
-            maxTurns, tools, allowedTools, addDirs, timeout, ct, streamKey, env);
-        var (isolation, mechanism) = ExecuteIsolation(tools, result.StreamOutput);
+            maxTurns, tools, allowedTools, addDirs, timeout, ct, streamKey, env, accessLevel);
+        var (isolation, mechanism) = ExecuteIsolation(tools, result.StreamOutput, accessLevel);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
             isolation, mechanism);
     }
 
     /// <summary>
-    /// What an execute call actually ran with. Execute always passes
+    /// What an execute call actually ran with. An explicit tools grant passes
     /// --dangerously-skip-permissions, so whatever tools are present run unprompted: the call is
     /// unrestricted unless the caller granted no tools (built-ins removed, empty strict MCP config)
     /// and this run's init event confirmed an empty tool list. A non-empty grant is not a sandbox.
+    /// Without a grant the access level decides: plan and ask restrict the tools (best effort),
+    /// auto leaves it to Claude's classifier and full skips every prompt (both unrestricted).
     /// </summary>
-    internal static (string Isolation, string Mechanism) ExecuteIsolation(string[]? tools, string? streamOutput)
+    internal static (string Isolation, string Mechanism) ExecuteIsolation(string[]? tools, string? streamOutput,
+        string? accessLevel = SessionAccessLevels.Full)
     {
         if (tools is { Length: 0 } && streamOutput != null && ClaudeSessionService.ToolFreeInitError(streamOutput) == null)
             return (SessionIsolation.VerifiedToolFree, "claude-empty-init-tools");
         return tools switch
         {
-            null => (SessionIsolation.Unrestricted, "claude-skip-permissions:default-tools"),
+            null => accessLevel switch
+            {
+                SessionAccessLevels.Full => (SessionIsolation.Unrestricted, "claude-skip-permissions:default-tools"),
+                SessionAccessLevels.Auto => (SessionIsolation.Unrestricted, "claude-permission-mode:auto"),
+                SessionAccessLevels.Plan => (SessionIsolation.SandboxedBestEffort, "claude-permission-mode:plan"),
+                _ => (SessionIsolation.SandboxedBestEffort, "claude-permission-mode:dontAsk-file-tools"),
+            },
             { Length: 0 } => (SessionIsolation.Unrestricted, "claude-skip-permissions:empty-grant-unverified"),
             _ => (SessionIsolation.Unrestricted, "claude-skip-permissions:tool-grant"),
         };
@@ -387,6 +404,11 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         QualityTier = s.QualityTier,
         JobId = s.JobId,
         PermissionMode = s.PermissionMode,
+        AccessLevel = s.Access.AccessLevel,
+        MaxAccessLevel = s.Access.MaxAccessLevel,
+        Unattended = s.Access.Unattended,
+        AccessLevelBeforePlan = s.Access.AccessLevelBeforePlan,
+        SupportedAccessLevels = ClaudeSessionService.SupportedAccessLevels,
         Source = s.Source,
         UserId = s.UserId,
         UserName = s.UserName,
@@ -417,6 +439,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ParentToolUseId = e.ParentToolUseId,
         TurnOrigin = e.TurnOrigin,
         RequestId = e.RequestId,
+        Kind = e.Kind,
+        Permission = e.Permission,
     };
 
     private static UnifiedMessageRecord ToUnifiedMessage(ClaudeMessageRecord m) => new()

@@ -371,10 +371,11 @@ public partial class ClaudeSessionService
         string[]? tools, string[]? allowedTools, string[]? addDirs, int timeout,
         CancellationToken ct,
         string? streamKey = null,
-        Dictionary<string, string>? env = null)
+        Dictionary<string, string>? env = null,
+        string? accessLevel = null)
         => LaunchGate.RunWhenInstallIdleAsync(
             spawned => ExecuteAgentCoreAsync(prompt, container, workingDir, model, effort, maxTurns,
-                tools, allowedTools, addDirs, timeout, ct, streamKey, env, spawned),
+                tools, allowedTools, addDirs, timeout, ct, streamKey, env, spawned, accessLevel),
             ct);
 
     private async Task<ExecuteResult> ExecuteAgentCoreAsync(
@@ -384,7 +385,8 @@ public partial class ClaudeSessionService
         CancellationToken ct,
         string? streamKey,
         Dictionary<string, string>? env,
-        Action spawned)
+        Action spawned,
+        string? accessLevel)
     {
         var useDocker = !string.IsNullOrWhiteSpace(container);
         var useCliArg = Encoding.UTF8.GetByteCount(prompt) < 32 * 1024;
@@ -413,7 +415,7 @@ public partial class ClaudeSessionService
         {
             DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "claude", workingDir, env);
             var args = new List<string>();
-            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs);
+            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel);
             if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }
@@ -426,7 +428,7 @@ public partial class ClaudeSessionService
                 foreach (var (k, v) in env)
                     startInfo.EnvironmentVariables[k] = v;
             var args = new List<string>();
-            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs);
+            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel);
             if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
             foreach (var a in args) startInfo.ArgumentList.Add(a);
         }
@@ -531,12 +533,43 @@ public partial class ClaudeSessionService
         }
     }
 
+    /// <summary>
+    /// File tools a one-shot at ask may use without a person: a print-mode run has nobody to
+    /// approve anything, so ask runs non-interactively (dontAsk) with these pre-approved.
+    /// </summary>
+    internal static readonly string[] OneshotAskFileTools = ["Read", "Glob", "Grep", "Edit", "Write", "NotebookEdit"];
+
+    /// <param name="accessLevel">
+    /// The resolved one-shot level. An explicit <paramref name="tools"/> grant keeps today's flags
+    /// (that exact tool set, unprompted); otherwise plan runs in plan mode, ask non-interactively
+    /// (dontAsk plus file tools), auto with Claude's classifier, full skipping every prompt. Null
+    /// (no level resolved, an internal caller) fails closed to ask.
+    /// </param>
     internal static void AddAgentArgs(List<string> args, string? model, string? effort,
-        int maxTurns, string[]? tools, string[]? allowedTools, string[]? addDirs)
+        int maxTurns, string[]? tools, string[]? allowedTools, string[]? addDirs, string? accessLevel = null)
     {
         args.AddRange(["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
         args.AddRange(["--max-turns", maxTurns.ToString()]);
-        args.Add("--dangerously-skip-permissions");
+        var preApproved = new List<string>();
+        if (tools is not null)
+            args.Add("--dangerously-skip-permissions");
+        else
+            switch (accessLevel)
+            {
+                case Core.Sessions.SessionAccessLevels.Full:
+                    args.Add("--dangerously-skip-permissions");
+                    break;
+                case Core.Sessions.SessionAccessLevels.Auto:
+                    args.AddRange(["--permission-mode", "auto"]);
+                    break;
+                case Core.Sessions.SessionAccessLevels.Plan:
+                    args.AddRange(["--permission-mode", "plan"]);
+                    break;
+                default:
+                    args.AddRange(["--permission-mode", "dontAsk"]);
+                    preApproved.AddRange(OneshotAskFileTools);
+                    break;
+            }
         if (tools is not null)
         {
             // `--allowedTools` controls permission prompts, not tool availability. An explicit
@@ -564,9 +597,11 @@ public partial class ClaudeSessionService
             args.Add(effort);
         }
         if (allowedTools is { Length: > 0 })
+            preApproved.AddRange(allowedTools);
+        if (preApproved.Count > 0)
         {
             args.Add("--allowed-tools");
-            args.Add(string.Join(",", allowedTools));
+            args.Add(string.Join(",", preApproved.Distinct(StringComparer.Ordinal)));
         }
         if (addDirs != null)
         {
@@ -1018,16 +1053,20 @@ public partial class ClaudeSessionService
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory = null, bool confidential = false,
         string? developerInstructions = null, CancellationToken ct = default)
-        => LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
+    {
+        // Read here: the launch gate may run the start outside this call's async flow.
+        var access = SessionAccessScope.Current;
+        return LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
             projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratchDirectory, confidential,
-            developerInstructions)), ct);
+            developerInstructions, access)), ct);
+    }
 
     private ClaudeSessionInfo? StartSessionCore(string projectPath, string? model, string? userId,
         string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory, bool confidential,
-        string? developerInstructions)
+        string? developerInstructions, Core.Sessions.SessionAccessState? access)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -1065,7 +1104,10 @@ public partial class ClaudeSessionService
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
             DeveloperInstructions = developerInstructions,
+            // No resolved state means RedCompute did not start this through its access rules: ask.
+            Access = access is { AccessLevel: not null } ? access : new Core.Sessions.SessionAccessState(Core.Sessions.SessionAccessLevels.Ask),
         };
+        info.PermissionMode = PermissionModeFor(info.Access.AccessLevel);
 
         var claudePath = ResolveClaudePath();
         if (claudePath == null)
@@ -1094,7 +1136,7 @@ public partial class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        PopulateSessionArgs(startInfo, model: model, effort: effort,
+        PopulateSessionArgs(startInfo, info.PermissionMode, model: model, effort: effort,
             developerInstructions: developerInstructions);
         if (SessionScratch.Environment(scratchDirectory, sessionId: id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
@@ -1247,6 +1289,10 @@ public partial class ClaudeSessionService
             UserId = sessionRecord.UserId,
             UserName = sessionRecord.UserName,
             UserAvatarUrl = sessionRecord.UserAvatarUrl,
+            // The persisted level, never the old hardcoded bypass. RedCompute resolves a legacy row
+            // before it resumes one; a relaunch that still finds none runs at ask.
+            Access = AccessOf(sessionRecord),
+            PermissionMode = PermissionModeFor(sessionRecord.AccessLevel),
         };
 
         var startInfo = new ProcessStartInfo
@@ -1262,7 +1308,7 @@ public partial class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        PopulateSessionArgs(startInfo,
+        PopulateSessionArgs(startInfo, info.PermissionMode,
             string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
             sessionRecord.Model, sessionRecord.Effort,
             sessionRecord.DeveloperInstructions);
@@ -1812,34 +1858,14 @@ public partial class ClaudeSessionService
         StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "status", Content = "idle" });
     }
 
+    /// <summary>
+    /// Legacy entry point. A mode is only ever a mapped access level now; RedCompute's routes
+    /// authorize changes and call <see cref="SetAccessState"/>, so this applies no rules itself.
+    /// </summary>
     public bool SetPermissionMode(string sessionId, string mode)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var session))
-            return false;
-
-        try
-        {
-            var requestId = $"perm-{++session.ControlRequestCounter}";
-            var msg = new
-            {
-                type = "control_request",
-                request_id = requestId,
-                request = new { subtype = "set_permission_mode", mode }
-            };
-            WriteControlLine(session, msg);
-
-            session.Info.PermissionMode = mode;
-            SessionUpdated?.Invoke(session.Info);
-
-            _log($"[Claude] Permission mode set to '{mode}' for session {sessionId}", null);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _log($"[Claude] Failed to set permission mode for {sessionId}: {ex.Message}", null);
-            return false;
-        }
-    }
+        => Core.Sessions.SessionAccessLevels.TryFromPermissionMode(mode, out var level)
+            && GetAccessState(sessionId) is { } current
+            && SetAccessState(sessionId, current with { AccessLevel = level });
 
     public async Task StopSession(string sessionId, string? reason = null)
     {
@@ -2124,8 +2150,16 @@ public partial class ClaudeSessionService
         ProviderEntity = r.ProviderEntity,
         DeveloperInstructions = r.DeveloperInstructions,
         JobId = r.JobId,
-        Source = r.Source
+        Source = r.Source,
+        Access = AccessOf(r),
+        PermissionMode = PermissionModeFor(r.AccessLevel),
     };
+
+    internal static Core.Sessions.SessionAccessState AccessOf(ClaudeSessionRecord r)
+        => new(Core.Sessions.SessionAccessLevels.IsKnown(r.AccessLevel) ? r.AccessLevel : null,
+            Core.Sessions.SessionAccessLevels.IsKnown(r.MaxAccessLevel) ? r.MaxAccessLevel : null,
+            r.Unattended,
+            Core.Sessions.SessionAccessLevels.IsKnown(r.AccessLevelBeforePlan) ? r.AccessLevelBeforePlan : null);
 
     /// <summary>Live background tasks of a loaded session; a session without a process has none.</summary>
     public IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId)
@@ -2144,9 +2178,13 @@ public partial class ClaudeSessionService
             .Select(q => new Core.Sessions.PendingSessionQuestion
             {
                 RequestId = q.RequestId,
-                ToolName = AskUserQuestionTool,
+                Kind = q.Permission is null
+                    ? Core.Sessions.PendingSessionQuestion.QuestionKind
+                    : Core.Sessions.PendingSessionQuestion.PermissionKind,
+                Permission = q.Permission,
+                ToolName = q.ToolName ?? AskUserQuestionTool,
                 ToolUseId = q.ToolUseId,
-                Questions = q.Input.ValueKind == JsonValueKind.Object
+                Questions = q.Permission is null && q.Input.ValueKind == JsonValueKind.Object
                     && q.Input.TryGetProperty("questions", out var questions) ? questions : EmptyJsonArray,
                 Input = q.Input.ValueKind == JsonValueKind.Undefined ? EmptyJsonObject : q.Input,
                 AskedAt = q.AskedAt,
@@ -2235,20 +2273,20 @@ public partial class ClaudeSessionService
         return null;
     }
 
-    private void PopulateSessionArgs(ProcessStartInfo startInfo, string? resumeClaudeSessionId = null, string? model = null, string? effort = null,
-        string? developerInstructions = null)
+    private void PopulateSessionArgs(ProcessStartInfo startInfo, string permissionMode, string? resumeClaudeSessionId = null,
+        string? model = null, string? effort = null, string? developerInstructions = null)
     {
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
             "--input-format", "stream-json", "--include-partial-messages", "--replay-user-messages",
-            "--permission-mode", "bypassPermissions",
-            // Routes tool asks to us as inbound `control_request`s instead of letting the
-            // CLI self-deny them. This does NOT weaken bypassPermissions: the permission
-            // evaluator short-circuits Bash/Edit/etc to "allow" before the ask path is
-            // reached, so those never produce a request. Only tools that declare
-            // requiresUserInteraction() -- AskUserQuestion, ExitPlanMode -- are exempt from
-            // the bypass and reach us. Without this flag their ask has nowhere to go and
-            // comes back to the model as `<error>Answer questions?</error>` (the ask's own
-            // message text, reused as the denial reason).
+            // The session's persisted access level, mapped (PermissionModeFor). Every launch passes
+            // it: start, resume, rollback and forced-interrupt recovery all come through here.
+            "--permission-mode", permissionMode,
+            // Routes tool asks to us as inbound `control_request`s instead of letting the CLI
+            // self-deny them: under ask and auto those become the permission cards a person
+            // answers. Under bypassPermissions the evaluator allows Bash/Edit/etc before the ask
+            // path, so only tools that declare requiresUserInteraction() -- AskUserQuestion,
+            // ExitPlanMode -- reach us. Without this flag an ask has nowhere to go and comes back
+            // to the model as `<error>Answer questions?</error>` (the ask's own text as the denial).
             "--permission-prompt-tool", "stdio",
             // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
             "--thinking-display", "summarized" })
@@ -2281,6 +2319,17 @@ public partial class ClaudeSessionService
             startInfo.ArgumentList.Add(resumeClaudeSessionId);
         }
     }
+
+    /// <summary>The CLI 2.1.318 permission mode for an access level. Unknown or legacy (null) is ask.</summary>
+    internal static string PermissionModeFor(string? accessLevel) => accessLevel switch
+    {
+        Core.Sessions.SessionAccessLevels.Plan => "plan",
+        Core.Sessions.SessionAccessLevels.Auto => "auto",
+        Core.Sessions.SessionAccessLevels.Full => "bypassPermissions",
+        _ => "acceptEdits",
+    };
+
+    internal static readonly IReadOnlyList<string> SupportedAccessLevels = Core.Sessions.SessionAccessLevels.All;
 
     /// <summary>
     /// Claude issues its conversation id on the first completed turn. A session stopped before
@@ -2817,8 +2866,20 @@ public partial class ClaudeSessionService
                     && model.ValueKind == JsonValueKind.String
                     && !string.IsNullOrWhiteSpace(model.GetString()))
                     session.Info.Model = model.GetString();
-                if (root.TryGetProperty("permissionMode", out var pm))
-                    session.Info.PermissionMode = pm.GetString() ?? "bypassPermissions";
+                // The CLI reports its mode; it describes the process, it never sets the level. A
+                // mismatch (an account without auto, a mode the CLI changed itself) is logged.
+                if (root.TryGetProperty("permissionMode", out var pm) && pm.ValueKind == JsonValueKind.String
+                    && pm.GetString() is { Length: > 0 } reportedMode)
+                {
+                    var expectedMode = PermissionModeFor(session.Info.Access.AccessLevel);
+                    session.Info.PermissionMode = reportedMode;
+                    if (reportedMode != expectedMode)
+                    {
+                        _log($"[Claude] Session {session.Info.Id} reports permission mode '{reportedMode}' at access level " +
+                             $"'{session.Info.Access.AccessLevel ?? "unset"}'; setting '{expectedMode}' again", null);
+                        if (WritePermissionMode(session, expectedMode)) session.Info.PermissionMode = expectedMode;
+                    }
+                }
 
                 // init opens every CLI turn. With no user input waiting, a turn after a background
                 // task finished is the CLI waking itself up to report it.
@@ -3136,13 +3197,10 @@ public partial class ClaudeSessionService
         var toolName = request.TryGetProperty("tool_name", out var tn) ? tn.GetString() : null;
         if (toolName != AskUserQuestionTool)
         {
-            // Under bypassPermissions this should never fire -- the evaluator allows those
-            // tools long before the ask path. If it does (someone moved the session to a
-            // prompting mode), deny: that is what the session already did before this
-            // handler existed, so it cannot regress behaviour, and it fails closed.
-            _log($"[Claude] Permission ask for '{toolName}' on session {session.Info.Id} has no interactive handler, denying", null);
-            RespondPermissionDeny(session, requestId,
-                $"No interactive permission UI is attached to this session, so '{toolName}' could not be approved.");
+            // A genuine permission ask: under ask (acceptEdits) and auto anything the CLI will not
+            // allow by itself, under plan ExitPlanMode. It becomes a permission card a person
+            // answers, or, with nobody watching, an immediate denial.
+            HandlePermissionRequest(session, requestId, toolName ?? "unknown", request);
             return;
         }
 
@@ -3190,6 +3248,106 @@ public partial class ClaudeSessionService
         SessionUpdated?.Invoke(session.Info);
     }
 
+    /// <summary>
+    /// Parks one permission ask (CLI 2.1.318 <c>can_use_tool</c>, captured in
+    /// <c>tests/RedCompute.App.Tests/Fixtures/claude-permissions/</c>) as a pending entry of kind
+    /// permission. An unattended session denies at once and never parks: there is nobody to
+    /// answer, and a parked ask would hold the turn until it expired. A call the person already
+    /// allowed for this session (a RedCompute rule, when the CLI offered no suggestion) runs.
+    /// </summary>
+    private void HandlePermissionRequest(ManagedSession session, string requestId, string toolName, JsonElement request)
+    {
+        var input = request.TryGetProperty("input", out var inp) && inp.ValueKind == JsonValueKind.Object
+            ? inp.Clone() : EmptyJsonObject;
+        var toolUseId = request.TryGetProperty("tool_use_id", out var tui) && tui.ValueKind == JsonValueKind.String
+            ? tui.GetString() : null;
+        var suggestions = request.TryGetProperty("permission_suggestions", out var ps) && ps.ValueKind == JsonValueKind.Array
+            && ps.GetArrayLength() > 0 ? ps.Clone() : (JsonElement?)null;
+        var permission = new Core.Sessions.PendingPermissionRequest
+        {
+            ToolName = toolName,
+            ToolUseId = toolUseId,
+            Summary = PermissionSummary(toolName, request, input),
+            Input = input,
+            Cwd = session.Info.ProjectPath,
+        };
+
+        if (session.Info.Access.Unattended)
+        {
+            var reason = $"This session is unattended, so no person can approve '{toolName}' and it was denied. " +
+                         "Continue without it, or say what you would need a person to allow.";
+            _log($"[Claude] Session {session.Info.Id} is unattended; denied '{toolName}' ({permission.Summary})", null);
+            RespondPermissionDeny(session, requestId, reason);
+            // Live notice; the denial message is also the tool result the transcript keeps.
+            StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+            {
+                Type = "permission_denied",
+                Kind = Core.Sessions.PendingSessionQuestion.PermissionKind,
+                RequestId = requestId,
+                ToolName = toolName,
+                ToolInput = input.ToString(),
+                MessageId = toolUseId,
+                Content = reason,
+                Permission = permission,
+            });
+            return;
+        }
+
+        if (session.AllowRules.Any(rule => rule.Matches(toolName, input)))
+        {
+            _log($"[Claude] Session {session.Info.Id} allowed '{toolName}' under a rule the person set for this session", null);
+            RespondPermissionAllow(session, requestId, input, null);
+            return;
+        }
+
+        var askedAt = DateTimeOffset.UtcNow;
+        var pending = new PendingQuestion
+        {
+            RequestId = requestId,
+            ToolUseId = toolUseId,
+            Input = input,
+            AskedAt = askedAt,
+            ExpiresAt = askedAt + QuestionAnswerTimeout,
+            ToolName = toolName,
+            Permission = permission,
+            Suggestions = suggestions,
+        };
+        pending.ExpiryTimer = new Timer(_ => ExpireQuestion(session, requestId), null,
+            QuestionAnswerTimeout, Timeout.InfiniteTimeSpan);
+        if (!session.PendingQuestions.TryAdd(requestId, pending))
+        {
+            pending.ExpiryTimer.Dispose();
+            _log($"[Claude] Duplicate permission request {requestId} on session {session.Info.Id}, ignoring", null);
+            return;
+        }
+
+        _log($"[Claude] Session {session.Info.Id} parked on a permission for '{toolName}' (request {requestId})", null);
+        StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+        {
+            Type = "question",
+            Kind = Core.Sessions.PendingSessionQuestion.PermissionKind,
+            RequestId = requestId,
+            ToolName = toolName,
+            ToolInput = input.ToString(),
+            MessageId = toolUseId,
+            Permission = permission,
+        });
+        SessionUpdated?.Invoke(session.Info);
+    }
+
+    /// <summary>One line for the card: the CLI's own description, else the command, path or URL.</summary>
+    internal static string PermissionSummary(string toolName, JsonElement request, JsonElement input)
+    {
+        static string? Text(JsonElement element, string name)
+            => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
+                ? value.GetString() : null;
+        var summary = Text(request, "description") ?? Text(input, "description") ?? Text(input, "command")
+            ?? Text(input, "file_path") ?? Text(input, "notebook_path") ?? Text(input, "url") ?? Text(input, "path")
+            ?? Text(request, "decision_reason") ?? $"Use {toolName}";
+        return summary.Length > 300 ? summary[..297] + "..." : summary;
+    }
+
     private void HandleControlCancelRequest(JsonElement root, ManagedSession session)
     {
         var requestId = root.TryGetProperty("request_id", out var rid) ? rid.GetString() : null;
@@ -3216,12 +3374,14 @@ public partial class ClaudeSessionService
             return;
         pending.Dispose();
 
-        _log($"[Claude] Question {requestId} on session {session.Info.Id} went unanswered for " +
-             $"{QuestionAnswerTimeout.TotalMinutes:0} minutes, denying", null);
+        _log($"[Claude] {(pending.Permission is null ? "Question" : "Permission")} {requestId} on session {session.Info.Id} " +
+             $"went unanswered for {QuestionAnswerTimeout.TotalMinutes:0} minutes, denying", null);
 
-        RespondPermissionDeny(session, requestId,
-            "The question timed out with no answer from the user. Proceed with your best judgement " +
-            "and state the assumption you made.");
+        RespondPermissionDeny(session, requestId, pending.Permission is null
+            ? "The question timed out with no answer from the user. Proceed with your best judgement " +
+              "and state the assumption you made."
+            : $"No one approved '{pending.ToolName}' within {QuestionAnswerTimeout.TotalMinutes:0} minutes, so it was denied. " +
+              "Continue without it, or ask again when the user is back.");
 
         StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
         {
@@ -3237,10 +3397,19 @@ public partial class ClaudeSessionService
         if (!_sessions.TryGetValue(sessionId, out var session))
             return Core.Sessions.QuestionAnswerResult.SessionNotFound;
 
+        if (session.PendingQuestions.TryGetValue(answer.RequestId, out var peek)
+            && (peek.Permission is null) != (answer.Decision is null))
+            // A decision answers only a permission and a permission only a decision. Refused
+            // before the claim, so the entry stays parked for a correct answer.
+            return Core.Sessions.QuestionAnswerResult.InvalidDecision;
+
         if (!session.PendingQuestions.TryRemove(answer.RequestId, out var pending))
             return Core.Sessions.QuestionAnswerResult.RequestNotFound;
 
         pending.Dispose();
+
+        if (pending.Permission is not null)
+            return AnswerPermission(session, pending, answer.Decision!);
 
         try
         {
@@ -3297,6 +3466,139 @@ public partial class ClaudeSessionService
         {
             _log($"[Claude] Failed to answer question {answer.RequestId} on {sessionId}: {ex.Message}", null);
             return Core.Sessions.QuestionAnswerResult.Error;
+        }
+    }
+
+    /// <summary>
+    /// Writes the person's decision on a parked permission. allow_session uses the CLI's own
+    /// permission_suggestions, moved to the session destination so nothing is written to the
+    /// project's settings files (verified on 2.1.318: the repeat runs without a second ask). With
+    /// no suggestion, RedCompute remembers the exact tool, and for Bash the exact command.
+    /// Approving ExitPlanMode leaves plan for the level the session entered plan from.
+    /// </summary>
+    private Core.Sessions.QuestionAnswerResult AnswerPermission(ManagedSession session, PendingQuestion pending, string decision)
+    {
+        var sessionId = session.Info.Id;
+        try
+        {
+            if (decision == Core.Sessions.SessionPermissionDecisions.Deny)
+            {
+                RespondPermissionDeny(session, pending.RequestId,
+                    $"The user denied '{pending.ToolName}'. Do not retry it; continue another way or ask the user.");
+                EmitQuestionResolved(session, pending.RequestId, Core.Sessions.SessionPermissionDecisions.Outcome(decision));
+                SessionUpdated?.Invoke(session.Info);
+                _log($"[Claude] Permission {pending.RequestId} for '{pending.ToolName}' denied on session {sessionId}", null);
+                return Core.Sessions.QuestionAnswerResult.Denied;
+            }
+
+            List<object>? updatedPermissions = null;
+            if (decision == Core.Sessions.SessionPermissionDecisions.AllowSession)
+            {
+                if (pending.Suggestions is { } suggestions)
+                    updatedPermissions = [.. SessionScopedSuggestions(suggestions)];
+                else
+                    session.AllowRules.Add(SessionAllowRule.For(pending.ToolName!, pending.Input));
+            }
+
+            var leavesPlan = pending.ToolName == ExitPlanModeTool
+                && session.Info.Access.AccessLevel == Core.Sessions.SessionAccessLevels.Plan;
+            var afterPlan = leavesPlan
+                ? session.Info.Access with
+                {
+                    AccessLevel = session.Info.Access.AccessLevelBeforePlan ?? Core.Sessions.SessionAccessLevels.Ask,
+                    AccessLevelBeforePlan = null,
+                }
+                : null;
+            if (afterPlan is not null)
+                (updatedPermissions ??= []).Add(new
+                {
+                    type = "setMode", mode = PermissionModeFor(afterPlan.AccessLevel), destination = "session",
+                });
+
+            RespondPermissionAllow(session, pending.RequestId, pending.Input, updatedPermissions);
+            if (afterPlan is not null) SetAccessState(sessionId, afterPlan);
+            EmitQuestionResolved(session, pending.RequestId, Core.Sessions.SessionPermissionDecisions.Outcome(decision));
+            SessionUpdated?.Invoke(session.Info);
+            _log($"[Claude] Permission {pending.RequestId} for '{pending.ToolName}' {decision} on session {sessionId}", null);
+            return Core.Sessions.QuestionAnswerResult.Allowed;
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to answer permission {pending.RequestId} on {sessionId}: {ex.Message}", null);
+            return Core.Sessions.QuestionAnswerResult.Error;
+        }
+    }
+
+    /// <summary>The CLI's suggestions, verbatim except that each applies to this session only.</summary>
+    internal static IEnumerable<object> SessionScopedSuggestions(JsonElement suggestions)
+    {
+        foreach (var suggestion in suggestions.EnumerateArray())
+        {
+            if (suggestion.ValueKind != JsonValueKind.Object) continue;
+            var copy = new Dictionary<string, object?>();
+            foreach (var property in suggestion.EnumerateObject())
+                copy[property.Name] = property.Value;
+            copy["destination"] = "session";
+            yield return copy;
+        }
+    }
+
+    private const string ExitPlanModeTool = "ExitPlanMode";
+
+    /// <summary>
+    /// The level the person approved ExitPlanMode out of plan into, or any other live change.
+    /// </summary>
+    public Core.Sessions.SessionAccessState? GetAccessState(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session)) return session.Info.Access;
+        return _sessionStore.FindSession(sessionId) is { } record ? AccessOf(record) : null;
+    }
+
+    /// <summary>
+    /// Persists an access state already authorized by RedCompute. A live session switches at once
+    /// with <c>set_permission_mode</c>; a stopped one launches at it next time.
+    /// </summary>
+    public bool SetAccessState(string sessionId, Core.Sessions.SessionAccessState state)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+        {
+            var mode = PermissionModeFor(state.AccessLevel);
+            if (mode != session.Info.PermissionMode && !WritePermissionMode(session, mode))
+                return false;
+            session.Info.Access = state;
+            session.Info.PermissionMode = mode;
+            PersistSessionRecord(session.Info);
+            SessionUpdated?.Invoke(session.Info);
+            _log($"[Claude] Session {sessionId} access level {state.AccessLevel} (permission mode {mode})", null);
+            return true;
+        }
+
+        var record = _sessionStore.FindSession(sessionId);
+        if (record is null) return false;
+        record.AccessLevel = state.AccessLevel;
+        record.MaxAccessLevel = state.MaxAccessLevel;
+        record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
+        record.Unattended = state.Unattended;
+        _sessionStore.SaveSession(record);
+        return true;
+    }
+
+    private bool WritePermissionMode(ManagedSession session, string mode)
+    {
+        try
+        {
+            WriteControlLine(session, new
+            {
+                type = "control_request",
+                request_id = $"perm-{++session.ControlRequestCounter}",
+                request = new { subtype = "set_permission_mode", mode },
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Failed to set permission mode for {session.Info.Id}: {ex.Message}", null);
+            return false;
         }
     }
 
@@ -3366,6 +3668,21 @@ public partial class ClaudeSessionService
             Type = "question_resolved",
             RequestId = requestId,
             Content = outcome,
+        });
+
+    // updatedInput is required by the control protocol on allow; the tool runs with it verbatim.
+    private void RespondPermissionAllow(ManagedSession session, string requestId, JsonElement input, List<object>? updatedPermissions)
+        => WriteControlLine(session, new
+        {
+            type = "control_response",
+            response = new
+            {
+                subtype = "success",
+                request_id = requestId,
+                response = updatedPermissions is { Count: > 0 }
+                    ? new Dictionary<string, object?> { ["behavior"] = "allow", ["updatedInput"] = input, ["updatedPermissions"] = updatedPermissions }
+                    : new Dictionary<string, object?> { ["behavior"] = "allow", ["updatedInput"] = input },
+            },
         });
 
     // Outer subtype stays "success" -- it describes the round trip, not the verdict. The
@@ -3941,6 +4258,9 @@ public partial class ClaudeSessionService
     // Every ManagedSession stdin write (user messages, answers, control requests)
     // goes through one of these so a queued-message drain can never interleave its
     // JSON line with an in-flight interrupt/permission-mode write on the same pipe.
+    /// <summary>Test seam: every JSON line written to a session's CLI stdin, after it is written.</summary>
+    internal Action<string, string>? ControlLineWritten { get; set; }
+
     private void WriteControlLine(ManagedSession session, object message)
     {
         var json = JsonSerializer.Serialize(message);
@@ -3954,6 +4274,7 @@ public partial class ClaudeSessionService
         {
             session.WriteLock.Release();
         }
+        ControlLineWritten?.Invoke(session.Info.Id, json);
     }
 
     private async Task WriteControlLineAsync(ManagedSession session, object message, Action? onWritten = null)
@@ -3970,6 +4291,7 @@ public partial class ClaudeSessionService
         {
             session.WriteLock.Release();
         }
+        ControlLineWritten?.Invoke(session.Info.Id, json);
     }
 
     private static async Task<bool> WaitForExit(Process process, TimeSpan timeout)
@@ -4029,6 +4351,10 @@ public partial class ClaudeSessionService
                 BackgroundTasksJson = info.BackgroundTasks.Count > 0
                     ? JsonSerializer.Serialize(info.BackgroundTasks)
                     : null,
+                AccessLevel = info.Access.AccessLevel,
+                MaxAccessLevel = info.Access.MaxAccessLevel,
+                AccessLevelBeforePlan = info.Access.AccessLevelBeforePlan,
+                Unattended = info.Access.Unattended,
             });
         }
         catch (Exception ex)
@@ -4091,8 +4417,31 @@ public partial class ClaudeSessionService
         public required DateTimeOffset AskedAt { get; init; }
         public required DateTimeOffset ExpiresAt { get; init; }
         public Timer? ExpiryTimer { get; set; }
+        /// <summary>The asking tool; null means AskUserQuestion.</summary>
+        public string? ToolName { get; init; }
+        /// <summary>Set for a permission ask; null for an AskUserQuestion question.</summary>
+        public Core.Sessions.PendingPermissionRequest? Permission { get; init; }
+        /// <summary>The CLI's permission_suggestions, used for allow_session.</summary>
+        public JsonElement? Suggestions { get; init; }
 
         public void Dispose() => ExpiryTimer?.Dispose();
+    }
+
+    /// <summary>
+    /// An allow_session RedCompute keeps itself, when the CLI offered no suggestion: the exact
+    /// tool, and for Bash the exact command. Lives as long as the CLI process.
+    /// </summary>
+    internal sealed record SessionAllowRule(string ToolName, string? Command)
+    {
+        public static SessionAllowRule For(string toolName, JsonElement input)
+            => new(toolName, toolName == "Bash" ? CommandOf(input) ?? "" : null);
+
+        public bool Matches(string toolName, JsonElement input)
+            => toolName == ToolName && (Command is null || CommandOf(input) == Command);
+
+        private static string? CommandOf(JsonElement input)
+            => input.ValueKind == JsonValueKind.Object && input.TryGetProperty("command", out var command)
+                && command.ValueKind == JsonValueKind.String ? command.GetString() : null;
     }
 
     private sealed class PendingSteer
@@ -4115,6 +4464,8 @@ public partial class ClaudeSessionService
         // the claim: whoever wins TryRemove owns writing the single control_response, so an
         // answer racing the expiry timer cannot produce two.
         public ConcurrentDictionary<string, PendingQuestion> PendingQuestions { get; } = new();
+        // allow_session decisions RedCompute keeps itself (no CLI suggestion to hand back).
+        public ConcurrentBag<SessionAllowRule> AllowRules { get; } = [];
         // Outbound steering messages wait for their exact replay UUID before the queue item
         // is acknowledged. Content matching would conflate duplicate user text.
         public ConcurrentDictionary<string, PendingSteer> PendingSteers { get; } = new();

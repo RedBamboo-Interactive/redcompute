@@ -29,7 +29,10 @@ public class ClaudeSessionInfo
     public string? ProviderEntity { get; set; }
     public string? DeveloperInstructions { get; set; }
     public Guid? JobId { get; set; }
-    public string PermissionMode { get; set; } = "bypassPermissions";
+    // The CLI's own mode string, as last launched or reported. Derived from Access, never the reverse.
+    public string PermissionMode { get; set; } = "acceptEdits";
+    // Provider-neutral access state, persisted with the session and applied on every launch.
+    public Core.Sessions.SessionAccessState Access { get; set; } = Core.Sessions.SessionAccessState.Legacy;
     public string? Source { get; set; }
     public string? UserId { get; set; }
     public string? UserName { get; set; }

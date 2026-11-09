@@ -48,4 +48,12 @@ public class ClaudeSessionRecord
     /// <see cref="IClaudeSessionStore.SetForkTarget"/>, so saving a session never clears it by accident.
     /// </summary>
     public string? ForkTargetJson { get; set; }
+    /// <summary>
+    /// Access level (plan, ask, auto, full) applied on every launch. Null for a row written before
+    /// access levels: it resolves fresh from policy, and the old hardcoded bypass is never trusted.
+    /// </summary>
+    public string? AccessLevel { get; set; }
+    public string? MaxAccessLevel { get; set; }
+    public string? AccessLevelBeforePlan { get; set; }
+    public bool Unattended { get; set; }
 }

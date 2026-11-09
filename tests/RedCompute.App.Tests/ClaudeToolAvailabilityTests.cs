@@ -61,16 +61,18 @@ public sealed class ClaudeToolAvailabilityTests
     }
 
     [Fact]
-    public void Omitted_tools_preserves_existing_agent_behavior()
+    public void Omitted_tools_at_full_preserves_existing_agent_behavior()
     {
         var args = new List<string>();
 
+        // Omitted tools now run at the resolved access level; full is what every one-shot did before.
         ClaudeSessionService.AddAgentArgs(
             args, model: null, effort: null, maxTurns: 1,
-            tools: null, allowedTools: ["Read"], addDirs: null);
+            tools: null, allowedTools: ["Read"], addDirs: null, accessLevel: "full");
 
         Assert.DoesNotContain("--tools", args);
         Assert.DoesNotContain("--bare", args);
+        Assert.Contains("--dangerously-skip-permissions", args);
         Assert.Equal("Read", ValueAfter(args, "--allowed-tools"));
     }
 

@@ -25,6 +25,10 @@ public class ClaudeStreamEvent
     // Correlation id for the CLI control_request this event reports ("question" /
     // "question_resolved"). Clients echo it back when submitting an answer. Null elsewhere.
     public string? RequestId { get; init; }
+    // "question" events: question or permission (PendingSessionQuestion.Kind), with what waits
+    // for approval when it is a permission. Also set on "permission_denied" notices.
+    public string? Kind { get; init; }
+    public PendingPermissionRequest? Permission { get; init; }
     // The launching tool call when the CLI attributes this line to background work (a subagent's
     // `parent_tool_use_id`). Null on main-loop events.
     public string? ParentToolUseId { get; init; }

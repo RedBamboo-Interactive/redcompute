@@ -156,6 +156,10 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.UserAvatarUrl = record.UserAvatarUrl;
             existing.ProcessId = record.ProcessId;
             existing.BackgroundTasksJson = record.BackgroundTasksJson;
+            existing.AccessLevel = record.AccessLevel;
+            existing.MaxAccessLevel = record.MaxAccessLevel;
+            existing.AccessLevelBeforePlan = record.AccessLevelBeforePlan;
+            existing.Unattended = record.Unattended;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;
         }

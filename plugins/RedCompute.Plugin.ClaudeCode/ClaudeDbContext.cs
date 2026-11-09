@@ -109,11 +109,19 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
-        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson", "ForkTargetJson" })
+        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson", "ForkTargetJson",
+                     "AccessLevel", "MaxAccessLevel", "AccessLevelBeforePlan" })
         {
             if (columns.Contains(column)) continue;
             using var alter = conn.CreateCommand();
             alter.CommandText = $"ALTER TABLE Sessions ADD COLUMN {column} TEXT";
+            alter.ExecuteNonQuery();
+        }
+
+        if (!columns.Contains("Unattended"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN Unattended INTEGER NOT NULL DEFAULT 0";
             alter.ExecuteNonQuery();
         }
 
