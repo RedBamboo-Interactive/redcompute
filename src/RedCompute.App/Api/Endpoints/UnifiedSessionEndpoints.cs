@@ -2092,8 +2092,10 @@ public static class UnifiedSessionEndpoints
             if (body.TryGetProperty("unattended", out var oneshotUnattended)
                 && oneshotUnattended.ValueKind is not (JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null))
                 return Error(422, "validation_failed", "unattended must be a boolean when supplied");
-            var oneshotAccess = await _access!.ResolveOneshotAsync(provider, requestedAccessLevel,
-                ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted);
+            var oneshotParent = _access!.FindParent(SignedSessionReferences(ctx), info => CanReadSession(ctx, info));
+            var oneshotAccess = await _access.ResolveOneshotAsync(provider, requestedAccessLevel,
+                ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted,
+                oneshotParent);
             if (oneshotAccess.Error is not null)
                 return Error(422, oneshotAccess.Error, oneshotAccess.Message ?? oneshotAccess.Error);
             if (oneshotAccess.State?.AccessLevel is { } oneshotLevel)

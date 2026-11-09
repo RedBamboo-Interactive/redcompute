@@ -548,10 +548,13 @@ public partial class ClaudeSessionService
         => args.AddRange(["--append-system-prompt", Core.Sessions.SessionAccessNotices.LaunchNote(level, unattended: true)]);
 
     /// <param name="accessLevel">
-    /// The resolved one-shot level. An explicit <paramref name="tools"/> grant keeps today's flags
-    /// (that exact tool set, unprompted); otherwise plan runs in plan mode, ask non-interactively
-    /// (dontAsk plus file tools), auto with Claude's classifier, full skipping every prompt. Null
-    /// (no level resolved, an internal caller) fails closed to ask.
+    /// The resolved one-shot level, which alone decides permissions: plan runs in plan mode, ask
+    /// non-interactively (dontAsk plus file tools), auto with Claude's classifier, full skipping
+    /// every prompt. Null (no level resolved, an internal caller) fails closed to ask. An explicit
+    /// <paramref name="tools"/> list only narrows which tools exist; it never skips a prompt.
+    /// <paramref name="allowedTools"/> pre-approvals are honoured in full only at full; below it
+    /// only file tools can be pre-approved, so a caller cannot pre-approve Bash or the network past
+    /// its level (at auto the classifier still decides those).
     /// </param>
     internal static void AddAgentArgs(List<string> args, string? model, string? effort,
         int maxTurns, string[]? tools, string[]? allowedTools, string[]? addDirs, string? accessLevel = null)
@@ -559,27 +562,28 @@ public partial class ClaudeSessionService
         args.AddRange(["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
         args.AddRange(["--max-turns", maxTurns.ToString()]);
         var preApproved = new List<string>();
-        if (tools is not null)
-            args.Add("--dangerously-skip-permissions");
-        else
-            switch (accessLevel)
-            {
-                case Core.Sessions.SessionAccessLevels.Full:
-                    args.Add("--dangerously-skip-permissions");
-                    break;
-                case Core.Sessions.SessionAccessLevels.Auto:
-                    args.AddRange(["--permission-mode", "auto"]);
-                    AddOneshotAccessNote(args, accessLevel);
-                    break;
-                case Core.Sessions.SessionAccessLevels.Plan:
-                    args.AddRange(["--permission-mode", "plan"]);
-                    break;
-                default:
-                    args.AddRange(["--permission-mode", "dontAsk"]);
-                    preApproved.AddRange(OneshotAskFileTools);
-                    AddOneshotAccessNote(args, Core.Sessions.SessionAccessLevels.Ask);
-                    break;
-            }
+        var level = accessLevel ?? Core.Sessions.SessionAccessLevels.Ask;
+        switch (level)
+        {
+            case Core.Sessions.SessionAccessLevels.Full:
+                args.Add("--dangerously-skip-permissions");
+                break;
+            case Core.Sessions.SessionAccessLevels.Auto:
+                args.AddRange(["--permission-mode", "auto"]);
+                AddOneshotAccessNote(args, level);
+                break;
+            case Core.Sessions.SessionAccessLevels.Plan:
+                args.AddRange(["--permission-mode", "plan"]);
+                break;
+            default:
+                level = Core.Sessions.SessionAccessLevels.Ask;
+                args.AddRange(["--permission-mode", "dontAsk"]);
+                preApproved.AddRange(tools is null
+                    ? OneshotAskFileTools
+                    : OneshotAskFileTools.Where(tool => tools.Contains(tool, StringComparer.Ordinal)));
+                AddOneshotAccessNote(args, Core.Sessions.SessionAccessLevels.Ask);
+                break;
+        }
         if (tools is not null)
         {
             // `--allowedTools` controls permission prompts, not tool availability. An explicit
@@ -607,7 +611,11 @@ public partial class ClaudeSessionService
             args.Add(effort);
         }
         if (allowedTools is { Length: > 0 })
-            preApproved.AddRange(allowedTools);
+            preApproved.AddRange(level == Core.Sessions.SessionAccessLevels.Full
+                ? allowedTools
+                : level == Core.Sessions.SessionAccessLevels.Plan
+                    ? []
+                    : allowedTools.Where(tool => OneshotAskFileTools.Contains(tool, StringComparer.Ordinal)));
         if (preApproved.Count > 0)
         {
             args.Add("--allowed-tools");

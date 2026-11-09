@@ -89,13 +89,25 @@ public sealed class SessionAccessService(
         return null;
     }
 
-    /// <summary>The level a one-shot runs at: requested, clamped exactly like a session start.</summary>
+    /// <summary>
+    /// The level a one-shot runs at: requested, clamped exactly like a session start. A one-shot run
+    /// by a session (its signed identity names it, <paramref name="parent"/>) stays within that
+    /// session's level, so a Discord session capped at Auto cannot get a Full one-shot.
+    /// </summary>
     public async Task<SessionAccessStart> ResolveOneshotAsync(ISessionProvider provider, string? requested,
-        bool personPresent, string? agentEntityId, CancellationToken ct = default)
+        bool personPresent, string? agentEntityId, CancellationToken ct = default, SessionAccessParent? parent = null)
     {
         var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0) return new SessionAccessStart(null);
         var current = await ReadPolicyAsync(ct);
+        if (parent is not null)
+        {
+            var inherited = SessionAccessResolver.ResolveFromParent(requested, parent.AccessLevel, current, supported, null);
+            return inherited.Level is null
+                ? new SessionAccessStart(null, inherited.Error, inherited.Message)
+                : new SessionAccessStart(new SessionAccessState(inherited.Level, inherited.Cap, Unattended: true,
+                    AccessLevelSource: SessionAccessLevelSources.Parent));
+        }
         var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, null);
         return resolved.Level is null
             ? new SessionAccessStart(null, resolved.Error, resolved.Message)

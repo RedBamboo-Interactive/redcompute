@@ -950,6 +950,25 @@ public sealed class SessionAccessEndpointTests
     }
 
     [Fact]
+    public async Task A_oneshot_run_by_a_capped_session_stays_within_its_level()
+    {
+        // Laurent's policy is Full; a Discord session runs at Auto under its cap. Its one-shots
+        // used to resolve from the policy alone and ran at Full.
+        var f = new Fixture(Auto, fullEnabled: true);
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full };
+
+        var bySession = await f.Access.ResolveOneshotAsync(f.Provider.Proxy, null, personPresent: false, null,
+            parent: new SessionAccessParent("claude-code", "discord", Auto, Unattended: true));
+        var asked = await f.Access.ResolveOneshotAsync(f.Provider.Proxy, Full, personPresent: false, null,
+            parent: new SessionAccessParent("claude-code", "discord", Auto, Unattended: true));
+        var noParent = await f.Access.ResolveOneshotAsync(f.Provider.Proxy, null, personPresent: false, null);
+
+        Assert.Equal(Auto, bySession.State!.AccessLevel);
+        Assert.Equal(Auto, asked.State!.AccessLevel);
+        Assert.Equal(Full, noParent.State!.AccessLevel);
+    }
+
+    [Fact]
     public void The_found_parent_carries_whether_it_is_unattended()
     {
         var f = new Fixture(Auto);

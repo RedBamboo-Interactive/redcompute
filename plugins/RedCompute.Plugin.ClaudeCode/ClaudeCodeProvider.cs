@@ -314,29 +314,29 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     }
 
     /// <summary>
-    /// What an execute call actually ran with. An explicit tools grant passes
-    /// --dangerously-skip-permissions, so whatever tools are present run unprompted: the call is
-    /// unrestricted unless the caller granted no tools (built-ins removed, empty strict MCP config)
-    /// and this run's init event confirmed an empty tool list. A non-empty grant is not a sandbox.
-    /// Without a grant the access level decides: plan and ask restrict the tools (best effort),
-    /// auto leaves it to Claude's classifier and full skips every prompt (both unrestricted).
+    /// What an execute call actually ran with. The access level decides permissions whatever the
+    /// tools list: full skips every prompt and auto leaves it to Claude's classifier (both
+    /// unrestricted), plan and ask restrict what runs (best effort). An explicit empty grant whose
+    /// init event confirmed an empty tool list is verified tool-free at any level. A null level is
+    /// what the CLI got: ask.
     /// </summary>
     internal static (string Isolation, string Mechanism) ExecuteIsolation(string[]? tools, string? streamOutput,
         string? accessLevel = SessionAccessLevels.Full)
     {
         if (tools is { Length: 0 } && streamOutput != null && ClaudeSessionService.ToolFreeInitError(streamOutput) == null)
             return (SessionIsolation.VerifiedToolFree, "claude-empty-init-tools");
-        return tools switch
+        var grant = tools switch
         {
-            null => accessLevel switch
-            {
-                SessionAccessLevels.Full => (SessionIsolation.Unrestricted, "claude-skip-permissions:default-tools"),
-                SessionAccessLevels.Auto => (SessionIsolation.Unrestricted, "claude-permission-mode:auto"),
-                SessionAccessLevels.Plan => (SessionIsolation.SandboxedBestEffort, "claude-permission-mode:plan"),
-                _ => (SessionIsolation.SandboxedBestEffort, "claude-permission-mode:dontAsk-file-tools"),
-            },
-            { Length: 0 } => (SessionIsolation.Unrestricted, "claude-skip-permissions:empty-grant-unverified"),
-            _ => (SessionIsolation.Unrestricted, "claude-skip-permissions:tool-grant"),
+            null => "default-tools",
+            { Length: 0 } => "empty-grant-unverified",
+            _ => "tool-grant",
+        };
+        return (accessLevel ?? SessionAccessLevels.Ask) switch
+        {
+            SessionAccessLevels.Full => (SessionIsolation.Unrestricted, $"claude-skip-permissions:{grant}"),
+            SessionAccessLevels.Auto => (SessionIsolation.Unrestricted, $"claude-permission-mode:auto:{grant}"),
+            SessionAccessLevels.Plan => (SessionIsolation.SandboxedBestEffort, $"claude-permission-mode:plan:{grant}"),
+            _ => (SessionIsolation.SandboxedBestEffort, $"claude-permission-mode:dontAsk-file-tools:{grant}"),
         };
     }
 

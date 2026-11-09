@@ -482,14 +482,27 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             if (providerParams.TryGetValue("networkAccess", out var na) && na is bool enabled)
                 networkAccess = enabled;
         }
+        sandbox = OneshotSandbox(sandbox ?? _defaultSandbox,
+            providerParams is not null && providerParams.TryGetValue("accessLevel", out var lv) ? lv as string : null);
 
         var result = await _codex.ExecuteExecAsync(prompt, container, workingDir, model, sandbox,
             timeout, ct, streamKey, env, networkAccess, effort);
-        var (isolation, mechanism) = ExecuteIsolation(sandbox ?? _defaultSandbox);
+        var (isolation, mechanism) = ExecuteIsolation(sandbox);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error,
             isolation, mechanism);
     }
+
+    /// <summary>
+    /// The sandbox a one-shot really gets at its resolved level (RedCompute sets <c>accessLevel</c>;
+    /// a body cannot). Only Full may run outside the sandbox: below it a requested or configured
+    /// <c>danger-full-access</c> becomes <c>workspace-write</c>, as a Codex session at Ask runs.
+    /// No level (an internal caller) fails closed the same way.
+    /// </summary>
+    internal static string OneshotSandbox(string sandbox, string? accessLevel)
+        => sandbox == "danger-full-access" && accessLevel != Core.Sessions.SessionAccessLevels.Full
+            ? "workspace-write"
+            : sandbox;
 
     /// <summary>
     /// Execute keeps Codex's full tool surface, so the sandbox is the only boundary: never verified

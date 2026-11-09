@@ -677,13 +677,31 @@ public sealed class ClaudeAccessLevelTests : IDisposable
     }
 
     [Theory]
-    [InlineData(Plan)]
-    [InlineData(Ask)]
-    [InlineData(null)]
-    public void Oneshot_with_an_explicit_tools_grant_keeps_todays_flags(string? level)
+    [InlineData(Plan, "plan")]
+    [InlineData(Ask, "dontAsk")]
+    [InlineData(null, "dontAsk")]
+    [InlineData(Auto, "auto")]
+    public void Oneshot_with_an_explicit_tools_list_still_runs_at_its_level(string? level, string mode)
+    {
+        // A tools list narrows which tools exist. It used to skip every permission at any level,
+        // so any caller could run Bash unprompted by naming it.
+        var args = new List<string>();
+        ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: ["Read", "Bash"], allowedTools: null, addDirs: null, accessLevel: level);
+
+        Assert.DoesNotContain("--dangerously-skip-permissions", args);
+        Assert.Equal(mode, args[args.IndexOf("--permission-mode") + 1]);
+        Assert.Equal("Read,Bash", args[args.IndexOf("--tools") + 1]);
+        if (mode == "dontAsk")
+            Assert.Equal("Read", args[args.IndexOf("--allowed-tools") + 1]);
+        else
+            Assert.DoesNotContain("--allowed-tools", args);
+    }
+
+    [Fact]
+    public void Oneshot_with_a_tools_list_at_full_skips_permissions()
     {
         var args = new List<string>();
-        ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: ["Read"], allowedTools: ["Read"], addDirs: null, accessLevel: level);
+        ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: ["Read"], allowedTools: ["Read"], addDirs: null, accessLevel: Full);
 
         Assert.Contains("--dangerously-skip-permissions", args);
         Assert.DoesNotContain("--permission-mode", args);
@@ -714,22 +732,28 @@ public sealed class ClaudeAccessLevelTests : IDisposable
     }
 
     [Fact]
-    public void Oneshot_with_a_tools_grant_gets_no_access_note()
+    public void Oneshot_with_a_tools_list_below_full_is_told_why_too()
     {
         var args = new List<string>();
         ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: ["Read"], allowedTools: null, addDirs: null, accessLevel: Ask);
 
-        Assert.DoesNotContain("--append-system-prompt", args);
+        Assert.Contains("--append-system-prompt", args);
     }
 
-    [Fact]
-    public void Oneshot_ask_merges_caller_preapprovals_with_the_file_tools()
+    [Theory]
+    [InlineData(Ask, "Read,Glob,Grep,Edit,Write,NotebookEdit")]
+    [InlineData(Auto, "Read")]
+    [InlineData(Plan, null)]
+    [InlineData(Full, "Bash(git status),Read,Bash,WebFetch")]
+    public void Oneshot_caller_preapprovals_reach_past_file_tools_only_at_full(string level, string? allowed)
     {
+        // nova-session and automation recovery pre-approve Bash and the web tools: below Full
+        // that would skip the person (ask) or the classifier (auto) for exactly what they guard.
         var args = new List<string>();
-        ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: null, allowedTools: ["Bash(git status)", "Read"], addDirs: null, accessLevel: Ask);
+        ClaudeSessionService.AddAgentArgs(args, null, null, 10, tools: null,
+            allowedTools: ["Bash(git status)", "Read", "Bash", "WebFetch"], addDirs: null, accessLevel: level);
 
-        Assert.Single(args, a => a == "--allowed-tools");
-        Assert.Equal("Read,Glob,Grep,Edit,Write,NotebookEdit,Bash(git status)", args[args.IndexOf("--allowed-tools") + 1]);
+        Assert.Equal(allowed, args.Contains("--allowed-tools") ? args[args.IndexOf("--allowed-tools") + 1] : null);
     }
 
     // ---- helpers ----

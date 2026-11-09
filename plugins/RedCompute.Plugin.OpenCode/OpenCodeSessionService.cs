@@ -350,6 +350,7 @@ public class OpenCodeSessionService
             foreach (var (key, value) in scratchEnvironment)
                 startInfo.Environment[key] = value;
         ApplyDeveloperInstructions(startInfo, info.Id, WithAccessNote(info, developerInstructions));
+        startInfo.Environment[PermissionEnvironment] = SessionPermissionOverride;
         ApplyConfiguredDataHome(startInfo, _config.OpenCodeDataHome);
 
         var resolvedModel = model ?? _config.Model;
@@ -2360,6 +2361,29 @@ public class OpenCodeSessionService
         => info.AccessLevel is { } level && SessionAccessLevels.IsKnown(level) && level != SessionAccessLevels.Full
             ? SessionAccessNotices.WithLaunchNote(developerInstructions, SessionAccessNotices.LaunchNote(level, info.Unattended))
             : developerInstructions;
+
+    /// <summary>
+    /// OpenCode merges this JSON over every config file it loads (global, project, a caller's
+    /// <c>OPENCODE_CONFIG_DIR</c> or <c>OPENCODE_CONFIG_CONTENT</c>), so it is the one place a level
+    /// can be enforced. OpenCode's own default allows everything, which made Ask close to Full.
+    /// </summary>
+    internal const string PermissionEnvironment = "OPENCODE_PERMISSION";
+
+    /// <summary>
+    /// A persistent session asks for what Ask guards (commands, the network, files outside the
+    /// project); edits inside it run, as with Claude at Ask. Set at every level: at Full RedCompute
+    /// answers each request_permission with allow_once, so a live change of level needs no relaunch.
+    /// </summary>
+    internal const string SessionPermissionOverride =
+        """{"bash":"ask","webfetch":"ask","websearch":"ask","external_directory":"ask"}""";
+
+    /// <summary>
+    /// A one-shot below Full runs with <c>--auto</c> (nobody can answer), which approves anything
+    /// not explicitly denied, so what Ask guards is denied outright: file tools in the project only,
+    /// like a Claude one-shot at Ask.
+    /// </summary>
+    internal const string OneshotPermissionOverride =
+        """{"bash":"deny","webfetch":"deny","websearch":"deny","external_directory":"deny"}""";
 
     internal static void ApplyDeveloperInstructions(
         ProcessStartInfo startInfo, string sessionId, string? developerInstructions)

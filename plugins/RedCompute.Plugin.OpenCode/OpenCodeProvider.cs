@@ -258,9 +258,24 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         if (providerParams?.TryGetValue("container", out var c) == true && c is string cs)
             container = cs;
 
+        env = OneshotEnvironment(env,
+            providerParams?.TryGetValue("accessLevel", out var level) == true ? level as string : null);
         var result = await _opencode.ExecuteAsync(prompt, container, workingDir, model, timeout, ct, streamKey, env);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
+    }
+
+    /// <summary>
+    /// The environment a one-shot really runs with at its resolved level (RedCompute sets
+    /// <c>accessLevel</c>; a body cannot). Below Full, and with no level, the deny override is
+    /// written last, over any value the caller's <c>env</c> carried.
+    /// </summary>
+    internal static Dictionary<string, string>? OneshotEnvironment(Dictionary<string, string>? env, string? accessLevel)
+    {
+        if (accessLevel == SessionAccessLevels.Full) return env;
+        var result = env is null ? new Dictionary<string, string>() : new Dictionary<string, string>(env);
+        result[OpenCodeSessionService.PermissionEnvironment] = OpenCodeSessionService.OneshotPermissionOverride;
+        return result;
     }
 
     public List<ModelInfo> GetAvailableModels() =>

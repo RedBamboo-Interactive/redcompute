@@ -207,7 +207,7 @@ public sealed class ClaudeToolAvailabilityTests
     {
         Assert.Equal((SessionIsolation.VerifiedToolFree, "claude-empty-init-tools"),
             ClaudeCodeProvider.ExecuteIsolation([], ToolFreeOutput([])));
-        // Execute always skips permissions, so anything short of a verified empty surface runs
+        // At full every prompt is skipped, so anything short of a verified empty surface runs
         // whatever tools it has unprompted: an unverified empty grant (ambient plugin, CLI change,
         // missing init) and a non-empty grant are both unrestricted, never "sandboxed".
         Assert.Equal((SessionIsolation.Unrestricted, "claude-skip-permissions:empty-grant-unverified"),
@@ -218,8 +218,15 @@ public sealed class ClaudeToolAvailabilityTests
             ClaudeCodeProvider.ExecuteIsolation(["Read"], ToolFreeOutput(["Read"])));
         Assert.Equal((SessionIsolation.Unrestricted, "claude-skip-permissions:default-tools"),
             ClaudeCodeProvider.ExecuteIsolation(null, ToolFreeOutput([])));
-        Assert.Contains("--dangerously-skip-permissions", AgentArgs(["Read"]));
-        Assert.Contains("--dangerously-skip-permissions", AgentArgs([]));
+        // Below full a tools grant no longer skips anything: the level decides.
+        Assert.Equal((SessionIsolation.SandboxedBestEffort, "claude-permission-mode:dontAsk-file-tools:tool-grant"),
+            ClaudeCodeProvider.ExecuteIsolation(["Read", "Bash"], ToolFreeOutput(["Read", "Bash"]), SessionAccessLevels.Ask));
+        Assert.Equal((SessionIsolation.SandboxedBestEffort, "claude-permission-mode:dontAsk-file-tools:tool-grant"),
+            ClaudeCodeProvider.ExecuteIsolation(["Read"], null, accessLevel: null));
+        Assert.Equal(SessionIsolation.Unrestricted,
+            ClaudeCodeProvider.ExecuteIsolation(["Bash"], null, SessionAccessLevels.Auto).Isolation);
+        Assert.DoesNotContain("--dangerously-skip-permissions", AgentArgs(["Read"]));
+        Assert.DoesNotContain("--dangerously-skip-permissions", AgentArgs([]));
     }
 
     [Theory]

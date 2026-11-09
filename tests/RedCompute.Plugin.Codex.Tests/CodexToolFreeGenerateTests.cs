@@ -72,6 +72,15 @@ public sealed class CodexToolFreeGenerateTests : IAsyncLifetime
         Assert.Equal($"codex-sandbox:{sandbox}", mechanism);
     }
 
+    [Theory]
+    [InlineData("danger-full-access", "full", "danger-full-access")]
+    [InlineData("danger-full-access", "ask", "workspace-write")]
+    [InlineData("danger-full-access", null, "workspace-write")]
+    [InlineData("read-only", "ask", "read-only")]
+    [InlineData("workspace-write", "full", "workspace-write")]
+    public void Execute_runs_outside_the_sandbox_only_at_full(string requested, string? level, string expected)
+        => Assert.Equal(expected, CodexProvider.OneshotSandbox(requested, level));
+
     // --- Request sanitizer ---
 
     [Fact]

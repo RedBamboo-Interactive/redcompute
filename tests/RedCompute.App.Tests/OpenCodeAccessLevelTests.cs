@@ -251,4 +251,28 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
         public void DismissSession(string sessionId) { }
         public Dictionary<Guid, string> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds) => [];
     }
+
+    [Theory]
+    [InlineData("ask")]
+    [InlineData("auto")]
+    [InlineData(null)]
+    public void A_oneshot_below_full_denies_commands_and_the_network_over_the_callers_env(string? level)
+    {
+        // Roleplay passes an allow-all OpenCode config through env; OPENCODE_PERMISSION merges last.
+        var env = new Dictionary<string, string> { ["OPENCODE_CONFIG_DIR"] = "C:\allow-all", ["OPENCODE_PERMISSION"] = """{"bash":"allow"}""" };
+
+        var result = RedCompute.Plugin.OpenCode.OpenCodeProvider.OneshotEnvironment(env, level)!;
+
+        Assert.Equal(RedCompute.Plugin.OpenCode.OpenCodeSessionService.OneshotPermissionOverride, result["OPENCODE_PERMISSION"]);
+        Assert.Contains("\"bash\":\"deny\"", result["OPENCODE_PERMISSION"]);
+        Assert.Equal("C:\allow-all", result["OPENCODE_CONFIG_DIR"]);
+        Assert.Equal("""{"bash":"allow"}""", env["OPENCODE_PERMISSION"]);
+    }
+
+    [Fact]
+    public void A_oneshot_at_full_keeps_the_callers_env()
+    {
+        var env = new Dictionary<string, string> { ["A"] = "b" };
+        Assert.Same(env, RedCompute.Plugin.OpenCode.OpenCodeProvider.OneshotEnvironment(env, "full"));
+    }
 }
