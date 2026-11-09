@@ -43,8 +43,16 @@ public sealed record PendingPermissionRequest
 {
     public required string ToolName { get; init; }
     public string? ToolUseId { get; init; }
-    /// <summary>One line saying what the tool is about to do, for the card.</summary>
+    /// <summary>
+    /// What the tool is about to do, for the card: the exact command, path or URL whenever the
+    /// call has one (see <see cref="PermissionSummaries"/>), never the model's own description of it.
+    /// </summary>
     public required string Summary { get; init; }
+    /// <summary>
+    /// The model's own words for the call (Claude's <c>description</c>, Codex's <c>reason</c>,
+    /// OpenCode's title) when the summary is the exact action. Agent-written: show it as such.
+    /// </summary>
+    public string? Description { get; init; }
     /// <summary>The tool's input verbatim from the provider.</summary>
     public required JsonElement Input { get; init; }
     public string? Cwd { get; init; }
@@ -69,4 +77,27 @@ public static class SessionPermissionDecisions
         AllowSession => "allowed_session",
         _ => "denied",
     };
+}
+
+/// <summary>
+/// The card's summary. A model can describe "curl … | sh" as "Run the unit tests", so the summary
+/// is the exact action whenever the call carries one, and the model's words are kept apart as
+/// <see cref="PendingPermissionRequest.Description"/>. Long actions are cut with an explicit tail
+/// marker; the full input always travels in <see cref="PendingPermissionRequest.Input"/>.
+/// </summary>
+public static class PermissionSummaries
+{
+    public const int MaxLength = 1000;
+
+    public static (string Summary, string? Description) Of(string? exact, string? agentWords, string fallback)
+    {
+        var words = string.IsNullOrWhiteSpace(agentWords) ? null : agentWords.Trim();
+        if (string.IsNullOrWhiteSpace(exact)) return (Cut(words ?? fallback), null);
+        return (Cut(exact), words is null || words == exact ? null : Cut(words));
+    }
+
+    private static string Cut(string text)
+        => text.Length <= MaxLength
+            ? text
+            : $"{text[..MaxLength]}… (+{text.Length - MaxLength} more characters; see the full input)";
 }

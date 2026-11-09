@@ -3291,6 +3291,7 @@ public partial class ClaudeSessionService
             ToolName = toolName,
             ToolUseId = toolUseId,
             Summary = PermissionSummary(toolName, request, input),
+            Description = PermissionDescription(request, input),
             Input = input,
             Cwd = session.Info.ProjectPath,
         };
@@ -3364,10 +3365,24 @@ public partial class ClaudeSessionService
             => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value)
                 && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
                 ? value.GetString() : null;
-        var summary = Text(request, "description") ?? Text(input, "description") ?? Text(input, "command")
-            ?? Text(input, "file_path") ?? Text(input, "notebook_path") ?? Text(input, "url") ?? Text(input, "path")
-            ?? Text(request, "decision_reason") ?? $"Use {toolName}";
-        return summary.Length > 300 ? summary[..297] + "..." : summary;
+        return PermissionSummaries.Of(
+            Text(input, "command") ?? Text(input, "file_path") ?? Text(input, "notebook_path") ?? Text(input, "url")
+                ?? Text(input, "path") ?? Text(input, "pattern"),
+            Text(request, "description") ?? Text(input, "description"),
+            Text(request, "decision_reason") ?? $"Use {toolName}").Summary;
+    }
+
+    /// <summary>The model's own words for a call whose card shows the exact action, else null.</summary>
+    internal static string? PermissionDescription(JsonElement request, JsonElement input)
+    {
+        static string? Text(JsonElement element, string name)
+            => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
+                ? value.GetString() : null;
+        return PermissionSummaries.Of(
+            Text(input, "command") ?? Text(input, "file_path") ?? Text(input, "notebook_path") ?? Text(input, "url")
+                ?? Text(input, "path") ?? Text(input, "pattern"),
+            Text(request, "description") ?? Text(input, "description"), "").Description;
     }
 
     private void HandleControlCancelRequest(JsonElement root, ManagedSession session)
@@ -3519,7 +3534,9 @@ public partial class ClaudeSessionService
             }
 
             List<object>? updatedPermissions = null;
-            if (decision == Core.Sessions.SessionPermissionDecisions.AllowSession)
+            // Leaving plan is approved one plan at a time: remembered for the session it would let
+            // a later return to plan (which anyone may ask for) slip back out without a person.
+            if (decision == Core.Sessions.SessionPermissionDecisions.AllowSession && pending.ToolName != ExitPlanModeTool)
             {
                 if (pending.Suggestions is { } suggestions)
                     updatedPermissions = [.. SessionScopedSuggestions(suggestions)];
@@ -3532,7 +3549,10 @@ public partial class ClaudeSessionService
             var afterPlan = leavesPlan
                 ? session.Info.Access with
                 {
-                    AccessLevel = session.Info.Access.AccessLevelBeforePlan ?? Core.Sessions.SessionAccessLevels.Ask,
+                    // Within the session's cap, which may have been lowered while it was in plan.
+                    AccessLevel = session.Info.Access.MaxAccessLevel is { } cap
+                        ? Core.Sessions.SessionAccessLevels.Lower(session.Info.Access.AccessLevelBeforePlan ?? Core.Sessions.SessionAccessLevels.Ask, cap)
+                        : session.Info.Access.AccessLevelBeforePlan ?? Core.Sessions.SessionAccessLevels.Ask,
                     AccessLevelBeforePlan = null,
                     // A person approved leaving plan: the level is theirs, no longer the default's.
                     AccessLevelSource = Core.Sessions.SessionAccessLevelSources.Explicit,
@@ -3565,7 +3585,15 @@ public partial class ClaudeSessionService
     {
         foreach (var suggestion in suggestions.EnumerateArray())
         {
-            if (suggestion.ValueKind != JsonValueKind.Object) continue;
+            // Only allow rules pass, kept to this session. A suggested setMode would change the
+            // level behind RedCompute's back, and addDirectories widens where edits may go: neither
+            // is what the person saw on the card.
+            if (suggestion.ValueKind != JsonValueKind.Object
+                || !suggestion.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String
+                || type.GetString() != "addRules"
+                || !suggestion.TryGetProperty("behavior", out var behavior) || behavior.ValueKind != JsonValueKind.String
+                || behavior.GetString() != "allow")
+                continue;
             var copy = new Dictionary<string, object?>();
             foreach (var property in suggestion.EnumerateObject())
                 copy[property.Name] = property.Value;
@@ -4644,13 +4672,22 @@ public partial class ClaudeSessionService
     /// An allow_session RedCompute keeps itself, when the CLI offered no suggestion: the exact
     /// tool, and for Bash the exact command. Lives as long as the CLI process.
     /// </summary>
-    internal sealed record SessionAllowRule(string ToolName, string? Command)
+    /// <summary>
+    /// What "allow for this session" remembers when the CLI offered no rule of its own: exactly
+    /// the approved call. Bash by its command; any other tool by its whole input, never tool-wide
+    /// (approving one WebFetch or MCP call must not approve every later one).
+    /// </summary>
+    internal sealed record SessionAllowRule(string ToolName, string? Command, string? Input = null)
     {
         public static SessionAllowRule For(string toolName, JsonElement input)
-            => new(toolName, toolName == "Bash" ? CommandOf(input) ?? "" : null);
+            => toolName == "Bash"
+                ? new(toolName, CommandOf(input) ?? "")
+                : new(toolName, null, input.ValueKind == JsonValueKind.Undefined ? "" : input.GetRawText());
 
         public bool Matches(string toolName, JsonElement input)
-            => toolName == ToolName && (Command is null || CommandOf(input) == Command);
+            => toolName == ToolName
+                && (Command is null || CommandOf(input) == Command)
+                && (Input is null || (input.ValueKind == JsonValueKind.Undefined ? "" : input.GetRawText()) == Input);
 
         private static string? CommandOf(JsonElement input)
             => input.ValueKind == JsonValueKind.Object && input.TryGetProperty("command", out var command)

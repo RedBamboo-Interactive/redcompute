@@ -39,7 +39,8 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
         Assert.Equal("permission-21", parked.RequestId);
         Assert.Equal("execute", parked.ToolName);
         Assert.Equal("call-1", parked.ToolUseId);
-        Assert.Equal("Run npm test", parked.Permission!.Summary);
+        Assert.Equal("npm test", parked.Permission!.Summary);
+        Assert.Equal("Run npm test", parked.Permission.Description);
         Assert.Equal("npm test", parked.Permission.Input.GetProperty("command").GetString());
         Assert.Equal(SessionPermissionDecisions.All, parked.Permission.Options);
         Assert.Equal(TimeSpan.FromMinutes(30), parked.ExpiresAt - parked.AskedAt);

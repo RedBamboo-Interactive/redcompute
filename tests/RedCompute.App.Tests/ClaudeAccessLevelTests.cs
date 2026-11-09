@@ -336,6 +336,23 @@ public sealed class ClaudeAccessLevelTests : IDisposable
     }
 
     [Fact]
+    public async Task Leaving_plan_stays_within_the_cap_and_is_never_remembered_for_the_session()
+    {
+        var id = Start(new SessionAccessState(Plan, Auto, AccessLevelBeforePlan: Full));
+        Assert.True(_service.ProcessOutputLine(id, CanUseTool("exit", "ExitPlanMode", new { plan = "1. do it" })));
+
+        Assert.Equal(QuestionAnswerResult.Allowed, _service.SubmitQuestionAnswer(id,
+            new SessionQuestionAnswer { RequestId = "exit", Decision = SessionPermissionDecisions.AllowSession }));
+        await Task.Delay(100);
+        Assert.Equal(Auto, _service.GetAccessState(id)!.AccessLevel);
+
+        // Back in plan (anyone may lower): leaving again needs a person again.
+        Assert.True(_service.SetAccessState(id, _service.GetAccessState(id)! with { AccessLevel = Plan, AccessLevelBeforePlan = Auto }));
+        Assert.True(_service.ProcessOutputLine(id, CanUseTool("exit-2", "ExitPlanMode", new { plan = "2. more" })));
+        Assert.Equal("exit-2", Assert.Single(_service.GetPendingQuestions(id)).RequestId);
+    }
+
+    [Fact]
     public void A_stopped_session_change_is_persisted_for_its_next_launch()
     {
         _store.SaveSession(Record("stopped", Full));
@@ -366,7 +383,9 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Equal("Bash", parked.ToolName);
         Assert.Equal("toolu_01UTW9gEtEYsKqgjsvvJ3ffn", parked.ToolUseId);
         Assert.Equal(TimeSpan.FromMinutes(30), parked.ExpiresAt - parked.AskedAt);
-        Assert.Equal(request["request"]!["description"]!.GetValue<string>(), parked.Permission!.Summary);
+        // The card shows the exact command; the model's own description travels apart.
+        Assert.Equal(request["request"]!["input"]!["command"]!.GetValue<string>(), parked.Permission!.Summary);
+        Assert.Equal(request["request"]!["description"]!.GetValue<string>(), parked.Permission.Description);
         Assert.Equal("node -e \"console.log(6*7)\"", parked.Permission.Input.GetProperty("command").GetString());
         Assert.Equal(SessionPermissionDecisions.All, parked.Permission.Options);
         Assert.Equal(records, _store.Messages.Count); // control state, never a transcript record
@@ -754,6 +773,39 @@ public sealed class ClaudeAccessLevelTests : IDisposable
             allowedTools: ["Bash(git status)", "Read", "Bash", "WebFetch"], addDirs: null, accessLevel: level);
 
         Assert.Equal(allowed, args.Contains("--allowed-tools") ? args[args.IndexOf("--allowed-tools") + 1] : null);
+    }
+
+    [Fact]
+    public void Only_allow_rules_from_the_cli_are_kept_for_the_session()
+    {
+        var suggestions = JsonDocument.Parse("""
+            [
+              {"type":"addRules","behavior":"allow","rules":[{"toolName":"Bash","ruleContent":"npm test"}],"destination":"localSettings"},
+              {"type":"setMode","mode":"bypassPermissions","destination":"session"},
+              {"type":"addDirectories","directories":["C:\\"],"destination":"session"},
+              {"type":"addRules","behavior":"deny","rules":[{"toolName":"Bash"}],"destination":"session"},
+              "not an object"
+            ]
+            """).RootElement;
+
+        var kept = ClaudeSessionService.SessionScopedSuggestions(suggestions).Cast<Dictionary<string, object?>>().ToList();
+
+        var rule = Assert.Single(kept);
+        Assert.Equal("addRules", ((JsonElement)rule["type"]!).GetString());
+        Assert.Equal("session", rule["destination"]);
+    }
+
+    [Fact]
+    public void A_remembered_approval_without_a_cli_rule_matches_exactly_that_call()
+    {
+        static JsonElement Input(string json) => JsonDocument.Parse(json).RootElement.Clone();
+        var fetch = ClaudeSessionService.SessionAllowRule.For("WebFetch", Input("""{"url":"https://a.test","prompt":"x"}"""));
+        var bash = ClaudeSessionService.SessionAllowRule.For("Bash", Input("""{"command":"npm test","description":"tests"}"""));
+
+        Assert.True(fetch.Matches("WebFetch", Input("""{"url":"https://a.test","prompt":"x"}""")));
+        Assert.False(fetch.Matches("WebFetch", Input("""{"url":"https://evil.test","prompt":"x"}""")));
+        Assert.True(bash.Matches("Bash", Input("""{"command":"npm test","description":"other words"}""")));
+        Assert.False(bash.Matches("Bash", Input("""{"command":"npm test; rm -rf ~"}""")));
     }
 
     // ---- helpers ----

@@ -907,24 +907,28 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     }
 
     /// <summary>
-    /// workspaceWrite scoped to the project. The sandbox param on thread/start is a *string* enum
-    /// and is ignored here; the per-turn policy is an object, and without writableRoots every edit
-    /// is refused as "writing outside of the project".
+    /// The per-turn sandbox, by level (sent every turn, so a live change applies from the next one).
+    /// At Full the configured sandbox applies as before. Below Full Codex runs only what its
+    /// sandbox allows and asks (on-request) for anything more, so the sandbox is what Ask means:
+    /// workspaceWrite scoped to the project with no network, never the configured
+    /// danger-full-access (with nothing left to escalate, that made Ask the same as Full). The
+    /// sandbox param on thread/start is a *string* enum and is ignored here; the per-turn policy is
+    /// an object, and without writableRoots every edit is refused as "writing outside of the project".
     /// </summary>
-    internal object BuildSandboxPolicy(CodexSessionInfo info) =>
-        SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
-            ? new { type = "readOnly", networkAccess = false }
-            : _config.SandboxMode switch
-            {
-                "danger-full-access" => new { type = "dangerFullAccess" },
-                "read-only" => new { type = "readOnly", networkAccess = false },
-                _ => new
-                {
-                    type = "workspaceWrite",
-                    writableRoots = new[] { info.ProjectPath },
-                    networkAccess = true,
-                },
-            };
+    internal object BuildSandboxPolicy(CodexSessionInfo info)
+    {
+        if (SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile) || _config.SandboxMode == "read-only")
+            return new { type = "readOnly", networkAccess = false };
+        var full = info.AccessLevel == Core.Sessions.SessionAccessLevels.Full;
+        if (full && _config.SandboxMode == "danger-full-access")
+            return new { type = "dangerFullAccess" };
+        return new
+        {
+            type = "workspaceWrite",
+            writableRoots = new[] { info.ProjectPath },
+            networkAccess = full,
+        };
+    }
 
     internal object BuildTurnStartParams(CodexSessionInfo info, object[] input) => new
     {
@@ -1589,6 +1593,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             ToolName = ApprovalToolName(method),
             ToolUseId = Str(@params, "itemId") ?? Str(@params, "callId"),
             Summary = ApprovalSummary(method, @params),
+            Description = Approval(method, @params).Description,
             Input = @params.ValueKind == JsonValueKind.Object ? @params.Clone() : EmptyJsonObject,
             Cwd = Str(@params, "cwd") ?? session.Info.ProjectPath,
         };
@@ -1711,21 +1716,30 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         _ => "permissions",
     };
 
-    internal static string ApprovalSummary(string method, JsonElement @params)
+    internal static string ApprovalSummary(string method, JsonElement @params) => Approval(method, @params).Summary;
+
+    /// <summary>The exact command or write root for the card; Codex's own reason kept apart.</summary>
+    internal static (string Summary, string? Description) Approval(string method, JsonElement @params)
     {
         var reason = Str(@params, "reason");
-        var summary = method switch
+        var exact = method switch
         {
-            "item/commandExecution/requestApproval" => Str(@params, "command") ?? reason ?? "Run a command",
+            "item/commandExecution/requestApproval" => Str(@params, "command"),
             "execCommandApproval" => @params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("command", out var argv)
                 && argv.ValueKind == JsonValueKind.Array
                     ? string.Join(' ', argv.EnumerateArray().Select(part => part.ToString()))
-                    : reason ?? "Run a command",
-            "item/fileChange/requestApproval" or "applyPatchApproval" => reason
-                ?? (Str(@params, "grantRoot") is { } root ? $"Write files under {root}" : "Apply file changes"),
-            _ => reason ?? "Grant additional permissions",
+                    : null,
+            "item/fileChange/requestApproval" or "applyPatchApproval" =>
+                Str(@params, "grantRoot") is { } root ? $"Write files under {root}" : null,
+            _ => null,
         };
-        return summary.Length > 300 ? summary[..297] + "..." : summary;
+        var fallback = method switch
+        {
+            "item/commandExecution/requestApproval" or "execCommandApproval" => "Run a command",
+            "item/fileChange/requestApproval" or "applyPatchApproval" => "Apply file changes",
+            _ => "Grant additional permissions",
+        };
+        return Core.Sessions.PermissionSummaries.Of(exact, reason, fallback);
     }
 
     private static string? Str(JsonElement element, string name)

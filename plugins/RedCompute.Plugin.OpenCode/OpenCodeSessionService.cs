@@ -1132,13 +1132,16 @@ public class OpenCodeSessionService
         if (kinds.Contains("allow_once")) offered.Add(SessionPermissionDecisions.AllowOnce);
         if (kinds.Contains("allow_always")) offered.Add(SessionPermissionDecisions.AllowSession);
         offered.Add(SessionPermissionDecisions.Deny);
-        var summary = Text(toolCall, "title") ?? Text(rawInput, "command") ?? Text(rawInput, "filePath")
-            ?? Text(rawInput, "path") ?? Text(toolCall, "kind") ?? "Use a tool";
+        var (summary, description) = PermissionSummaries.Of(
+            Text(rawInput, "command") ?? Text(rawInput, "filePath") ?? Text(rawInput, "path") ?? Text(rawInput, "url"),
+            Text(toolCall, "title"),
+            Text(toolCall, "kind") ?? "Use a tool");
         return new PendingPermissionRequest
         {
             ToolName = Text(toolCall, "kind") ?? "tool",
             ToolUseId = Text(toolCall, "toolCallId"),
-            Summary = summary.Length > 300 ? summary[..297] + "..." : summary,
+            Summary = summary,
+            Description = description,
             Input = rawInput,
             Cwd = projectPath,
             Options = offered,
