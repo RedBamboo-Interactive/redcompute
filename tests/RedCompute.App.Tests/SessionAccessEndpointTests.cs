@@ -205,7 +205,9 @@ public sealed class SessionAccessEndpointTests
         // Unowned session, Full enabled, no cap: only the person rule can refuse.
         var raise = new Fixture(Ask, fullEnabled: true) { Readable = true };
         var raised = await raise.PostAsync("access-level", new { level = Full }, caller, subject: "local-user");
-        var aliased = await raise.PostAsync("permission-mode", new { mode = "bypassPermissions" }, caller, subject: "local-user");
+        var aliasPlan = new Fixture(Plan, fullEnabled: true) { Readable = true };
+        aliasPlan.Provider.State = new SessionAccessState(Plan, AccessLevelBeforePlan: Full);
+        var aliased = await aliasPlan.PostAsync("permission-mode", new { mode = "bypassPermissions" }, caller, subject: "local-user");
 
         var plan = new Fixture(Plan, fullEnabled: true) { Readable = true };
         plan.Provider.State = new SessionAccessState(Plan, AccessLevelBeforePlan: Full);
@@ -244,22 +246,42 @@ public sealed class SessionAccessEndpointTests
     [MemberData(nameof(NotPeople))]
     public async Task The_permission_mode_alias_cannot_raise_for_an_agent(string caller)
     {
-        var f = new Fixture(Ask, fullEnabled: true) { Readable = true };
+        var f = new Fixture(Plan, fullEnabled: true) { Readable = true };
+        f.Provider.State = new SessionAccessState(Plan, AccessLevelBeforePlan: Auto);
 
         var (status, body) = await f.PostAsync("permission-mode", new { mode = "bypassPermissions" }, caller);
 
         Assert.Equal(403, status);
         Assert.Equal(SessionAccessResolver.RaiseRequiresPerson, body.GetProperty("error").GetString());
-        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+        Assert.Equal(Plan, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task A_stale_tab_leaving_plan_with_bypass_returns_to_its_level_never_to_full()
+    {
+        // A bundle from before access levels flips plan off with bypassPermissions. A signed-in
+        // person must not raise the session to Full (and pin it there) by toggling plan.
+        var f = new Fixture(Plan, fullEnabled: true);
+        f.Provider.State = new SessionAccessState(Plan, AccessLevelBeforePlan: Auto, AccessLevelSource: Policy);
+
+        var (status, body) = await f.PostAsync("permission-mode", new { mode = "bypassPermissions" }, "code browser");
+
+        Assert.Equal(200, status);
+        Assert.Equal(Auto, body.GetProperty("accessLevel").GetString());
+        Assert.Equal(Auto, f.Provider.State.AccessLevel);
+
+        var notInPlan = await f.PostAsync("permission-mode", new { mode = "bypassPermissions" }, "code browser");
+        Assert.Equal(200, notInPlan.Status);
+        Assert.NotEqual(Full, f.Provider.State.AccessLevel);
     }
 
     [Theory]
-    [InlineData("bypassPermissions", Full)]
+    [InlineData("bypassPermissions", Ask)]   // never raises: leaves plan, else stays
     [InlineData("acceptEdits", Ask)]
     [InlineData("default", Ask)]
     [InlineData("plan", Plan)]
     [InlineData("auto", Auto)]
-    [InlineData("full", Full)]
+    [InlineData("full", Ask)]
     public async Task The_permission_mode_alias_maps_legacy_modes_for_a_person(string mode, string level)
     {
         var f = new Fixture(Ask, fullEnabled: true);
@@ -314,7 +336,8 @@ public sealed class SessionAccessEndpointTests
     [Fact]
     public async Task The_permission_mode_alias_reports_a_refusal_the_same_way()
     {
-        var f = new Fixture(Ask, fullEnabled: true);
+        var f = new Fixture(Plan, fullEnabled: true);
+        f.Provider.State = new SessionAccessState(Plan, AccessLevelBeforePlan: Full);
         f.Provider.Refusal = CliRefusal;
 
         var (status, body) = await f.PostAsync("permission-mode", new { mode = "bypassPermissions" }, "nova through the kernel");
@@ -322,7 +345,7 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(409, status);
         Assert.Equal(SessionAccessService.ProviderRefusedLevel, body.GetProperty("error").GetString());
         Assert.Contains(CliRefusal, body.GetProperty("message").GetString());
-        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+        Assert.Equal(Plan, f.Provider.State.AccessLevel);
     }
 
     [Fact]
@@ -895,6 +918,44 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(new SessionAccessState(Auto, Auto, AccessLevelSource: ParentSource), higher.State);
         Assert.Equal(new SessionAccessState(Ask, Full, AccessLevelSource: ParentSource), lowerLevel.State);
         Assert.Equal(new SessionAccessState(Auto, Auto, Unattended: true, AccessLevelSource: ParentSource), lowerCap.State);
+    }
+
+    [Fact]
+    public async Task A_worker_of_an_unattended_parent_is_unattended_too()
+    {
+        // A heartbeat or Discord session delegates: nobody watches the worker either, so its asks
+        // must be denied at once rather than park in a Code session no one looks at.
+        var f = new Fixture(Ask, fullEnabled: true);
+        var parent = new SessionAccessParent("claude-code", "parent", Full, Unattended: true);
+
+        var start = await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, unattended: false, personPresent: false, null, parent: parent);
+
+        Assert.Equal(new SessionAccessState(Full, Full, Unattended: true, AccessLevelSource: ParentSource), start.State);
+        var attended = await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, unattended: false, personPresent: false, null,
+            parent: parent with { Unattended = false });
+        Assert.False(attended.State!.Unattended);
+    }
+
+    [Fact]
+    public async Task Delegating_from_a_session_in_plan_is_refused_with_why()
+    {
+        var f = new Fixture(Ask, fullEnabled: true);
+
+        var start = await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, false, false, null,
+            parent: new SessionAccessParent("claude-code", "parent", SessionAccessLevels.Plan));
+
+        Assert.Null(start.State);
+        Assert.Equal(SessionAccessResolver.ParentInPlan, start.Error);
+        Assert.Contains("plan mode", start.Message);
+    }
+
+    [Fact]
+    public void The_found_parent_carries_whether_it_is_unattended()
+    {
+        var f = new Fixture(Auto);
+        f.Provider.State = f.Provider.State with { Unattended = true };
+
+        Assert.Equal(new SessionAccessParent("test", "session-1", Auto, Unattended: true), f.Access.FindParent(["session-1"], _ => true));
     }
 
     [Fact]

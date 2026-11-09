@@ -14,6 +14,7 @@ public static class SessionAccessResolver
     public const string CapBelowSupported = "access_level_cap_unsupported";
     public const string CapChangeRequiresPerson = "cap_change_requires_person";
     public const string AttendedRequiresPerson = "attended_requires_person";
+    public const string ParentInPlan = "parent_in_plan";
 
     /// <summary>
     /// The level a session starts at (and a legacy session resumes at, with no request):

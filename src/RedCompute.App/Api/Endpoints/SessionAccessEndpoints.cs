@@ -131,7 +131,9 @@ public static class SessionAccessEndpoints
 
         endpoints.MapPost("/ai-session/sessions/{id}/permission-mode",
             "Compatibility alias of POST /ai-session/sessions/{id}/access-level, under exactly the same rules. Legacy mode names map to levels: "
-            + "bypassPermissions -> full; acceptEdits, default, manual, dontAsk -> ask; plan; auto. Responds with the provider-native mode now in force.",
+            + "acceptEdits, default, manual, dontAsk -> ask; plan; auto. bypassPermissions never raises anything: legacy clients sent it to "
+            + "leave plan, so it leaves plan for the level the session entered plan from (or its default), exactly like access-level with no "
+            + "level. Responds with the provider-native mode now in force.",
             async (HttpContext ctx, string id) =>
         {
             var (provider, info, error) = Find(ctx, registry, jobTracker, id);
@@ -149,7 +151,9 @@ public static class SessionAccessEndpoints
                 return Error(422, SessionAccessResolver.InvalidAccessLevel,
                     $"mode must be one of {string.Join(", ", LegacyModes)}");
 
-            return await ChangeAsync(ctx, access, provider!, info!, level, legacyMode: mode);
+            // A tab still running a bundle from before access levels flips plan with bypassPermissions;
+            // taken literally that would raise the session to Full and pin it there.
+            return await ChangeAsync(ctx, access, provider!, info!, level == SessionAccessLevels.Full ? null : level, legacyMode: mode);
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("mode", "string", required: true, description: "Legacy permission mode, mapped to an access level",

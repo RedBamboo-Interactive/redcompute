@@ -474,9 +474,11 @@ public static class UnifiedSessionEndpoints
             var accessStart = await _access.ResolveStartAsync(provider, requestedAccessLevel, maxAccessLevel, unattended,
                 ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted, parent);
             if (accessStart.Error is not null)
-                return Error(422, accessStart.Error, accessStart.Message ?? accessStart.Error);
+                return Error(accessStart.Error == SessionAccessResolver.ParentInPlan ? 409 : 422,
+                    accessStart.Error, accessStart.Message ?? accessStart.Error);
             if (parent is not null)
-                log($"[Access] New {provider.ProviderId} session inherits {accessStart.State?.AccessLevel} (cap {accessStart.State?.MaxAccessLevel}) "
+                log($"[Access] New {provider.ProviderId} session inherits {accessStart.State?.AccessLevel} (cap {accessStart.State?.MaxAccessLevel}"
+                    + $"{(accessStart.State?.Unattended == true ? ", unattended" : "")}) "
                     + $"from delegating session {parent.ProviderId}/{parent.SessionId} at {parent.AccessLevel}", null);
             UnifiedSessionInfo? session;
             try

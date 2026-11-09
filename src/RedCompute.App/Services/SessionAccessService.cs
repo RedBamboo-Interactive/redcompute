@@ -34,10 +34,18 @@ public sealed class SessionAccessService(
         var current = await ReadPolicyAsync(ct);
         if (parent is not null)
         {
+            // A session in plan is meant to look, not act; work it hands off would act. Say so
+            // rather than start a worker capped at plan that cannot do the job.
+            if (parent.AccessLevel == SessionAccessLevels.Plan)
+                return new SessionAccessStart(null, SessionAccessResolver.ParentInPlan,
+                    "The session delegating this work is in plan mode, so it can't hand off work that changes anything. "
+                    + "Leave plan in that session first (from its Info panel, or by approving the plan), then delegate again.");
             var inherited = SessionAccessResolver.ResolveFromParent(requested, parent.AccessLevel, current, supported, maxAccessLevel);
+            // A worker of a session nobody watches has nobody to approve its asks either: they
+            // would park in a Code session no one looks at.
             return inherited.Level is null
                 ? new SessionAccessStart(null, inherited.Error, inherited.Message)
-                : new SessionAccessStart(new SessionAccessState(inherited.Level, inherited.Cap, unattended,
+                : new SessionAccessStart(new SessionAccessState(inherited.Level, inherited.Cap, unattended || parent.Unattended,
                     AccessLevelSource: SessionAccessLevelSources.Parent));
         }
         var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, maxAccessLevel);
@@ -70,7 +78,7 @@ public sealed class SessionAccessService(
                 if (provider.GetSession(id).Info is not { } info) continue;
                 if (!canRead(info)) return null;
                 return state.AccessLevel is { } level && SessionAccessLevels.IsKnown(level)
-                    ? new SessionAccessParent(provider.ProviderId, id, level)
+                    ? new SessionAccessParent(provider.ProviderId, id, level, state.Unattended)
                     : null;
             }
             catch (Exception ex)
@@ -462,7 +470,8 @@ public sealed class SessionAccessService(
 public sealed record SessionAccessPolicyChangeResult(IReadOnlyList<string> Demoted, IReadOnlyList<string> Followed);
 
 /// <summary>The session that delegated a new one, and the level it held when it did.</summary>
-public sealed record SessionAccessParent(string ProviderId, string SessionId, string AccessLevel);
+/// <summary>The session delegating a new one: its level, and whether anyone watches it.</summary>
+public sealed record SessionAccessParent(string ProviderId, string SessionId, string AccessLevel, bool Unattended = false);
 
 public sealed record SessionAccessStart(SessionAccessState? State, string? Error = null, string? Message = null);
 
