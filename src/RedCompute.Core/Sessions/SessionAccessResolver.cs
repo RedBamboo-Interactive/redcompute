@@ -12,6 +12,8 @@ public static class SessionAccessResolver
     public const string AboveSessionCap = "above_session_cap";
     public const string InvalidAccessLevel = "invalid_access_level";
     public const string CapBelowSupported = "access_level_cap_unsupported";
+    public const string CapChangeRequiresPerson = "cap_change_requires_person";
+    public const string AttendedRequiresPerson = "attended_requires_person";
 
     /// <summary>
     /// The level a session starts at (and a legacy session resumes at, with no request):
@@ -126,6 +128,62 @@ public static class SessionAccessResolver
             ? currentLevel == SessionAccessLevels.Plan ? current.AccessLevelBeforePlan : currentLevel
             : null;
         var next = current with { AccessLevel = target, AccessLevelBeforePlan = before };
+        return next == current ? SessionAccessChange.Unchanged(next) : SessionAccessChange.Changed(next);
+    }
+
+    /// <summary>
+    /// A change to an existing session's limits: its cap (<paramref name="capProvided"/> with
+    /// <paramref name="cap"/>, null clearing it) and whether it is <paramref name="unattended"/>.
+    /// Tightening is open to anyone with write access: setting or lowering a cap, and turning
+    /// unattended on. A cap below the current level lowers the level (and a remembered after-plan
+    /// level) to the highest supported level at or below it. Raising or clearing a cap, and turning
+    /// unattended off, need a person. The level's source is kept: a policy-sourced session still
+    /// follows its default, within the new cap.
+    /// </summary>
+    public static SessionAccessChange ResolveLimits(
+        SessionAccessState current,
+        bool capProvided,
+        string? cap,
+        bool? unattended,
+        bool personPresent,
+        IReadOnlyCollection<string> supported)
+    {
+        if (capProvided && cap is not null && !SessionAccessLevels.IsKnown(cap))
+            return SessionAccessChange.Refused(InvalidAccessLevel, $"'{cap}' is not an access level");
+
+        var next = current;
+        if (capProvided)
+        {
+            var oldCap = current.MaxAccessLevel is { } known && SessionAccessLevels.IsKnown(known) ? known : null;
+            var loosens = cap is null ? oldCap is not null : oldCap is not null && SessionAccessLevels.IsAbove(cap, oldCap);
+            if (loosens && !personPresent)
+                return SessionAccessChange.Refused(CapChangeRequiresPerson,
+                    "Raising or removing a session's access cap needs you, signed in. Agents and automations can only lower it.");
+            if (cap is not null)
+            {
+                var highest = SessionAccessLevels.All
+                    .LastOrDefault(level => supported.Contains(level) && !SessionAccessLevels.IsAbove(level, cap));
+                if (highest is null)
+                    return SessionAccessChange.Refused(CapBelowSupported,
+                        $"maxAccessLevel '{cap}' is below every level this provider supports ({string.Join(", ", Ordered(supported))})");
+                next = next with
+                {
+                    AccessLevel = next.AccessLevel is { } level && SessionAccessLevels.IsAbove(level, cap) ? highest : next.AccessLevel,
+                    AccessLevelBeforePlan = next.AccessLevelBeforePlan is { } before && SessionAccessLevels.IsAbove(before, cap)
+                        ? highest : next.AccessLevelBeforePlan,
+                };
+            }
+            next = next with { MaxAccessLevel = cap };
+        }
+
+        if (unattended is { } watched)
+        {
+            if (!watched && current.Unattended && !personPresent)
+                return SessionAccessChange.Refused(AttendedRequiresPerson,
+                    "Marking an unattended session as attended needs you, signed in: approvals would then wait for a person.");
+            next = next with { Unattended = watched };
+        }
+
         return next == current ? SessionAccessChange.Unchanged(next) : SessionAccessChange.Changed(next);
     }
 

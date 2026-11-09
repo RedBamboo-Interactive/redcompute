@@ -539,7 +539,9 @@ public static class UnifiedSessionEndpoints
             .WithParam("maxAccessLevel", "string", description: "Hard cap for the session's lifetime: nothing raises it above this level. "
                 + "422 access_level_cap_unsupported when the provider supports no level at or below it.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
             .WithParam("unattended", "boolean", description: "No person watches this session (automations, Discord): permission asks are denied at once "
-                + "with a visible notice and never park.", defaultValue: false, location: ParamLocation.Body);
+                + "with a visible notice and never park. The model is told why (the session's level, nobody to approve) and that the installation "
+                + "owner can change it in RedLeaf Settings > Agent permissions or raise the session in its Info panel. An existing session can be "
+                + "marked unattended later through POST /ai-session/sessions/{id}/access-level {unattended: true}.", defaultValue: false, location: ParamLocation.Body);
 
 
         endpoints.MapGet("/ai-session/sessions/{id}",

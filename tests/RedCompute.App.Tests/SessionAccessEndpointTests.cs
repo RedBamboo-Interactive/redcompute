@@ -353,6 +353,214 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(Ask, f.Provider.State.AccessLevel);
     }
 
+    // ---- access-level limits: one-way tightening of maxAccessLevel and unattended ----
+
+    [Theory]
+    [MemberData(nameof(People))]
+    [MemberData(nameof(NotPeople))]
+    public async Task Anyone_who_may_write_can_set_and_lower_a_cap_which_lowers_the_level(string caller)
+    {
+        var f = new Fixture(Full, fullEnabled: true) { Readable = true };
+
+        var set = await f.PostAsync("access-level", new { maxAccessLevel = Auto }, caller);
+
+        Assert.Equal(200, set.Status);
+        Assert.Equal(Auto, set.Body.GetProperty("accessLevel").GetString());
+        Assert.Equal(Auto, set.Body.GetProperty("maxAccessLevel").GetString());
+        Assert.False(set.Body.GetProperty("stopped").GetBoolean());
+        Assert.Equal(new SessionAccessState(Auto, Auto, AccessLevelSource: Explicit), f.Provider.State);
+
+        var lowered = await f.PostAsync("access-level", new { maxAccessLevel = Ask }, caller);
+
+        Assert.Equal(200, lowered.Status);
+        Assert.Equal(new SessionAccessState(Ask, Ask, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
+    [Theory]
+    [MemberData(nameof(NotPeople))]
+    public async Task Nothing_but_a_person_can_raise_or_clear_a_cap(string caller)
+    {
+        var f = new Fixture(Ask, fullEnabled: true, cap: Ask) { Readable = true };
+
+        var raise = await f.PostAsync("access-level", new { maxAccessLevel = Full }, caller);
+        var clear = await f.PostAsync("access-level", new { maxAccessLevel = (string?)null }, caller);
+
+        foreach (var (status, body) in new[] { raise, clear })
+        {
+            Assert.Equal(403, status);
+            Assert.Equal(SessionAccessResolver.CapChangeRequiresPerson, body.GetProperty("error").GetString());
+            Assert.Equal(Ask, body.GetProperty("maxAccessLevel").GetString());
+        }
+        Assert.Equal(new SessionAccessState(Ask, Ask, AccessLevelSource: Explicit), f.Provider.State);
+        Assert.Equal(0, f.Provider.Sets);
+    }
+
+    [Theory]
+    [MemberData(nameof(People))]
+    public async Task A_person_can_raise_and_clear_a_cap_without_raising_the_level(string caller)
+    {
+        var f = new Fixture(Ask, fullEnabled: true, cap: Ask) { Readable = true };
+
+        var raised = await f.PostAsync("access-level", new { maxAccessLevel = Full }, caller);
+        Assert.Equal(200, raised.Status);
+        Assert.Equal(new SessionAccessState(Ask, Full, AccessLevelSource: Explicit), f.Provider.State);
+
+        var cleared = await f.PostAsync("access-level", new { maxAccessLevel = (string?)null }, caller);
+        Assert.Equal(200, cleared.Status);
+        Assert.Equal(JsonValueKind.Null, cleared.Body.GetProperty("maxAccessLevel").ValueKind);
+        Assert.Equal(new SessionAccessState(Ask, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
+    [Theory]
+    [MemberData(nameof(NotPeople))]
+    public async Task Anyone_can_mark_a_session_unattended_but_only_a_person_can_undo_it(string caller)
+    {
+        var f = new Fixture(Auto) { Readable = true };
+
+        var on = await f.PostAsync("access-level", new { unattended = true }, caller);
+        Assert.Equal(200, on.Status);
+        Assert.True(on.Body.GetProperty("unattended").GetBoolean());
+        Assert.True(f.Provider.State.Unattended);
+
+        var again = await f.PostAsync("access-level", new { unattended = true }, caller);
+        Assert.Equal(200, again.Status);
+
+        var off = await f.PostAsync("access-level", new { unattended = false }, caller);
+        Assert.Equal(403, off.Status);
+        Assert.Equal(SessionAccessResolver.AttendedRequiresPerson, off.Body.GetProperty("error").GetString());
+        Assert.True(f.Provider.State.Unattended);
+
+        var person = await f.PostAsync("access-level", new { unattended = false }, "code browser");
+        Assert.Equal(200, person.Status);
+        Assert.False(f.Provider.State.Unattended);
+        Assert.Equal(Auto, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task An_agent_token_retrofits_a_pre_upgrade_discord_session()
+    {
+        // A Discord session from before access levels follow-ups: policy-sourced, attended, uncapped,
+        // running at the full the default gave it. Nova's own token caps it at auto and marks it
+        // unattended in one call; the level drops, the source stays policy, nothing is stopped.
+        var f = new Fixture(Full, fullEnabled: true, source: Policy);
+
+        var (status, body) = await f.PostAsync("access-level", new { maxAccessLevel = Auto, unattended = true }, "agent");
+
+        Assert.Equal(200, status);
+        Assert.True(body.GetProperty("ok").GetBoolean());
+        Assert.Equal(Auto, body.GetProperty("accessLevel").GetString());
+        Assert.Equal(new SessionAccessState(Auto, Auto, true, AccessLevelSource: Policy), f.Provider.State);
+        Assert.Equal(1, f.Provider.Sets);
+
+        // Policy changes keep following the default, inside the cap.
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full };
+        await f.PostPolicyChangedAsync("infrastructure service token");
+        Assert.Equal(Auto, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task Limits_without_a_level_never_leave_plan()
+    {
+        var f = new Fixture(Plan);
+        f.Provider.State = f.Provider.State with { AccessLevelBeforePlan = Full };
+
+        var (status, body) = await f.PostAsync("access-level", new { maxAccessLevel = Auto }, "agent");
+
+        Assert.Equal(200, status);
+        Assert.Equal(Plan, body.GetProperty("accessLevel").GetString());
+        Assert.Equal(new SessionAccessState(Plan, Auto, AccessLevelBeforePlan: Auto, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
+    [Fact]
+    public async Task Limits_apply_first_and_a_level_in_the_same_body_is_judged_against_them()
+    {
+        var f = new Fixture(Ask, fullEnabled: true);
+
+        var agent = await f.PostAsync("access-level", new { level = Full, maxAccessLevel = Auto }, "agent");
+        Assert.Equal(403, agent.Status);
+        Assert.Equal(SessionAccessResolver.RaiseRequiresPerson, agent.Body.GetProperty("error").GetString());
+        Assert.Equal(Auto, agent.Body.GetProperty("maxAccessLevel").GetString());
+        Assert.Equal(new SessionAccessState(Ask, Auto, AccessLevelSource: Explicit), f.Provider.State);
+
+        var person = await f.PostAsync("access-level", new { level = Full, maxAccessLevel = Auto }, "code browser");
+        Assert.Equal(403, person.Status);
+        Assert.Equal(SessionAccessResolver.AboveSessionCap, person.Body.GetProperty("error").GetString());
+
+        var within = await f.PostAsync("access-level", new { level = Auto, unattended = true }, "code browser");
+        Assert.Equal(200, within.Status);
+        Assert.Equal(new SessionAccessState(Auto, Auto, true, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
+    [Fact]
+    public async Task A_cap_a_live_harness_will_not_switch_down_to_stops_the_session()
+    {
+        var f = new Fixture(Full, fullEnabled: true);
+        f.Provider.Refusal = "Claude Code did not confirm the change within 10 seconds.";
+
+        var (status, body) = await f.PostAsync("access-level", new { maxAccessLevel = Ask }, "agent");
+
+        Assert.Equal(200, status);
+        Assert.True(body.GetProperty("stopped").GetBoolean());
+        Assert.Equal(1, f.Provider.Stops);
+        Assert.Equal(new SessionAccessState(Ask, Ask, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
+    [Fact]
+    public async Task A_cap_clamps_to_what_the_provider_supports()
+    {
+        var f = new Fixture(Full, fullEnabled: true);
+        f.Provider.Supported = [Ask, Full];
+
+        var plan = await f.PostAsync("access-level", new { maxAccessLevel = Plan }, "agent");
+        Assert.Equal(422, plan.Status);
+        Assert.Equal(SessionAccessResolver.CapBelowSupported, plan.Body.GetProperty("error").GetString());
+        Assert.Equal(Full, f.Provider.State.AccessLevel);
+
+        var auto = await f.PostAsync("access-level", new { maxAccessLevel = Auto }, "agent");
+        Assert.Equal(200, auto.Status);
+        Assert.Equal(new SessionAccessState(Ask, Auto, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
+    [Theory]
+    [InlineData("""{"maxAccessLevel":"everything"}""", SessionAccessResolver.InvalidAccessLevel)]
+    [InlineData("""{"maxAccessLevel":3}""", SessionAccessResolver.InvalidAccessLevel)]
+    [InlineData("""{"unattended":"yes"}""", "validation_failed")]
+    [InlineData("""{"unattended":null}""", "validation_failed")]
+    public async Task Malformed_limits_are_422(string json, string error)
+    {
+        var f = new Fixture(Full, fullEnabled: true);
+
+        var (status, body) = await f.PostRawAsync("access-level", json, "agent");
+
+        Assert.Equal(422, status);
+        Assert.Equal(error, body.GetProperty("error").GetString());
+        Assert.Equal(0, f.Provider.Sets);
+    }
+
+    [Fact]
+    public async Task A_legacy_session_is_capped_at_its_resolved_level()
+    {
+        var f = new Fixture(null, fullEnabled: true);
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full };
+
+        var (status, _) = await f.PostAsync("access-level", new { maxAccessLevel = Auto, unattended = true }, "agent");
+
+        Assert.Equal(200, status);
+        Assert.Equal(new SessionAccessState(Auto, Auto, true), f.Provider.State);
+        Assert.True(f.Provider.State.FollowsPolicy);
+    }
+
+    [Fact]
+    public async Task Limits_on_a_session_the_caller_cannot_read_are_refused()
+    {
+        var f = new Fixture(Full, fullEnabled: true);
+
+        var (status, _) = await f.PostAsync("access-level", new { maxAccessLevel = Ask }, "agent", subject: "someone-else");
+
+        Assert.NotEqual(200, status);
+        Assert.Equal(new SessionAccessState(Full, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
     // ---- access-policy/changed ----
 
     [Theory]

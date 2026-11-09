@@ -32,7 +32,8 @@ public static class SessionAccessEndpoints
             + "refuses (or does not answer in time) the session keeps its level and the call is 409 provider_refused_level, whose message "
             + "says so in plain words with the harness's own reason, and whose accessLevel is the level kept. "
             + "A stopped session launches at the new level. The level set here is explicit (session accessLevelSource explicit): it no longer "
-            + "follows the Agent's or global default when RedLeaf's policy changes. Unknown levels are 422.",
+            + "follows the Agent's or global default when RedLeaf's policy changes. Unknown levels are 422. "
+            + LimitsDescription,
             async (HttpContext ctx, string id) =>
         {
             var (provider, info, error) = Find(ctx, registry, jobTracker, id);
@@ -45,7 +46,8 @@ public static class SessionAccessEndpoints
                 return Error(400, "invalid_body", "Request body must be a JSON object");
 
             string? level = null;
-            if (body.TryGetProperty("level", out var value) && value.ValueKind != JsonValueKind.Null)
+            var levelProvided = body.TryGetProperty("level", out var value);
+            if (levelProvided && value.ValueKind != JsonValueKind.Null)
             {
                 if (value.ValueKind != JsonValueKind.String || !SessionAccessLevels.TryNormalize(value.GetString(), out var normalized))
                     return Error(422, SessionAccessResolver.InvalidAccessLevel,
@@ -53,11 +55,66 @@ public static class SessionAccessEndpoints
                 level = normalized;
             }
 
-            return await ChangeAsync(ctx, access, provider!, info!, level, legacyMode: null);
+            string? cap = null;
+            var capProvided = body.TryGetProperty("maxAccessLevel", out var capValue);
+            if (capProvided && capValue.ValueKind != JsonValueKind.Null)
+            {
+                if (capValue.ValueKind != JsonValueKind.String || !SessionAccessLevels.TryNormalize(capValue.GetString(), out var normalizedCap))
+                    return Error(422, SessionAccessResolver.InvalidAccessLevel,
+                        $"maxAccessLevel must be one of {string.Join(", ", SessionAccessLevels.All)}, or null");
+                cap = normalizedCap;
+            }
+
+            bool? unattended = null;
+            if (body.TryGetProperty("unattended", out var unattendedValue))
+            {
+                if (unattendedValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    return Error(422, "validation_failed", "unattended must be true or false");
+                unattended = unattendedValue.GetBoolean();
+            }
+
+            if (!capProvided && unattended is null)
+                return await ChangeAsync(ctx, access, provider!, info!, level, legacyMode: null);
+
+            var personPresent = ComputeResourceAccess.IsPersonPresent(ctx);
+            var limits = await access.ChangeLimitsAsync(provider!, info!, capProvided, cap, unattended, personPresent, ctx.RequestAborted);
+            if (!limits.Ok)
+                return Results.Json(new
+                {
+                    error = limits.Error,
+                    message = limits.Message,
+                    ok = false,
+                    accessLevel = limits.State?.AccessLevel,
+                    maxAccessLevel = limits.State?.MaxAccessLevel,
+                    unattended = limits.State?.Unattended,
+                }, statusCode: limits.Status);
+            // With limits in the body, level applies only when it is named (null still leaves plan).
+            if (!levelProvided)
+                return LimitsResponse(limits.State!, limits.Stopped);
+            var changed = await access.ChangeAsync(provider!, info!, level, personPresent, ctx.RequestAborted);
+            var after = provider!.GetAccessState(info!.Id) ?? limits.State!;
+            if (changed.Error is not null)
+                return Results.Json(new
+                {
+                    error = changed.Error,
+                    message = changed.Message,
+                    ok = false,
+                    accessLevel = changed.AccessLevel ?? after.AccessLevel,
+                    maxAccessLevel = after.MaxAccessLevel,
+                    unattended = after.Unattended,
+                }, statusCode: changed.Status);
+            return LimitsResponse(after, limits.Stopped);
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
-            .WithParam("level", "string", description: "The new level. Omit or null to leave plan for the level it was entered from.",
+            .WithParam("level", "string", description: "The new level. Omit or null to leave plan for the level it was entered from. "
+                + "When maxAccessLevel or unattended is sent, an omitted level means no level change (null still leaves plan).",
                 enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+            .WithParam("maxAccessLevel", "string", description: "New cap for the session. Setting or lowering it is open to any caller with write access, "
+                + "Agents included, and lowers a level above it; raising it or clearing it (null) needs a person (403 cap_change_requires_person).",
+                enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+            .WithParam("unattended", "boolean", description: "true marks the session unattended (open to any caller with write access): later "
+                + "permission asks are denied at once and never park. false needs a person (403 attended_requires_person).",
+                location: ParamLocation.Body)
             .WithResponse(new
             {
                 type = "object",
@@ -66,6 +123,9 @@ public static class SessionAccessEndpoints
                 {
                     accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray() },
                     ok = new { type = "boolean", description = "True when the level is in force. A harness refusal is 409 provider_refused_level instead" },
+                    maxAccessLevel = new { type = new[] { "string", "null" }, description = "The cap now in force; returned when maxAccessLevel or unattended was sent" },
+                    unattended = new { type = "boolean", description = "Returned when maxAccessLevel or unattended was sent" },
+                    stopped = new { type = "boolean", description = "True when a live harness would not switch down to the new cap, so the session was stopped; it relaunches within the cap" },
                 },
             });
 
@@ -157,6 +217,26 @@ public static class SessionAccessEndpoints
             return null;
         }
     }
+
+    internal const string LimitsDescription =
+        "Also tightens an existing session's limits (one-way without a person): maxAccessLevel sets or lowers its cap, and a cap below the "
+        + "current level lowers the level (and the level it returns to after plan) to the highest supported level at or below it, through the "
+        + "harness; a live harness that will not switch down is stopped (stopped true) and relaunches within the cap. unattended true marks it "
+        + "unattended, so later permission asks are denied at once and never park (asks already parked stay parked). Any caller with write access "
+        + "may tighten, Agents and automations included. Raising or clearing a cap needs a person (403 cap_change_requires_person), as does "
+        + "unattended false (403 attended_requires_person). A cap below every level the provider supports is 422 access_level_cap_unsupported. "
+        + "The level's source is kept: a policy-sourced session still follows its default, within the cap. Limits apply before any level in the "
+        + "same body, which is then judged against the new cap. The response then also carries maxAccessLevel and unattended.";
+
+    private static IResult LimitsResponse(SessionAccessState state, bool stopped)
+        => Results.Json(new
+        {
+            accessLevel = state.AccessLevel,
+            ok = true,
+            maxAccessLevel = state.MaxAccessLevel,
+            unattended = state.Unattended,
+            stopped,
+        });
 
     internal static readonly string[] LegacyModes =
         ["plan", "default", "acceptEdits", "manual", "dontAsk", "auto", "bypassPermissions", .. SessionAccessLevels.All.Where(l => l is not ("plan" or "auto"))];

@@ -137,6 +137,54 @@ public sealed class SessionAccessService(
     }
 
     /// <summary>
+    /// Tightens (or, for a person, loosens) an existing session's limits: its cap and whether it is
+    /// unattended (<see cref="SessionAccessResolver.ResolveLimits"/>). The caller has already checked
+    /// write access. A cap below the current level lowers it through the harness; a live harness that
+    /// will not switch down is stopped, and the lower level is persisted for its next launch, so it
+    /// never keeps running above its new cap. The level's source is kept.
+    /// </summary>
+    public async Task<SessionAccessLimitsResult> ChangeLimitsAsync(ISessionProvider provider, UnifiedSessionInfo info,
+        bool capProvided, string? cap, bool? unattended, bool personPresent, CancellationToken ct = default)
+    {
+        var supported = provider.SupportedAccessLevels;
+        if (supported.Count == 0)
+            return SessionAccessLimitsResult.Refused(422, "access_levels_not_supported",
+                $"Provider '{provider.ProviderId}' does not support access levels");
+        var stored = provider.GetAccessState(info.Id);
+        if (stored is null)
+            return SessionAccessLimitsResult.Refused(404, "not_found", $"Session '{info.Id}' not found");
+
+        var state = stored;
+        // A session persisted before access levels: judge the cap against what it would really run at.
+        if (state.AccessLevel is null)
+        {
+            var current = await policy.GetAsync(ct: ct);
+            state = state with
+            {
+                AccessLevel = SessionAccessResolver.ResolveDefault(AgentEntityId(info), current, supported, state.MaxAccessLevel).Level
+                    ?? SessionAccessResolver.ClampToSupported(SessionAccessLevels.Ask, supported),
+            };
+        }
+        var change = SessionAccessResolver.ResolveLimits(state, capProvided, cap, unattended, personPresent, supported);
+        if (change.State is null)
+            return SessionAccessLimitsResult.Refused(
+                change.Error is SessionAccessResolver.InvalidAccessLevel or SessionAccessResolver.CapBelowSupported ? 422 : 403,
+                change.Error!, change.Message!, stored);
+
+        var next = change.State;
+        if (next == stored) return SessionAccessLimitsResult.Done(next, stopped: false);
+        var outcome = await ApplyLoweringAsync(provider, info, state, next, "its new access limits", ct);
+        if (outcome == LoweringOutcome.NotApplied)
+            return SessionAccessLimitsResult.Refused(409, ProviderRefusedLevel,
+                RefusedMessage(provider, state.AccessLevel, next.AccessLevel, null), stored);
+        log($"[Access] Session {info.Provider}/{info.Id} limits: cap {stored.MaxAccessLevel ?? "none"} -> {next.MaxAccessLevel ?? "none"}, "
+            + $"unattended {stored.Unattended} -> {next.Unattended}, level {state.AccessLevel} -> {next.AccessLevel}"
+            + (outcome == LoweringOutcome.Stopped ? " (stopped: the harness would not switch down)" : "")
+            + (personPresent ? " (person)" : ""), info.JobId);
+        return SessionAccessLimitsResult.Done(next, outcome == LoweringOutcome.Stopped);
+    }
+
+    /// <summary>
     /// Run before a session launches from a stopped state. A session whose level came from the
     /// policy (including one persisted before access levels) re-resolves from the current policy; a
     /// session holding Full that RedLeaf no longer enables is demoted. Either is persisted, so the
@@ -228,27 +276,38 @@ public sealed class SessionAccessService(
     /// </summary>
     private async Task<bool> ApplyPolicyAsync(ISessionProvider provider, UnifiedSessionInfo session,
         SessionAccessState state, SessionAccessState next, CancellationToken ct)
+        => await ApplyLoweringAsync(provider, session, state, next, "the policy", ct) != LoweringOutcome.NotApplied;
+
+    private enum LoweringOutcome { Applied, Stopped, NotApplied }
+
+    /// <summary>
+    /// Applies a state that may lower the level. A live harness that will not switch down is
+    /// stopped and the lower level persisted, so nothing keeps running above it. A refused raise
+    /// keeps the level it had. <paramref name="why"/> names what asked for the change, for the log.
+    /// </summary>
+    private async Task<LoweringOutcome> ApplyLoweringAsync(ISessionProvider provider, UnifiedSessionInfo session,
+        SessionAccessState state, SessionAccessState next, string why, CancellationToken ct)
     {
         var applied = await provider.ApplyAccessStateAsync(session.Id, next, ct);
-        if (applied.Applied) return true;
-        if (applied.Reason is null) return false;
+        if (applied.Applied) return LoweringOutcome.Applied;
+        if (applied.Reason is null) return LoweringOutcome.NotApplied;
         var held = state.AccessLevel ?? SessionAccessLevels.Ask;
         var target = next.AccessLevel ?? SessionAccessLevels.Ask;
         if (!SessionAccessLevels.IsAbove(held, target))
         {
             log($"[Access] {provider.ProviderDisplayName} did not switch session {provider.ProviderId}/{session.Id} from {held} to {target} "
                 + $"({applied.Reason}); it stays at {held} until its next launch", session.JobId);
-            return false;
+            return LoweringOutcome.NotApplied;
         }
         log($"[Access] {provider.ProviderDisplayName} did not lower session {provider.ProviderId}/{session.Id} from {held} to {target} "
-            + $"({applied.Reason}); stopping it so it relaunches at {target}", session.JobId);
+            + $"for {why} ({applied.Reason}); stopping it so it relaunches at {target}", session.JobId);
         try { await provider.StopSessionAsync(session.Id); }
         catch (Exception ex)
         {
             log($"[Access] Could not stop {provider.ProviderId}/{session.Id} to lower it: {ex.Message}", session.JobId);
-            return false;
+            return LoweringOutcome.NotApplied;
         }
-        return (await provider.ApplyAccessStateAsync(session.Id, next, ct)).Applied;
+        return (await provider.ApplyAccessStateAsync(session.Id, next, ct)).Applied ? LoweringOutcome.Stopped : LoweringOutcome.NotApplied;
     }
 
     public const string ProviderRefusedLevel = "provider_refused_level";
@@ -323,6 +382,16 @@ public sealed record SessionAccessPolicyChangeResult(IReadOnlyList<string> Demot
 public sealed record SessionAccessParent(string ProviderId, string SessionId, string AccessLevel);
 
 public sealed record SessionAccessStart(SessionAccessState? State, string? Error = null, string? Message = null);
+
+/// <param name="State">The state now in force; on a refusal, the state kept.</param>
+/// <param name="Stopped">The live harness would not switch down, so the session was stopped and relaunches within its limits.</param>
+public sealed record SessionAccessLimitsResult(SessionAccessState? State, bool Ok, int Status, bool Stopped = false,
+    string? Error = null, string? Message = null)
+{
+    public static SessionAccessLimitsResult Done(SessionAccessState state, bool stopped) => new(state, true, 200, stopped);
+    public static SessionAccessLimitsResult Refused(int status, string error, string message, SessionAccessState? kept = null)
+        => new(kept, false, status, false, error, message);
+}
 
 public sealed record SessionAccessChangeResult(string? AccessLevel, bool Ok, int Status, string? Error = null, string? Message = null)
 {

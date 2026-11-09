@@ -355,6 +355,85 @@ public sealed class SessionAccessResolverTests
         Assert.Equal("laurent", first.FullAccess!.AcknowledgedBy);
     }
 
+    public static IEnumerable<object?[]> LimitCombinations()
+    {
+        foreach (var level in new[] { Plan, Ask, Auto, Full })
+        foreach (var before in new[] { null, Ask, Auto, Full })
+        foreach (var oldCap in LevelsOrNone)
+        foreach (var capProvided in new[] { true, false })
+        foreach (var cap in capProvided ? LevelsOrNone : [null])
+        foreach (var wasUnattended in new[] { true, false })
+        foreach (var unattended in new bool?[] { null, true, false })
+        foreach (var person in new[] { true, false })
+        foreach (var supported in new[] { Claude, AskAndFull })
+            yield return [level, before, oldCap, capProvided, cap, wasUnattended, unattended, person, supported];
+    }
+
+    /// <summary>
+    /// ResolveLimits against the rules as stated: tightening is open to anyone, loosening needs a
+    /// person, the level never rises, ends at or below the new cap, and the source is kept.
+    /// </summary>
+    [Fact]
+    public void Limits_only_tighten_without_a_person()
+    {
+        var count = 0;
+        foreach (var combination in LimitCombinations())
+        {
+            CheckLimits((string)combination[0]!, (string?)combination[1], (string?)combination[2], (bool)combination[3]!,
+                (string?)combination[4], (bool)combination[5]!, (bool?)combination[6], (bool)combination[7]!, (string[])combination[8]!);
+            count++;
+        }
+        Assert.True(count > 10_000, $"{count} combinations");
+    }
+
+    private static void CheckLimits(string level, string? before, string? oldCap, bool capProvided, string? cap,
+        bool wasUnattended, bool? unattended, bool person, string[] supported)
+    {
+        var current = new SessionAccessState(level, oldCap, wasUnattended, before, SessionAccessLevelSources.Policy);
+
+        var change = SessionAccessResolver.ResolveLimits(current, capProvided, cap, unattended, person, supported);
+
+        var loosensCap = capProvided && oldCap is not null && (cap is null || R(cap) > R(oldCap));
+        var attends = unattended == false && wasUnattended;
+        var capUnsupported = capProvided && cap is not null && !supported.Any(s => R(s) <= R(cap));
+        if (!person && loosensCap)
+        {
+            Assert.Equal(SessionAccessResolver.CapChangeRequiresPerson, change.Error);
+            return;
+        }
+        if (capUnsupported)
+        {
+            Assert.Equal(SessionAccessResolver.CapBelowSupported, change.Error);
+            return;
+        }
+        if (!person && attends)
+        {
+            Assert.Equal(SessionAccessResolver.AttendedRequiresPerson, change.Error);
+            return;
+        }
+
+        var next = Assert.IsType<SessionAccessState>(change.State);
+        Assert.True(R(next.AccessLevel) <= R(level), "a limit never raises the level");
+        Assert.Equal(capProvided ? cap : oldCap, next.MaxAccessLevel);
+        Assert.Equal(unattended ?? wasUnattended, next.Unattended);
+        Assert.Equal(SessionAccessLevelSources.Policy, next.AccessLevelSource);
+        if (capProvided && cap is not null)
+        {
+            Assert.True(R(next.AccessLevel) <= R(cap), "the level ends at or below the new cap");
+            if (before is not null) Assert.True(R(next.AccessLevelBeforePlan) <= R(cap), "so does the level plan returns to");
+            if (R(level) > R(cap))
+                Assert.Equal(supported.Where(s => R(s) <= R(cap)).MaxBy(R), next.AccessLevel);
+            else
+                Assert.Equal(level, next.AccessLevel);
+        }
+        else
+        {
+            Assert.Equal(level, next.AccessLevel);
+            Assert.Equal(before, next.AccessLevelBeforePlan);
+        }
+        Assert.Equal(next != current, change.IsChange);
+    }
+
     [Fact]
     public async Task Policy_fetch_failure_fails_closed_to_ask_with_full_disabled()
     {
