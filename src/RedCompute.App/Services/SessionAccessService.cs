@@ -31,7 +31,7 @@ public sealed class SessionAccessService(
     {
         var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0) return new SessionAccessStart(null);
-        var current = await policy.GetAsync(ct: ct);
+        var current = await ReadPolicyAsync(ct);
         if (parent is not null)
         {
             var inherited = SessionAccessResolver.ResolveFromParent(requested, parent.AccessLevel, current, supported, maxAccessLevel);
@@ -87,7 +87,7 @@ public sealed class SessionAccessService(
     {
         var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0) return new SessionAccessStart(null);
-        var current = await policy.GetAsync(ct: ct);
+        var current = await ReadPolicyAsync(ct);
         var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, null);
         return resolved.Level is null
             ? new SessionAccessStart(null, resolved.Error, resolved.Message)
@@ -111,7 +111,7 @@ public sealed class SessionAccessService(
         if (state is null)
             return SessionAccessChangeResult.Refused(404, "not_found", $"Session '{info.Id}' not found");
 
-        var current = await policy.GetAsync(ct: ct);
+        var current = await ReadPolicyAsync(ct);
         var agent = AgentEntityId(info);
         // A session persisted before access levels has no trusted level. Resolve it first, so a
         // change is judged against what it would really run at, never against a stored bypass.
@@ -158,7 +158,7 @@ public sealed class SessionAccessService(
         // A session persisted before access levels: judge the cap against what it would really run at.
         if (state.AccessLevel is null)
         {
-            var current = await policy.GetAsync(ct: ct);
+            var current = await ReadPolicyAsync(ct);
             state = state with
             {
                 AccessLevel = SessionAccessResolver.ResolveDefault(AgentEntityId(info), current, supported, state.MaxAccessLevel).Level
@@ -231,10 +231,13 @@ public sealed class SessionAccessService(
         var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0 || provider.GetAccessState(sessionId) is not { } state) return;
         var info = provider.GetSession(sessionId).Info;
-        var current = await policy.GetAsync(ct: ct);
+        var current = await ReadPolicyAsync(ct);
         var agent = info is null ? null : AgentEntityId(info);
 
-        var next = Target(state, agent, current, supported);
+        // RedLeaf unreadable (restarting, a timeout): a level the session already holds is kept,
+        // never rewritten from the fail-closed defaults, which would pin an owner's explicit or
+        // inherited Full at Ask for good. Only a session with no level at all gets one (ask).
+        var next = current.Available ? Target(state, agent, current, supported) : state;
         if (next.AccessLevel is null)
             next = next with { AccessLevel = SessionAccessResolver.ClampToSupported(SessionAccessLevels.Ask, supported) };
         if (next == state) return;
@@ -251,12 +254,56 @@ public sealed class SessionAccessService(
     /// one that keeps running above its new level is stopped. Approvals already parked stay parked.
     /// </summary>
     public async Task<SessionAccessPolicyChangeResult> PolicyChangedAsync(CancellationToken ct = default, long? revision = null)
+        => await ApplyPolicyPassAsync(announced: true, revision, ct);
+
+    private readonly SemaphoreSlim passGate = new(1, 1);
+    private long appliedRevision = -1;
+    private int passQueued;
+
+    /// <summary>
+    /// Reads the policy for a decision, and notices a write RedLeaf could not announce (RedCompute
+    /// was down, the notice failed, a restore): a readable policy whose revision differs from the
+    /// last one applied queues the same pass an announcement runs.
+    /// </summary>
+    private async Task<SessionAccessPolicy> ReadPolicyAsync(CancellationToken ct)
     {
-        var current = await policy.GetAsync(refresh: true, ct);
-        log($"[Access] RedLeaf announced a policy change{(revision is { } r ? $" (revision {r})" : "")}; "
-            + (current.Available
-                ? $"default {current.DefaultFor(null)}{(current.Stored ? "" : " (no policy saved)")}, Full access {(current.FullAccessEnabled ? "enabled" : "disabled")}"
-                : "policy unavailable, failing closed"), null);
+        var current = await policy.GetAsync(ct: ct);
+        if (current.Available && current.Revision is { } seen && seen != Interlocked.Read(ref appliedRevision)
+            && Interlocked.CompareExchange(ref passQueued, 1, 0) == 0)
+            _ = Task.Run(async () =>
+            {
+                try { await ApplyPolicyPassAsync(announced: false, seen, CancellationToken.None); }
+                catch (Exception ex) { log($"[Access] Policy pass for revision {seen} failed: {ex.Message}", null); }
+                finally { Interlocked.Exchange(ref passQueued, 0); }
+            });
+        return current;
+    }
+
+    private async Task<SessionAccessPolicyChangeResult> ApplyPolicyPassAsync(bool announced, long? revision, CancellationToken ct)
+    {
+        await passGate.WaitAsync(ct);
+        try
+        {
+            var current = await policy.GetAsync(refresh: announced, ct);
+            if (!announced && (current.Revision is null || current.Revision == Interlocked.Read(ref appliedRevision)))
+                return new SessionAccessPolicyChangeResult([], []);
+            log($"[Access] {(announced ? "RedLeaf announced a policy change" : "The policy changed since it was last applied")}"
+                + $"{(revision is { } r ? $" (revision {r})" : "")}; "
+                + (current.Available
+                    ? $"default {current.DefaultFor(null)}{(current.Stored ? "" : " (no policy saved)")}, Full access {(current.FullAccessEnabled ? "enabled" : "disabled")}"
+                    : "policy unavailable: nothing changes until it can be read"), null);
+            // The fail-closed defaults are a stand-in for a decision, not a policy to apply: moving
+            // sessions to them would demote and pin an owner's Full sessions until a person fixes each.
+            if (!current.Available) return new SessionAccessPolicyChangeResult([], []);
+            var result = await ApplyPolicyToSessionsAsync(current, ct);
+            if (current.Revision is { } applied) Interlocked.Exchange(ref appliedRevision, applied);
+            return result;
+        }
+        finally { passGate.Release(); }
+    }
+
+    private async Task<SessionAccessPolicyChangeResult> ApplyPolicyToSessionsAsync(SessionAccessPolicy current, CancellationToken ct)
+    {
         var demoted = new List<string>();
         var followed = new List<string>();
         foreach (var provider in providers())

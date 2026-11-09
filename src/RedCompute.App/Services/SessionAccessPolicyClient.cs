@@ -17,8 +17,8 @@ public interface ISessionAccessPolicySource
 /// Reads <c>GET /api/agent-permissions/policy</c> from RedLeaf and keeps it at most
 /// <see cref="CacheLifetime"/>. Fails closed: an unreachable RedLeaf, an error status or a body it
 /// cannot read all mean default <c>ask</c> with Full disabled. No policy record (404, an empty
-/// answer, or RedLeaf's own no-record shape confirmed by revision 0) means default <c>auto</c> with
-/// Full disabled (<see cref="SessionAccessPolicy.NoRecord"/>). Failures are cached only briefly, so a
+/// answer, or revision 0) means RedLeaf's no-record default (<c>auto</c>, Full disabled, see
+/// <see cref="SessionAccessPolicy.NoRecord"/>). Failures are cached only briefly, so a
 /// recovered RedLeaf is seen quickly.
 /// </summary>
 public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySource
@@ -80,11 +80,15 @@ public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySourc
             var root = Unwrap(document.RootElement);
             if (IsEmpty(root)) return SessionAccessPolicy.NoRecord;
             var policy = Parse(root);
-            if (!policy.Available || !LooksLikeNoRecord(root)) return policy;
-            // RedLeaf answers "no record" with the same compact shape as an owner's saved plain Ask.
-            // Its revision tells them apart: 0 is no record, a saved policy is 1 or more.
-            var revision = Revision(root) ?? await ReadRevisionAsync(ct);
-            return revision == 0 ? SessionAccessPolicy.NoRecord : policy;
+            if (!policy.Available) return policy;
+            // A RedLeaf that sends its revision also sends the right default for every case (auto
+            // with no record, ask for a record it cannot read): take it as given.
+            if (policy.Revision is { } sent) return sent == 0 ? policy with { Stored = false } : policy;
+            if (!LooksLikeNoRecord(root)) return policy;
+            // An older RedLeaf answers "no record" with the same compact shape as an owner's saved
+            // plain Ask. Its Settings view's revision tells them apart: 0 is no record.
+            var revision = await ReadRevisionAsync(ct);
+            return revision == 0 ? SessionAccessPolicy.NoRecord with { Revision = 0 } : policy;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -192,6 +196,7 @@ public sealed class RedLeafSessionAccessPolicyClient : ISessionAccessPolicySourc
         {
             Version = root.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.Number
                 && v.TryGetInt32(out var number) ? number : 0,
+            Revision = Revision(root),
             DefaultLevel = root.TryGetProperty("defaultLevel", out var d) && d.ValueKind == JsonValueKind.String
                 && SessionAccessLevels.TryNormalize(d.GetString(), out var defaultLevel) ? defaultLevel : null,
             Agents = agents,

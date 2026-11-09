@@ -14,6 +14,11 @@ public sealed record SessionAccessPolicy
 
     /// <summary>The policy's shape version (always 1 today), not a revision.</summary>
     public int Version { get; init; }
+    /// <summary>
+    /// RedLeaf's write counter: 0 when it holds no record, then +1 per write. Null from an older
+    /// RedLeaf that does not send it, and for the fail-closed defaults.
+    /// </summary>
+    public long? Revision { get; init; }
     public string? DefaultLevel { get; init; }
     /// <summary>Per-Agent default level, keyed by Agent entity id.</summary>
     public IReadOnlyDictionary<string, string> Agents { get; init; } = new Dictionary<string, string>();

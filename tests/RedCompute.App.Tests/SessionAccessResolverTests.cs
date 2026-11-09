@@ -505,12 +505,16 @@ public sealed class SessionAccessResolverTests
     }
 
     [Theory]
-    [InlineData(0, Auto)]
-    [InlineData(2, Ask)]
-    public async Task A_revision_in_the_compact_policy_needs_no_second_read(long revision, string level)
+    // RedLeaf since e3d434f2: no record is revision 0 with its own no-record default (auto); a stored
+    // record it cannot read is revision 0 with ask. Either way the level is taken as sent.
+    [InlineData("auto", 0, Auto, false)]
+    [InlineData("ask", 0, Ask, false)]
+    [InlineData("ask", 2, Ask, true)]
+    [InlineData("full", 3, Full, true)]
+    public async Task A_revision_in_the_compact_policy_needs_no_second_read(string sent, long revision, string level, bool stored)
     {
         var reads = 0;
-        var body = RedLeafNoRecordShape[..^1] + $$""","revision":{{revision}}}""";
+        var body = $$$"""{"version":1,"revision":{{{revision}}},"defaultLevel":"{{{sent}}}","agents":{},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null}}""";
         var policy = await AnyPathClient(request =>
         {
             reads++;
@@ -520,6 +524,8 @@ public sealed class SessionAccessResolverTests
 
         Assert.Equal(1, reads);
         Assert.Equal(level, policy.DefaultFor(null));
+        Assert.Equal(stored, policy.Stored);
+        Assert.Equal(revision, policy.Revision);
     }
 
     [Theory]

@@ -637,8 +637,10 @@ public sealed class SessionAccessEndpointTests
     }
 
     [Fact]
-    public async Task Policy_change_while_redleaf_is_unreachable_fails_closed_and_demotes()
+    public async Task Policy_change_while_redleaf_is_unreachable_changes_nothing()
     {
+        // An unreadable policy is not a revocation: demoting to the fail-closed default would pin
+        // the owner's Full sessions at Ask until a person raised each one again.
         var f = new Fixture(Full, fullEnabled: true);
         f.Policy.Policy = SessionAccessPolicy.FailClosed;
 
@@ -646,7 +648,57 @@ public sealed class SessionAccessEndpointTests
 
         Assert.Equal(200, status);
         Assert.False(body.GetProperty("policyAvailable").GetBoolean());
+        Assert.Empty(body.GetProperty("demotedSessions").EnumerateArray());
+        Assert.Equal(new SessionAccessState(Full, AccessLevelSource: Explicit), f.Provider.State);
+    }
+
+    [Theory]
+    [InlineData(Explicit)]
+    [InlineData(ParentSource)]
+    [InlineData(Policy)]
+    public async Task A_launch_while_redleaf_is_unreachable_keeps_the_level_it_holds(string source)
+    {
+        var f = new Fixture(Full, fullEnabled: true, source: source);
+        f.Policy.Policy = SessionAccessPolicy.FailClosed;
+
+        await f.Access.EnsureLaunchStateAsync(f.Provider.Proxy, "session-1");
+
+        Assert.Equal(new SessionAccessState(Full, AccessLevelSource: source), f.Provider.State);
+        Assert.Equal(0, f.Provider.Sets);
+    }
+
+    [Fact]
+    public async Task A_launch_while_redleaf_is_unreachable_still_gives_a_levelless_session_ask()
+    {
+        var f = new Fixture(null);
+        f.Policy.Policy = SessionAccessPolicy.FailClosed;
+
+        await f.Access.EnsureLaunchStateAsync(f.Provider.Proxy, "session-1");
+
         Assert.Equal(Ask, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task A_policy_write_that_was_never_announced_is_applied_on_the_next_read()
+    {
+        // RedCompute was down during the write, or the notice failed: the next decision that reads
+        // a new revision runs the same pass an announcement would.
+        var f = new Fixture(Full, fullEnabled: true);
+        f.Policy.Policy = f.Policy.Policy with { Revision = 4, DefaultLevel = Full };
+        await f.Access.EnsureLaunchStateAsync(f.Provider.Proxy, "session-1");
+        await WaitForAsync(() => f.Policy.Reads >= 2);
+        Assert.Equal(Full, f.Provider.State.AccessLevel);
+
+        f.Policy.Policy = f.Policy.Policy with { Revision = 5, DefaultLevel = Auto, FullAccess = new FullAccessAcknowledgement(false, 1) };
+        await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, unattended: false, personPresent: false, agentEntityId: null);
+
+        await WaitForAsync(() => f.Provider.State.AccessLevel == Auto);
+        Assert.Equal(Auto, f.Provider.State.AccessLevel);
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        for (var i = 0; i < 200 && !condition(); i++) await Task.Delay(10);
     }
 
     // ---- following the policy (accessLevelSource policy) ----
