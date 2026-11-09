@@ -35,39 +35,130 @@ public sealed class PermissionContractAlignmentTests : IDisposable
 
     public PermissionContractAlignmentTests() => Directory.CreateDirectory(_root);
 
-    // ---- RedLeaf's GET /api/agent-permissions/policy (redleaf 3d7f8c2a, AgentAccessPolicy.ToContract) ----
+    // ---- RedLeaf's GET /api/agent-permissions/policy, exactly as redleaf 88de9e40 sends it ----
+    //
+    // AgentAccessPolicy.ToContract() builds a JsonObject (version, defaultLevel, agents sorted by id,
+    // fullAccess {enabled = Effective, textVersion, acknowledgedAt = "O" format, acknowledgedBy}) and
+    // the endpoint returns it with Results.Json, so the default web serializer writes nulls and
+    // escapes '+'. The change notification is JsonContent.Create(new { version = 1, revision }).
 
-    [Theory]
-    [InlineData(true, true)]
-    [InlineData(false, false)]   // accepted on an older warning text: RedLeaf already reports false
-    public void Redleafs_exact_contract_is_read_with_enabled_taken_as_effective(bool enabled, bool fullAccess)
+    /// <summary>No stored policy: AgentAccessPolicy.None.</summary>
+    private const string RedLeafNoRecord =
+        """{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":false,"textVersion":null,"acknowledgedAt":null,"acknowledgedBy":null}}""";
+
+    /// <summary>Full access accepted on the current text (1), default auto, one Agent at full.</summary>
+    private static readonly string RedLeafFullOn = Wire(
+        """{"version":1,"defaultLevel":"auto","agents":{"0b9e1d2c-5a4f-4e3b-9c8d-7f6a5b4c3d2e":"full","5f0c2f7e-0000-4000-8000-000000000001":"plan"},"fullAccess":{"enabled":true,"textVersion":1,"acknowledgedAt":"2026-11-09T10:00:00.0000000+00:00","acknowledgedBy":"7c1d4e2a-9b3f-4a8e-b6d5-0e1f2a3b4c5d"}}""");
+
+    /// <summary>Accepted on an older warning text (0): stored Enabled, but Effective is false.</summary>
+    private static readonly string RedLeafStaleAcceptance = Wire(
+        """{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":false,"textVersion":0,"acknowledgedAt":"2026-10-01T08:30:00.0000000+00:00","acknowledgedBy":"7c1d4e2a-9b3f-4a8e-b6d5-0e1f2a3b4c5d"}}""");
+
+    /// <summary>The default web encoder escapes '+' as a backslash-u002B sequence, as RedLeaf's response does.</summary>
+    private static string Wire(string json) => json.Replace("+", @"\u002B", StringComparison.Ordinal);
+
+    /// <summary>NotifyComputeAsync's body after a write.</summary>
+    private const string RedLeafChangeNotification = """{"version":1,"revision":3}""";
+
+    [Fact]
+    public void The_literals_are_what_redleafs_serialization_writes()
     {
-        using var body = JsonDocument.Parse($$$"""
-            {"version":1,"defaultLevel":"auto","agents":{"5f0c2f7e-0000-4000-8000-000000000001":"full"},
-             "fullAccess":{"enabled":{{{(enabled ? "true" : "false")}}},"textVersion":1,"acknowledgedAt":"2026-11-09T10:00:00.0000000+00:00","acknowledgedBy":"owner-1"}}
-            """);
+        // ToContract's code, serialized the way Results.Json and JsonContent.Create do (web defaults).
+        static string Contract(string defaultLevel, (string Id, string Level)[] agents, bool effective, int? textVersion,
+            DateTimeOffset? acknowledgedAt, string? acknowledgedBy)
+        {
+            var map = new System.Text.Json.Nodes.JsonObject();
+            foreach (var (id, level) in agents.OrderBy(pair => pair.Id, StringComparer.Ordinal)) map[id] = level;
+            var contract = new System.Text.Json.Nodes.JsonObject
+            {
+                ["version"] = 1,
+                ["defaultLevel"] = defaultLevel,
+                ["agents"] = map,
+                ["fullAccess"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["enabled"] = effective,
+                    ["textVersion"] = textVersion,
+                    ["acknowledgedAt"] = acknowledgedAt?.ToString("O"),
+                    ["acknowledgedBy"] = acknowledgedBy,
+                },
+            };
+            return JsonSerializer.Serialize(contract, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
 
-        var policy = RedLeafSessionAccessPolicyClient.Parse(body.RootElement);
-
-        Assert.Equal(1, policy.Version);
-        Assert.Equal(SessionAccessLevels.Auto, policy.DefaultFor("someone"));
-        Assert.Equal(SessionAccessLevels.Full, policy.DefaultFor("5f0c2f7e-0000-4000-8000-000000000001"));
-        Assert.Equal(fullAccess, policy.FullAccessEnabled);
-        Assert.Equal("owner-1", policy.FullAccess!.AcknowledgedBy);
+        Assert.Equal(RedLeafNoRecord, Contract("ask", [], false, null, null, null));
+        Assert.Equal(RedLeafFullOn, Contract("auto",
+            [("5f0c2f7e-0000-4000-8000-000000000001", "plan"), ("0b9e1d2c-5a4f-4e3b-9c8d-7f6a5b4c3d2e", "full")],
+            true, 1, DateTimeOffset.Parse("2026-11-09T10:00:00Z"), "7c1d4e2a-9b3f-4a8e-b6d5-0e1f2a3b4c5d"));
+        Assert.Equal(RedLeafStaleAcceptance, Contract("ask", [], false, 0,
+            DateTimeOffset.Parse("2026-10-01T08:30:00Z"), "7c1d4e2a-9b3f-4a8e-b6d5-0e1f2a3b4c5d"));
+        Assert.Equal(RedLeafChangeNotification,
+            JsonSerializer.Serialize(new { version = 1, revision = 3 }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     }
 
     [Fact]
-    public void An_enabled_full_access_counts_whatever_text_version_it_names()
+    public async Task The_client_reads_redleafs_policy_with_full_access_on()
     {
-        using var body = JsonDocument.Parse("""{"version":1,"defaultLevel":"ask","agents":{},"fullAccess":{"enabled":true,"textVersion":7,"acknowledgedAt":null,"acknowledgedBy":null}}""");
+        var policy = await ReadThroughClientAsync(RedLeafFullOn);
 
-        Assert.True(RedLeafSessionAccessPolicyClient.Parse(body.RootElement).FullAccessEnabled);
+        Assert.True(policy.Available);
+        Assert.Equal(1, policy.Version);
+        Assert.True(policy.FullAccessEnabled);
+        Assert.Equal(SessionAccessLevels.Auto, policy.DefaultFor("someone-else"));
+        Assert.Equal(SessionAccessLevels.Auto, policy.DefaultFor(null));
+        Assert.Equal(SessionAccessLevels.Full, policy.DefaultFor("0b9e1d2c-5a4f-4e3b-9c8d-7f6a5b4c3d2e"));
+        Assert.Equal(SessionAccessLevels.Plan, policy.DefaultFor("5f0c2f7e-0000-4000-8000-000000000001"));
+        Assert.Equal(1, policy.FullAccess!.TextVersion);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-09T10:00:00Z"), policy.FullAccess.AcknowledgedAt);
+        Assert.Equal("7c1d4e2a-9b3f-4a8e-b6d5-0e1f2a3b4c5d", policy.FullAccess.AcknowledgedBy);
+        Assert.Equal(SessionAccessLevels.Full, SessionAccessResolver.ResolveStart(SessionAccessLevels.Full, null, true, policy,
+            SessionAccessLevels.All, null).Level);
+    }
+
+    [Fact]
+    public async Task The_client_reads_redleafs_no_record_as_ask_with_full_off()
+    {
+        var policy = await ReadThroughClientAsync(RedLeafNoRecord);
+
+        Assert.True(policy.Available);
+        Assert.False(policy.FullAccessEnabled);
+        Assert.Null(policy.FullAccess!.TextVersion);
+        Assert.Equal(SessionAccessLevels.Ask, policy.DefaultFor("anyone"));
+    }
+
+    [Fact]
+    public async Task The_client_trusts_redleafs_effective_enabled_on_a_stale_acceptance()
+    {
+        var policy = await ReadThroughClientAsync(RedLeafStaleAcceptance);
+
+        Assert.False(policy.FullAccessEnabled);
+        Assert.Equal(0, policy.FullAccess!.TextVersion);
+        Assert.Equal(SessionAccessLevels.Auto, SessionAccessResolver.ResolveStart(SessionAccessLevels.Full, null, true, policy,
+            SessionAccessLevels.All, null).Level);
+    }
+
+    private static async Task<SessionAccessPolicy> ReadThroughClientAsync(string json)
+    {
+        var http = new HttpClient(new FixedResponse(json)) { BaseAddress = new Uri("http://redleaf/") };
+        return await new RedLeafSessionAccessPolicyClient(http, (_, _) => { }).GetAsync();
+    }
+
+    private sealed class FixedResponse(string json) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Equal("/api/agent-permissions/policy", request.RequestUri!.AbsolutePath);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            });
+        }
     }
 
     // ---- POST /ai-session/access-policy/changed with RedLeaf's {version, revision} ----
 
     [Theory]
-    [InlineData("""{"version":1,"revision":7}""", 7L)]
+    [InlineData(RedLeafChangeNotification, 3L)]
     [InlineData("", null)]
     [InlineData("not json", null)]
     public async Task Policy_change_accepts_redleafs_body(string json, long? revision)
@@ -85,11 +176,24 @@ public sealed class PermissionContractAlignmentTests : IDisposable
     {
         // RedLeaf's NotifyComputeAsync goes through ComputeGateway: with a caller execution token it
         // sends the derived token (one redcompute-call hop), otherwise the infrastructure token.
-        var (status, _, reads) = await PostPolicyChangedAsync("""{"version":1,"revision":8}""", "redleaf shell through the kernel");
+        var (status, _, reads) = await PostPolicyChangedAsync(RedLeafChangeNotification, "redleaf shell through the kernel");
 
         Assert.Equal(200, status);
         Assert.True(reads >= 1, reads.ToString()); // refetched, never served from the cache
     }
+
+    [Theory]
+    [MemberData(nameof(LocalDefaultCallers))]
+    public async Task Policy_change_refuses_localdefault_identities(string caller)
+    {
+        var (status, body, reads) = await PostPolicyChangedAsync(RedLeafChangeNotification, caller);
+
+        Assert.Equal(403, status);
+        Assert.Equal("service_caller_required", body.GetProperty("error").GetString());
+        Assert.Equal(0, reads);
+    }
+
+    public static TheoryData<string> LocalDefaultCallers => new(SessionRollbackTests.LocalDefaultCallers);
 
     // ---- what the shared chat client reads from the live stream ----
 
