@@ -228,17 +228,20 @@ public sealed class SessionProcessIdentityTests : IDisposable
     }
 
     [Fact]
-    public async Task An_unknown_parent_falls_back_to_the_policy()
+    public async Task An_unknown_parent_starts_at_ask_never_the_policy_default()
     {
-        await using var host = Host.Create(this, FullEnabled with { DefaultLevel = SessionAccessLevels.Auto });
+        // The signed context names a session that cannot be established: falling back to the
+        // policy default would hand a capped or unattended caller Full on an owner's install.
+        await using var host = Host.Create(this, FullEnabled with { DefaultLevel = SessionAccessLevels.Full });
 
         var (status, body) = await host.InvokeAsync("/ai-session/sessions",
             Parent([.. DiscordOpenContext, new("session", "no-such-session")]), new { projectPath = _root, provider = "claude-code" });
 
         Assert.True(status == 200, $"{status}: {body}");
         var child = JsonDocument.Parse(body).RootElement;
-        Assert.Equal(SessionAccessLevels.Auto, child.GetProperty("accessLevel").GetString());
-        Assert.Equal(SessionAccessLevelSources.Policy, child.GetProperty("accessLevelSource").GetString());
+        Assert.Equal(SessionAccessLevels.Ask, child.GetProperty("accessLevel").GetString());
+        Assert.Equal(SessionAccessLevels.Ask, child.GetProperty("maxAccessLevel").GetString());
+        Assert.Equal(SessionAccessLevelSources.Parent, child.GetProperty("accessLevelSource").GetString());
     }
 
     /// <summary>A person starts the delegating session at an explicit level.</summary>
