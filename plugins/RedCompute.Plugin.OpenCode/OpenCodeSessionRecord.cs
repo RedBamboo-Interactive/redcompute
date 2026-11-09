@@ -31,4 +31,12 @@ public class OpenCodeSessionRecord
     public int? ProcessId { get; set; }
     public DateTimeOffset? LastActivity { get; set; }
     public string? DeveloperInstructions { get; set; }
+    /// <summary>
+    /// Access level: ask (request_permission parks as a permission card) or full (allow_once, the
+    /// behaviour before access levels). Null on a row written before access levels.
+    /// </summary>
+    public string? AccessLevel { get; set; }
+    public string? MaxAccessLevel { get; set; }
+    public string? AccessLevelBeforePlan { get; set; }
+    public bool Unattended { get; set; }
 }

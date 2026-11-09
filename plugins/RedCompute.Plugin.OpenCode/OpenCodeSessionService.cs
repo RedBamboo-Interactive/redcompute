@@ -61,6 +61,8 @@ public class OpenCodeSessionService
         public SemaphoreSlim AdmissionLock { get; } = new(1, 1);
         public bool IsLoadingHistory { get; set; }
         public ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> PendingRequests { get; } = new();
+        // session/request_permission calls parked as permission cards, keyed by request id.
+        public ConcurrentDictionary<string, PendingPermission> PendingPermissions { get; } = new();
         private int _nextRequestId;
         private readonly SemaphoreSlim _writeLock = new(1, 1);
 
@@ -130,6 +132,7 @@ public class OpenCodeSessionService
         string? scratchDirectory = null, bool confidential = false,
         string? developerInstructions = null)
     {
+        var access = SessionAccessScope.Current;
         if (_sessions.Count >= _config.MaxSessions)
         {
             LastStartError = $"Max sessions reached ({_config.MaxSessions})";
@@ -167,6 +170,8 @@ public class OpenCodeSessionService
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
             DeveloperInstructions = developerInstructions,
+            // Not started through RedCompute's access rules: ask, the fail-closed level.
+            Access = access is { AccessLevel: not null } ? access : new SessionAccessState(SessionAccessLevels.Ask),
         };
 
         var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, effort,
@@ -272,6 +277,10 @@ public class OpenCodeSessionService
             UserName = record.UserName,
             UserAvatarUrl = record.UserAvatarUrl,
             DeveloperInstructions = record.DeveloperInstructions,
+            AccessLevel = record.AccessLevel,
+            MaxAccessLevel = record.MaxAccessLevel,
+            AccessLevelBeforePlan = record.AccessLevelBeforePlan,
+            Unattended = record.Unattended,
         };
 
         var (session, error) = await SpawnAcpSession(
@@ -702,6 +711,7 @@ public class OpenCodeSessionService
         {
             SendNotification(session, "session/cancel", new { sessionId = session.AcpSessionId })
                 .GetAwaiter().GetResult();
+            CancelPendingPermissions(session, "cancelled", respond: true);
             return InterruptResult.Interrupted;
         }
         catch
@@ -727,6 +737,7 @@ public class OpenCodeSessionService
             }
             catch (Exception ex) { _log($"[OpenCode] Error during graceful stop of {sessionId}: {ex.Message}", null); }
 
+            CancelPendingPermissions(session, "session_ended", respond: false);
             session.Info.Status = "Stopped";
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.StoppedAt = DateTimeOffset.UtcNow;
@@ -773,6 +784,7 @@ public class OpenCodeSessionService
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
+            CancelPendingPermissions(session, "session_ended", respond: false);
             session.Info.Status = "Stopped";
             session.Info.StopReason = reason ?? "user_stopped";
             session.Info.StoppedAt = DateTimeOffset.UtcNow;
@@ -1024,22 +1036,242 @@ public class OpenCodeSessionService
         }
     }
 
+    /// <summary>
+    /// full: the first allow_once option, as before access levels. ask: the request parks as a
+    /// permission card whose options follow the request's option kinds. An unattended session
+    /// rejects at once and never parks: a parked request with nobody to answer holds the turn,
+    /// which is the 24 Sep detached-session deadlock.
+    /// </summary>
     private async Task HandlePermissionRequest(ManagedSession session, JsonElement root)
     {
-        var options = root.GetProperty("params").GetProperty("options");
+        var @params = root.GetProperty("params");
+        var options = @params.GetProperty("options");
 
-        string? selectedOptionId = null;
-        foreach (var opt in options.EnumerateArray())
+        if (session.Info.AccessLevel == SessionAccessLevels.Full)
         {
-            var kind = opt.GetProperty("kind").GetString();
-            if (kind == "allow_once" && selectedOptionId == null)
-                selectedOptionId = opt.GetProperty("optionId").GetString();
+            string? selectedOptionId = null;
+            foreach (var opt in options.EnumerateArray())
+            {
+                var kind = opt.GetProperty("kind").GetString();
+                if (kind == "allow_once" && selectedOptionId == null)
+                    selectedOptionId = opt.GetProperty("optionId").GetString();
+            }
+
+            if (selectedOptionId != null)
+                await RespondToRequest(session, root, new { outcome = new { outcome = "selected", optionId = selectedOptionId } });
+            else
+                await RespondToRequest(session, root, new { outcome = new { outcome = "cancelled" } });
+            return;
         }
 
-        if (selectedOptionId != null)
-            await RespondToRequest(session, root, new { outcome = new { outcome = "selected", optionId = selectedOptionId } });
-        else
-            await RespondToRequest(session, root, new { outcome = new { outcome = "cancelled" } });
+        var permission = PermissionFor(@params, session.Info.ProjectPath);
+        var requestId = "permission-" + root.GetProperty("id").GetRawText().Trim('"');
+        if (session.Info.Unattended)
+        {
+            _log($"[OpenCode] Session {session.Info.Id} is unattended; rejected {permission.ToolName} ({permission.Summary})", null);
+            await RespondToRequest(session, root, PermissionOutcome(options, SessionPermissionDecisions.Deny));
+            StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent
+            {
+                Type = "permission_denied", Kind = PendingSessionQuestion.PermissionKind, RequestId = requestId,
+                ToolName = permission.ToolName, MessageId = permission.ToolUseId, MessageUid = session.CurrentAssistantUid,
+                Content = $"This session is unattended, so no person could approve {permission.ToolName} ({permission.Summary}); it was rejected.",
+                Permission = permission,
+            });
+            return;
+        }
+
+        var askedAt = DateTimeOffset.UtcNow;
+        var pending = new PendingPermission
+        {
+            RequestId = requestId, Root = root.Clone(), Options = options.Clone(), Permission = permission,
+            AskedAt = askedAt, ExpiresAt = askedAt + PermissionTimeout,
+        };
+        if (!session.PendingPermissions.TryAdd(requestId, pending)) return;
+        pending.Expiry = new Timer(_ => _ = ExpirePermissionAsync(session, requestId), null, PermissionTimeout, Timeout.InfiniteTimeSpan);
+
+        _log($"[OpenCode] Session {session.Info.Id} parked on a permission for {permission.ToolName} (request {requestId})", null);
+        StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent
+        {
+            Type = "question", Kind = PendingSessionQuestion.PermissionKind, RequestId = requestId,
+            ToolName = permission.ToolName, ToolInput = permission.Input.ToString(), MessageId = permission.ToolUseId,
+            MessageUid = session.CurrentAssistantUid, Permission = permission,
+        });
+        SessionUpdated?.Invoke(session.Info);
+    }
+
+    internal sealed class PendingPermission : IDisposable
+    {
+        public required string RequestId { get; init; }
+        public required JsonElement Root { get; init; }
+        public required JsonElement Options { get; init; }
+        public required PendingPermissionRequest Permission { get; init; }
+        public required DateTimeOffset AskedAt { get; init; }
+        public required DateTimeOffset ExpiresAt { get; init; }
+        public Timer? Expiry { get; set; }
+        public void Dispose() => Expiry?.Dispose();
+    }
+
+    internal TimeSpan PermissionTimeout { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>The card: the tool call ACP describes, and the decisions its option kinds allow.</summary>
+    internal static PendingPermissionRequest PermissionFor(JsonElement @params, string projectPath)
+    {
+        var toolCall = @params.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object ? call : default;
+        static string? Text(JsonElement element, string name)
+            => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
+                ? value.GetString() : null;
+        var rawInput = toolCall.ValueKind == JsonValueKind.Object && toolCall.TryGetProperty("rawInput", out var raw)
+            && raw.ValueKind == JsonValueKind.Object ? raw.Clone() : JsonDocument.Parse("{}").RootElement.Clone();
+        var kinds = @params.TryGetProperty("options", out var options) && options.ValueKind == JsonValueKind.Array
+            ? options.EnumerateArray().Select(option => Text(option, "kind")).ToHashSet()
+            : [];
+        var offered = new List<string>();
+        if (kinds.Contains("allow_once")) offered.Add(SessionPermissionDecisions.AllowOnce);
+        if (kinds.Contains("allow_always")) offered.Add(SessionPermissionDecisions.AllowSession);
+        offered.Add(SessionPermissionDecisions.Deny);
+        var summary = Text(toolCall, "title") ?? Text(rawInput, "command") ?? Text(rawInput, "filePath")
+            ?? Text(rawInput, "path") ?? Text(toolCall, "kind") ?? "Use a tool";
+        return new PendingPermissionRequest
+        {
+            ToolName = Text(toolCall, "kind") ?? "tool",
+            ToolUseId = Text(toolCall, "toolCallId"),
+            Summary = summary.Length > 300 ? summary[..297] + "..." : summary,
+            Input = rawInput,
+            Cwd = projectPath,
+            Options = offered,
+        };
+    }
+
+    /// <summary>
+    /// The ACP outcome for a decision: allow_once and allow_always options for the two allows,
+    /// reject_once (else reject_always) for deny, and a cancelled outcome when the request offers
+    /// no matching option.
+    /// </summary>
+    internal static object PermissionOutcome(JsonElement options, string decision)
+    {
+        var wanted = decision switch
+        {
+            SessionPermissionDecisions.AllowOnce => new[] { "allow_once" },
+            SessionPermissionDecisions.AllowSession => new[] { "allow_always" },
+            _ => new[] { "reject_once", "reject_always" },
+        };
+        foreach (var kind in wanted)
+            foreach (var option in options.EnumerateArray())
+                if (option.TryGetProperty("kind", out var k) && k.GetString() == kind
+                    && option.TryGetProperty("optionId", out var id) && id.GetString() is { } optionId)
+                    return new { outcome = new { outcome = "selected", optionId } };
+        return new { outcome = new { outcome = "cancelled" } };
+    }
+
+    public IReadOnlyList<PendingSessionQuestion> GetPendingQuestions(string sessionId)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return [];
+        return session.PendingPermissions.Values.OrderBy(p => p.AskedAt).Select(p => new PendingSessionQuestion
+        {
+            RequestId = p.RequestId,
+            Kind = PendingSessionQuestion.PermissionKind,
+            Permission = p.Permission,
+            ToolName = p.Permission.ToolName,
+            ToolUseId = p.Permission.ToolUseId,
+            Questions = JsonDocument.Parse("[]").RootElement.Clone(),
+            Input = p.Permission.Input,
+            AskedAt = p.AskedAt,
+            ExpiresAt = p.ExpiresAt,
+        }).ToArray();
+    }
+
+    public QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return QuestionAnswerResult.SessionNotFound;
+        if (!session.PendingPermissions.TryGetValue(answer.RequestId, out var peek)) return QuestionAnswerResult.RequestNotFound;
+        if (answer.Decision is not { } decision || !peek.Permission.Options.Contains(decision))
+            return QuestionAnswerResult.InvalidDecision;
+        if (!session.PendingPermissions.TryRemove(answer.RequestId, out var pending)) return QuestionAnswerResult.RequestNotFound;
+        pending.Dispose();
+        try
+        {
+            RespondToRequest(session, pending.Root, PermissionOutcome(pending.Options, decision)).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            _log($"[OpenCode] Failed to answer permission {answer.RequestId} on {sessionId}: {ex.Message}", null);
+            return QuestionAnswerResult.Error;
+        }
+        _log($"[OpenCode] Permission {answer.RequestId} ({pending.Permission.ToolName}) {decision} on session {sessionId}", null);
+        ResolvePermission(session, answer.RequestId, SessionPermissionDecisions.Outcome(decision));
+        return decision == SessionPermissionDecisions.Deny ? QuestionAnswerResult.Denied : QuestionAnswerResult.Allowed;
+    }
+
+    private async Task ExpirePermissionAsync(ManagedSession session, string requestId)
+    {
+        if (!session.PendingPermissions.TryRemove(requestId, out var pending)) return;
+        pending.Dispose();
+        _log($"[OpenCode] Permission {requestId} on session {session.Info.Id} went unanswered for " +
+             $"{PermissionTimeout.TotalMinutes:0} minutes, rejecting", null);
+        try { await RespondToRequest(session, pending.Root, PermissionOutcome(pending.Options, SessionPermissionDecisions.Deny)); }
+        catch (Exception ex) { _log($"[OpenCode] Failed to reject expired permission {requestId}: {ex.Message}", null); }
+        ResolvePermission(session, requestId, "timeout");
+    }
+
+    /// <summary>
+    /// Drops every parked permission. After session/cancel ACP needs each answered as cancelled;
+    /// when the process is gone there is nothing to answer and only the cards are cleared.
+    /// </summary>
+    private void CancelPendingPermissions(ManagedSession session, string outcome, bool respond)
+    {
+        foreach (var requestId in session.PendingPermissions.Keys)
+        {
+            if (!session.PendingPermissions.TryRemove(requestId, out var pending)) continue;
+            pending.Dispose();
+            if (respond)
+            {
+                try { RespondToRequest(session, pending.Root, new { outcome = new { outcome = "cancelled" } }).GetAwaiter().GetResult(); }
+                catch (Exception ex) { _log($"[OpenCode] Failed to cancel permission {requestId}: {ex.Message}", null); }
+            }
+            ResolvePermission(session, requestId, outcome);
+        }
+    }
+
+    private void ResolvePermission(ManagedSession session, string requestId, string outcome)
+    {
+        StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent
+        {
+            Type = "question_resolved", Kind = PendingSessionQuestion.PermissionKind, RequestId = requestId,
+            Content = outcome, MessageUid = session.CurrentAssistantUid,
+        });
+        SessionUpdated?.Invoke(session.Info);
+    }
+
+    public SessionAccessState? GetAccessState(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session)) return session.Info.Access;
+        return _store.FindSession(sessionId) is { } record
+            ? new SessionAccessState(record.AccessLevel, record.MaxAccessLevel, record.Unattended, record.AccessLevelBeforePlan)
+            : null;
+    }
+
+    /// <summary>
+    /// Persists an access state RedCompute already authorized. The level decides how the next
+    /// request_permission is answered, so a live change needs nothing sent to OpenCode.
+    /// </summary>
+    public bool SetAccessState(string sessionId, SessionAccessState state)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+        {
+            session.Info.Access = state;
+            PersistSessionRecord(session.Info);
+            SessionUpdated?.Invoke(session.Info);
+            return true;
+        }
+        var record = _store.FindSession(sessionId);
+        if (record is null) return false;
+        record.AccessLevel = state.AccessLevel;
+        record.MaxAccessLevel = state.MaxAccessLevel;
+        record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
+        record.Unattended = state.Unattended;
+        _store.SaveSession(record);
+        return true;
     }
 
     private async Task HandleFileRead(ManagedSession session, JsonElement root)
@@ -1495,6 +1727,7 @@ public class OpenCodeSessionService
     private void OnProcessExited(string sessionId)
     {
         if (!_sessions.TryRemove(sessionId, out var session)) return;
+        CancelPendingPermissions(session, "session_ended", respond: false);
 
         _log($"[OpenCode] ACP process exited unexpectedly for session {sessionId}", null);
         session.Info.Status = "Error";
@@ -1565,6 +1798,10 @@ public class OpenCodeSessionService
             ProcessId = info.ProcessId,
             LastActivity = DateTimeOffset.UtcNow,
             DeveloperInstructions = info.DeveloperInstructions,
+            AccessLevel = info.AccessLevel,
+            MaxAccessLevel = info.MaxAccessLevel,
+            AccessLevelBeforePlan = info.AccessLevelBeforePlan,
+            Unattended = info.Unattended,
         });
     }
 
@@ -2102,6 +2339,10 @@ public class OpenCodeSessionService
         ProviderEntity = r.ProviderEntity,
         Source = r.Source,
         DeveloperInstructions = r.DeveloperInstructions,
+        AccessLevel = r.AccessLevel,
+        MaxAccessLevel = r.MaxAccessLevel,
+        AccessLevelBeforePlan = r.AccessLevelBeforePlan,
+        Unattended = r.Unattended,
     };
 
     internal static void ApplyDeveloperInstructions(

@@ -112,6 +112,10 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.UserId = record.UserId;
             existing.UserName = record.UserName;
             existing.UserAvatarUrl = record.UserAvatarUrl;
+            existing.AccessLevel = record.AccessLevel;
+            existing.MaxAccessLevel = record.MaxAccessLevel;
+            existing.AccessLevelBeforePlan = record.AccessLevelBeforePlan;
+            existing.Unattended = record.Unattended;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;
         }

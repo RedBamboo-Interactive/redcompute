@@ -14,6 +14,11 @@ public class OpenCodeStreamEvent
     // event constructors don't know the session's current turn).
     public string? MessageUid { get; set; }
     public List<OpenCodeAttachment>? Attachments { get; init; }
+    // A parked permission ("question", "question_resolved") or an unattended denial
+    // ("permission_denied"). Live control state, never persisted.
+    public string? RequestId { get; init; }
+    public string? Kind { get; init; }
+    public RedCompute.Core.Sessions.PendingPermissionRequest? Permission { get; init; }
 }
 
 public class OpenCodeAttachment

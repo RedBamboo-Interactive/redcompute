@@ -41,7 +41,16 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         SessionCapabilities.Interrupt |
         SessionCapabilities.SendMessage |
         SessionCapabilities.ImageAttachments |
-        SessionCapabilities.FileAttachments;
+        SessionCapabilities.FileAttachments |
+        SessionCapabilities.PermissionMode;
+
+    /// <summary>ask: request_permission parks as a permission card. full: allow_once, as before. No plan or auto.</summary>
+    public IReadOnlyList<string> SupportedAccessLevels { get; } = [SessionAccessLevels.Ask, SessionAccessLevels.Full];
+    public SessionAccessState? GetAccessState(string sessionId) => _opencode.GetAccessState(sessionId);
+    public bool SetAccessState(string sessionId, SessionAccessState state) => _opencode.SetAccessState(sessionId, state);
+    public IReadOnlyList<PendingSessionQuestion> GetPendingQuestions(string sessionId) => _opencode.GetPendingQuestions(sessionId);
+    public QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)
+        => _opencode.SubmitQuestionAnswer(sessionId, answer);
 
     public string? LastStartError => _opencode.LastStartError;
     public string? LastStartErrorCode => _opencode.LastStartErrorCode;
@@ -198,8 +207,11 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     // --- ISessionProvider: Configuration ---
 
+    /// <summary>Legacy entry point: a mode maps to an access level; RedCompute's routes apply the rules.</summary>
     public bool SetPermissionMode(string sessionId, string mode)
-        => false;
+        => SessionAccessLevels.TryFromPermissionMode(mode, out var level)
+            && GetAccessState(sessionId) is { } current
+            && SetAccessState(sessionId, current with { AccessLevel = SessionAccessResolver.ClampToSupported(level, SupportedAccessLevels) });
 
     // --- ISessionProvider: Generate (not supported) ---
 
@@ -294,6 +306,11 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         UserId = s.UserId,
         UserName = s.UserName,
         UserAvatarUrl = s.UserAvatarUrl,
+        AccessLevel = s.AccessLevel,
+        MaxAccessLevel = s.MaxAccessLevel,
+        AccessLevelBeforePlan = s.AccessLevelBeforePlan,
+        Unattended = s.Unattended,
+        SupportedAccessLevels = [SessionAccessLevels.Ask, SessionAccessLevels.Full],
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(OpenCodeStreamEvent e) => new()
@@ -306,6 +323,9 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         IsPartial = e.IsPartial,
         MessageId = e.MessageId,
         MessageUid = e.MessageUid,
+        RequestId = e.RequestId,
+        Kind = e.Kind,
+        Permission = e.Permission,
         Attachments = e.Attachments?.Select(a => new UnifiedAttachment
         {
             Type = a.Type,

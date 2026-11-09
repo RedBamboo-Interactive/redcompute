@@ -56,7 +56,9 @@ public class OpenCodeDbContext : DbContext
                 WHERE ProviderPartId IS NOT NULL
                 """;
             cmd.ExecuteNonQuery();
-            foreach (var col in new[] { "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER" })
+            foreach (var col in new[] { "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER",
+                         "AccessLevel TEXT", "MaxAccessLevel TEXT", "AccessLevelBeforePlan TEXT",
+                         "Unattended INTEGER NOT NULL DEFAULT 0" })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";
                 try { cmd.ExecuteNonQuery(); }
