@@ -46,51 +46,74 @@ internal static class ComputeResourceAccess
         => Results.NotFound(new { error = "not_found", message = "Job not found" });
 
     /// <summary>
-    /// Whether a person asked for this, rather than an Agent, an automation, a service or a process a
-    /// session started. Reading access says nothing about that: an Agent can read its own conversation.
-    /// Three things arrive here as a person, and nothing else does:
-    /// a signed login used directly; a browser app's own token, forwarded by the kernel's proxy (Code);
-    /// and that same token after one signed hop through a kernel service (Nova's route calling here).
-    /// The browser token counts for the loopback owner too, whose token benefits <c>system</c> and keeps
-    /// <c>local-user</c> as its subject. A session's own token also descends from a browser token, so the
-    /// context has to be exactly one of those shapes: it says which steps the call came through.
+    /// Whether a person asked for a rollback: <see cref="IsPersonPresent"/>, or the loopback owner's
+    /// own browser token (beneficiary <c>system</c>, subject <c>local-user</c>), which rollback has
+    /// always accepted. Access levels and approvals do not: on loopback any local process can mint
+    /// that token tokenless, so it says nothing about a person being there.
     /// </summary>
-    internal static bool IsPersonAction(HttpContext context) => IsPersonPresent(context);
+    internal static bool IsPersonAction(HttpContext context)
+    {
+        if (IsPersonPresent(context)) return true;
+        if (context.User.Identity?.IsAuthenticated != true
+            || context.User.FindFirst("sub")?.Value != LocalUserSubject
+            || ConfidentialResourcePolicy.ExecutionIdentity(context) is not { } execution)
+            return false;
+        return execution.Beneficiary.Kind.Equals("system", StringComparison.OrdinalIgnoreCase)
+            && IsBrowserAppToken(execution);
+    }
 
     /// <summary>
     /// The access-level contract's person-present predicate, and the one implementation of it:
-    /// raising a session's access level, approving a permission and rolling back all require it.
-    /// True for an ordinary human access token, and for an execution token RedLeaf minted at
-    /// <c>POST /api/auth/execution-token</c> for a browser app the person is using: actor kind
-    /// <c>app</c> naming that same app, beneficiary the token's own subject (or <c>system</c> for the
-    /// loopback owner), and a first context step <c>browser</c> with the page route, optionally after
-    /// exactly one signed <c>redcompute-call</c> hop through a kernel service. False for every Agent
-    /// (<c>actor.kind: agent</c>) and automation token, every token a session process holds, service and
-    /// infrastructure tokens, and a tokenless loopback request.
+    /// raising a session's access level and approving a permission require it. Decided from the
+    /// verified token alone, structured as RedLeaf's <c>AgentPermissionAccess.IsPersonPresent</c>
+    /// but accepting every browser app, since Nova's and Code's web apps show the approval cards:
+    /// <list type="bullet">
+    /// <item>An ordinary user session of a real account is a person. The anonymous loopback
+    /// principal (<c>LocalDefault</c>, <c>local-user</c>), <c>system</c> and <c>service:*</c>
+    /// subjects are not: an Agent that drops its bearer on loopback lands there.</item>
+    /// <item>An execution token is a person only when it is a browser app's own token, minted by
+    /// RedLeaf's <c>POST /api/auth/execution-token</c> from a user session: actor kind <c>app</c>
+    /// naming that same app, beneficiary kind <c>user</c> equal to the token subject, and a
+    /// <c>browser</c> context. Never an <c>agent</c> or <c>automation</c> actor.</item>
+    /// </list>
+    /// Stricter than "has a browser reference" in one way: a session's own process holds a token
+    /// derived from the browser token that started it, and that token still carries the browser
+    /// step. So the context must be the browser step (with its page route) alone, or after exactly
+    /// one signed <c>redcompute-call</c> hop through a kernel service (Nova's routes calling here);
+    /// causes are notes, not steps. Anything else, a session process included, is not a person.
     /// </summary>
     internal static bool IsPersonPresent(HttpContext context)
     {
-        var subject = context.User.FindFirst("sub")?.Value;
-        if (context.User.Identity?.IsAuthenticated != true || string.IsNullOrWhiteSpace(subject)) return false;
+        var user = context.User;
+        if (user.Identity?.IsAuthenticated != true
+            || string.Equals(user.Identity.AuthenticationType, ConfidentialResourcePolicy.LocalDefaultAuthenticationType, StringComparison.Ordinal))
+            return false;
+        var subject = user.FindFirst("sub")?.Value;
+        if (string.IsNullOrWhiteSpace(subject) || subject is LocalUserSubject or "system"
+            || subject.StartsWith("service:", StringComparison.OrdinalIgnoreCase))
+            return false;
 
         var execution = ConfidentialResourcePolicy.ExecutionIdentity(context);
+        var claimsExecution = user.HasClaim(claim => claim.Type == ExecutionIdentityClaims.TokenUseClaim);
         if (execution is null)
-            return ConfidentialResourcePolicy.IsExplicitHuman(context.User)
-                && context.User.FindFirst("client_id") is null
-                && subject is not (LocalUserSubject or "system")
-                && !subject.StartsWith("service:", StringComparison.OrdinalIgnoreCase);
+            // An execution token whose identity did not verify is nobody; a plain login is a person,
+            // unless it is a client's (service) token.
+            return !claimsExecution && ConfidentialResourcePolicy.IsExplicitHuman(user) && user.FindFirst("client_id") is null;
 
-        if (!execution.Actor.Kind.Equals("app", StringComparison.OrdinalIgnoreCase)
+        return execution.Beneficiary.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(execution.Beneficiary.Id, subject, StringComparison.OrdinalIgnoreCase)
+            && IsBrowserAppToken(execution);
+    }
+
+    /// <summary>A browser app's own token, directly or after one kernel hop; never an Agent's or automation's.</summary>
+    private static bool IsBrowserAppToken(ExecutionIdentity execution)
+    {
+        if (execution.Actor.Kind.Equals("agent", StringComparison.OrdinalIgnoreCase)
+            || execution.Actor.Kind.Equals("automation", StringComparison.OrdinalIgnoreCase)
+            || !execution.Actor.Kind.Equals("app", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(execution.Actor.Id, execution.App.Id, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var beneficiary = execution.Beneficiary;
-        var isThePerson = beneficiary.Kind.Equals("user", StringComparison.OrdinalIgnoreCase)
-            ? subject != LocalUserSubject && string.Equals(beneficiary.Id, subject, StringComparison.OrdinalIgnoreCase)
-            : beneficiary.Kind.Equals("system", StringComparison.OrdinalIgnoreCase) && subject == LocalUserSubject;
-        if (!isThePerson) return false;
-
-        // A cause is a note about the call, wherever it sits, and not a step the call came through.
         var steps = execution.Context.Where(item => item.Kind != JobCauses.ContextKind).ToList();
         if (steps.Count == 0
             || !steps[0].Kind.Equals("browser", StringComparison.OrdinalIgnoreCase)

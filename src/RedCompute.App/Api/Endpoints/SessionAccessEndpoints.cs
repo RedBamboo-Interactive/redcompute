@@ -94,32 +94,55 @@ public static class SessionAccessEndpoints
         endpoints.MapPost("/ai-session/access-policy/changed",
             "RedLeaf calls this after it writes the Agent permission policy. RedCompute reads the policy fresh and, when Full access is no longer "
             + "enabled, demotes every session holding full to its resolved default. Authenticated service callers (RedLeaf's kernel) and people only; "
-            + "an Agent or automation token gets 403. Idempotent.",
+            + "an Agent or automation token gets 403. Body (optional, as RedLeaf sends it): {version (policy shape version), revision}; "
+            + "it only labels the log line, the policy itself is always re-read. Idempotent.",
             async (HttpContext ctx) =>
         {
             if (!MayAnnouncePolicyChange(ctx))
                 return Error(403, "service_caller_required", "Only RedLeaf announces a policy change");
-            var demoted = await access.PolicyChangedAsync(ctx.RequestAborted);
+            var revision = await ReadRevisionAsync(ctx);
+            var demoted = await access.PolicyChangedAsync(ctx.RequestAborted, revision);
             var policy = await access.Policy.GetAsync(ct: ctx.RequestAborted);
             return Results.Json(new
             {
                 refreshed = true,
+                revision,
                 policyAvailable = policy.Available,
                 fullAccessEnabled = policy.FullAccessEnabled,
                 demotedSessions = demoted,
             });
         })
+            .WithParam("version", "integer", description: "Policy shape version (1)", location: ParamLocation.Body)
+            .WithParam("revision", "integer", description: "RedLeaf's policy revision after the write, for the log", location: ParamLocation.Body)
             .WithResponse(new
             {
                 type = "object",
                 properties = new
                 {
                     refreshed = new { type = "boolean" },
+                    revision = new { type = new[] { "integer", "null" }, description = "The revision RedLeaf announced, echoed" },
                     policyAvailable = new { type = "boolean", description = "False when RedLeaf could not be read; RedCompute then runs fail-closed (ask, Full disabled)" },
                     fullAccessEnabled = new { type = "boolean" },
                     demotedSessions = new { type = "array", items = new { type = "string" } },
                 },
             });
+    }
+
+    /// <summary>RedLeaf's announced revision. The body is a label only: missing or malformed is fine.</summary>
+    private static async Task<long?> ReadRevisionAsync(HttpContext ctx)
+    {
+        try
+        {
+            if (ctx.Request.ContentLength is 0) return null;
+            using var body = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+            return body.RootElement.ValueKind == JsonValueKind.Object
+                && body.RootElement.TryGetProperty("revision", out var revision)
+                && revision.ValueKind == JsonValueKind.Number && revision.TryGetInt64(out var value) ? value : null;
+        }
+        catch (Exception ex) when (ex is JsonException or System.IO.IOException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     internal static readonly string[] LegacyModes =

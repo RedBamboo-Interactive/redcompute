@@ -109,9 +109,11 @@ public sealed class SessionAccessService(
     /// RedLeaf changed the policy: read it fresh and, when Full is no longer enabled, demote every
     /// session holding Full to its resolved default. Returns the demoted session ids.
     /// </summary>
-    public async Task<IReadOnlyList<string>> PolicyChangedAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<string>> PolicyChangedAsync(CancellationToken ct = default, long? revision = null)
     {
         var current = await policy.GetAsync(refresh: true, ct);
+        log($"[Access] RedLeaf announced a policy change{(revision is { } r ? $" (revision {r})" : "")}; "
+            + (current.Available ? $"Full access {(current.FullAccessEnabled ? "enabled" : "disabled")}" : "policy unavailable, failing closed"), null);
         var demoted = new List<string>();
         if (current.FullAccessEnabled) return demoted;
         foreach (var provider in providers())

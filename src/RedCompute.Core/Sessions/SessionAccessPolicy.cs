@@ -7,9 +7,7 @@ namespace RedCompute.Core.Sessions;
 /// </summary>
 public sealed record SessionAccessPolicy
 {
-    /// <summary>The acknowledgement text version Full access must have been accepted against.</summary>
-    public const int CurrentFullAccessTextVersion = 1;
-
+    /// <summary>The policy's shape version (always 1 today), not a revision.</summary>
     public int Version { get; init; }
     public string? DefaultLevel { get; init; }
     /// <summary>Per-Agent default level, keyed by Agent entity id.</summary>
@@ -21,9 +19,11 @@ public sealed record SessionAccessPolicy
     public static SessionAccessPolicy NoRecord { get; } = new();
     public static SessionAccessPolicy FailClosed { get; } = new() { Available = false };
 
-    /// <summary>Full counts only when it was acknowledged against the current text version.</summary>
-    public bool FullAccessEnabled =>
-        FullAccess is { Enabled: true, TextVersion: CurrentFullAccessTextVersion };
+    /// <summary>
+    /// RedLeaf's effective value, taken as is: it is already false when Full access was accepted on
+    /// an older warning text, so RedCompute never compares text versions itself.
+    /// </summary>
+    public bool FullAccessEnabled => FullAccess is { Enabled: true };
 
     /// <summary>The configured default for an Agent: its own entry, else the global default, else ask.</summary>
     public string DefaultFor(string? agentEntityId)

@@ -458,21 +458,25 @@ public sealed class SessionRollbackTests
     /// <c>ComputeGateway</c> for a hop through a kernel service, <c>WithPageCause</c> for a page's own
     /// mutation, <c>SessionExecutionToken.Child</c> for a session's own process.
     /// </summary>
-    public static TheoryData<string> People => new()
-    {
-        "signed login", "code browser", "code browser with page cause", "nova through the kernel",
+    internal static readonly string[] PeopleCallers =
+    [
+        "signed login", "code browser", "code browser with page cause", "nova browser", "nova through the kernel",
         "nova through the kernel with cause", "loopback browser", "loopback nova through the kernel",
-    };
+    ];
 
-    public static TheoryData<string> NotPeople => new()
-    {
+    public static TheoryData<string> People => new(PeopleCallers);
+
+    public static TheoryData<string> NotPeople => new(NotPeopleCallers);
+
+    internal static readonly string[] NotPeopleCallers =
+    [
         "agent", "agent through the kernel", "agent with a browser context", "automation",
         "session process of a browser token", "session process of an agent", "direct client session process",
         "hop of a hop", "hop with another step", "hop through a bare other step", "root with another step", "no browser",
         "one step that is not a browser", "browser with no route", "system browser token for a named subject",
         "kernel proxy without a token", "browser for someone else", "local subject claiming a user",
         "infrastructure service token", "service subject", "system subject", "loopback without a token",
-    };
+    ];
 
     [Theory]
     [MemberData(nameof(People))]
@@ -546,6 +550,7 @@ public sealed class SessionRollbackTests
         {
             case "signed login": Plain("signed", new Claim("sub", subject)); break;
             case "code browser": Execution(App("codered", person, null, Browser("codered")), subject); break;
+            case "nova browser": Execution(App("nova", person, null, Browser("nova")), subject); break;
             case "code browser with page cause": Execution(App("codered", person, null, Browser("codered"), cause), subject); break;
             case "nova through the kernel": Execution(App("nova", person, "browser-token", Browser("nova"), hop), subject); break;
             case "nova through the kernel with cause": Execution(App("nova", person, "browser-token", Browser("nova"), hop, cause), subject); break;

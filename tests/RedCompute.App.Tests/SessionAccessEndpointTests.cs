@@ -27,8 +27,18 @@ public sealed class SessionAccessEndpointTests
     private const string Plan = SessionAccessLevels.Plan, Ask = SessionAccessLevels.Ask,
         Auto = SessionAccessLevels.Auto, Full = SessionAccessLevels.Full;
 
-    public static TheoryData<string> People => SessionRollbackTests.People;
-    public static TheoryData<string> NotPeople => SessionRollbackTests.NotPeople;
+    // Rollback accepts the loopback owner's browser token; access levels and approvals do not, since
+    // any local process can mint it tokenless on loopback.
+    private static readonly string[] LoopbackOwner = ["loopback browser", "loopback nova through the kernel"];
+    public static TheoryData<string> People => Callers(SessionRollbackTests.PeopleCallers.Except(LoopbackOwner));
+    public static TheoryData<string> NotPeople => Callers(SessionRollbackTests.NotPeopleCallers.Concat(LoopbackOwner));
+
+    private static TheoryData<string> Callers(IEnumerable<string> callers)
+    {
+        var data = new TheoryData<string>();
+        foreach (var caller in callers) data.Add(caller);
+        return data;
+    }
 
     // ---- access-level ----
 
@@ -500,7 +510,7 @@ public sealed class SessionAccessEndpointTests
             Provider.State = new SessionAccessState(level, cap);
             Policy = new StaticSessionAccessPolicySource(new SessionAccessPolicy
             {
-                FullAccess = new FullAccessAcknowledgement(fullEnabled, SessionAccessPolicy.CurrentFullAccessTextVersion),
+                FullAccess = new FullAccessAcknowledgement(fullEnabled, 1),
             });
             Registry.Register("ai-session", new CapabilityDefinition { Slug = "ai-session", DisplayName = "AI Session" },
                 new CapabilityConfig(), new Dictionary<string, IBackendProvider> { ["test"] = proxy }, "test");

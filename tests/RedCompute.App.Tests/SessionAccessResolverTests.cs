@@ -19,7 +19,7 @@ public sealed class SessionAccessResolverTests
     private static readonly string?[] LevelsOrNone = [null, Plan, Ask, Auto, Full];
 
     private static SessionAccessPolicy Policy(string? defaultLevel = null, bool full = false,
-        Dictionary<string, string>? agents = null, int textVersion = SessionAccessPolicy.CurrentFullAccessTextVersion)
+        Dictionary<string, string>? agents = null, int textVersion = 1)
         => new()
         {
             DefaultLevel = defaultLevel,
@@ -148,10 +148,10 @@ public sealed class SessionAccessResolverTests
 
     [Theory]
     [InlineData(true, 1, true)]
-    [InlineData(true, 0, false)]
-    [InlineData(true, 2, false)]   // acknowledged against another text: does not count
-    [InlineData(false, 1, false)]
-    public void Full_counts_only_for_the_current_acknowledgement_text(bool enabled, int textVersion, bool counts)
+    [InlineData(true, 2, true)]    // RedLeaf's enabled is already effective: no text-version check here
+    [InlineData(true, 0, true)]
+    [InlineData(false, 1, false)]  // accepted on an older text: RedLeaf reports enabled false
+    public void Full_is_redleafs_effective_enabled_value_as_is(bool enabled, int textVersion, bool counts)
         => Assert.Equal(counts, Policy(full: enabled, textVersion: textVersion).FullAccessEnabled);
 
     [Fact]
