@@ -28,7 +28,10 @@ public static class SessionAccessEndpoints
             + "Raising needs a person (an Agent's or automation's token gets 403 raise_requires_person), Full enabled in RedLeaf "
             + "(403 full_access_not_enabled) and stays at or below the session's maxAccessLevel (403 above_session_cap). "
             + "Entering plan remembers the level it left; omit level (or send null) to leave plan for that level. "
-            + "A live session changes at once; a stopped one launches at the new level. Unknown levels are 422.",
+            + "A live session changes at once and is recorded at the new level only once its harness confirmed the switch; when the harness "
+            + "refuses (or does not answer in time) the session keeps its level and the call is 409 provider_refused_level, whose message "
+            + "says so in plain words with the harness's own reason, and whose accessLevel is the level kept. "
+            + "A stopped session launches at the new level. Unknown levels are 422.",
             async (HttpContext ctx, string id) =>
         {
             var (provider, info, error) = Find(ctx, registry, jobTracker, id);
@@ -61,7 +64,7 @@ public static class SessionAccessEndpoints
                 properties = new
                 {
                     accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray() },
-                    ok = new { type = "boolean", description = "False when the provider could not apply it; accessLevel is then the unchanged level" },
+                    ok = new { type = "boolean", description = "True when the level is in force. A harness refusal is 409 provider_refused_level instead" },
                 },
             });
 
@@ -153,6 +156,9 @@ public static class SessionAccessEndpoints
     {
         var result = await access.ChangeAsync(provider, info, level,
             ComputeResourceAccess.IsPersonPresent(ctx), ctx.RequestAborted);
+        if (result.Error == SessionAccessService.ProviderRefusedLevel)
+            return Results.Json(new { error = result.Error, message = result.Message, ok = false, accessLevel = result.AccessLevel },
+                statusCode: result.Status);
         if (result.Error is not null)
             return Error(result.Status, result.Error, result.Message ?? result.Error);
         if (legacyMode is null)

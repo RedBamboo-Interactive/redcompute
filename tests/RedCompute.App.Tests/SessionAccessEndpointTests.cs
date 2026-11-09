@@ -286,6 +286,71 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(422, missing.Status);
     }
 
+    // ---- a harness that will not switch ----
+
+    private const string CliRefusal = "Claude Code said: \"Cannot set permission mode to bypassPermissions because the session "
+        + "was not launched with --dangerously-skip-permissions\"";
+
+    [Fact]
+    public async Task A_refused_raise_keeps_the_level_and_says_why_in_plain_words()
+    {
+        var f = new Fixture(Ask, fullEnabled: true);
+        f.Provider.Refusal = CliRefusal;
+
+        var (status, body) = await f.PostAsync("access-level", new { level = Full }, "code browser");
+
+        Assert.Equal(409, status);
+        Assert.Equal(SessionAccessService.ProviderRefusedLevel, body.GetProperty("error").GetString());
+        Assert.False(body.GetProperty("ok").GetBoolean());
+        Assert.Equal(Ask, body.GetProperty("accessLevel").GetString());
+        Assert.Equal("Test didn't switch this session to Full, so it stays at Ask. " + CliRefusal,
+            body.GetProperty("message").GetString());
+        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+        Assert.Equal(0, f.Provider.Sets);
+    }
+
+    [Fact]
+    public async Task The_permission_mode_alias_reports_a_refusal_the_same_way()
+    {
+        var f = new Fixture(Ask, fullEnabled: true);
+        f.Provider.Refusal = CliRefusal;
+
+        var (status, body) = await f.PostAsync("permission-mode", new { mode = "bypassPermissions" }, "nova through the kernel");
+
+        Assert.Equal(409, status);
+        Assert.Equal(SessionAccessService.ProviderRefusedLevel, body.GetProperty("error").GetString());
+        Assert.Contains(CliRefusal, body.GetProperty("message").GetString());
+        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task A_confirmed_raise_persists()
+    {
+        var f = new Fixture(Ask, fullEnabled: true);
+
+        var (status, body) = await f.PostAsync("access-level", new { level = Full }, "code browser");
+
+        Assert.Equal(200, status);
+        Assert.True(body.GetProperty("ok").GetBoolean());
+        Assert.Equal(Full, f.Provider.State.AccessLevel);
+        Assert.Equal(1, f.Provider.Sets);
+    }
+
+    [Fact]
+    public async Task Policy_demotion_a_live_harness_refuses_stops_the_session_and_persists_the_lower_level()
+    {
+        var f = new Fixture(Full, fullEnabled: true);
+        f.Policy.Policy = f.Policy.Policy with { FullAccess = new FullAccessAcknowledgement(false, 1) };
+        f.Provider.Refusal = "Claude Code did not confirm the change within 10 seconds.";
+
+        var (status, body) = await f.PostPolicyChangedAsync("infrastructure service token");
+
+        Assert.Equal(200, status);
+        Assert.Equal(["session-1"], body.GetProperty("demotedSessions").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(1, f.Provider.Stops);
+        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+    }
+
     // ---- access-policy/changed ----
 
     [Theory]
@@ -625,6 +690,9 @@ public sealed class SessionAccessEndpointTests
         internal SessionAccessState State = new(SessionAccessLevels.Ask);
         internal IReadOnlyList<string> Supported = SessionAccessLevels.All;
         internal int Sets;
+        // While set, a live switch is refused with this reason, as Claude refuses set_permission_mode.
+        internal string? Refusal;
+        internal int Stops;
         internal readonly List<PendingSessionQuestion> Pending = [];
         internal readonly List<SessionQuestionAnswer> Answers = [];
         internal bool RejectDecision;
@@ -658,6 +726,16 @@ public sealed class SessionAccessEndpointTests
                     Sets++;
                     State = (SessionAccessState)args![1]!;
                     return true;
+                case nameof(ISessionProvider.ApplyAccessStateAsync):
+                    if (Refusal is { } why) return Task.FromResult(SessionAccessApplyResult.Refused(why));
+                    Sets++;
+                    State = (SessionAccessState)args![1]!;
+                    return Task.FromResult(SessionAccessApplyResult.Done);
+                case nameof(ISessionProvider.StopSessionAsync):
+                    // A stopped session has no harness to refuse: its level is just persisted.
+                    Stops++;
+                    Refusal = null;
+                    return Task.CompletedTask;
                 case nameof(ISessionProvider.GetBackgroundTasks): return (IReadOnlyList<BackgroundTaskInfo>)[];
                 case nameof(ISessionProvider.GetPendingQuestions): return (IReadOnlyList<PendingSessionQuestion>)[.. Pending];
                 case nameof(ISessionProvider.SubmitQuestionAnswer):

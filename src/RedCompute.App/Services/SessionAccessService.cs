@@ -69,8 +69,14 @@ public sealed class SessionAccessService(
         if (change.State is null)
             return SessionAccessChangeResult.Refused(change.Error == SessionAccessResolver.InvalidAccessLevel ? 422 : 403,
                 change.Error!, change.Message!);
-        if (change.State != provider.GetAccessState(info.Id) && !provider.SetAccessState(info.Id, change.State))
-            return new SessionAccessChangeResult(state.AccessLevel, false, 200);
+        if (change.State != provider.GetAccessState(info.Id)
+            && await provider.ApplyAccessStateAsync(info.Id, change.State, ct) is { Applied: false } refused)
+        {
+            log($"[Access] Session {info.Provider}/{info.Id} stays at {state.AccessLevel}: {provider.ProviderDisplayName} did not switch to "
+                + $"{change.State.AccessLevel}" + (refused.Reason is { } why ? $" ({why})" : ""), info.JobId);
+            return SessionAccessChangeResult.Refused(409, ProviderRefusedLevel,
+                RefusedMessage(provider, state.AccessLevel, change.State.AccessLevel, refused.Reason), state.AccessLevel);
+        }
         if (change.IsChange)
             log($"[Access] Session {info.Provider}/{info.Id} access level {state.AccessLevel} -> {change.State.AccessLevel}"
                 + (personPresent ? " (person)" : ""), info.JobId);
@@ -99,7 +105,7 @@ public sealed class SessionAccessService(
             };
         next = SessionAccessResolver.DemoteIfFullRevoked(next, agent, current, supported) ?? next;
         if (next == state) return;
-        if (provider.SetAccessState(sessionId, next))
+        if ((await provider.ApplyAccessStateAsync(sessionId, next, ct)).Applied)
             log($"[Access] Session {provider.ProviderId}/{sessionId} launches at {next.AccessLevel}"
                 + (state.AccessLevel is null ? " (resolved from policy; it predates access levels)" : " (Full is no longer enabled)"),
                 info?.JobId);
@@ -132,13 +138,51 @@ public sealed class SessionAccessService(
                 if (provider.GetAccessState(session.Id) is not { } state) continue;
                 if (SessionAccessResolver.DemoteIfFullRevoked(state, AgentEntityId(session), current, supported) is not { } next)
                     continue;
-                if (!provider.SetAccessState(session.Id, next)) continue;
+                if (!await DemoteAsync(provider, session, next, ct)) continue;
                 demoted.Add(session.Id);
                 log($"[Access] Full access is no longer enabled; session {provider.ProviderId}/{session.Id} demoted to {next.AccessLevel}", session.JobId);
             }
         }
         return demoted;
     }
+
+    /// <summary>
+    /// Demotes one session. A live session whose harness will not switch down is stopped, so Full
+    /// stops running at once, and its lower level is persisted for its next launch.
+    /// </summary>
+    private async Task<bool> DemoteAsync(ISessionProvider provider, UnifiedSessionInfo session, SessionAccessState next, CancellationToken ct)
+    {
+        var applied = await provider.ApplyAccessStateAsync(session.Id, next, ct);
+        if (applied.Applied) return true;
+        if (applied.Reason is null) return false;
+        log($"[Access] Full access is no longer enabled and {provider.ProviderDisplayName} did not lower session "
+            + $"{provider.ProviderId}/{session.Id} ({applied.Reason}); stopping it so it relaunches at {next.AccessLevel}", session.JobId);
+        try { await provider.StopSessionAsync(session.Id); }
+        catch (Exception ex)
+        {
+            log($"[Access] Could not stop {provider.ProviderId}/{session.Id} to demote it: {ex.Message}", session.JobId);
+            return false;
+        }
+        return (await provider.ApplyAccessStateAsync(session.Id, next, ct)).Applied;
+    }
+
+    public const string ProviderRefusedLevel = "provider_refused_level";
+
+    /// <summary>What the Info modal shows when the harness would not switch: plain words, then its own.</summary>
+    internal static string RefusedMessage(ISessionProvider provider, string? from, string? to, string? reason)
+    {
+        var message = $"{provider.ProviderDisplayName} didn't switch this session to {Title(to)}, so it stays at {Title(from)}.";
+        return reason is null ? message : $"{message} {reason}";
+    }
+
+    private static string Title(string? level) => level switch
+    {
+        SessionAccessLevels.Plan => "Plan",
+        SessionAccessLevels.Ask => "Ask",
+        SessionAccessLevels.Auto => "Auto",
+        SessionAccessLevels.Full => "Full",
+        _ => level ?? "its current level",
+    };
 
     /// <summary>The Agent a session belongs to, from its job's verified creation identity.</summary>
     public string? AgentEntityId(UnifiedSessionInfo info)
@@ -189,5 +233,7 @@ public sealed record SessionAccessStart(SessionAccessState? State, string? Error
 
 public sealed record SessionAccessChangeResult(string? AccessLevel, bool Ok, int Status, string? Error = null, string? Message = null)
 {
-    public static SessionAccessChangeResult Refused(int status, string error, string message) => new(null, false, status, error, message);
+    /// <param name="accessLevel">The level the session keeps, when known.</param>
+    public static SessionAccessChangeResult Refused(int status, string error, string message, string? accessLevel = null)
+        => new(accessLevel, false, status, error, message);
 }

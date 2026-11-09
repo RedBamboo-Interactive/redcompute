@@ -30,6 +30,11 @@ public sealed class ClaudeAccessLevelTests : IDisposable
     private readonly List<ClaudeStreamEvent> _live = [];
     private readonly ClaudeBackgroundWorkTests.RecordingStore _store = new();
     private readonly ClaudeSessionService _service;
+    // How the fake CLI answers set_permission_mode: a null error is success. Switched off, it never answers.
+    private Func<string, string?> _cliModeError = _ => null;
+    private bool _cliAnswersModes = true;
+    private const string BypassNotLaunched =
+        "Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions";
 
     public ClaudeAccessLevelTests()
     {
@@ -42,19 +47,23 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         _service.LaunchSessionProcess = startInfo =>
         {
             lock (_launches) _launches.Add(startInfo);
-            var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = TestProcesses.StdinSink,
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            })!;
+            // A sink that never echoes: an echo would hand our own set_permission_mode back as an
+            // inbound request, and RedCompute's refusal of it would answer the pending switch.
+            var sink = TestProcesses.AppendStdinTo(Path.Combine(_root, "stdin.jsonl"), "CLAUDE_ACCESS_STDIN");
+            sink.CreateNoWindow = true;
+            sink.UseShellExecute = false;
+            sink.RedirectStandardInput = true;
+            sink.RedirectStandardOutput = true;
+            sink.RedirectStandardError = true;
+            var process = Process.Start(sink)!;
             lock (_processes) _processes.Add(process);
             return process;
         };
-        _service.ControlLineWritten = (_, json) => _written.Enqueue(json);
+        _service.ControlLineWritten = (id, json) =>
+        {
+            _written.Enqueue(json);
+            AnswerPermissionMode(id, json);
+        };
         _service.StreamEvent += (_, e) => { lock (_live) _live.Add(e); };
     }
 
@@ -70,6 +79,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         var id = Start(new SessionAccessState(level, Full, Unattended: false));
 
         Assert.Equal(mode, PermissionModeArg(_launches[^1]));
+        Assert.Contains(AllowBypass, _launches[^1].ArgumentList);
         Assert.Equal(level, _service.GetAccessState(id)!.AccessLevel);
         Assert.Equal(level, _store.FindSession(id)!.AccessLevel);
         Assert.Equal(Full, _store.FindSession(id)!.MaxAccessLevel);
@@ -98,6 +108,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
 
         var launch = Assert.Single(_launches);
         Assert.Equal(mode, PermissionModeArg(launch));
+        Assert.Contains(AllowBypass, launch.ArgumentList);
         Assert.Equal("claude-conversation", ArgAfter(launch, "--resume"));
     }
 
@@ -117,12 +128,15 @@ public sealed class ClaudeAccessLevelTests : IDisposable
             .Invoke(_service, [Path.Combine(_root, "claude.exe"), record, target])!;
 
         Assert.Equal(mode, PermissionModeArg(startInfo));
+        Assert.Contains(AllowBypass, startInfo.ArgumentList);
         Assert.Equal("uuid-kept", ArgAfter(startInfo, "--resume-session-at"));
     }
 
     [Theory]
     [InlineData(Auto, "auto")]
     [InlineData(Plan, "plan")]
+    [InlineData(Ask, "acceptEdits")]
+    [InlineData(Full, "bypassPermissions")]
     public async Task Forced_interrupt_recovery_relaunches_at_the_level(string level, string mode)
     {
         var id = Start(new SessionAccessState(level));
@@ -138,6 +152,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
 
         Assert.Equal(2, _launches.Count);
         Assert.Equal(mode, PermissionModeArg(_launches[1]));
+        Assert.Contains(AllowBypass, _launches[1].ArgumentList);
         Assert.Equal(level, _service.GetAccessState(id)!.AccessLevel);
     }
 
@@ -175,6 +190,117 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Equal("auto", change["request"]!["mode"]!.GetValue<string>());
         Assert.Equal(Auto, _store.FindSession(id)!.AccessLevel);
         Assert.True(_store.FindSession(id)!.Unattended);
+    }
+
+    // The 2026-11-09 incident: raised ask -> full while live, the CLI refused, RedCompute recorded
+    // full anyway, then retried at every turn's init while every tool call kept parking.
+    [Fact]
+    public async Task A_refused_live_raise_keeps_the_level_and_returns_the_cli_reason()
+    {
+        var id = Start(new SessionAccessState(Ask));
+        _cliModeError = mode => mode == "bypassPermissions" ? BypassNotLaunched : null;
+
+        var result = await _service.ApplyAccessStateAsync(id, new SessionAccessState(Full));
+
+        Assert.False(result.Applied);
+        Assert.Equal($"Claude Code said: \"{BypassNotLaunched}\"", result.Reason);
+        Assert.Equal(Ask, _service.GetAccessState(id)!.AccessLevel);
+        Assert.Equal(Ask, _store.FindSession(id)!.AccessLevel);
+        Assert.Equal("acceptEdits", _service.GetSession(id).Info!.PermissionMode);
+    }
+
+    [Fact]
+    public async Task A_live_raise_is_recorded_only_once_the_cli_confirms_it()
+    {
+        var id = Start(new SessionAccessState(Ask));
+        _cliAnswersModes = false;
+        _written.Clear();
+
+        var pending = _service.ApplyAccessStateAsync(id, new SessionAccessState(Full));
+        var request = Assert.Single(Written("set_permission_mode"));
+        Assert.Equal("bypassPermissions", request["request"]!["mode"]!.GetValue<string>());
+        Assert.False(pending.IsCompleted);
+        Assert.Equal(Ask, _store.FindSession(id)!.AccessLevel);
+
+        Assert.True(_service.ProcessOutputLine(id, ModeResponse(request["request_id"]!.GetValue<string>(), "bypassPermissions", null)));
+        var result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(result.Applied);
+        Assert.Equal(Full, _service.GetAccessState(id)!.AccessLevel);
+        Assert.Equal(Full, _store.FindSession(id)!.AccessLevel);
+        Assert.Equal("bypassPermissions", _service.GetSession(id).Info!.PermissionMode);
+    }
+
+    [Fact]
+    public async Task An_unanswered_switch_counts_as_refused_and_a_late_success_is_put_back()
+    {
+        var id = Start(new SessionAccessState(Ask));
+        _service.PermissionModeConfirmTimeout = TimeSpan.FromMilliseconds(100);
+        _cliAnswersModes = false;
+        _written.Clear();
+
+        var result = await _service.ApplyAccessStateAsync(id, new SessionAccessState(Full));
+
+        Assert.False(result.Applied);
+        Assert.Contains("did not confirm", result.Reason);
+        Assert.Equal(Ask, _store.FindSession(id)!.AccessLevel);
+
+        _cliAnswersModes = true;
+        var late = Assert.Single(Written("set_permission_mode"))["request_id"]!.GetValue<string>();
+        Assert.True(_service.ProcessOutputLine(id, ModeResponse(late, "bypassPermissions", null)));
+        await WaitUntil(() => Written("set_permission_mode").Count == 2);
+        Assert.Equal("acceptEdits", Written("set_permission_mode")[1]["request"]!["mode"]!.GetValue<string>());
+        Assert.Equal(Ask, _service.GetAccessState(id)!.AccessLevel);
+    }
+
+    [Fact]
+    public void A_refused_reconcile_tries_once_then_records_the_level_the_cli_really_runs_at()
+    {
+        // Persisted full while the CLI runs acceptEdits: the incident's state after its refused raise.
+        var id = Start(new SessionAccessState(Full));
+        _cliModeError = mode => mode == "bypassPermissions" ? BypassNotLaunched : null;
+        _written.Clear();
+
+        for (var turn = 0; turn < 3; turn++)
+            Assert.True(_service.ProcessOutputLine(id,
+                """{"type":"system","subtype":"init","session_id":"claude-1","permissionMode":"acceptEdits","tools":[]}"""));
+
+        var attempt = Assert.Single(Written("set_permission_mode"));
+        Assert.Equal("bypassPermissions", attempt["request"]!["mode"]!.GetValue<string>());
+        Assert.Equal(Ask, _service.GetAccessState(id)!.AccessLevel);
+        Assert.Equal(Ask, _store.FindSession(id)!.AccessLevel);
+        Assert.Equal("acceptEdits", _service.GetSession(id).Info!.PermissionMode);
+    }
+
+    [Fact]
+    public void A_refused_reconcile_never_raises_the_level_to_a_higher_reported_mode()
+    {
+        var id = Start(new SessionAccessState(Ask));
+        _cliModeError = _ => "no";
+        _written.Clear();
+
+        for (var turn = 0; turn < 3; turn++)
+            Assert.True(_service.ProcessOutputLine(id,
+                """{"type":"system","subtype":"init","session_id":"claude-1","permissionMode":"bypassPermissions","tools":[]}"""));
+
+        Assert.Single(Written("set_permission_mode"));
+        Assert.Equal(Ask, _service.GetAccessState(id)!.AccessLevel);
+        Assert.Equal(Ask, _store.FindSession(id)!.AccessLevel);
+    }
+
+    [Fact]
+    public void A_refused_plan_exit_stays_in_plan()
+    {
+        var id = Start(new SessionAccessState(Plan, AccessLevelBeforePlan: Full));
+        _cliModeError = mode => mode == "bypassPermissions" ? BypassNotLaunched : null;
+        Assert.True(_service.ProcessOutputLine(id, CanUseTool("exit", "ExitPlanMode", new { plan = "1. do it" })));
+
+        Assert.Equal(QuestionAnswerResult.Allowed, _service.SubmitQuestionAnswer(id,
+            new SessionQuestionAnswer { RequestId = "exit", Decision = SessionPermissionDecisions.AllowOnce }));
+
+        Assert.Single(Written("set_permission_mode"));
+        Assert.Equal(new SessionAccessState(Plan, AccessLevelBeforePlan: Full), _service.GetAccessState(id));
+        Assert.Equal(Plan, _store.FindSession(id)!.AccessLevel);
     }
 
     [Fact]
@@ -386,6 +512,8 @@ public sealed class ClaudeAccessLevelTests : IDisposable
 
         Assert.True(ContainsSequence(args, expected), string.Join(' ', args));
         Assert.Equal(level == Full, args.Contains("--dangerously-skip-permissions"));
+        // A one-shot never changes level mid-run: it launches at its level and needs no opt-in.
+        Assert.DoesNotContain(AllowBypass, args);
         Assert.Equal(allowed, args.Contains("--allowed-tools") ? args[args.IndexOf("--allowed-tools") + 1] : null);
     }
 
@@ -414,6 +542,31 @@ public sealed class ClaudeAccessLevelTests : IDisposable
     }
 
     // ---- helpers ----
+
+    private const string AllowBypass = "--allow-dangerously-skip-permissions";
+
+    /// <summary>The fake CLI's answer to set_permission_mode, in the shape CLI 2.1.318 sends it.</summary>
+    private void AnswerPermissionMode(string sessionId, string json)
+    {
+        if (!_cliAnswersModes) return;
+        var node = JsonNode.Parse(json)!;
+        if (node["type"]?.GetValue<string>() != "control_request"
+            || node["request"]?["subtype"]?.GetValue<string>() != "set_permission_mode") return;
+        var mode = node["request"]!["mode"]!.GetValue<string>();
+        _service.ProcessOutputLine(sessionId, ModeResponse(node["request_id"]!.GetValue<string>(), mode, _cliModeError(mode)));
+    }
+
+    private static string ModeResponse(string requestId, string mode, string? error) => error is null
+        ? JsonSerializer.Serialize(new
+        {
+            type = "control_response",
+            response = new { subtype = "success", request_id = requestId, response = new { mode } },
+        })
+        : JsonSerializer.Serialize(new
+        {
+            type = "control_response",
+            response = new { subtype = "error", request_id = requestId, error, error_code = "bypass_not_launched" },
+        });
 
     private string Start(SessionAccessState? access)
     {

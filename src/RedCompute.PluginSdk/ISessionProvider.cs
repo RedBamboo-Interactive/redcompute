@@ -240,6 +240,16 @@ public interface ISessionProvider
     /// </summary>
     bool SetAccessState(string sessionId, SessionAccessState state) => false;
 
+    /// <summary>
+    /// <see cref="SetAccessState"/> for callers that need to know whether the harness really
+    /// switched. A provider whose live switch is acknowledged asynchronously (Claude's
+    /// <c>set_permission_mode</c> control_response) overrides this, persists the new state only
+    /// once the harness confirmed it, and on refusal keeps the previous state and returns the
+    /// harness's reason. RedCompute's access-level routes, plan exits and policy demotions use this.
+    /// </summary>
+    Task<SessionAccessApplyResult> ApplyAccessStateAsync(string sessionId, SessionAccessState state, CancellationToken ct = default)
+        => Task.FromResult(SetAccessState(sessionId, state) ? SessionAccessApplyResult.Done : SessionAccessApplyResult.NotApplied);
+
     // Querying
     List<UnifiedSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false);
     (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSession(string sessionId);

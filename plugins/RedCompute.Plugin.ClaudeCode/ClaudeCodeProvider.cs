@@ -253,6 +253,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public IReadOnlyList<string> SupportedAccessLevels => ClaudeSessionService.SupportedAccessLevels;
     public SessionAccessState? GetAccessState(string sessionId) => _claude.GetAccessState(sessionId);
     public bool SetAccessState(string sessionId, SessionAccessState state) => _claude.SetAccessState(sessionId, state);
+    public Task<SessionAccessApplyResult> ApplyAccessStateAsync(string sessionId, SessionAccessState state, CancellationToken ct = default)
+        => _claude.ApplyAccessStateAsync(sessionId, state, ct);
 
     // --- ISessionProvider: Querying ---
 

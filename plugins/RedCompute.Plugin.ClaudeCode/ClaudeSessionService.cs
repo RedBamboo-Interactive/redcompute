@@ -2873,19 +2873,16 @@ public partial class ClaudeSessionService
                     && model.ValueKind == JsonValueKind.String
                     && !string.IsNullOrWhiteSpace(model.GetString()))
                     session.Info.Model = model.GetString();
-                // The CLI reports its mode; it describes the process, it never sets the level. A
-                // mismatch (an account without auto, a mode the CLI changed itself) is logged.
+                // The CLI reports its mode; it describes the process. A mismatch with the level (an
+                // account without auto, a mode the CLI changed itself) gets one set_permission_mode
+                // attempt; see ReconcilePermissionModeAsync. Not awaited: its answer comes through
+                // this very reader.
                 if (root.TryGetProperty("permissionMode", out var pm) && pm.ValueKind == JsonValueKind.String
                     && pm.GetString() is { Length: > 0 } reportedMode)
                 {
-                    var expectedMode = PermissionModeFor(session.Info.Access.AccessLevel);
                     session.Info.PermissionMode = reportedMode;
-                    if (reportedMode != expectedMode)
-                    {
-                        _log($"[Claude] Session {session.Info.Id} reports permission mode '{reportedMode}' at access level " +
-                             $"'{session.Info.Access.AccessLevel ?? "unset"}'; setting '{expectedMode}' again", null);
-                        if (WritePermissionMode(session, expectedMode)) session.Info.PermissionMode = expectedMode;
-                    }
+                    if (reportedMode != PermissionModeFor(session.Info.Access.AccessLevel))
+                        _ = ReconcilePermissionModeAsync(session, reportedMode);
                 }
 
                 // init opens every CLI turn. With no user input waiting, a turn after a background
@@ -3128,7 +3125,7 @@ public partial class ClaudeSessionService
     {
         foreach (var pending in session.PendingControlRequests.Keys)
             if (session.PendingControlRequests.TryRemove(pending, out var response))
-                response.TrySetResult("The Claude process ended");
+                response.TrySetResult(ProcessEndedControlError);
 
         var lost = session.BackgroundTasks.MarkAllLost(DateTimeOffset.UtcNow);
         foreach (var task in lost)
@@ -3526,7 +3523,9 @@ public partial class ClaudeSessionService
                 });
 
             RespondPermissionAllow(session, pending.RequestId, pending.Input, updatedPermissions);
-            if (afterPlan is not null) SetAccessState(sessionId, afterPlan);
+            // Recorded only once the CLI confirms the mode; awaited off this call because the
+            // confirmation can take a moment and the approval itself is already answered.
+            if (afterPlan is not null) _ = LeavePlanAsync(sessionId, afterPlan);
             EmitPermissionResolved(session, pending.RequestId, decision);
             SessionUpdated?.Invoke(session.Info);
             _log($"[Claude] Permission {pending.RequestId} for '{pending.ToolName}' {decision} on session {sessionId}", null);
@@ -3556,6 +3555,23 @@ public partial class ClaudeSessionService
     private const string ExitPlanModeTool = "ExitPlanMode";
 
     /// <summary>
+    /// An approved ExitPlanMode: the allow already carried <c>setMode</c>; this confirms the mode
+    /// with <c>set_permission_mode</c> and records the level only when the CLI accepted it. A
+    /// refusal keeps the session at plan (logged by <see cref="ApplyAccessStateAsync"/>).
+    /// </summary>
+    private async Task LeavePlanAsync(string sessionId, Core.Sessions.SessionAccessState afterPlan)
+    {
+        try
+        {
+            await ApplyAccessStateAsync(sessionId, afterPlan);
+        }
+        catch (Exception ex)
+        {
+            _log($"[Claude] Session {sessionId} could not leave plan for {afterPlan.AccessLevel}: {ex.Message}", null);
+        }
+    }
+
+    /// <summary>
     /// The level the person approved ExitPlanMode out of plan into, or any other live change.
     /// </summary>
     public Core.Sessions.SessionAccessState? GetAccessState(string sessionId)
@@ -3565,51 +3581,172 @@ public partial class ClaudeSessionService
     }
 
     /// <summary>
-    /// Persists an access state already authorized by RedCompute. A live session switches at once
-    /// with <c>set_permission_mode</c>; a stopped one launches at it next time.
+    /// Persists an access state already authorized by RedCompute. Blocks until the CLI confirmed a
+    /// live switch; prefer <see cref="ApplyAccessStateAsync"/>. Never call it on a session's stdout
+    /// reader: the confirmation arrives through that reader.
     /// </summary>
     public bool SetAccessState(string sessionId, Core.Sessions.SessionAccessState state)
+        => ApplyAccessStateAsync(sessionId, state).GetAwaiter().GetResult().Applied;
+
+    /// <summary>
+    /// Persists an access state already authorized by RedCompute. A live session switches with
+    /// <c>set_permission_mode</c> and is recorded at the new level only once the CLI's
+    /// control_response confirms it; a refusal (or no answer in time) keeps the level it had and
+    /// returns the CLI's reason. A stopped session is persisted and launches at it next time.
+    /// </summary>
+    public async Task<Core.Sessions.SessionAccessApplyResult> ApplyAccessStateAsync(string sessionId,
+        Core.Sessions.SessionAccessState state, CancellationToken ct = default)
     {
         if (_sessions.TryGetValue(sessionId, out var session))
         {
-            var mode = PermissionModeFor(state.AccessLevel);
-            if (mode != session.Info.PermissionMode && !WritePermissionMode(session, mode))
-                return false;
-            session.Info.Access = state;
-            session.Info.PermissionMode = mode;
-            PersistSessionRecord(session.Info);
-            SessionUpdated?.Invoke(session.Info);
-            _log($"[Claude] Session {sessionId} access level {state.AccessLevel} (permission mode {mode})", null);
-            return true;
+            await session.AccessGate.WaitAsync(ct);
+            try
+            {
+                var mode = PermissionModeFor(state.AccessLevel);
+                if (mode != session.Info.PermissionMode
+                    && await SendPermissionModeAsync(session, mode) is { } refusal)
+                {
+                    _log($"[Claude] Session {sessionId} stays at access level {session.Info.Access.AccessLevel ?? "unset"}: " +
+                         $"the CLI did not switch to '{mode}' for {state.AccessLevel} ({refusal})", null);
+                    return Core.Sessions.SessionAccessApplyResult.Refused(refusal);
+                }
+                session.Info.Access = state;
+                session.Info.PermissionMode = mode;
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                _log($"[Claude] Session {sessionId} access level {state.AccessLevel} (permission mode {mode})", null);
+                return Core.Sessions.SessionAccessApplyResult.Done;
+            }
+            finally
+            {
+                session.AccessGate.Release();
+            }
         }
 
         var record = _sessionStore.FindSession(sessionId);
-        if (record is null) return false;
+        if (record is null) return Core.Sessions.SessionAccessApplyResult.NotApplied;
         record.AccessLevel = state.AccessLevel;
         record.MaxAccessLevel = state.MaxAccessLevel;
         record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
         record.Unattended = state.Unattended;
         _sessionStore.SaveSession(record);
-        return true;
+        return Core.Sessions.SessionAccessApplyResult.Done;
     }
 
-    private bool WritePermissionMode(ManagedSession session, string mode)
+    /// <summary>
+    /// The CLI reported a mode that is not its level's. Sets the level's mode once per mismatch per
+    /// process, never again (each turn's init would otherwise retry a refusal forever). When the CLI
+    /// does not switch, the session is recorded at the level its real mode stands for, as long as
+    /// that is not higher than the level it held: a report can lower a level, never raise one.
+    /// </summary>
+    private async Task ReconcilePermissionModeAsync(ManagedSession session, string reportedMode)
     {
         try
         {
-            WriteControlLine(session, new
+            await session.AccessGate.WaitAsync(session.Cts.Token);
+        }
+        catch (OperationCanceledException) { return; }
+        try
+        {
+            var level = session.Info.Access.AccessLevel;
+            var expectedMode = PermissionModeFor(level);
+            // A confirmed change or a newer init got here first.
+            if (session.Info.PermissionMode != reportedMode || reportedMode == expectedMode) return;
+            if (!session.ReconciledModes.TryAdd($"{reportedMode}>{expectedMode}", 0)) return;
+
+            _log($"[Claude] Session {session.Info.Id} reports permission mode '{reportedMode}' at access level " +
+                 $"'{level ?? "unset"}'; setting '{expectedMode}' once", null);
+            var refusal = await SendPermissionModeAsync(session, expectedMode);
+            if (refusal is null)
             {
-                type = "control_request",
-                request_id = $"perm-{++session.ControlRequestCounter}",
-                request = new { subtype = "set_permission_mode", mode },
-            });
-            return true;
+                session.Info.PermissionMode = expectedMode;
+                PersistSessionRecord(session.Info);
+                SessionUpdated?.Invoke(session.Info);
+                return;
+            }
+
+            if (!Core.Sessions.SessionAccessLevels.TryFromPermissionMode(reportedMode, out var actual)
+                || level is null || Core.Sessions.SessionAccessLevels.IsAbove(actual, level))
+            {
+                _log($"[Claude] Session {session.Info.Id}: the CLI stays in '{reportedMode}' ({refusal}); " +
+                     $"its level stays '{level ?? "unset"}' because that mode is not a level at or below it", null);
+                return;
+            }
+            session.Info.Access = session.Info.Access with
+            {
+                AccessLevel = actual,
+                AccessLevelBeforePlan = actual == Core.Sessions.SessionAccessLevels.Plan
+                    ? (level == Core.Sessions.SessionAccessLevels.Plan ? session.Info.Access.AccessLevelBeforePlan : level)
+                    : null,
+            };
+            PersistSessionRecord(session.Info);
+            SessionUpdated?.Invoke(session.Info);
+            _log($"[Claude] Session {session.Info.Id}: the CLI stays in '{reportedMode}' ({refusal}); " +
+                 $"access level recorded as {actual} (was {level}) to match it", null);
         }
         catch (Exception ex)
         {
-            _log($"[Claude] Failed to set permission mode for {session.Info.Id}: {ex.Message}", null);
-            return false;
+            _log($"[Claude] Session {session.Info.Id}: permission mode reconcile failed: {ex.Message}", null);
         }
+        finally
+        {
+            session.AccessGate.Release();
+        }
+    }
+
+    /// <summary>How long a live switch waits for the CLI's control_response before it counts as refused.</summary>
+    internal TimeSpan PermissionModeConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    private const string ProcessEndedControlError = "The Claude process ended";
+
+    /// <summary>
+    /// Writes <c>set_permission_mode</c> and waits for its control_response. Null when the CLI
+    /// switched; otherwise a sentence a person can read, quoting the CLI's own error. Never await
+    /// this on the session's stdout reader, which is what delivers the answer.
+    /// </summary>
+    private async Task<string?> SendPermissionModeAsync(ManagedSession session, string mode)
+    {
+        var requestId = $"perm-{++session.ControlRequestCounter}";
+        var response = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        session.PendingControlRequests[requestId] = response;
+        try
+        {
+            await WriteControlLineAsync(session, new
+            {
+                type = "control_request",
+                request_id = requestId,
+                request = new { subtype = "set_permission_mode", mode },
+            });
+        }
+        catch (Exception ex)
+        {
+            session.PendingControlRequests.TryRemove(requestId, out _);
+            _log($"[Claude] Failed to set permission mode for {session.Info.Id}: {ex.Message}", null);
+            return $"Claude Code could not be reached ({ex.Message}).";
+        }
+
+        if (await Task.WhenAny(response.Task, Task.Delay(PermissionModeConfirmTimeout)) != response.Task)
+        {
+            // Left registered: a late success means the CLI switched after we gave up and recorded
+            // nothing, so put it back to the mode of the level the session really holds.
+            _ = response.Task.ContinueWith(late =>
+            {
+                if (late.Result is not null || !_sessions.TryGetValue(session.Info.Id, out var current)
+                    || !ReferenceEquals(current, session)) return;
+                var expected = PermissionModeFor(session.Info.Access.AccessLevel);
+                if (expected == mode) return;
+                _log($"[Claude] Session {session.Info.Id}: the CLI switched to '{mode}' after the change timed out; restoring '{expected}'", null);
+                _ = SendPermissionModeAsync(session, expected);
+            }, TaskScheduler.Default);
+            return $"Claude Code did not confirm the change within {PermissionModeConfirmTimeout.TotalSeconds:0} seconds.";
+        }
+
+        return await response.Task switch
+        {
+            null => null,
+            ProcessEndedControlError => "The Claude process ended before it confirmed the change.",
+            var error => $"Claude Code said: \"{error}\"",
+        };
     }
 
     /// <summary>
@@ -4518,9 +4655,14 @@ public partial class ClaudeSessionService
         public TurnOrigin? WakeTurnOrigin { get; set; }
         public TurnOrigin? PendingLiveTurnOrigin { get; set; }
         public (string Uid, TurnOrigin Origin)? DurableTurnOrigin { get; set; }
-        // Outbound control requests awaiting their control_response (stop_task), keyed by request_id.
+        // Outbound control requests awaiting their control_response (stop_task, set_permission_mode), keyed by request_id.
         // The result is the CLI's error, or null on success.
         public ConcurrentDictionary<string, TaskCompletionSource<string?>> PendingControlRequests { get; } = new();
+        // Serializes access-level switches (route changes, plan exits, init reconciles) so each
+        // compares against the mode the last one left, and records only what the CLI confirmed.
+        public SemaphoreSlim AccessGate { get; } = new(1, 1);
+        // "reported>expected" mode mismatches this process already had its one reconcile attempt for.
+        public ConcurrentDictionary<string, byte> ReconciledModes { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, byte> LoggedSystemSubtypes { get; } = new(StringComparer.Ordinal);
         // The ContextCompaction tool_use awaiting its result, with the turn it belongs to.
         public (string ToolUseId, string? TurnUid)? OpenCompaction { get; set; }

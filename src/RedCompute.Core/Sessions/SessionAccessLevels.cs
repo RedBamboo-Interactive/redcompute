@@ -78,3 +78,21 @@ public sealed record SessionAccessState(
 {
     public static readonly SessionAccessState Legacy = new((string?)null);
 }
+
+/// <summary>
+/// What a provider did with an access state. A live session is only recorded at a new level once
+/// its harness confirmed the switch; otherwise the level it had stays, and <see cref="Reason"/>
+/// carries the harness's own explanation when there is one.
+/// </summary>
+/// <param name="Applied">The new state is in force and persisted.</param>
+/// <param name="Reason">Why not, in words a person can read (often the harness's own message); null when unknown.</param>
+public sealed record SessionAccessApplyResult(bool Applied, string? Reason = null)
+{
+    public static readonly SessionAccessApplyResult Done = new(true);
+
+    /// <summary>The session is unknown or this provider cannot change it; nothing more to say.</summary>
+    public static readonly SessionAccessApplyResult NotApplied = new(false);
+
+    /// <summary>The harness refused or did not confirm the switch; the session keeps its level.</summary>
+    public static SessionAccessApplyResult Refused(string reason) => new(false, reason);
+}
