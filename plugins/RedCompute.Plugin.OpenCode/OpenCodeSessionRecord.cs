@@ -39,4 +39,9 @@ public class OpenCodeSessionRecord
     public string? MaxAccessLevel { get; set; }
     public string? AccessLevelBeforePlan { get; set; }
     public bool Unattended { get; set; }
+    /// <summary>
+    /// <c>policy</c> or <c>explicit</c> (<see cref="RedCompute.Core.Sessions.SessionAccessLevelSources"/>). Null on
+    /// rows written before sources existed, which count as policy.
+    /// </summary>
+    public string? AccessLevelSource { get; set; }
 }

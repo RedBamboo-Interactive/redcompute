@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using RedCompute.App.Services;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
@@ -513,8 +514,9 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Equal("setMode", setMode!["type"]!.GetValue<string>());
         Assert.Equal("auto", setMode["mode"]!.GetValue<string>());
         Assert.Equal("session", setMode["destination"]!.GetValue<string>());
-        Assert.Equal(new SessionAccessState(Auto), _service.GetAccessState(id));
+        Assert.Equal(new SessionAccessState(Auto, AccessLevelSource: SessionAccessLevelSources.Explicit), _service.GetAccessState(id));
         Assert.Equal(Auto, _store.FindSession(id)!.AccessLevel);
+        Assert.Equal(SessionAccessLevelSources.Explicit, _store.FindSession(id)!.AccessLevelSource);
     }
 
     [Fact]
@@ -526,6 +528,125 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         var parked = Assert.Single(_service.GetPendingQuestions(id));
         Assert.Equal(PendingSessionQuestion.QuestionKind, parked.Kind);
         Assert.Null(parked.Permission);
+    }
+
+    // ---- following the policy ----
+
+    // The 2026-11-09 incident: sessions that predated the policy resolved to ask at the 14:35
+    // relaunch and stayed there after the owner set defaultLevel full at 15:30, so a delegated
+    // worker parked Bash asks nobody answered. A policy-sourced session now follows the default live.
+    [Fact]
+    public async Task A_legacy_ask_session_follows_a_later_full_default_live_and_its_parked_approval_stays()
+    {
+        var id = Start(new SessionAccessState(Ask));   // resolved from policy, persisted without a source
+        Assert.True(_service.ProcessOutputLine(id, CanUseTool("parked", "Bash", new { command = "dotnet test" })));
+        _written.Clear();
+
+        var changed = await Access(Full, id).PolicyChangedAsync();
+
+        Assert.Equal([id], changed.Followed);
+        Assert.Empty(changed.Demoted);
+        var change = Assert.Single(Written("set_permission_mode"));
+        Assert.Equal("bypassPermissions", change["request"]!["mode"]!.GetValue<string>());
+        Assert.Equal(Full, _service.GetAccessState(id)!.AccessLevel);
+        Assert.Equal(Full, _store.FindSession(id)!.AccessLevel);
+        Assert.Equal(SessionAccessLevelSources.Policy, _service.GetAccessState(id)!.Source);
+        // The next tool call runs in bypassPermissions; the ask already parked still waits for its answer.
+        Assert.Equal("bypassPermissions", _service.GetSession(id).Info!.PermissionMode);
+        Assert.Equal("parked", Assert.Single(_service.GetPendingQuestions(id)).RequestId);
+        Assert.DoesNotContain(_written, json => json.Contains("\"parked\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task An_explicit_session_keeps_its_level_when_the_default_changes()
+    {
+        var id = Start(new SessionAccessState(Ask, AccessLevelSource: SessionAccessLevelSources.Explicit));
+        _written.Clear();
+
+        var changed = await Access(Full, id).PolicyChangedAsync();
+
+        Assert.Empty(changed.Followed);
+        Assert.Empty(Written("set_permission_mode"));
+        Assert.Equal(Ask, _service.GetAccessState(id)!.AccessLevel);
+    }
+
+    // Nova's Discord sessions: unattended, capped at auto. A full default lifts them to auto only,
+    // and an ask is still denied at once rather than parked.
+    [Fact]
+    public async Task A_capped_unattended_session_follows_only_up_to_its_cap_and_still_never_parks()
+    {
+        var id = Start(new SessionAccessState(Ask, Auto, Unattended: true));
+        _written.Clear();
+
+        await Access(Full, id).PolicyChangedAsync();
+
+        Assert.Equal("auto", Assert.Single(Written("set_permission_mode"))["request"]!["mode"]!.GetValue<string>());
+        Assert.Equal(new SessionAccessState(Auto, Auto, Unattended: true), _service.GetAccessState(id));
+        Assert.True(_service.ProcessOutputLine(id, CanUseTool("denied", "Bash", new { command = "rm -rf build" })));
+        Assert.Empty(_service.GetPendingQuestions(id));
+    }
+
+    [Fact]
+    public async Task A_stopped_policy_session_relaunches_at_the_current_default_and_an_explicit_one_keeps_its_level()
+    {
+        _store.SaveSession(Record("followed", Ask));
+        var chosen = Record("chosen", Ask);
+        chosen.AccessLevelSource = SessionAccessLevelSources.Explicit;
+        _store.SaveSession(chosen);
+        var access = Access(Full, "followed", "chosen");
+
+        await access.EnsureLaunchStateAsync(_provider!, "followed");
+        await access.EnsureLaunchStateAsync(_provider!, "chosen");
+        Assert.True(_service.ResumeSession("followed", Provenance()) is not null, _service.LastStartError);
+
+        Assert.Equal("bypassPermissions", PermissionModeArg(Assert.Single(_launches)));
+        Assert.Equal(Full, _store.FindSession("followed")!.AccessLevel);
+        Assert.Null(_store.FindSession("followed")!.AccessLevelSource);
+        Assert.Equal(Ask, _store.FindSession("chosen")!.AccessLevel);
+    }
+
+    private ISessionProvider? _provider;
+
+    /// <summary>The access service over this Claude service, with RedLeaf's policy at <paramref name="defaultLevel"/> and Full enabled.</summary>
+    private SessionAccessService Access(string defaultLevel, params string[] sessions)
+    {
+        var proxy = DispatchProxy.Create<ISessionProvider, ClaudeProviderAdapter>();
+        var adapter = (ClaudeProviderAdapter)(object)proxy;
+        adapter.Service = _service;
+        adapter.Sessions = sessions;
+        _provider = proxy;
+        var policy = new StaticSessionAccessPolicySource(new SessionAccessPolicy
+        {
+            DefaultLevel = defaultLevel,
+            FullAccess = new FullAccessAcknowledgement(true, 1),
+        });
+        return new SessionAccessService(policy, () => [proxy], _ => null, (_, _) => { });
+    }
+
+    /// <summary>The slice of ClaudeCodeProvider the access service uses, straight onto the service under test.</summary>
+    public class ClaudeProviderAdapter : DispatchProxy
+    {
+        internal ClaudeSessionService Service = null!;
+        internal string[] Sessions = [];
+
+        protected override object? Invoke(MethodInfo? method, object?[]? args) => method!.Name switch
+        {
+            "get_ProviderId" => "claude-code",
+            "get_ProviderDisplayName" => "Claude Code",
+            "get_SupportedAccessLevels" => ClaudeSessionService.SupportedAccessLevels,
+            nameof(ISessionProvider.GetSessions) => Sessions.Select(Unified).ToList(),
+            nameof(ISessionProvider.GetSession) => ((UnifiedSessionInfo?)Unified((string)args![0]!), new List<UnifiedMessageRecord>()),
+            nameof(ISessionProvider.GetAccessState) => Service.GetAccessState((string)args![0]!),
+            nameof(ISessionProvider.ApplyAccessStateAsync) => Service.ApplyAccessStateAsync(
+                (string)args![0]!, (SessionAccessState)args[1]!, (CancellationToken)args[2]!),
+            nameof(ISessionProvider.StopSessionAsync) => Service.StopSession((string)args![0]!),
+            _ => throw new NotSupportedException(method.Name),
+        };
+
+        private static UnifiedSessionInfo Unified(string id) => new()
+        {
+            Id = id, Provider = "claude-code", ProjectName = "p", ProjectPath = "p", Status = SessionStatus.Idle,
+        };
     }
 
     // ---- one-shots ----

@@ -51,7 +51,7 @@ public class CodexDbContext : DbContext
                          "StopReason TEXT",
                          "StoppedAt TEXT",
                          "HistoryMode TEXT",
-                         "AccessLevel TEXT", "MaxAccessLevel TEXT", "AccessLevelBeforePlan TEXT",
+                         "AccessLevel TEXT", "MaxAccessLevel TEXT", "AccessLevelBeforePlan TEXT", "AccessLevelSource TEXT",
                          "Unattended INTEGER NOT NULL DEFAULT 0",
                      })
             {

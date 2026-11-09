@@ -281,6 +281,7 @@ public class OpenCodeSessionService
             MaxAccessLevel = record.MaxAccessLevel,
             AccessLevelBeforePlan = record.AccessLevelBeforePlan,
             Unattended = record.Unattended,
+            AccessLevelSource = record.AccessLevelSource,
         };
 
         var (session, error) = await SpawnAcpSession(
@@ -1248,7 +1249,8 @@ public class OpenCodeSessionService
     {
         if (_sessions.TryGetValue(sessionId, out var session)) return session.Info.Access;
         return _store.FindSession(sessionId) is { } record
-            ? new SessionAccessState(record.AccessLevel, record.MaxAccessLevel, record.Unattended, record.AccessLevelBeforePlan)
+            ? new SessionAccessState(record.AccessLevel, record.MaxAccessLevel, record.Unattended, record.AccessLevelBeforePlan,
+                record.AccessLevelSource)
             : null;
     }
 
@@ -1271,6 +1273,7 @@ public class OpenCodeSessionService
         record.MaxAccessLevel = state.MaxAccessLevel;
         record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
         record.Unattended = state.Unattended;
+        record.AccessLevelSource = state.AccessLevelSource;
         _store.SaveSession(record);
         return true;
     }
@@ -1803,6 +1806,7 @@ public class OpenCodeSessionService
             MaxAccessLevel = info.MaxAccessLevel,
             AccessLevelBeforePlan = info.AccessLevelBeforePlan,
             Unattended = info.Unattended,
+            AccessLevelSource = info.AccessLevelSource,
         });
     }
 
@@ -2344,6 +2348,7 @@ public class OpenCodeSessionService
         MaxAccessLevel = r.MaxAccessLevel,
         AccessLevelBeforePlan = r.AccessLevelBeforePlan,
         Unattended = r.Unattended,
+        AccessLevelSource = r.AccessLevelSource,
     };
 
     internal static void ApplyDeveloperInstructions(

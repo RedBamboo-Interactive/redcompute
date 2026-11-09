@@ -70,13 +70,43 @@ public static class SessionAccessLevels
 /// <param name="MaxAccessLevel">Hard cap set at start; nothing raises the session above it.</param>
 /// <param name="Unattended">No person watches: asks are denied at once and never park.</param>
 /// <param name="AccessLevelBeforePlan">The level to return to when the session leaves plan without naming one.</param>
+/// <param name="AccessLevelSource">
+/// Where the level came from (<see cref="SessionAccessLevelSources"/>). Null, as on every session
+/// persisted before sources existed, counts as <see cref="SessionAccessLevelSources.Policy"/>.
+/// </param>
 public sealed record SessionAccessState(
     string? AccessLevel,
     string? MaxAccessLevel = null,
     bool Unattended = false,
-    string? AccessLevelBeforePlan = null)
+    string? AccessLevelBeforePlan = null,
+    string? AccessLevelSource = null)
 {
     public static readonly SessionAccessState Legacy = new((string?)null);
+
+    /// <summary>The level came from the configured default, so it follows that default when it changes.</summary>
+    public bool FollowsPolicy => AccessLevelSource != SessionAccessLevelSources.Explicit;
+
+    /// <summary>The source as reported on session reads: always one of the two names.</summary>
+    public string Source => FollowsPolicy ? SessionAccessLevelSources.Policy : SessionAccessLevelSources.Explicit;
+
+    /// <summary>The same state, marked as chosen by someone rather than taken from the default.</summary>
+    public SessionAccessState AsExplicit() => this with { AccessLevelSource = SessionAccessLevelSources.Explicit };
+}
+
+/// <summary>
+/// Where a session's access level came from. A <see cref="Policy"/> level was resolved from the
+/// Agent's or global default and is re-resolved from the current policy on every launch and policy
+/// change. An <see cref="Explicit"/> level was chosen: a start request's <c>accessLevel</c>, any
+/// change through <c>/access-level</c> or <c>/permission-mode</c>, or entering or leaving plan. It
+/// is kept across policy changes, except that a revoked Full is still demoted.
+/// </summary>
+public static class SessionAccessLevelSources
+{
+    public const string Policy = "policy";
+    public const string Explicit = "explicit";
+
+    /// <summary>The persisted form: <see cref="Explicit"/> or <see cref="Policy"/>, anything else as policy.</summary>
+    public static string Normalize(string? source) => source == Explicit ? Explicit : Policy;
 }
 
 /// <summary>

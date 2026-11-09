@@ -57,7 +57,7 @@ public class OpenCodeDbContext : DbContext
                 """;
             cmd.ExecuteNonQuery();
             foreach (var col in new[] { "ProcessId INTEGER", "LastActivity TEXT", "ContextWindow INTEGER",
-                         "AccessLevel TEXT", "MaxAccessLevel TEXT", "AccessLevelBeforePlan TEXT",
+                         "AccessLevel TEXT", "MaxAccessLevel TEXT", "AccessLevelBeforePlan TEXT", "AccessLevelSource TEXT",
                          "Unattended INTEGER NOT NULL DEFAULT 0" })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col}";

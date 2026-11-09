@@ -26,6 +26,7 @@ public sealed class SessionAccessEndpointTests
 {
     private const string Plan = SessionAccessLevels.Plan, Ask = SessionAccessLevels.Ask,
         Auto = SessionAccessLevels.Auto, Full = SessionAccessLevels.Full;
+    private const string Policy = SessionAccessLevelSources.Policy, Explicit = SessionAccessLevelSources.Explicit;
 
     public static TheoryData<string> People => Callers(SessionRollbackTests.PeopleCallers);
     public static TheoryData<string> NotPeople => Callers(SessionRollbackTests.NotPeopleCallers);
@@ -110,7 +111,7 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(403, above.Status);
         Assert.Equal(SessionAccessResolver.AboveSessionCap, above.Body.GetProperty("error").GetString());
         Assert.Equal(200, at.Status);
-        Assert.Equal(new SessionAccessState(Auto, Auto), f.Provider.State);
+        Assert.Equal(new SessionAccessState(Auto, Auto, AccessLevelSource: Explicit), f.Provider.State);
     }
 
     [Fact]
@@ -120,7 +121,7 @@ public sealed class SessionAccessEndpointTests
 
         var entered = await f.PostAsync("access-level", new { level = Plan }, "agent");
         Assert.Equal(200, entered.Status);
-        Assert.Equal(new SessionAccessState(Plan, AccessLevelBeforePlan: Auto), f.Provider.State);
+        Assert.Equal(new SessionAccessState(Plan, AccessLevelBeforePlan: Auto, AccessLevelSource: Explicit), f.Provider.State);
 
         var agentLeaves = await f.PostAsync("access-level", new { level = (string?)null }, "agent");
         Assert.Equal(403, agentLeaves.Status);
@@ -128,7 +129,7 @@ public sealed class SessionAccessEndpointTests
 
         var personLeaves = await f.PostAsync("access-level", new { }, "code browser");
         Assert.Equal(200, personLeaves.Status);
-        Assert.Equal(new SessionAccessState(Auto), f.Provider.State);
+        Assert.Equal(new SessionAccessState(Auto, AccessLevelSource: Explicit), f.Provider.State);
     }
 
     [Fact]
@@ -414,6 +415,174 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(Ask, f.Provider.State.AccessLevel);
     }
 
+    // ---- following the policy (accessLevelSource policy) ----
+
+    [Theory]
+    [InlineData(null)]     // persisted before sources existed: counts as policy
+    [InlineData(Policy)]
+    public async Task A_policy_session_follows_a_later_full_default_on_policy_change(string? source)
+    {
+        var f = new Fixture(Ask, source: source);
+        f.Provider.Pending.Add(Permission("parked"));
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full, FullAccess = new FullAccessAcknowledgement(true, 1) };
+
+        var (status, body) = await f.PostPolicyChangedAsync("infrastructure service token");
+
+        Assert.Equal(200, status);
+        Assert.Equal(["session-1"], body.GetProperty("followedSessions").EnumerateArray().Select(e => e.GetString()));
+        Assert.Empty(body.GetProperty("demotedSessions").EnumerateArray());
+        Assert.Equal(new SessionAccessState(Full, AccessLevelSource: source), f.Provider.State);
+        // A parked approval still needs its answer (or expires); nothing answered it.
+        Assert.Equal("parked", Assert.Single(f.Provider.Pending).RequestId);
+        Assert.Empty(f.Provider.Answers);
+    }
+
+    [Fact]
+    public async Task An_explicit_session_keeps_its_level_on_policy_change()
+    {
+        var f = new Fixture(Ask, source: Explicit);
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full, FullAccess = new FullAccessAcknowledgement(true, 1) };
+
+        var (status, body) = await f.PostPolicyChangedAsync("infrastructure service token");
+
+        Assert.Equal(200, status);
+        Assert.Empty(body.GetProperty("followedSessions").EnumerateArray());
+        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+        Assert.Equal(0, f.Provider.Sets);
+    }
+
+    [Fact]
+    public async Task A_policy_session_follows_only_up_to_its_cap_and_stays_unattended()
+    {
+        var f = new Fixture(Ask, cap: Auto, source: null);
+        f.Provider.State = f.Provider.State with { Unattended = true };
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full, FullAccess = new FullAccessAcknowledgement(true, 1) };
+
+        await f.PostPolicyChangedAsync("infrastructure service token");
+
+        Assert.Equal(new SessionAccessState(Auto, Auto, Unattended: true), f.Provider.State);
+    }
+
+    [Fact]
+    public async Task A_policy_default_of_full_without_full_enabled_gives_auto()
+    {
+        var f = new Fixture(Ask, source: null);
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full };
+
+        await f.PostPolicyChangedAsync("infrastructure service token");
+
+        Assert.Equal(Auto, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task A_policy_session_follows_a_lower_default_and_one_whose_harness_refuses_is_stopped()
+    {
+        var f = new Fixture(Full, fullEnabled: true, source: null);
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Ask };
+        f.Provider.Refusal = "Claude Code did not confirm the change within 10 seconds.";
+
+        var (_, body) = await f.PostPolicyChangedAsync("infrastructure service token");
+
+        Assert.Equal(["session-1"], body.GetProperty("followedSessions").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(1, f.Provider.Stops);
+        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task A_refused_raise_from_the_policy_keeps_the_level_and_does_not_stop_the_session()
+    {
+        var f = new Fixture(Ask, source: null);
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full, FullAccess = new FullAccessAcknowledgement(true, 1) };
+        f.Provider.Refusal = CliRefusal;
+
+        var (status, body) = await f.PostPolicyChangedAsync("infrastructure service token");
+
+        Assert.Equal(200, status);
+        Assert.Empty(body.GetProperty("followedSessions").EnumerateArray());
+        Assert.Equal(0, f.Provider.Stops);
+        Assert.Equal(Ask, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task Launch_state_moves_a_policy_session_to_the_current_default_and_keeps_an_explicit_one()
+    {
+        var followed = new Fixture(Ask, fullEnabled: true, source: null);
+        followed.Policy.Policy = followed.Policy.Policy with { DefaultLevel = Full };
+        await followed.Access.EnsureLaunchStateAsync(followed.Provider.Proxy, "session-1");
+        Assert.Equal(Full, followed.Provider.State.AccessLevel);
+
+        var capped = new Fixture(Ask, fullEnabled: true, cap: Auto, source: Policy);
+        capped.Policy.Policy = capped.Policy.Policy with { DefaultLevel = Full };
+        await capped.Access.EnsureLaunchStateAsync(capped.Provider.Proxy, "session-1");
+        Assert.Equal(new SessionAccessState(Auto, Auto, AccessLevelSource: Policy), capped.Provider.State);
+
+        var chosen = new Fixture(Ask, fullEnabled: true, source: Explicit);
+        chosen.Policy.Policy = chosen.Policy.Policy with { DefaultLevel = Full };
+        await chosen.Access.EnsureLaunchStateAsync(chosen.Provider.Proxy, "session-1");
+        Assert.Equal(Ask, chosen.Provider.State.AccessLevel);
+        Assert.Equal(0, chosen.Provider.Sets);
+    }
+
+    [Theory]
+    [InlineData("access-level", """{"level":"ask"}""")]       // naming the level it already has pins it
+    [InlineData("access-level", """{"level":"plan"}""")]
+    [InlineData("permission-mode", """{"mode":"acceptEdits"}""")]
+    public async Task A_change_through_the_routes_makes_the_level_explicit(string route, string json)
+    {
+        var f = new Fixture(Ask, fullEnabled: true, source: null);
+
+        var (status, _) = await f.PostRawAsync(route, json, "code browser");
+        Assert.Equal(200, status);
+        Assert.Equal(Explicit, f.Provider.State.AccessLevelSource);
+
+        f.Policy.Policy = f.Policy.Policy with { DefaultLevel = Full };
+        await f.PostPolicyChangedAsync("infrastructure service token");
+        Assert.NotEqual(Full, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task Leaving_plan_without_being_in_it_leaves_the_source_alone()
+    {
+        var f = new Fixture(Ask, source: null);
+
+        var (status, _) = await f.PostAsync("access-level", new { }, "code browser");
+
+        Assert.Equal(200, status);
+        Assert.Null(f.Provider.State.AccessLevelSource);
+        Assert.Equal(0, f.Provider.Sets);
+    }
+
+    [Fact]
+    public async Task A_start_with_a_level_is_explicit_and_one_without_follows_the_policy()
+    {
+        var f = new Fixture(Ask);
+
+        var named = await f.Access.ResolveStartAsync(f.Provider.Proxy, Ask, null, false, personPresent: false, null);
+        var defaulted = await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, false, personPresent: false, null);
+
+        Assert.Equal(Explicit, named.State!.AccessLevelSource);
+        Assert.Equal(Policy, defaulted.State!.AccessLevelSource);
+    }
+
+    [Fact]
+    public void Following_the_policy_keeps_plan_entered_from_another_level_and_moves_where_it_returns()
+    {
+        var policy = new SessionAccessPolicy { DefaultLevel = Full, FullAccess = new FullAccessAcknowledgement(true, 1) };
+        IReadOnlyCollection<string> all = SessionAccessLevels.All;
+
+        var inPlan = SessionAccessResolver.FollowPolicy(new SessionAccessState(Plan, AccessLevelBeforePlan: Ask), null, policy, all);
+        var planDefault = SessionAccessResolver.FollowPolicy(new SessionAccessState(Plan), null, policy, all);
+        var chosen = SessionAccessResolver.FollowPolicy(new SessionAccessState(Ask, AccessLevelSource: Explicit), null, policy, all);
+        var same = SessionAccessResolver.FollowPolicy(new SessionAccessState(Full), null, policy, all);
+        var codex = SessionAccessResolver.FollowPolicy(new SessionAccessState(Ask), null, policy with { DefaultLevel = Auto }, [Ask, Full]);
+
+        Assert.Equal(new SessionAccessState(Plan, AccessLevelBeforePlan: Full), inPlan);
+        Assert.Equal(new SessionAccessState(Full), planDefault);
+        Assert.Null(chosen);
+        Assert.Null(same);
+        Assert.Null(codex);   // auto is not Codex's, so its default resolves to ask: unchanged
+    }
+
     // ---- approving a parked permission ----
 
     [Theory]
@@ -508,9 +677,9 @@ public sealed class SessionAccessEndpointTests
         var defaulted = await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, false, false, agent);
 
         Assert.Equal("agent-nova", agent);
-        Assert.Equal(new SessionAccessState(Auto, Full, Unattended: true), byAgent.State);
-        Assert.Equal(new SessionAccessState(Full), byPerson.State);
-        Assert.Equal(Auto, defaulted.State!.AccessLevel);
+        Assert.Equal(new SessionAccessState(Auto, Full, Unattended: true, AccessLevelSource: Explicit), byAgent.State);
+        Assert.Equal(new SessionAccessState(Full, AccessLevelSource: Explicit), byPerson.State);
+        Assert.Equal(new SessionAccessState(Auto, AccessLevelSource: Policy), defaulted.State);
     }
 
     [Fact]
@@ -558,7 +727,13 @@ public sealed class SessionAccessEndpointTests
         Assert.Equal(Auto, read.MaxAccessLevel);
         Assert.True(read.Unattended);
         Assert.Equal(Ask, read.AccessLevelBeforePlan);
+        Assert.Equal(Explicit, read.AccessLevelSource);
         Assert.Equal([Plan, Ask, Auto, Full], read.SupportedAccessLevels);
+        f.Provider.State = f.Provider.State with { AccessLevelSource = null };
+        Assert.Equal(Policy, SessionAccessService.Overlay(new UnifiedSessionInfo
+        {
+            Id = "session-1", Provider = "test", ProjectName = "p", ProjectPath = "p", Status = SessionStatus.Idle,
+        }, f.Provider.Proxy).AccessLevelSource);
     }
 
     [Fact]
@@ -608,12 +783,13 @@ public sealed class SessionAccessEndpointTests
         /// <summary>When set, the session has no owner, so every caller may read and write it and only the person rule decides.</summary>
         internal bool Readable { set => Provider.Info.UserId = value ? null : "owner"; }
 
-        internal Fixture(string? level, bool fullEnabled = false, string? cap = null)
+        /// <param name="source">Where the session's level came from; explicit unless a test says otherwise, null being a row from before sources.</param>
+        internal Fixture(string? level, bool fullEnabled = false, string? cap = null, string? source = Explicit)
         {
             var proxy = DispatchProxy.Create<ITestProvider, AccessProvider>();
             Provider = (AccessProvider)(object)proxy;
             Provider.Proxy = proxy;
-            Provider.State = new SessionAccessState(level, cap);
+            Provider.State = new SessionAccessState(level, cap, AccessLevelSource: level is null ? null : source);
             Policy = new StaticSessionAccessPolicySource(new SessionAccessPolicy
             {
                 FullAccess = new FullAccessAcknowledgement(fullEnabled, 1),

@@ -103,6 +103,33 @@ public static class SessionAccessResolver
     }
 
     /// <summary>
+    /// What a session whose level came from the policy moves to under <paramref name="policy"/>: its
+    /// configured default, resolved and clamped exactly like a start without a request (a non-person
+    /// start gets the default; full needs Full enabled; provider support; the cap). It may raise the
+    /// level, because a person set the policy. A session in plan that entered it from another level
+    /// stays in plan, and only the level it returns to follows the default. Returns null when the
+    /// session's level is explicit, nothing changes, or no supported level honours its cap. The cap,
+    /// <c>unattended</c> and the source are kept as they are.
+    /// </summary>
+    public static SessionAccessState? FollowPolicy(
+        SessionAccessState current,
+        string? agentEntityId,
+        SessionAccessPolicy policy,
+        IReadOnlyCollection<string> supported)
+    {
+        if (!current.FollowsPolicy) return null;
+        if (ResolveDefault(agentEntityId, policy, supported, current.MaxAccessLevel).Level is not { } resolved) return null;
+
+        var next = current.AccessLevel == SessionAccessLevels.Plan && current.AccessLevelBeforePlan is not null
+            ? current with
+            {
+                AccessLevelBeforePlan = resolved == SessionAccessLevels.Plan ? current.AccessLevelBeforePlan : resolved,
+            }
+            : current with { AccessLevel = resolved, AccessLevelBeforePlan = null };
+        return next == current ? null : next;
+    }
+
+    /// <summary>
     /// What a session keeps when Full is no longer enabled: an unchanged state when nothing it holds
     /// is full, otherwise full (current, or remembered for after plan) replaced by its resolved default.
     /// </summary>

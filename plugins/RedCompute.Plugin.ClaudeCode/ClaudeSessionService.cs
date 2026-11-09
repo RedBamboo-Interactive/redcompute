@@ -1865,7 +1865,7 @@ public partial class ClaudeSessionService
     public bool SetPermissionMode(string sessionId, string mode)
         => Core.Sessions.SessionAccessLevels.TryFromPermissionMode(mode, out var level)
             && GetAccessState(sessionId) is { } current
-            && SetAccessState(sessionId, current with { AccessLevel = level });
+            && SetAccessState(sessionId, (current with { AccessLevel = level }).AsExplicit());
 
     public async Task StopSession(string sessionId, string? reason = null)
     {
@@ -2159,7 +2159,8 @@ public partial class ClaudeSessionService
         => new(Core.Sessions.SessionAccessLevels.IsKnown(r.AccessLevel) ? r.AccessLevel : null,
             Core.Sessions.SessionAccessLevels.IsKnown(r.MaxAccessLevel) ? r.MaxAccessLevel : null,
             r.Unattended,
-            Core.Sessions.SessionAccessLevels.IsKnown(r.AccessLevelBeforePlan) ? r.AccessLevelBeforePlan : null);
+            Core.Sessions.SessionAccessLevels.IsKnown(r.AccessLevelBeforePlan) ? r.AccessLevelBeforePlan : null,
+            r.AccessLevelSource);
 
     /// <summary>Live background tasks of a loaded session; a session without a process has none.</summary>
     public IReadOnlyList<BackgroundTaskInfo> GetBackgroundTasks(string sessionId)
@@ -3514,6 +3515,8 @@ public partial class ClaudeSessionService
                 {
                     AccessLevel = session.Info.Access.AccessLevelBeforePlan ?? Core.Sessions.SessionAccessLevels.Ask,
                     AccessLevelBeforePlan = null,
+                    // A person approved leaving plan: the level is theirs, no longer the default's.
+                    AccessLevelSource = Core.Sessions.SessionAccessLevelSources.Explicit,
                 }
                 : null;
             if (afterPlan is not null)
@@ -3629,6 +3632,7 @@ public partial class ClaudeSessionService
         record.MaxAccessLevel = state.MaxAccessLevel;
         record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
         record.Unattended = state.Unattended;
+        record.AccessLevelSource = state.AccessLevelSource;
         _sessionStore.SaveSession(record);
         return Core.Sessions.SessionAccessApplyResult.Done;
     }
@@ -4544,6 +4548,7 @@ public partial class ClaudeSessionService
                 MaxAccessLevel = info.Access.MaxAccessLevel,
                 AccessLevelBeforePlan = info.Access.AccessLevelBeforePlan,
                 Unattended = info.Access.Unattended,
+                AccessLevelSource = info.Access.AccessLevelSource,
             });
         }
         catch (Exception ex)

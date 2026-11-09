@@ -315,7 +315,7 @@ public static class UnifiedSessionEndpoints
 
         endpoints.MapPost("/ai-session/sessions",
             "Start a new persistent session. The optional conversation-only profile uses an isolated empty workspace, read-only/no-network execution, denied approvals, and no derived suite credential. " +
-            "The response carries accessLevel, maxAccessLevel, supportedAccessLevels and unattended.", async (HttpContext ctx) =>
+            "The response carries accessLevel, accessLevelSource, maxAccessLevel, supportedAccessLevels and unattended.", async (HttpContext ctx) =>
         {
             if (_maintenance?.IsDraining == true)
                 return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
@@ -526,7 +526,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("accessLevel", "string", description: "Requested access level. " + SessionAccessEndpoints.LevelDescription
                 + " Defaults to the Agent's configured level from RedLeaf policy, else the global default, else ask. A caller that is not a person "
                 + "is clamped to that default; full needs Full enabled (else auto); maxAccessLevel clamps last. The session's Agent is taken from the "
-                + "verified start identity.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+                + "verified start identity. A level named here is explicit (accessLevelSource explicit) and policy changes keep it; without one the level "
+                + "comes from the default (accessLevelSource policy) and follows it on every launch and policy change.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
             .WithParam("maxAccessLevel", "string", description: "Hard cap for the session's lifetime: nothing raises it above this level. "
                 + "422 access_level_cap_unsupported when the provider supports no level at or below it.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
             .WithParam("unattended", "boolean", description: "No person watches this session (automations, Discord): permission asks are denied at once "
@@ -3217,6 +3218,10 @@ public static class UnifiedSessionEndpoints
                     accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray(),
                         description = "The session's access level; null for a session persisted before access levels and not yet relaunched" },
                     maxAccessLevel = new { type = new[] { "string", "null" }, description = "Hard cap; null when uncapped" },
+                    accessLevelSource = new { type = new[] { "string", "null" }, @enum = new object?[] { SessionAccessLevelSources.Policy, SessionAccessLevelSources.Explicit, null },
+                        description = "policy: the level came from the Agent's or global default and follows it when it changes (shown as \"default\"); "
+                            + "explicit: someone chose it (a start request's accessLevel, a change, entering or leaving plan) and policy changes keep it, "
+                            + "except a revoked Full. Null for a provider without access levels" },
                     supportedAccessLevels = new { type = "array", items = new { type = "string" } },
                     unattended = new { type = "boolean", description = "Permission asks are denied at once and never park" },
                     permissionMode = new { type = new[] { "string", "null" }, description = "Provider-native mode string" },

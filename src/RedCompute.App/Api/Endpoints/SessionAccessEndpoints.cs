@@ -31,7 +31,8 @@ public static class SessionAccessEndpoints
             + "A live session changes at once and is recorded at the new level only once its harness confirmed the switch; when the harness "
             + "refuses (or does not answer in time) the session keeps its level and the call is 409 provider_refused_level, whose message "
             + "says so in plain words with the harness's own reason, and whose accessLevel is the level kept. "
-            + "A stopped session launches at the new level. Unknown levels are 422.",
+            + "A stopped session launches at the new level. The level set here is explicit (session accessLevelSource explicit): it no longer "
+            + "follows the Agent's or global default when RedLeaf's policy changes. Unknown levels are 422.",
             async (HttpContext ctx, string id) =>
         {
             var (provider, info, error) = Find(ctx, registry, jobTracker, id);
@@ -95,8 +96,11 @@ public static class SessionAccessEndpoints
                 enumValues: LegacyModes, location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/access-policy/changed",
-            "RedLeaf calls this after it writes the Agent permission policy. RedCompute reads the policy fresh and, when Full access is no longer "
-            + "enabled, demotes every session holding full to its resolved default. Authenticated service callers (RedLeaf's kernel) and people only; "
+            "RedLeaf calls this after it writes the Agent permission policy. RedCompute reads the policy fresh. Every session whose "
+            + "accessLevelSource is policy (its level came from the Agent's or global default) moves to the re-resolved default, raised or "
+            + "lowered, within its maxAccessLevel; a live one changes through its harness and is stopped if it keeps running above its new level. "
+            + "Sessions with an explicit level keep it, except that when Full access is no longer enabled every session holding full is demoted "
+            + "to its resolved default. Approvals already parked stay parked. Authenticated service callers (RedLeaf's kernel) and people only; "
             + "an Agent or automation token gets 403. Body (optional, as RedLeaf sends it): {version (policy shape version), revision}; "
             + "it only labels the log line, the policy itself is always re-read. Idempotent.",
             async (HttpContext ctx) =>
@@ -104,7 +108,9 @@ public static class SessionAccessEndpoints
             if (!MayAnnouncePolicyChange(ctx))
                 return Error(403, "service_caller_required", "Only RedLeaf announces a policy change");
             var revision = await ReadRevisionAsync(ctx);
-            var demoted = await access.PolicyChangedAsync(ctx.RequestAborted, revision);
+            // Not tied to the request: RedLeaf gives up waiting after 3 s, and a live session's switch
+            // can take longer to confirm. Every session must still be brought to the new policy.
+            var changed = await access.PolicyChangedAsync(CancellationToken.None, revision);
             var policy = await access.Policy.GetAsync(ct: ctx.RequestAborted);
             return Results.Json(new
             {
@@ -112,7 +118,8 @@ public static class SessionAccessEndpoints
                 revision,
                 policyAvailable = policy.Available,
                 fullAccessEnabled = policy.FullAccessEnabled,
-                demotedSessions = demoted,
+                demotedSessions = changed.Demoted,
+                followedSessions = changed.Followed,
             });
         })
             .WithParam("version", "integer", description: "Policy shape version (1)", location: ParamLocation.Body)
@@ -126,7 +133,8 @@ public static class SessionAccessEndpoints
                     revision = new { type = new[] { "integer", "null" }, description = "The revision RedLeaf announced, echoed" },
                     policyAvailable = new { type = "boolean", description = "False when RedLeaf could not be read; RedCompute then runs fail-closed (ask, Full disabled)" },
                     fullAccessEnabled = new { type = "boolean" },
-                    demotedSessions = new { type = "array", items = new { type = "string" } },
+                    demotedSessions = new { type = "array", items = new { type = "string" }, description = "Sessions moved off full because Full is no longer enabled" },
+                    followedSessions = new { type = "array", items = new { type = "string" }, description = "Policy-sourced sessions whose level changed to follow the default" },
                 },
             });
     }

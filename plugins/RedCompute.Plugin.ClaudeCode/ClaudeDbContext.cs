@@ -110,7 +110,7 @@ public class ClaudeDbContext : DbContext
         }
 
         foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson", "ForkTargetJson",
-                     "AccessLevel", "MaxAccessLevel", "AccessLevelBeforePlan" })
+                     "AccessLevel", "MaxAccessLevel", "AccessLevelBeforePlan", "AccessLevelSource" })
         {
             if (columns.Contains(column)) continue;
             using var alter = conn.CreateCommand();

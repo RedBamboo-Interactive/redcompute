@@ -6,9 +6,10 @@ namespace RedCompute.App.Services;
 
 /// <summary>
 /// Applies the access-level contract across providers: resolves a starting level, authorizes
-/// changes, resolves legacy sessions before they launch, and demotes Full sessions when RedLeaf
-/// stops enabling Full. The rules themselves live in <see cref="SessionAccessResolver"/>; whether a
-/// person is present comes from the auth layer (<c>ComputeResourceAccess.IsPersonPresent</c>).
+/// changes, re-resolves sessions whose level came from the policy before they launch and whenever
+/// RedLeaf announces a policy change, and demotes Full sessions when RedLeaf stops enabling Full.
+/// The rules themselves live in <see cref="SessionAccessResolver"/>; whether a person is present
+/// comes from the auth layer (<c>ComputeResourceAccess.IsPersonPresent</c>).
 /// </summary>
 public sealed class SessionAccessService(
     ISessionAccessPolicySource policy,
@@ -18,7 +19,11 @@ public sealed class SessionAccessService(
 {
     public ISessionAccessPolicySource Policy => policy;
 
-    /// <summary>The state a new session starts with; null for a provider without access levels.</summary>
+    /// <summary>
+    /// The state a new session starts with; null for a provider without access levels. A requested
+    /// level is explicit and kept across policy changes; without one the level comes from the policy
+    /// and follows it.
+    /// </summary>
     public async Task<SessionAccessStart> ResolveStartAsync(ISessionProvider provider, string? requested,
         string? maxAccessLevel, bool unattended, bool personPresent, string? agentEntityId, CancellationToken ct = default)
     {
@@ -28,7 +33,8 @@ public sealed class SessionAccessService(
         var resolved = SessionAccessResolver.ResolveStart(requested, agentEntityId, personPresent, current, supported, maxAccessLevel);
         return resolved.Level is null
             ? new SessionAccessStart(null, resolved.Error, resolved.Message)
-            : new SessionAccessStart(new SessionAccessState(resolved.Level, maxAccessLevel, unattended));
+            : new SessionAccessStart(new SessionAccessState(resolved.Level, maxAccessLevel, unattended,
+                AccessLevelSource: requested is null ? SessionAccessLevelSources.Policy : SessionAccessLevelSources.Explicit));
     }
 
     /// <summary>The level a one-shot runs at: requested, clamped exactly like a session start.</summary>
@@ -46,7 +52,9 @@ public sealed class SessionAccessService(
 
     /// <summary>
     /// Changes a session's level under the contract's rules. The caller has already checked write
-    /// access. A null <paramref name="requested"/> leaves plan for the level it entered from.
+    /// access. A null <paramref name="requested"/> leaves plan for the level it entered from. The
+    /// resulting level is explicit: it no longer follows the policy (a request naming the level the
+    /// session already has pins it too).
     /// </summary>
     public async Task<SessionAccessChangeResult> ChangeAsync(ISessionProvider provider, UnifiedSessionInfo info,
         string? requested, bool personPresent, CancellationToken ct = default)
@@ -69,24 +77,26 @@ public sealed class SessionAccessService(
         if (change.State is null)
             return SessionAccessChangeResult.Refused(change.Error == SessionAccessResolver.InvalidAccessLevel ? 422 : 403,
                 change.Error!, change.Message!);
-        if (change.State != provider.GetAccessState(info.Id)
-            && await provider.ApplyAccessStateAsync(info.Id, change.State, ct) is { Applied: false } refused)
+        var next = change.IsChange || requested is not null ? change.State.AsExplicit() : change.State;
+        if (next != provider.GetAccessState(info.Id)
+            && await provider.ApplyAccessStateAsync(info.Id, next, ct) is { Applied: false } refused)
         {
             log($"[Access] Session {info.Provider}/{info.Id} stays at {state.AccessLevel}: {provider.ProviderDisplayName} did not switch to "
-                + $"{change.State.AccessLevel}" + (refused.Reason is { } why ? $" ({why})" : ""), info.JobId);
+                + $"{next.AccessLevel}" + (refused.Reason is { } why ? $" ({why})" : ""), info.JobId);
             return SessionAccessChangeResult.Refused(409, ProviderRefusedLevel,
-                RefusedMessage(provider, state.AccessLevel, change.State.AccessLevel, refused.Reason), state.AccessLevel);
+                RefusedMessage(provider, state.AccessLevel, next.AccessLevel, refused.Reason), state.AccessLevel);
         }
         if (change.IsChange)
-            log($"[Access] Session {info.Provider}/{info.Id} access level {state.AccessLevel} -> {change.State.AccessLevel}"
+            log($"[Access] Session {info.Provider}/{info.Id} access level {state.AccessLevel} -> {next.AccessLevel}"
                 + (personPresent ? " (person)" : ""), info.JobId);
-        return new SessionAccessChangeResult(change.State.AccessLevel, true, 200);
+        return new SessionAccessChangeResult(next.AccessLevel, true, 200);
     }
 
     /// <summary>
-    /// Run before a session launches from a stopped state. A legacy session resolves fresh from
-    /// policy; a session holding Full that RedLeaf no longer enables is demoted. Either is persisted,
-    /// so the provider's launch applies it.
+    /// Run before a session launches from a stopped state. A session whose level came from the
+    /// policy (including one persisted before access levels) re-resolves from the current policy; a
+    /// session holding Full that RedLeaf no longer enables is demoted. Either is persisted, so the
+    /// provider's launch applies it.
     /// </summary>
     public async Task EnsureLaunchStateAsync(ISessionProvider provider, string sessionId, CancellationToken ct = default)
     {
@@ -96,32 +106,31 @@ public sealed class SessionAccessService(
         var current = await policy.GetAsync(ct: ct);
         var agent = info is null ? null : AgentEntityId(info);
 
-        var next = state;
-        if (state.AccessLevel is null)
-            next = state with
-            {
-                AccessLevel = SessionAccessResolver.ResolveDefault(agent, current, supported, state.MaxAccessLevel).Level
-                    ?? SessionAccessResolver.ClampToSupported(SessionAccessLevels.Ask, supported),
-            };
-        next = SessionAccessResolver.DemoteIfFullRevoked(next, agent, current, supported) ?? next;
+        var next = Target(state, agent, current, supported);
+        if (next.AccessLevel is null)
+            next = next with { AccessLevel = SessionAccessResolver.ClampToSupported(SessionAccessLevels.Ask, supported) };
         if (next == state) return;
         if ((await provider.ApplyAccessStateAsync(sessionId, next, ct)).Applied)
-            log($"[Access] Session {provider.ProviderId}/{sessionId} launches at {next.AccessLevel}"
-                + (state.AccessLevel is null ? " (resolved from policy; it predates access levels)" : " (Full is no longer enabled)"),
+            log($"[Access] Session {provider.ProviderId}/{sessionId} launches at {next.AccessLevel} ({Why(state, current)})",
                 info?.JobId);
     }
 
     /// <summary>
-    /// RedLeaf changed the policy: read it fresh and, when Full is no longer enabled, demote every
-    /// session holding Full to its resolved default. Returns the demoted session ids.
+    /// RedLeaf changed the policy: read it fresh, move every session whose level came from the
+    /// policy to its re-resolved default (raising as well as lowering, within its cap), and, when
+    /// Full is no longer enabled, demote every other session holding Full to its resolved default.
+    /// A live session changes through its harness and is recorded only once the harness confirmed;
+    /// one that keeps running above its new level is stopped. Approvals already parked stay parked.
     /// </summary>
-    public async Task<IReadOnlyList<string>> PolicyChangedAsync(CancellationToken ct = default, long? revision = null)
+    public async Task<SessionAccessPolicyChangeResult> PolicyChangedAsync(CancellationToken ct = default, long? revision = null)
     {
         var current = await policy.GetAsync(refresh: true, ct);
         log($"[Access] RedLeaf announced a policy change{(revision is { } r ? $" (revision {r})" : "")}; "
-            + (current.Available ? $"Full access {(current.FullAccessEnabled ? "enabled" : "disabled")}" : "policy unavailable, failing closed"), null);
+            + (current.Available
+                ? $"default {current.DefaultFor(null)}, Full access {(current.FullAccessEnabled ? "enabled" : "disabled")}"
+                : "policy unavailable, failing closed"), null);
         var demoted = new List<string>();
-        if (current.FullAccessEnabled) return demoted;
+        var followed = new List<string>();
         foreach (var provider in providers())
         {
             var supported = provider.SupportedAccessLevels;
@@ -130,37 +139,69 @@ public sealed class SessionAccessService(
             try { sessions = provider.GetSessions(10_000); }
             catch (Exception ex)
             {
-                log($"[Access] Could not list {provider.ProviderId} sessions to demote Full: {ex.Message}", null);
+                log($"[Access] Could not list {provider.ProviderId} sessions to apply the policy: {ex.Message}", null);
                 continue;
             }
             foreach (var session in sessions)
             {
                 if (provider.GetAccessState(session.Id) is not { } state) continue;
-                if (SessionAccessResolver.DemoteIfFullRevoked(state, AgentEntityId(session), current, supported) is not { } next)
-                    continue;
-                if (!await DemoteAsync(provider, session, next, ct)) continue;
-                demoted.Add(session.Id);
-                log($"[Access] Full access is no longer enabled; session {provider.ProviderId}/{session.Id} demoted to {next.AccessLevel}", session.JobId);
+                var next = Target(state, AgentEntityId(session), current, supported);
+                if (next == state) continue;
+                if (!await ApplyPolicyAsync(provider, session, state, next, ct)) continue;
+                if (!current.FullAccessEnabled && HoldsFull(state) && !HoldsFull(next)) demoted.Add(session.Id);
+                if (state.FollowsPolicy) followed.Add(session.Id);
+                log($"[Access] Session {provider.ProviderId}/{session.Id} access level {state.AccessLevel ?? "unset"} -> {next.AccessLevel} "
+                    + $"({Why(state, current)})", session.JobId);
             }
         }
-        return demoted;
+        return new SessionAccessPolicyChangeResult(demoted, followed);
     }
 
+    private static bool HoldsFull(SessionAccessState state)
+        => state.AccessLevel == SessionAccessLevels.Full || state.AccessLevelBeforePlan == SessionAccessLevels.Full;
+
     /// <summary>
-    /// Demotes one session. A live session whose harness will not switch down is stopped, so Full
-    /// stops running at once, and its lower level is persisted for its next launch.
+    /// The state a session should hold under <paramref name="current"/>: a policy-sourced one
+    /// follows its default, and nothing keeps a Full that RedLeaf no longer enables.
     /// </summary>
-    private async Task<bool> DemoteAsync(ISessionProvider provider, UnifiedSessionInfo session, SessionAccessState next, CancellationToken ct)
+    private static SessionAccessState Target(SessionAccessState state, string? agent, SessionAccessPolicy current,
+        IReadOnlyCollection<string> supported)
+    {
+        var next = SessionAccessResolver.FollowPolicy(state, agent, current, supported) ?? state;
+        return SessionAccessResolver.DemoteIfFullRevoked(next, agent, current, supported) ?? next;
+    }
+
+    private static string Why(SessionAccessState before, SessionAccessPolicy current)
+        => before.AccessLevel is null ? "resolved from policy; it predates access levels"
+            : before.FollowsPolicy ? current.Available ? "follows the configured default" : "follows the fail-closed default, RedLeaf unreachable"
+            : "Full is no longer enabled";
+
+    /// <summary>
+    /// Applies a policy-driven state. A live session whose harness will not switch down is stopped,
+    /// so it never keeps running above the level the policy now gives it, and the lower level is
+    /// persisted for its next launch. A refused raise keeps the level it had: that is safe, and its
+    /// next launch re-resolves it anyway.
+    /// </summary>
+    private async Task<bool> ApplyPolicyAsync(ISessionProvider provider, UnifiedSessionInfo session,
+        SessionAccessState state, SessionAccessState next, CancellationToken ct)
     {
         var applied = await provider.ApplyAccessStateAsync(session.Id, next, ct);
         if (applied.Applied) return true;
         if (applied.Reason is null) return false;
-        log($"[Access] Full access is no longer enabled and {provider.ProviderDisplayName} did not lower session "
-            + $"{provider.ProviderId}/{session.Id} ({applied.Reason}); stopping it so it relaunches at {next.AccessLevel}", session.JobId);
+        var held = state.AccessLevel ?? SessionAccessLevels.Ask;
+        var target = next.AccessLevel ?? SessionAccessLevels.Ask;
+        if (!SessionAccessLevels.IsAbove(held, target))
+        {
+            log($"[Access] {provider.ProviderDisplayName} did not switch session {provider.ProviderId}/{session.Id} from {held} to {target} "
+                + $"({applied.Reason}); it stays at {held} until its next launch", session.JobId);
+            return false;
+        }
+        log($"[Access] {provider.ProviderDisplayName} did not lower session {provider.ProviderId}/{session.Id} from {held} to {target} "
+            + $"({applied.Reason}); stopping it so it relaunches at {target}", session.JobId);
         try { await provider.StopSessionAsync(session.Id); }
         catch (Exception ex)
         {
-            log($"[Access] Could not stop {provider.ProviderId}/{session.Id} to demote it: {ex.Message}", session.JobId);
+            log($"[Access] Could not stop {provider.ProviderId}/{session.Id} to lower it: {ex.Message}", session.JobId);
             return false;
         }
         return (await provider.ApplyAccessStateAsync(session.Id, next, ct)).Applied;
@@ -225,9 +266,14 @@ public sealed class SessionAccessService(
         session.MaxAccessLevel = state.MaxAccessLevel;
         session.Unattended = state.Unattended;
         session.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
+        session.AccessLevelSource = state.Source;
         return session;
     }
 }
+
+/// <param name="Demoted">Sessions moved off full because Full is no longer enabled.</param>
+/// <param name="Followed">Sessions whose level came from the policy and changed to follow it (raised or lowered).</param>
+public sealed record SessionAccessPolicyChangeResult(IReadOnlyList<string> Demoted, IReadOnlyList<string> Followed);
 
 public sealed record SessionAccessStart(SessionAccessState? State, string? Error = null, string? Message = null);
 

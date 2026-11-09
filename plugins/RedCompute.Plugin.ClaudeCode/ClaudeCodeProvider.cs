@@ -410,6 +410,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         MaxAccessLevel = s.Access.MaxAccessLevel,
         Unattended = s.Access.Unattended,
         AccessLevelBeforePlan = s.Access.AccessLevelBeforePlan,
+        AccessLevelSource = s.Access.Source,
         SupportedAccessLevels = ClaudeSessionService.SupportedAccessLevels,
         Source = s.Source,
         UserId = s.UserId,

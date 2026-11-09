@@ -211,7 +211,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     public bool SetPermissionMode(string sessionId, string mode)
         => SessionAccessLevels.TryFromPermissionMode(mode, out var level)
             && GetAccessState(sessionId) is { } current
-            && SetAccessState(sessionId, current with { AccessLevel = SessionAccessResolver.ClampToSupported(level, SupportedAccessLevels) });
+            && SetAccessState(sessionId, (current with { AccessLevel = SessionAccessResolver.ClampToSupported(level, SupportedAccessLevels) }).AsExplicit());
 
     // --- ISessionProvider: Generate (not supported) ---
 
@@ -310,6 +310,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         MaxAccessLevel = s.MaxAccessLevel,
         AccessLevelBeforePlan = s.AccessLevelBeforePlan,
         Unattended = s.Unattended,
+        AccessLevelSource = s.Access.Source,
         SupportedAccessLevels = [SessionAccessLevels.Ask, SessionAccessLevels.Full],
     };
 

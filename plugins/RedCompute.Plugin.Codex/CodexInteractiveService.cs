@@ -1722,7 +1722,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     {
         if (_sessions.TryGetValue(sessionId, out var session)) return session.Info.Access;
         return _store.FindSession(sessionId) is { } record
-            ? new(record.AccessLevel, record.MaxAccessLevel, record.Unattended, record.AccessLevelBeforePlan)
+            ? new(record.AccessLevel, record.MaxAccessLevel, record.Unattended, record.AccessLevelBeforePlan, record.AccessLevelSource)
             : null;
     }
 
@@ -1746,6 +1746,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         record.MaxAccessLevel = state.MaxAccessLevel;
         record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
         record.Unattended = state.Unattended;
+        record.AccessLevelSource = state.AccessLevelSource;
         _store.SaveSession(record);
         return true;
     }
@@ -2143,6 +2144,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         MaxAccessLevel = info.MaxAccessLevel,
         AccessLevelBeforePlan = info.AccessLevelBeforePlan,
         Unattended = info.Unattended,
+        AccessLevelSource = info.AccessLevelSource,
         Source = info.Source,
         ContextWindow = info.ContextWindow,
         UserId = info.UserId,
@@ -2183,6 +2185,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         MaxAccessLevel = r.MaxAccessLevel,
         AccessLevelBeforePlan = r.AccessLevelBeforePlan,
         Unattended = r.Unattended,
+        AccessLevelSource = r.AccessLevelSource,
         Source = r.Source,
         ContextWindow = r.ContextWindow,
         UserId = r.UserId,

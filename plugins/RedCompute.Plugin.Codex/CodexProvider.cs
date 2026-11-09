@@ -358,10 +358,10 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public bool SetPermissionMode(string sessionId, string mode)
         => Core.Sessions.SessionAccessLevels.TryFromPermissionMode(mode, out var level)
             && GetAccessState(sessionId) is { } current
-            && SetAccessState(sessionId, current with
+            && SetAccessState(sessionId, (current with
             {
                 AccessLevel = Core.Sessions.SessionAccessResolver.ClampToSupported(level, SupportedAccessLevels),
-            });
+            }).AsExplicit());
 
     public Task<SessionGenerateResult> GenerateAsync(string? model, string? system,
         string messagesJson, int maxTokens, CancellationToken ct, string? effort = null, int? timeout = null)
@@ -560,6 +560,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         MaxAccessLevel = s.MaxAccessLevel,
         AccessLevelBeforePlan = s.AccessLevelBeforePlan,
         Unattended = s.Unattended,
+        AccessLevelSource = s.Access.Source,
         SupportedAccessLevels = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Full],
         UserId = s.UserId,
         UserName = s.UserName,

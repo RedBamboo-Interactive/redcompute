@@ -40,6 +40,9 @@ public class UnifiedSessionInfo
     public bool Unattended { get; set; }
     // The level the session returns to when it leaves plan without naming one.
     public string? AccessLevelBeforePlan { get; set; }
+    // SessionAccessLevelSources: "policy" when the level came from the Agent's or global default
+    // (the session follows that default when it changes), "explicit" when someone chose it.
+    public string? AccessLevelSource { get; set; }
     public string? Source { get; set; }
     public string? ExecutionProfile { get; set; }
     public string? UserId { get; set; }
