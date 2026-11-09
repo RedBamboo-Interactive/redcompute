@@ -3426,7 +3426,7 @@ public partial class ClaudeSessionService
         pending.Dispose();
 
         if (pending.Permission is not null)
-            return AnswerPermission(session, pending, answer.Decision!);
+            return AnswerPermission(session, pending, answer.Decision!, answer.DeclineReason);
 
         try
         {
@@ -3493,15 +3493,17 @@ public partial class ClaudeSessionService
     /// no suggestion, RedCompute remembers the exact tool, and for Bash the exact command.
     /// Approving ExitPlanMode leaves plan for the level the session entered plan from.
     /// </summary>
-    private Core.Sessions.QuestionAnswerResult AnswerPermission(ManagedSession session, PendingQuestion pending, string decision)
+    private Core.Sessions.QuestionAnswerResult AnswerPermission(ManagedSession session, PendingQuestion pending, string decision,
+        string? denyReason = null)
     {
         var sessionId = session.Info.Id;
         try
         {
             if (decision == Core.Sessions.SessionPermissionDecisions.Deny)
             {
-                RespondPermissionDeny(session, pending.RequestId,
-                    $"The user denied '{pending.ToolName}'. Do not retry it; continue another way or ask the user.");
+                RespondPermissionDeny(session, pending.RequestId, string.IsNullOrWhiteSpace(denyReason)
+                    ? $"The user denied '{pending.ToolName}'. Do not retry it; continue another way or ask the user."
+                    : denyReason);
                 EmitPermissionResolved(session, pending.RequestId, decision);
                 SessionUpdated?.Invoke(session.Info);
                 _log($"[Claude] Permission {pending.RequestId} for '{pending.ToolName}' denied on session {sessionId}", null);

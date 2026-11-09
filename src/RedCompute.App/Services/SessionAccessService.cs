@@ -181,7 +181,43 @@ public sealed class SessionAccessService(
             + $"unattended {stored.Unattended} -> {next.Unattended}, level {state.AccessLevel} -> {next.AccessLevel}"
             + (outcome == LoweringOutcome.Stopped ? " (stopped: the harness would not switch down)" : "")
             + (personPresent ? " (person)" : ""), info.JobId);
+        if (!stored.Unattended && next.Unattended) DenyParkedPermissions(provider, info, next);
         return SessionAccessLimitsResult.Done(next, outcome == LoweringOutcome.Stopped);
+    }
+
+    /// <summary>
+    /// A session that just became unattended has nobody to answer what it already parked: each
+    /// waiting permission is denied now, with the same explanation an unattended ask gets, instead
+    /// of holding the session's turn until it expires. Ordinary questions are left alone.
+    /// </summary>
+    private void DenyParkedPermissions(ISessionProvider provider, UnifiedSessionInfo info, SessionAccessState state)
+    {
+        IReadOnlyList<PendingSessionQuestion> parked;
+        try { parked = provider.GetPendingQuestions(info.Id); }
+        catch (Exception ex)
+        {
+            log($"[Access] Could not read the approvals parked on {info.Provider}/{info.Id}: {ex.Message}", info.JobId);
+            return;
+        }
+        foreach (var question in parked)
+        {
+            if (question.Kind != PendingSessionQuestion.PermissionKind) continue;
+            var what = question.Permission?.ToolName is { Length: > 0 } tool ? $"'{tool}'" : "this";
+            try
+            {
+                var result = provider.SubmitQuestionAnswer(info.Id, new SessionQuestionAnswer
+                {
+                    RequestId = question.RequestId,
+                    Decision = SessionPermissionDecisions.Deny,
+                    DeclineReason = SessionAccessNotices.UnattendedDenial(state.AccessLevel, what),
+                });
+                log($"[Access] Session {info.Provider}/{info.Id} is now unattended; parked approval {question.RequestId} ({what}): {result}", info.JobId);
+            }
+            catch (Exception ex)
+            {
+                log($"[Access] Could not deny parked approval {question.RequestId} on {info.Provider}/{info.Id}: {ex.Message}", info.JobId);
+            }
+        }
     }
 
     /// <summary>

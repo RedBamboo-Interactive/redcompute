@@ -222,7 +222,7 @@ public static class SessionAccessEndpoints
         "Also tightens an existing session's limits (one-way without a person): maxAccessLevel sets or lowers its cap, and a cap below the "
         + "current level lowers the level (and the level it returns to after plan) to the highest supported level at or below it, through the "
         + "harness; a live harness that will not switch down is stopped (stopped true) and relaunches within the cap. unattended true marks it "
-        + "unattended, so later permission asks are denied at once and never park (asks already parked stay parked). Any caller with write access "
+        + "unattended, so later permission asks are denied at once and never park, and approvals already parked are denied now with the same explanation. Any caller with write access "
         + "may tighten, Agents and automations included. Raising or clearing a cap needs a person (403 cap_change_requires_person), as does "
         + "unattended false (403 attended_requires_person). A cap below every level the provider supports is 422 access_level_cap_unsupported. "
         + "The level's source is kept: a policy-sourced session still follows its default, within the cap. Limits apply before any level in the "

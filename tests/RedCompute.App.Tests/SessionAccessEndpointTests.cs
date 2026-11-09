@@ -437,6 +437,31 @@ public sealed class SessionAccessEndpointTests
     }
 
     [Fact]
+    public async Task Turning_a_session_unattended_denies_the_approvals_it_already_parked()
+    {
+        // A pre-upgrade Discord session parked on an approval nobody can see: the retrofit must
+        // release it now instead of holding the next turn for thirty minutes. Questions stay.
+        var f = new Fixture(Auto) { Readable = true };
+        f.Provider.Pending.Add(Permission("perm-1"));
+        f.Provider.Pending.Add(SessionQuestionCallbackTests.Question("q-1"));
+
+        var (status, _) = await f.PostAsync("access-level", new { maxAccessLevel = Auto, unattended = true }, "agent");
+
+        Assert.Equal(200, status);
+        var answer = Assert.Single(f.Provider.Answers);
+        Assert.Equal("perm-1", answer.RequestId);
+        Assert.Equal(SessionPermissionDecisions.Deny, answer.Decision);
+        Assert.StartsWith("Denied: this session runs at Auto with nobody to approve", answer.DeclineReason);
+        Assert.Equal("q-1", Assert.Single(f.Provider.Pending).RequestId);
+
+        // Already unattended: nothing parked is touched again.
+        f.Provider.Pending.Add(Permission("perm-2"));
+        var again = await f.PostAsync("access-level", new { unattended = true }, "agent");
+        Assert.Equal(200, again.Status);
+        Assert.Single(f.Provider.Answers);
+    }
+
+    [Fact]
     public async Task An_agent_token_retrofits_a_pre_upgrade_discord_session()
     {
         // A Discord session from before access levels follow-ups: policy-sourced, attended, uncapped,
