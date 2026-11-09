@@ -29,6 +29,8 @@ public class ClaudeStreamEvent
     // for approval when it is a permission. Also set on "permission_denied" notices.
     public string? Kind { get; init; }
     public PendingPermissionRequest? Permission { get; init; }
+    /// <summary>On a permission's question_resolved: the decision (UnifiedStreamEvent.Decision).</summary>
+    public string? Decision { get; init; }
     // The launching tool call when the CLI attributes this line to background work (a subagent's
     // `parent_tool_use_id`). Null on main-loop events.
     public string? ParentToolUseId { get; init; }

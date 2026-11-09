@@ -326,6 +326,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         RequestId = e.RequestId,
         Kind = e.Kind,
         Permission = e.Permission,
+        Decision = e.Decision,
         Attachments = e.Attachments?.Select(a => new UnifiedAttachment
         {
             Type = a.Type,

@@ -54,7 +54,7 @@ public sealed class CodexApprovalTests : IDisposable
         Assert.Equal(7, response["id"]!.GetValue<int>());
         Assert.Equal("acceptForSession", response["result"]!["decision"]!.GetValue<string>());
         Assert.Empty(h.Service.GetPendingQuestions("session-1"));
-        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "approval-7", Content: "allowed_session" });
+        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "approval-7", Content: "allow_session", Decision: "allow_session" });
         Assert.Equal("Active", h.Info.Status);
     }
 
@@ -134,7 +134,7 @@ public sealed class CodexApprovalTests : IDisposable
 
         Assert.Equal("decline", Assert.Single(await h.ResponsesAsync())["result"]!["decision"]!.GetValue<string>());
         Assert.Empty(h.Service.GetPendingQuestions("session-1"));
-        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "approval-10", Content: "timeout" });
+        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "approval-10", Content: "timeout", Decision: "deny" });
     }
 
     [Fact]

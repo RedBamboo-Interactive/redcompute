@@ -19,6 +19,8 @@ public class OpenCodeStreamEvent
     public string? RequestId { get; init; }
     public string? Kind { get; init; }
     public RedCompute.Core.Sessions.PendingPermissionRequest? Permission { get; init; }
+    /// <summary>On a permission's question_resolved: the decision (UnifiedStreamEvent.Decision).</summary>
+    public string? Decision { get; init; }
 }
 
 public class OpenCodeAttachment

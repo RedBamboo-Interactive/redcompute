@@ -54,7 +54,7 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
         Assert.Equal("selected", response["result"]!["outcome"]!["outcome"]!.GetValue<string>());
         Assert.Equal("always", response["result"]!["outcome"]!["optionId"]!.GetValue<string>());
         Assert.Empty(h.Service.GetPendingQuestions("session-1"));
-        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "permission-21", Content: "allowed_session" });
+        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "permission-21", Content: "allow_session", Decision: "allow_session" });
     }
 
     [Theory]
@@ -127,7 +127,7 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
 
         Assert.Equal("reject", Assert.Single(await h.ResponsesAsync())["result"]!["outcome"]!["optionId"]!.GetValue<string>());
         Assert.Empty(h.Service.GetPendingQuestions("session-1"));
-        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "permission-26", Content: "timeout" });
+        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "permission-26", Content: "timeout", Decision: "deny" });
     }
 
     [Theory]

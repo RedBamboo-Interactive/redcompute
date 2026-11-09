@@ -1199,7 +1199,7 @@ public class OpenCodeSessionService
             return QuestionAnswerResult.Error;
         }
         _log($"[OpenCode] Permission {answer.RequestId} ({pending.Permission.ToolName}) {decision} on session {sessionId}", null);
-        ResolvePermission(session, answer.RequestId, SessionPermissionDecisions.Outcome(decision));
+        ResolvePermission(session, answer.RequestId, decision, decision);
         return decision == SessionPermissionDecisions.Deny ? QuestionAnswerResult.Denied : QuestionAnswerResult.Allowed;
     }
 
@@ -1211,7 +1211,7 @@ public class OpenCodeSessionService
              $"{PermissionTimeout.TotalMinutes:0} minutes, rejecting", null);
         try { await RespondToRequest(session, pending.Root, PermissionOutcome(pending.Options, SessionPermissionDecisions.Deny)); }
         catch (Exception ex) { _log($"[OpenCode] Failed to reject expired permission {requestId}: {ex.Message}", null); }
-        ResolvePermission(session, requestId, "timeout");
+        ResolvePermission(session, requestId, "timeout", SessionPermissionDecisions.Deny);
     }
 
     /// <summary>
@@ -1233,12 +1233,13 @@ public class OpenCodeSessionService
         }
     }
 
-    private void ResolvePermission(ManagedSession session, string requestId, string outcome)
+    /// <summary>Content is the decision (or timeout / cancelled / session_ended); decision is set when one was made or an expiry denied it.</summary>
+    private void ResolvePermission(ManagedSession session, string requestId, string outcome, string? decision = null)
     {
         StreamEvent?.Invoke(session.Info.Id, new OpenCodeStreamEvent
         {
             Type = "question_resolved", Kind = PendingSessionQuestion.PermissionKind, RequestId = requestId,
-            Content = outcome, MessageUid = session.CurrentAssistantUid,
+            Content = outcome, Decision = decision, MessageUid = session.CurrentAssistantUid,
         });
         SessionUpdated?.Invoke(session.Info);
     }

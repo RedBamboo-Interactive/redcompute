@@ -441,6 +441,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         RequestId = e.RequestId,
         Kind = e.Kind,
         Permission = e.Permission,
+        Decision = e.Decision,
     };
 
     private static UnifiedMessageRecord ToUnifiedMessage(ClaudeMessageRecord m) => new()

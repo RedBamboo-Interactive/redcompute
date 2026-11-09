@@ -228,7 +228,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(Fixture("allow-session-response")[0]), response["response"]!["response"]),
             response.ToJsonString());
         Assert.Empty(_service.GetPendingQuestions(id));
-        Assert.Contains(Live(), e => e is { Type: "question_resolved" } && e.RequestId == requestId && e.Content == "allowed_session");
+        Assert.Contains(Live(), e => e is { Type: "question_resolved" } && e.RequestId == requestId && e.Content == "allow_session" && e.Decision == "allow_session" && e.Kind == "permission");
 
         // The rest of the capture: the second, identical command arrives with no ask at all.
         foreach (var line in lines.Skip(2)) Assert.True(_service.ProcessOutputLine(id, line));
@@ -250,7 +250,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         var verdict = Response(requestId);
         Assert.Equal("deny", verdict["behavior"]!.GetValue<string>());
         Assert.Contains("denied 'Bash'", verdict["message"]!.GetValue<string>());
-        Assert.Contains(Live(), e => e is { Type: "question_resolved" } && e.RequestId == requestId && e.Content == "denied");
+        Assert.Contains(Live(), e => e is { Type: "question_resolved" } && e.RequestId == requestId && e.Content == "deny" && e.Decision == "deny" && e.Kind == "permission");
     }
 
     [Fact]
@@ -267,7 +267,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         var verdict = Response(requestId);
         Assert.Equal("allow", verdict["behavior"]!.GetValue<string>());
         Assert.Null(verdict["updatedPermissions"]);
-        Assert.Contains(Live(), e => e is { Type: "question_resolved" } && e.RequestId == requestId && e.Content == "allowed_once");
+        Assert.Contains(Live(), e => e is { Type: "question_resolved" } && e.RequestId == requestId && e.Content == "allow_once" && e.Decision == "allow_once" && e.Kind == "permission");
 
         // Asked again, it parks again.
         Assert.True(_service.ProcessOutputLine(id, lines[1].Replace(requestId, "second-ask")));
@@ -308,7 +308,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         var verdict = Response(requestId);
         Assert.Equal("deny", verdict["behavior"]!.GetValue<string>());
         Assert.Contains("No one approved 'Bash'", verdict["message"]!.GetValue<string>());
-        Assert.Contains(Live(), e => e is { Type: "question_resolved", Content: "timeout" } && e.RequestId == requestId);
+        Assert.Contains(Live(), e => e is { Type: "question_resolved", Content: "timeout", Decision: "deny" } && e.RequestId == requestId);
     }
 
     [Fact]

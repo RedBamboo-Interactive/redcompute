@@ -1451,7 +1451,9 @@ public static class UnifiedSessionEndpoints
             "A pendingQuestions entry of kind permission (a tool call waiting for approval) is answered with {requestId, decision}: " +
             "allow_once, allow_session (remember it for this session) or deny, from the entry's permission.options. Only a person may decide: " +
             "an Agent's, automation's or service's token gets 403 approval_requires_person, even with read access. " +
-            "Unanswered permissions are denied after 30 minutes.",
+            "Unanswered permissions are denied after 30 minutes. A permission's question_resolved stream event carries the decision in both " +
+            "decision and content (allow_once, allow_session, deny); an expired one has content timeout and decision deny; a withdrawn one " +
+            "(cancelled, session_ended) has no decision.",
             async (HttpContext ctx, string id) =>
         {
             var (provider, info, _) = FindSessionAcrossProviders(registry, id);
@@ -1503,6 +1505,7 @@ public static class UnifiedSessionEndpoints
                     {
                         answered = true,
                         outcome = SessionPermissionDecisions.Outcome(decision),
+                        decision,
                         kind = PendingSessionQuestion.PermissionKind,
                     }),
                     QuestionAnswerResult.InvalidDecision
@@ -1963,7 +1966,8 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/execute",
             "Run an agent task (default 30min timeout, max 2h). Without an explicit tools grant, Claude runs at the resolved access level " +
             "(accessLevel, clamped like a session start; ask runs non-interactively with file tools only, auto uses Claude's classifier, full skips every prompt); " +
-            "an explicit tools grant keeps its exact tool set unprompted. Use ?async for fire-and-forget with job tracking. Signed execution identity is derived for the admitted one-shot lifetime and passed to the provider process in REDLEAF_EXECUTION_TOKEN.", async (HttpContext ctx) =>
+            "an explicit tools grant keeps its exact tool set unprompted. A one-shot is always unattended (flow nodes send unattended: true): " +
+            "nothing parks, a permission the level does not grant is denied at once and the run continues. Use ?async for fire-and-forget with job tracking. Signed execution identity is derived for the admitted one-shot lifetime and passed to the provider process in REDLEAF_EXECUTION_TOKEN.", async (HttpContext ctx) =>
         {
             var userId = ResolveUserId(ctx);
             if (userId == null)
@@ -2070,6 +2074,11 @@ public static class UnifiedSessionEndpoints
                         $"accessLevel must be one of {string.Join(", ", SessionAccessLevels.All)}");
                 requestedAccessLevel = normalizedAccess;
             }
+            // Nobody can answer a one-shot's permission: it is unattended whatever the caller says.
+            // unattended is still validated, so a malformed flag is not silently taken as a promise.
+            if (body.TryGetProperty("unattended", out var oneshotUnattended)
+                && oneshotUnattended.ValueKind is not (JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null))
+                return Error(422, "validation_failed", "unattended must be a boolean when supplied");
             var oneshotAccess = await _access!.ResolveOneshotAsync(provider, requestedAccessLevel,
                 ComputeResourceAccess.IsPersonPresent(ctx), SessionAccessService.AgentEntityId(provenance), ctx.RequestAborted);
             if (oneshotAccess.Error is not null)
@@ -2195,6 +2204,11 @@ public static class UnifiedSessionEndpoints
                         type = "string", @enum = SessionAccessLevels.All.ToArray(),
                         description = "Requested access level when no explicit tools grant is given (Claude). Defaults to the Agent's policy level; "
                             + "a caller that is not a person is clamped to it, and full needs Full enabled (else auto).",
+                    },
+                    unattended = new
+                    {
+                        type = "boolean", @default = true,
+                        description = "A one-shot is always unattended: permission asks are denied at once and never park. Accepted for symmetry with session start.",
                     },
                 },
             });

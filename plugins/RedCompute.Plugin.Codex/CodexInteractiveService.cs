@@ -1628,7 +1628,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
         _ = session.Connection.RespondAsync(pending.RpcId, ApprovalResponse(pending.Method, pending.Params, decision!));
         _log($"[Codex] Permission {requestId} ({pending.Method}) {decision} on session {sessionId}", null);
-        ResolveApproval(session, requestId, Core.Sessions.SessionPermissionDecisions.Outcome(decision!));
+        ResolveApproval(session, requestId, decision!, decision);
         return decision == Core.Sessions.SessionPermissionDecisions.Deny
             ? Core.Sessions.QuestionAnswerResult.Denied
             : Core.Sessions.QuestionAnswerResult.Allowed;
@@ -1642,14 +1642,15 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
              $"{ApprovalTimeout.TotalMinutes:0} minutes, declining", null);
         _ = session.Connection.RespondAsync(pending.RpcId,
             ApprovalResponse(pending.Method, pending.Params, Core.Sessions.SessionPermissionDecisions.Deny));
-        ResolveApproval(session, requestId, "timeout");
+        ResolveApproval(session, requestId, "timeout", Core.Sessions.SessionPermissionDecisions.Deny);
     }
 
-    private void ResolveApproval(ManagedSession session, string requestId, string outcome)
+    /// <summary>Content is the decision (or timeout / cancelled); decision is set when one was made or an expiry denied it.</summary>
+    private void ResolveApproval(ManagedSession session, string requestId, string outcome, string? decision = null)
     {
         StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
         {
-            Type = "question_resolved", RequestId = requestId, Content = outcome,
+            Type = "question_resolved", RequestId = requestId, Content = outcome, Decision = decision,
             Kind = Core.Sessions.PendingSessionQuestion.PermissionKind, MessageUid = session.CurrentTurnUid,
         });
         if (session.Info.Status == "Waiting" && session.Approvals.IsEmpty && session.Questions.IsEmpty)

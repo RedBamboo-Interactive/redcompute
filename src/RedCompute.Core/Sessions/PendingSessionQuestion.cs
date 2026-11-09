@@ -62,7 +62,7 @@ public static class SessionPermissionDecisions
 
     public static bool IsKnown(string? decision) => decision is AllowOnce or AllowSession or Deny;
 
-    /// <summary>The <c>question_resolved</c> outcome for a decision.</summary>
+    /// <summary>The HTTP answer's <c>outcome</c> for a decision. The <c>question_resolved</c> event carries the decision itself.</summary>
     public static string Outcome(string decision) => decision switch
     {
         AllowOnce => "allowed_once",

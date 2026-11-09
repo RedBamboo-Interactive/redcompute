@@ -336,6 +336,7 @@ public sealed class SessionAccessEndpointTests
 
         Assert.Equal(200, status);
         Assert.Equal("allowed_session", body.GetProperty("outcome").GetString());
+        Assert.Equal("allow_session", body.GetProperty("decision").GetString());
         Assert.Equal("permission", body.GetProperty("kind").GetString());
         var answer = Assert.Single(f.Provider.Answers);
         Assert.Equal(("perm-1", "allow_session"), (answer.RequestId, answer.Decision));

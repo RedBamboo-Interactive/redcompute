@@ -3383,12 +3383,15 @@ public partial class ClaudeSessionService
             : $"No one approved '{pending.ToolName}' within {QuestionAnswerTimeout.TotalMinutes:0} minutes, so it was denied. " +
               "Continue without it, or ask again when the user is back.");
 
-        StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
-        {
-            Type = "question_resolved",
-            RequestId = requestId,
-            Content = "timeout",
-        });
+        if (pending.Permission is not null)
+            EmitPermissionResolved(session, requestId, Core.Sessions.SessionPermissionDecisions.Deny, "timeout");
+        else
+            StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+            {
+                Type = "question_resolved",
+                RequestId = requestId,
+                Content = "timeout",
+            });
         SessionUpdated?.Invoke(session.Info);
     }
 
@@ -3485,7 +3488,7 @@ public partial class ClaudeSessionService
             {
                 RespondPermissionDeny(session, pending.RequestId,
                     $"The user denied '{pending.ToolName}'. Do not retry it; continue another way or ask the user.");
-                EmitQuestionResolved(session, pending.RequestId, Core.Sessions.SessionPermissionDecisions.Outcome(decision));
+                EmitPermissionResolved(session, pending.RequestId, decision);
                 SessionUpdated?.Invoke(session.Info);
                 _log($"[Claude] Permission {pending.RequestId} for '{pending.ToolName}' denied on session {sessionId}", null);
                 return Core.Sessions.QuestionAnswerResult.Denied;
@@ -3517,7 +3520,7 @@ public partial class ClaudeSessionService
 
             RespondPermissionAllow(session, pending.RequestId, pending.Input, updatedPermissions);
             if (afterPlan is not null) SetAccessState(sessionId, afterPlan);
-            EmitQuestionResolved(session, pending.RequestId, Core.Sessions.SessionPermissionDecisions.Outcome(decision));
+            EmitPermissionResolved(session, pending.RequestId, decision);
             SessionUpdated?.Invoke(session.Info);
             _log($"[Claude] Permission {pending.RequestId} for '{pending.ToolName}' {decision} on session {sessionId}", null);
             return Core.Sessions.QuestionAnswerResult.Allowed;
@@ -3668,6 +3671,17 @@ public partial class ClaudeSessionService
             Type = "question_resolved",
             RequestId = requestId,
             Content = outcome,
+        });
+
+    /// <summary>A permission resolved by a decision: the decision in both decision and content.</summary>
+    private void EmitPermissionResolved(ManagedSession session, string requestId, string decision, string? content = null) =>
+        StreamEvent?.Invoke(session.Info.Id, new ClaudeStreamEvent
+        {
+            Type = "question_resolved",
+            Kind = Core.Sessions.PendingSessionQuestion.PermissionKind,
+            RequestId = requestId,
+            Content = content ?? decision,
+            Decision = decision,
         });
 
     // updatedInput is required by the control protocol on allow; the tool runs with it verbatim.

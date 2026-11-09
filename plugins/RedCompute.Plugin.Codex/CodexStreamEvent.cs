@@ -26,6 +26,8 @@ public class CodexStreamEvent
     /// <summary>On question events: question or permission. Permission cards are live-only, never transcript.</summary>
     public string? Kind { get; init; }
     public Core.Sessions.PendingPermissionRequest? Permission { get; init; }
+    /// <summary>On a permission's question_resolved: the decision (UnifiedStreamEvent.Decision).</summary>
+    public string? Decision { get; init; }
     public List<CodexAttachment>? Attachments { get; init; }
 }
 

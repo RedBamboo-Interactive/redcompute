@@ -35,6 +35,10 @@ public class UnifiedStreamEvent
     public string? Kind { get; init; }
     // On a "question" event of kind permission: what waits for approval.
     public PendingPermissionRequest? Permission { get; init; }
+    // On "question_resolved" for a permission: allow_once, allow_session or deny (an expired one is
+    // deny, with content "timeout"). Content carries the same decision. Null when the card was only
+    // withdrawn (cancelled, session ended) and for ordinary questions.
+    public string? Decision { get; init; }
     public string? Epoch { get; init; }
     public long? Sequence { get; init; }
     public List<UnifiedAttachment>? Attachments { get; init; }

@@ -591,6 +591,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         RequestId = e.RequestId,
         Kind = e.Kind,
         Permission = e.Permission,
+        Decision = e.Decision,
         Attachments = e.Attachments?.Select(a => new UnifiedAttachment
         {
             Type = a.Type,
