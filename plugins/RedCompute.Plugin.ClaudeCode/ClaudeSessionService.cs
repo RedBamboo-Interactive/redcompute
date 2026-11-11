@@ -855,6 +855,12 @@ public partial class ClaudeSessionService
         options.Add("--strict-mcp-config");
         options.Add("--mcp-config");
         options.Add(EmptyMcpConfig);
+        // A generate is exactly its system prompt and messages. With no setting sources the CLI
+        // loads no CLAUDE.md, hooks or user defaults: otherwise the machine owner's global
+        // CLAUDE.md arrives as a <system-reminder> inside the user turn, next to the untrusted
+        // sample a Sentinel review is judging, and the reviewer takes it for an injection attempt.
+        options.Add("--setting-sources");
+        options.Add("");
         // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
         options.Add("--thinking-display");
         options.Add("summarized");
