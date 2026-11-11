@@ -46,8 +46,23 @@ internal sealed class SessionPromptCallbacks
         // Session-scoped subscription state (Kind "session"): whether a turn is in progress, whether
         // it began without a queued input, the queue sequence it began at, and the last one seen.
         string? Kind = null, bool InTurn = false, bool UnpromptedOpen = false, int UnpromptedTurns = 0,
-        long LastDeliverySequence = 0, long OpenDeliverySequence = 0);
+        long LastDeliverySequence = 0, long OpenDeliverySequence = 0,
+        // Background-turn coalescing: when the last background report went out, the turns absorbed
+        // since, and whether a trailing report is owed at the window's end.
+        DateTimeOffset? LastBackgroundNoticeAt = null, int CoalescedTurns = 0, bool NoticeHeld = false,
+        // Why RedCompute created this registration itself (restart-continuation); reported as trigger.
+        string? Trigger = null);
     private const string KindSession = "session";
+    /// <summary>
+    /// At most one "still working in the background" report per registration in this window. A worker
+    /// tailing a log with a Monitor is woken every minute or so; each woken turn used to become one
+    /// discussion event, about 50 in 80 minutes on 9 Nov, each waking a supervisor at ~300k context.
+    /// Thirty minutes keeps a liveness signal inside the proof runs that matter (tens of minutes)
+    /// while cutting that hour to two or three reports. Completions, pauses, stops, interrupted
+    /// turns and questions never wait for it.
+    /// </summary>
+    internal static readonly TimeSpan DefaultBackgroundNoticeWindow = TimeSpan.FromMinutes(30);
+    private readonly TimeSpan _backgroundWindow;
     private const string KindUnprompted = "unprompted";
     private readonly SessionCallbackStore _store;
     private readonly SessionInputQueueStore _queue;
@@ -71,9 +86,10 @@ internal sealed class SessionPromptCallbacks
 
     internal SessionPromptCallbacks(string path, SessionInputQueueStore queue,
         Func<string, UnifiedSessionInfo?> current, HttpClient http,
-        Action<string, Guid?>? log = null, Func<DateTimeOffset>? now = null)
+        Action<string, Guid?>? log = null, Func<DateTimeOffset>? now = null, TimeSpan? backgroundNoticeWindow = null)
     {
         _store = new(path); _queue = queue; _current = current; _http = http;
+        _backgroundWindow = backgroundNoticeWindow ?? DefaultBackgroundNoticeWindow;
         _log = log ?? ((_, _) => { }); _now = now ?? (() => DateTimeOffset.UtcNow);
         foreach (var (_, json) in _store.Load())
         {
@@ -277,6 +293,21 @@ internal sealed class SessionPromptCallbacks
                 if (entry.Kind == KindSession) continue;
                 var prompt = await _queue.FindPromptAsync(sessionId, entry.PromptMessageUid, ct);
                 if (prompt is null || prompt.OwnerUserId != entry.UserId) continue;
+                // The window after the last background report ran out while the session is still
+                // working in the background: send the one trailing report for the turns absorbed.
+                if (entry.NoticeHeld && entry.Payload is null && session is { Status: SessionStatus.Idle } held
+                    && entry.LastBackgroundNoticeAt is { } since && _now() - since >= _backgroundWindow
+                    && prompt.State == SessionInputQueueState.Delivered
+                    && SessionWorkStates.RunningBackgroundTasks(held.BackgroundTasks) is var stillRunning and > 0)
+                {
+                    pendingInputs ??= await _queue.CountPendingAsync(sessionId, ct);
+                    var trailing = Completion(sessionId, entry, prompt, nameof(SessionStatus.Idle), null, held.StopReason, true,
+                        SessionWorkStates.Background, pendingInputs.Value, _queue.GetLastEndedTurn(sessionId));
+                    // It reports the latest absorbed turn, whose sequence the absorption already counted.
+                    var report = WithReport(entry, trailing, stillRunning, entry.BackgroundDeliveries - 1);
+                    Save(report); deliver.Add(report);
+                    continue;
+                }
                 // The turn this prompt rode; for a report re-armed by background work, the turn
                 // that work woke, which is the session's latest ended one when it reports.
                 var turn = prompt.State != SessionInputQueueState.Delivered || prompt.TurnId is null ? null
@@ -296,8 +327,7 @@ internal sealed class SessionPromptCallbacks
                     var ended = Completion(sessionId, entry, prompt, turn.Status!, null, turn.StopReason, true,
                         turn.BackgroundTasksRunning > 0 ? SessionWorkStates.Background : SessionWorkStates.Idle,
                         pendingInputs.Value, turn);
-                    var recorded = entry with { Payload = SessionCallbackRegistry.WithTurnIdentity(ended, turn.BackgroundTasksRunning, entry.BackgroundDeliveries),
-                        ActiveSeen = true, Attempts = 0, NextAttemptAt = null };
+                    var recorded = WithReport(entry, ended, turn.BackgroundTasksRunning) with { ActiveSeen = true };
                     Save(recorded); deliver.Add(recorded);
                     continue;
                 }
@@ -342,8 +372,13 @@ internal sealed class SessionPromptCallbacks
                     pendingInputs: pendingInputs.Value, turn: cancelled ? null : turn);
                 var backgroundRunning = !cancelled && !paused && endedReason is null && session!.Status == SessionStatus.Idle
                     ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
-                var payload = SessionCallbackRegistry.WithTurnIdentity(completion, backgroundRunning, entry.BackgroundDeliveries);
-                var pending = entry with { Payload = payload, ActiveSeen = paused ? false : entry.ActiveSeen, Attempts = 0, NextAttemptAt = null };
+                if (TryCoalesce(entry, backgroundRunning, turn)) continue;
+                // A delegated prompt a restart stopped mid-work is continued by RedCompute after the
+                // restart (RestartContinuations); the receiver is told so it does not write one itself.
+                var autoContinue = restartPaused && SessionStopReasons.IsRestartRecoverable(session!.StopReason)
+                    && prompt.State == SessionInputQueueState.Delivered;
+                var pending = WithReport(entry, completion, backgroundRunning, autoContinue: autoContinue)
+                    with { ActiveSeen = paused ? false : entry.ActiveSeen };
                 Save(pending); deliver.Add(pending);
             }
             await ObserveSessionSubscriptionsAsync(sessionId, session, observedActive, endedReason, endedStopReason, deliver, ct);
@@ -399,6 +434,103 @@ internal sealed class SessionPromptCallbacks
             {
                 _entries.Remove((sessionId, row.CallbackId)); _store.Remove(sessionId, row.CallbackId);
             }
+    }
+
+    /// <summary>
+    /// A background-turn report inside the window after the last one is absorbed: the registration
+    /// re-arms exactly as an acknowledged report would, and owes one trailing report at the window's
+    /// end if the session is still in the background then. An interrupted turn always reports.
+    /// </summary>
+    private bool TryCoalesce(Entry entry, int backgroundRunning, SessionTurnRecord? turn)
+    {
+        if (backgroundRunning <= 0 || turn is { Interrupted: true }
+            || entry.LastBackgroundNoticeAt is not { } last || _now() - last >= _backgroundWindow) return false;
+        Save(entry with { Payload = null, ActiveSeen = false, BackgroundDeliveries = entry.BackgroundDeliveries + 1,
+            NoticeHeld = true, CoalescedTurns = entry.CoalescedTurns + 1, Attempts = 0, NextAttemptAt = null });
+        _log($"[Callbacks] Session {entry.SessionId}: background turn report absorbed ({entry.CoalescedTurns + 1} since the last one)", null);
+        return true;
+    }
+
+    /// <summary>
+    /// The outbox row for a built completion. Additive fields appear only when they say something:
+    /// coalescedTurns (background turns absorbed since the last report), trigger (a registration
+    /// RedCompute made itself) and autoContinue (RedCompute continues this prompt after the restart).
+    /// </summary>
+    private Entry WithReport(Entry entry, object completion, int backgroundRunning, int? priorDeliveries = null,
+        bool autoContinue = false)
+    {
+        var payload = SessionCallbackRegistry.WithTurnIdentity(completion, backgroundRunning,
+            priorDeliveries ?? entry.BackgroundDeliveries);
+        if (entry.CoalescedTurns > 0 || entry.Trigger is not null || autoContinue)
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(payload)!.AsObject();
+            if (entry.CoalescedTurns > 0) node["coalescedTurns"] = entry.CoalescedTurns;
+            if (entry.Trigger is not null) node["trigger"] = entry.Trigger;
+            if (autoContinue) node["autoContinue"] = true;
+            payload = node.ToJsonString();
+        }
+        return entry with
+        {
+            Payload = payload, Attempts = 0, NextAttemptAt = null, NoticeHeld = false,
+            LastBackgroundNoticeAt = backgroundRunning > 0 ? _now() : entry.LastBackgroundNoticeAt,
+            CoalescedTurns = backgroundRunning > 0 ? 0 : entry.CoalescedTurns,
+        };
+    }
+
+    /// <summary>A delegated prompt still waiting for its completion: nothing final was built for it.</summary>
+    internal sealed record AwaitingPrompt(string SessionId, string CallbackId, string PromptMessageUid, string Url,
+        string? UserId, string? QuestionUrl);
+
+    internal async Task<IReadOnlyList<AwaitingPrompt>> AwaitingCompletionAsync(CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            return _entries.Values
+                .Where(e => e.Kind is null && e.QuestionRequestId is null && !IsFinal(e.Payload))
+                .Select(e => new AwaitingPrompt(e.SessionId, e.CallbackId, e.PromptMessageUid, e.Url, e.UserId, e.QuestionUrl))
+                .ToArray();
+        }
+        finally { _gate.Release(); }
+    }
+
+    // A built payload that consumes its registration once acknowledged: neither a pause nor a background report.
+    private static bool IsFinal(string? payload)
+    {
+        if (payload is null) return false;
+        using var doc = JsonDocument.Parse(payload);
+        var root = doc.RootElement;
+        if (root.TryGetProperty("backgroundTasksRunning", out var running) && running.GetInt32() > 0) return false;
+        var stop = root.TryGetProperty("stopReason", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+        return !(root.GetProperty("status").GetString() == "Stopped"
+            && (SessionStopReasons.IsAutoResumable(stop) || stop == "usage_limit"));
+    }
+
+    /// <summary>
+    /// Moves the registrations of an interrupted delegated prompt onto the continuation RedCompute
+    /// admitted for it. Each distinct receiver hears the continuation's completion instead; the old
+    /// rows, which could never report again, are removed. Session subscriptions are untouched, so
+    /// question and approval notifications keep flowing.
+    /// </summary>
+    internal async Task HandOverAsync(string sessionId, IReadOnlyList<string> callbackIds, string continuationUid, string trigger)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            var old = callbackIds.Select(id => _entries.GetValueOrDefault((sessionId, id)))
+                .OfType<Entry>().Where(e => e.Kind is null && e.QuestionRequestId is null).ToArray();
+            var receivers = old.GroupBy(e => (e.Url, e.UserId)).Select(g => g.First()).ToArray();
+            for (var i = 0; i < receivers.Length; i++)
+            {
+                var id = i == 0 ? continuationUid : $"{continuationUid}-{i}";
+                if (!_entries.ContainsKey((sessionId, id)))
+                    Save(new(sessionId, id, continuationUid, receivers[i].Url, receivers[i].UserId,
+                        QuestionUrl: receivers[i].QuestionUrl, Trigger: trigger));
+            }
+            foreach (var e in old) { _entries.Remove((sessionId, e.CallbackId)); _store.Remove(sessionId, e.CallbackId); }
+        }
+        finally { _gate.Release(); }
+        await ObserveAsync(sessionId);
     }
 
     /// <summary>

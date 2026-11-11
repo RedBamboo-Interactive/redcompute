@@ -392,6 +392,11 @@ public class RelayServer
         RegisterWsEvents(broadcaster, transcriptPipeline, inputQueue);
         _ = rollbacks.RecoverAsync(ct);
         _ = inputQueue.RunAsync(ct);
+        // Read now: the host consumes the planned-restart checkpoint once providers have started.
+        if (_callbacks.Durable is { } durableCallbacks)
+            _ = new RestartContinuations(durableCallbacks, inputQueueStore, inputQueue.AdmitAsync,
+                sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSession(sessionId).Info).FirstOrDefault(i => i is not null),
+                PlannedRestartCheckpoint.Current, DateTimeOffset.UtcNow, _log).RunAfterBootAsync(ct);
         // Always runs: its eligibility clock also tells completion callbacks a session settled.
         // A zero idle timeout disables only the parking itself.
         var idleParking = new IdleSessionParkingCoordinator(

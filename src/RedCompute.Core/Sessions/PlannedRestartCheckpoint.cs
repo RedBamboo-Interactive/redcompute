@@ -2,7 +2,15 @@ using System.Text.Json;
 
 namespace RedCompute.Core.Sessions;
 
-public sealed record PlannedRestartSession(string Provider, string SessionId, Guid? JobId);
+public sealed record PlannedRestartSession(string Provider, string SessionId, Guid? JobId)
+{
+    /// <summary>The drain stopped this session's turn because it was still running when the graceful wait ran out.</summary>
+    public bool ForcedStop { get; init; }
+    /// <summary>What the session was doing when the drain last saw it running (<see cref="SessionWorkStates"/>).</summary>
+    public string? WorkState { get; init; }
+    /// <summary>The background tasks still running when the drain last saw the session, by description.</summary>
+    public IReadOnlyList<string>? BackgroundTasks { get; init; }
+}
 
 public sealed record PlannedRestartData(
     string RunId,

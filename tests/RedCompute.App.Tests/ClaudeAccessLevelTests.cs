@@ -113,6 +113,41 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Equal("claude-conversation", ArgAfter(launch, "--resume"));
     }
 
+    // 2026-11-11 (80570766): the 9 Nov worker that came back at ask was the access-level rollout
+    // (rows with no level, then bbaf384), not the restart. This pins the restart itself: a session
+    // a planned restart cut mid-turn is recovered without touching its level, and resumes at it.
+    [Theory]
+    [InlineData(Full, SessionAccessLevelSources.Explicit, "bypassPermissions")]
+    [InlineData(Full, SessionAccessLevelSources.Parent, "bypassPermissions")]
+    [InlineData(Full, SessionAccessLevelSources.Policy, "bypassPermissions")]
+    [InlineData(Auto, SessionAccessLevelSources.Parent, "auto")]
+    [InlineData(Ask, SessionAccessLevelSources.Explicit, "acceptEdits")]
+    public void A_session_a_planned_restart_cut_mid_turn_keeps_its_level_and_resumes_at_it(string level, string source, string mode)
+    {
+        var record = Record("worker", level);
+        record.Status = "Active";
+        record.AccessLevelSource = source;
+        record.MaxAccessLevel = Full;
+        _store.SaveSession(record);
+        var checkpoint = Path.Combine(_root, "planned-restart.json");
+        PlannedRestartCheckpoint.Write(new("run", DateTimeOffset.UtcNow, [new("claude-code", "worker", null) { ForcedStop = true }]), checkpoint);
+        try
+        {
+            Assert.NotNull(PlannedRestartCheckpoint.LoadForStartup(checkpoint));
+            _service.RecoverSessions();
+        }
+        finally { PlannedRestartCheckpoint.Consume(checkpoint); }
+
+        var recovered = _store.FindSession("worker")!;
+        Assert.Equal("Stopped", recovered.Status);
+        Assert.Equal(SessionStopReasons.MaintenanceRestart, recovered.StopReason);
+        Assert.Equal((level, source, Full), (recovered.AccessLevel, recovered.AccessLevelSource, recovered.MaxAccessLevel));
+
+        Assert.True(_service.ResumeSession("worker", Provenance()) is not null, _service.LastStartError);
+        Assert.Equal(mode, PermissionModeArg(Assert.Single(_launches)));
+        Assert.Equal(level, _service.GetAccessState("worker")!.AccessLevel);
+    }
+
     [Theory]
     [InlineData(Plan, "plan")]
     [InlineData(Ask, "acceptEdits")]

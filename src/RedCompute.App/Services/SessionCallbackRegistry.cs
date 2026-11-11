@@ -44,6 +44,9 @@ public class SessionCallbackRegistry
         _currentSession = currentSession;
     }
 
+    /// <summary>The durable exact-prompt store, once attached.</summary>
+    internal SessionPromptCallbacks? Durable => _durable;
+
     internal Task ReconcileAsync(CancellationToken ct)
         => _durable?.SweepAsync(ct) ?? Task.CompletedTask;
 

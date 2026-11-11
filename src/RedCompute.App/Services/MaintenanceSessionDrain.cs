@@ -57,7 +57,7 @@ internal sealed class MaintenanceSessionDrain
 
             using var forced = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             forced.CancelAfter(_forcedTimeout);
-            await ForceStopAsync(blockers, forced.Token);
+            await ForceStopAsync(blockers, restartSessions, forced.Token);
 
             try
             {
@@ -127,16 +127,31 @@ internal sealed class MaintenanceSessionDrain
                      entry.Session.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting))
         {
             var session = entry.Session;
+            // The last running view of the session is what the replacement process tells it it lost.
+            var running = session.BackgroundTasks
+                .Where(task => !BackgroundTaskStatuses.IsTerminal(task.Status))
+                .Select(task => task.Description ?? task.Kind ?? task.TaskId)
+                .Where(description => !string.IsNullOrWhiteSpace(description))
+                .ToArray();
             restartSessions[(session.Provider, session.Id)] = new PlannedRestartSession(
-                session.Provider, session.Id, session.JobId);
+                session.Provider, session.Id, session.JobId)
+            {
+                WorkState = session.WorkState ?? SessionWorkStates.Derive(session.Status, 0, session.BackgroundTasks),
+                BackgroundTasks = running.Length == 0 ? null : running,
+            };
         }
 
         return sessions;
     }
 
-    private async Task ForceStopAsync(IReadOnlyList<SessionEntry> blockers, CancellationToken ct)
+    private async Task ForceStopAsync(IReadOnlyList<SessionEntry> blockers,
+        Dictionary<(string Provider, string SessionId), PlannedRestartSession> restartSessions, CancellationToken ct)
     {
         if (blockers.Count == 0) return;
+        // Recorded before the kill: a stop that lands is a turn this restart cut short.
+        foreach (var entry in blockers)
+            if (restartSessions.TryGetValue((entry.Session.Provider, entry.Session.Id), out var planned))
+                restartSessions[(entry.Session.Provider, entry.Session.Id)] = planned with { ForcedStop = true };
 
         var attempts = blockers
             .DistinctBy(entry => (entry.Provider, entry.Session.Id))

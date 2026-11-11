@@ -47,6 +47,34 @@ public sealed class MaintenanceSessionDrainTests
         Assert.Contains(logs, line => line.Contains("Forced maintenance drain reached quiescence", StringComparison.Ordinal));
     }
 
+    // 2026-11-11: the replacement process tells a cut worker what happened, so the drain records it.
+    [Fact]
+    public async Task The_checkpoint_says_which_turn_was_forced_and_which_background_work_was_running()
+    {
+        var (registry, provider) = RegistryWithSession(SessionStatus.Active);
+        provider.Session.BackgroundTasks =
+        [
+            new BackgroundTaskInfo { TaskId = "b1", Kind = "shell", Status = BackgroundTaskStatuses.Running, Description = "proof run" },
+            new BackgroundTaskInfo { TaskId = "b0", Kind = "shell", Status = BackgroundTaskStatuses.Completed, Description = "done" },
+        ];
+        var drain = CreateDrain(registry, []);
+
+        var planned = Assert.Single(await drain.DrainAsync(_ => Task.CompletedTask));
+
+        Assert.True(planned.ForcedStop);
+        Assert.Equal(SessionWorkStates.Working, planned.WorkState);
+        Assert.Equal(["proof run"], planned.BackgroundTasks!);
+    }
+
+    [Fact]
+    public async Task A_turn_that_ends_in_time_is_not_recorded_as_forced()
+    {
+        var (registry, provider) = RegistryWithSession(SessionStatus.Active);
+        provider.IdleAfterReads = 2;
+        var planned = Assert.Single(await CreateDrain(registry, []).DrainAsync(_ => Task.CompletedTask));
+        Assert.False(planned.ForcedStop);
+    }
+
     [Fact]
     public async Task Grace_timeout_also_breaks_stuck_queue_delivery_after_provider_stop()
     {
