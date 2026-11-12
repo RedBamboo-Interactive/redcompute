@@ -24,7 +24,8 @@ public class CodexSessionService
     public void EmitStreamEvent(string key, CodexStreamEvent evt) => StreamEvent?.Invoke(key, evt);
 
     /// <summary>Test seam for non-interactive exec invocations.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchExecProcess { get; set; } = Process.Start;
+    internal Func<ProcessStartInfo, Process?> LaunchExecProcess { get; set; } =
+        startInfo => SessionProcessContainment.Start(startInfo, "codex-exec");
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
     public CodexSessionService(CodexConfig config, IJobTracker jobTracker, ICodexSessionStore store, Action<string, Guid?> log)

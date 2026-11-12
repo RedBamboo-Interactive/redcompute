@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -87,7 +88,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
             foreach (var (k, v) in env)
                 startInfo.EnvironmentVariables[k] = v;
 
-        var process = (launchProcess ?? Process.Start)(startInfo)
+        var process = (launchProcess ?? (info => SessionProcessContainment.Start(info, "codex")))(startInfo)
             ?? throw new InvalidOperationException("Failed to start 'codex app-server'.");
         spawned?.Invoke();
 

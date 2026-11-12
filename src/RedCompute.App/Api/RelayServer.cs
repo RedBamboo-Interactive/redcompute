@@ -385,6 +385,13 @@ public class RelayServer
         SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
         CliVersionEndpoints.Map(registry, _registry);
         MaintenanceEndpoints.Map(registry, maintenance);
+        // Every session tree dies with its session; the long-lived registry is the one way out.
+        // Wire its guard before the boot sweep reaps what an earlier run's sessions left behind.
+        var longLived = new LongLivedProcessRegistry(LongLivedProcessRegistry.DefaultDirectory, message => _log(message, null));
+        SessionProcessContainment.Log = message => _log(message, null);
+        SessionProcessContainment.IsProtected = longLived.IsProtected;
+        SessionProcessContainment.SweepLedgers();
+        LongLivedProcessEndpoints.Map(registry, longLived);
         VoiceSessionEndpoints.Map(registry, _registry, _voiceSessions);
         _ = RunAttachmentCleanupAsync(ct);
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);

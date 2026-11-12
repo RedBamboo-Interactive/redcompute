@@ -358,7 +358,7 @@ public class OpenCodeSessionService
         Process process;
         try
         {
-            process = Process.Start(startInfo)!;
+            process = SessionProcessContainment.Start(startInfo, "opencode")!;
         }
         catch (Exception ex)
         {
@@ -1875,7 +1875,7 @@ public class OpenCodeSessionService
         BuildExecArgs(startInfo, model);
 
         var sw = Stopwatch.StartNew();
-        using var process = Process.Start(startInfo);
+        using var process = SessionProcessContainment.Start(startInfo, "opencode-exec");
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start opencode process");
         if (streamKey != null)

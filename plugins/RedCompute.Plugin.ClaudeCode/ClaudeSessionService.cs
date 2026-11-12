@@ -49,7 +49,8 @@ public partial class ClaudeSessionService
     /// Launches the persistent interactive CLI process (start and resume). Tests replace it to
     /// observe the exact argv without spawning a real Claude Code session.
     /// </summary>
-    internal Func<ProcessStartInfo, Process?> LaunchSessionProcess { get; set; } = Process.Start;
+    internal Func<ProcessStartInfo, Process?> LaunchSessionProcess { get; set; } =
+        startInfo => SessionProcessContainment.Start(startInfo, "claude-code");
 
     // Claude Code 2.1.300 rejects a bare `{}` ("mcpServers: expected record"). `--bare` is not used:
     // it also skips OAuth/keychain credentials, which breaks subscription-authenticated providers.
@@ -57,9 +58,11 @@ public partial class ClaudeSessionService
     internal const string EmptyMcpConfig = "{\"mcpServers\":{}}";
 
     /// <summary>Test seam for the short-lived, tool-free completion process.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchOneshotProcess { get; set; } = Process.Start;
+    internal Func<ProcessStartInfo, Process?> LaunchOneshotProcess { get; set; } =
+        startInfo => SessionProcessContainment.Start(startInfo, "claude-code-oneshot");
     /// <summary>Test seam for the agent execution process.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchAgentProcess { get; set; } = Process.Start;
+    internal Func<ProcessStartInfo, Process?> LaunchAgentProcess { get; set; } =
+        startInfo => SessionProcessContainment.Start(startInfo, "claude-code-agent");
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
     public ClaudeSessionService(

@@ -124,7 +124,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     // The session cap and the "already live" resume check are check-then-act across the app-server
     // handshake. The launch gate no longer spans that handshake, so this keeps them serialized.
     private readonly SemaphoreSlim _sessionLaunchLock = new(1, 1);
-    internal Func<ProcessStartInfo, Process?> LaunchAppServerProcess { get; set; } = Process.Start;
+    internal Func<ProcessStartInfo, Process?> LaunchAppServerProcess { get; set; } =
+        startInfo => SessionProcessContainment.Start(startInfo, "codex");
 
     public event Action<CodexSessionInfo>? SessionCreated;
     public event Action<CodexSessionInfo>? SessionUpdated;
