@@ -89,7 +89,7 @@ public sealed class SessionProcessContainmentTests : IDisposable
     public async Task An_adopted_escapee_survives_the_reap_and_stops_through_the_registry()
     {
         if (!OperatingSystem.IsWindows() || FindOnPath("pwsh.exe") is null) return;
-        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var registry = NewRegistry();
         SessionProcessContainment.IsProtected = registry.IsProtected;
         var pidFile = Path.Combine(_root, "kept.pid");
         var root = StartScript("escapee-root.ps1", WindowsPowerShell, pidFile);
@@ -116,7 +116,7 @@ public sealed class SessionProcessContainmentTests : IDisposable
     public async Task A_session_member_cannot_be_adopted_because_it_would_die_with_its_session()
     {
         if (!OperatingSystem.IsWindows()) return;
-        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var registry = NewRegistry();
         var root = StartRoot("Start-Sleep 600");
         var tree = SessionProcessContainment.Contain(root, "test")!;
 
@@ -155,7 +155,7 @@ public sealed class SessionProcessContainmentTests : IDisposable
     public async Task A_launched_long_lived_server_runs_outside_every_session_logs_to_file_and_stops_as_a_tree()
     {
         if (!OperatingSystem.IsWindows()) return;
-        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var registry = NewRegistry();
         var pidFile = Path.Combine(_root, "server.pid");
         var result = registry.Launch(new LongLivedLaunchRequest("test server",
             $"\"{WindowsPowerShell}\" -NoProfile -Command \"Write-Output listening; Set-Content -Path '{pidFile}' -Value $PID; Start-Sleep 600\"",
@@ -170,12 +170,13 @@ public sealed class SessionProcessContainmentTests : IDisposable
         Assert.False(SessionProcessContainment.IsSessionMember(view.Pid));
         await WaitUntilAsync(() => File.Exists(view.LogPath) && ReadShared(view.LogPath!).Contains("listening"), "log written");
 
-        // Started through a launcher that exited: not in this (RedCompute's) process tree.
-        await WaitUntilAsync(() => !ParentAlive(view.Pid), "the launcher to exit, leaving the server outside this tree");
+        // Parented to the desktop shell: not in this (RedCompute's) process tree, nor in its jobs.
+        Assert.Equal("desktop", view.LaunchedVia);
+        Assert.Equal(DesktopShellPid(), ParentPid(view.Pid));
         await WaitUntilAsync(() => registry.Get(view.Id)!.ProcessIds.Contains(server), "the server tracked by parentage");
 
         // A restarted RedCompute takes the whole tree back from its ledger and can stop it.
-        var reloaded = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var reloaded = NewRegistry();
         Assert.True(reloaded.Get(view.Id)!.Running);
         Assert.True(reloaded.IsProtected(server, ProcessCreated(server)));
 
@@ -189,7 +190,7 @@ public sealed class SessionProcessContainmentTests : IDisposable
     public async Task A_long_lived_server_whose_own_root_exited_stays_listed_running_and_stoppable()
     {
         if (!OperatingSystem.IsWindows()) return;
-        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var registry = NewRegistry();
         var pidFile = Path.Combine(_root, "detached-server.pid");
         // The command itself detaches and returns, the way `pnpm exec` trees lost their root on 12 Nov.
         var result = registry.Launch(new LongLivedLaunchRequest("detaching server",
@@ -218,7 +219,7 @@ public sealed class SessionProcessContainmentTests : IDisposable
         var chain = Path.Combine(_root, "chain.cmd");
         File.WriteAllText(chain, $"@\"{WindowsPowerShell}\" -NoProfile -ExecutionPolicy Bypass -File \"{Sleeper}\" %1" + "\r\n");
         var pidFile = Path.Combine(_root, "chained.pid");
-        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var registry = NewRegistry();
         var result = registry.Launch(new LongLivedLaunchRequest("chained",
             $"set CHAINED=1&& \"{chain}\" \"{pidFile}\"", _root), new LongLivedOwner("user", "Nova", null));
         Assert.True(result.Status == 200, result.Error);
@@ -234,7 +235,7 @@ public sealed class SessionProcessContainmentTests : IDisposable
     [Fact]
     public void Launch_refuses_a_port_in_use_and_a_relative_directory()
     {
-        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var registry = NewRegistry();
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         try
@@ -251,6 +252,245 @@ public sealed class SessionProcessContainmentTests : IDisposable
             listener.Stop();
         }
     }
+
+    [Fact]
+    public async Task A_launched_server_is_outside_its_hosts_job_and_survives_a_RedCompute_restart()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        // RedLeaf holds RedCompute in a kill-on-close job; on 12 Nov stopping RedLeaf killed every
+        // launched server, because each was still a member of that job (memory/artifacts/909ca1ed).
+        // Stand in for it: this process joins a job of its own, and what it starts the ordinary way
+        // joins it too. Kill-on-close kills exactly the members, so membership is the whole question.
+        var hostJob = HostJob.Value;
+        Assert.True(hostJob != IntPtr.Zero, "this test process must be able to join a host job");
+        var ordinary = StartSleeper("ordinary");
+        Assert.True(InJob(ordinary.Id, hostJob), "control: an ordinary child inherits its host's job");
+
+        var registry = NewRegistry();
+        var pidFile = Path.Combine(_root, "survivor.pid");
+        var result = registry.Launch(new LongLivedLaunchRequest("survivor",
+            $"\"{WindowsPowerShell}\" -NoProfile -ExecutionPolicy Bypass -File \"{Sleeper}\" \"{pidFile}\"", _root),
+            new LongLivedOwner("user", "Nova", "session-1"));
+        Assert.True(result.Status == 200, result.Error);
+        Track(result.Process!.Pid);
+        var server = await WaitForPidAsync(pidFile);
+        await WaitUntilAsync(() => registry.Get(result.Process.Id)!.ProcessIds.Contains(server), "the server tracked by parentage");
+        foreach (var pid in registry.Get(result.Process.Id)!.ProcessIds)
+            Assert.False(InJob(pid, hostJob), $"PID {pid} of the kept tree must not be in its host's job");
+
+        // RedCompute stops: it lets go of the tree without killing it, and the next one takes it back.
+        registry.Dispose();
+        Assert.True(IsAlive(server));
+        var restarted = NewRegistry();
+        var view = restarted.Get(result.Process.Id)!;
+        Assert.Equal("running", view.State);
+        Assert.Contains(server, view.ProcessIds);
+        Assert.True(restarted.IsProtected(server, ProcessCreated(server)));
+
+        Assert.Equal(200, restarted.Stop(view.Id).Status);
+        await AssertGoneAsync(server);
+    }
+
+    [Fact]
+    public void Without_a_desktop_shell_a_launch_inside_a_job_that_forbids_breakaway_is_refused()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Assert.True(HostJob.Value != IntPtr.Zero); // a job without JOB_OBJECT_LIMIT_BREAKAWAY_OK
+        var previous = DetachedProcessLauncher.ShellWindow;
+        DetachedProcessLauncher.ShellWindow = () => IntPtr.Zero;
+        try
+        {
+            var registry = NewRegistry();
+            var result = registry.Launch(new LongLivedLaunchRequest("no shell", "echo hi", _root), new LongLivedOwner("user", "Nova", null));
+            // A server that would die with its host is refused, never promised.
+            Assert.Equal(400, result.Status);
+            Assert.Contains("breakaway", result.Error);
+            Assert.Empty(registry.List());
+        }
+        finally
+        {
+            DetachedProcessLauncher.ShellWindow = previous;
+        }
+    }
+
+    [Fact]
+    public async Task A_launched_server_gets_the_users_environment_and_its_own_never_RedComputes()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Environment.SetEnvironmentVariable("REDCOMPUTE_PRIVATE_PROBE", "leaked");
+        try
+        {
+            var registry = NewRegistry();
+            var result = registry.Launch(new LongLivedLaunchRequest("environment",
+                "echo [%LONG_LIVED_PROBE%] [%REDCOMPUTE_PRIVATE_PROBE%] [%USERPROFILE%]", _root,
+                Environment: new() { ["LONG_LIVED_PROBE"] = "given" }), new LongLivedOwner("user", "Nova", null));
+            Assert.True(result.Status == 200, result.Error);
+            var log = result.Process!.LogPath!;
+            await WaitUntilAsync(() => ReadShared(log).Contains("[given]"), "the probe line");
+            var line = ReadShared(log);
+            // In a batch file an undefined variable expands to nothing: RedCompute's own did not leak.
+            Assert.Contains($"[given] [] [{Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}]", line);
+            registry.Stop(result.Process.Id);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("REDCOMPUTE_PRIVATE_PROBE", null);
+        }
+    }
+
+    [Fact]
+    public async Task An_exited_entry_shows_its_exit_time_and_stays_listed_until_its_owner_removes_it()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var registry = NewRegistry();
+        var before = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var result = registry.Launch(new LongLivedLaunchRequest("short", "exit /b 3", _root), new LongLivedOwner("user", "Nova", null));
+        Assert.True(result.Status == 200, result.Error);
+        var id = result.Process!.Id;
+
+        await WaitUntilAsync(() =>
+        {
+            registry.Tick();
+            return registry.Get(id)!.State == "exited";
+        }, "the exit to be recorded");
+        var view = registry.Get(id)!;
+        Assert.False(view.Running);
+        Assert.Empty(view.ProcessIds);
+        Assert.NotNull(view.ExitedAt);
+        Assert.InRange(view.ExitedAt!.Value, before, DateTimeOffset.UtcNow);
+        Assert.Null(view.Note);
+
+        // A restart keeps it exactly as it was: exited, with the same time, not resurrected.
+        registry.Dispose();
+        var restarted = NewRegistry();
+        restarted.Tick();
+        var reloaded = restarted.Get(id)!;
+        Assert.Equal("exited", reloaded.State);
+        Assert.Equal(view.ExitedAt, reloaded.ExitedAt);
+
+        Assert.Equal(200, restarted.Stop(id).Status);
+        Assert.Empty(restarted.List());
+    }
+
+    [Fact]
+    public async Task An_entry_that_died_while_RedCompute_was_down_is_shown_dead_or_relaunched_as_it_asked()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var registry = NewRegistry();
+        var owner = new LongLivedOwner("user", "Nova", null);
+        var keptPid = Path.Combine(_root, "kept.pid");
+        var relaunchedPid = Path.Combine(_root, "relaunched.pid");
+        var plain = registry.Launch(new LongLivedLaunchRequest("plain",
+            $"\"{WindowsPowerShell}\" -NoProfile -ExecutionPolicy Bypass -File \"{Sleeper}\" \"{keptPid}\"", _root), owner).Process!;
+        var restarting = registry.Launch(new LongLivedLaunchRequest("restarting",
+            $"\"{WindowsPowerShell}\" -NoProfile -ExecutionPolicy Bypass -File \"{Sleeper}\" \"{relaunchedPid}\"", _root,
+            Restart: "on-exit"), owner).Process!;
+        var first = await WaitForPidAsync(keptPid);
+        var second = await WaitForPidAsync(relaunchedPid);
+        await WaitUntilAsync(() => registry.Get(plain.Id)!.ProcessIds.Contains(first)
+                                   && registry.Get(restarting.Id)!.ProcessIds.Contains(second), "both servers tracked");
+
+        // RedCompute is gone, and so, meanwhile, are both servers: every process their ledgers name.
+        registry.Dispose();
+        foreach (var pid in new[] { plain.Pid, restarting.Pid })
+            using (var process = Process.GetProcessById(pid)) process.Kill(entireProcessTree: true);
+        File.Delete(relaunchedPid);
+        // Every identity the ledgers name, a console host included, so none is resumed half-dead.
+        foreach (var ledger in Directory.GetFiles(Path.Combine(_root, "registry", "long-lived-processes"), "*.processes.json"))
+            foreach (var entry in JsonDocument.Parse(File.ReadAllText(ledger)).RootElement.GetProperty("Escapees").EnumerateArray())
+                await AssertGoneAsync(entry.GetProperty("Pid").GetInt32());
+
+        var restarted = NewRegistry();
+        var dead = restarted.Get(plain.Id)!;
+        Assert.Equal("exited", dead.State);
+        Assert.Null(dead.ExitedAt); // nobody saw it end
+        Assert.NotNull(dead.LastSeenAliveAt);
+        Assert.Contains("no RedCompute was watching", dead.Note);
+        Assert.Equal("restarting", restarted.Get(restarting.Id)!.State);
+
+        await WaitUntilAsync(() =>
+        {
+            restarted.Tick();
+            return File.Exists(relaunchedPid);
+        }, "the relaunch after its first backoff");
+        var relaunched = await WaitForPidAsync(relaunchedPid);
+        var view = restarted.Get(restarting.Id)!;
+        Assert.Equal("running", view.State);
+        Assert.Equal(1, view.RestartCount);
+        Assert.NotEqual(restarting.Pid, view.Pid);
+        Track(view.Pid);
+        await WaitUntilAsync(() => restarted.Get(restarting.Id)!.ProcessIds.Contains(relaunched), "the relaunched server tracked");
+
+        Assert.Equal(200, restarted.Stop(restarting.Id).Status);
+        await AssertGoneAsync(relaunched);
+        Assert.Equal(200, restarted.Stop(plain.Id).Status);
+    }
+
+    [Fact]
+    public async Task A_relaunching_entry_that_keeps_exiting_at_once_stops_being_relaunched()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var runs = Path.Combine(_root, "runs.txt");
+        var registry = NewRegistry();
+        registry.RelaunchDelay = TimeSpan.FromMilliseconds(20);
+        var result = registry.Launch(new LongLivedLaunchRequest("crashing", $"echo run>>\"{runs}\"& exit /b 1", _root,
+            Restart: "on-exit"), new LongLivedOwner("user", "Nova", null));
+        Assert.True(result.Status == 200, result.Error);
+        var id = result.Process!.Id;
+
+        await WaitUntilAsync(() =>
+        {
+            registry.Tick();
+            var view = registry.Get(id)!;
+            return view.State == "exited" && view.Note?.Contains("not relaunched") == true;
+        }, "the relaunching to give up");
+        var final = registry.Get(id)!;
+        Assert.Equal(LongLivedProcessRegistry.QuickExitLimit - 1, final.RestartCount);
+        Assert.Equal(LongLivedProcessRegistry.QuickExitLimit, ReadShared(runs).Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.Equal(400, registry.Launch(new LongLivedLaunchRequest("bad", "echo", _root, Restart: "always"),
+            new LongLivedOwner("user", "Nova", null)).Status);
+    }
+
+    private LongLivedProcessRegistry NewRegistry() => new(Path.Combine(_root, "registry"), _ => { }, monitor: false);
+
+    /// <summary>
+    /// A job this test process joins for the rest of its life, standing in for RedLeaf's. Without
+    /// kill-on-close, so nothing ever dies of it, and without breakaway, like RedLeaf's.
+    /// </summary>
+    private static readonly Lazy<IntPtr> HostJob = new(() =>
+    {
+        var job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) return IntPtr.Zero;
+        using var self = Process.GetCurrentProcess();
+        return AssignProcessToJobObject(job, self.Handle) ? job : IntPtr.Zero;
+    });
+
+    private static bool InJob(int pid, IntPtr job)
+    {
+        using var process = Process.GetProcessById(pid);
+        return IsProcessInJob(process.Handle, job, out var result) && result;
+    }
+
+    private static int DesktopShellPid()
+    {
+        GetWindowThreadProcessId(GetShellWindow(), out var pid);
+        return (int)pid;
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetShellWindow();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
 
     private string Sleeper => Path.Combine(_root, "sleeper.ps1");
 
@@ -367,7 +607,7 @@ public sealed class SessionProcessContainmentTests : IDisposable
         }
     }
 
-    private static bool ParentAlive(int pid)
+    private static int ParentPid(int pid)
     {
         using var query = Process.Start(new ProcessStartInfo(WindowsPowerShell)
         {
@@ -378,6 +618,12 @@ public sealed class SessionProcessContainmentTests : IDisposable
         })!;
         var parent = int.Parse(query.StandardOutput.ReadToEnd().Trim());
         query.WaitForExit();
+        return parent;
+    }
+
+    private static bool ParentAlive(int pid)
+    {
+        var parent = ParentPid(pid);
         // A live process under that PID created after the child is a reuse, not its parent.
         try { return IsAlive(parent) && ProcessCreated(parent) <= ProcessCreated(pid); }
         catch { return false; }

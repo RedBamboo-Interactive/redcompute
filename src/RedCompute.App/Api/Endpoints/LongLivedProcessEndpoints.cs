@@ -18,18 +18,18 @@ public static class LongLivedProcessEndpoints
     public static void Map(EndpointRegistry endpoints, LongLivedProcessRegistry registry)
     {
         endpoints.MapGet("/processes/long-lived",
-            "Servers deliberately kept beyond their session (registered, never reaped): name, port, PID, running, who started them, log path",
+            "Servers deliberately kept beyond their session (registered, never reaped): name, port, PID, state (running | restarting | exited), exitedAt (OS exit time; null when it ended while no RedCompute was watching, then lastSeenAliveAt bounds it), restart policy and count, who started them, log path. An exited entry stays listed until DELETE",
             (HttpContext context) => context.User.Identity?.IsAuthenticated == true
                 ? Results.Json(new { processes = registry.List() })
                 : Results.Unauthorized());
 
         endpoints.MapPost("/processes/long-lived",
-            "Start a server that outlives the calling session: { name, command (one cmd.exe line), workingDirectory, port?, description?, environment? }. Output goes to logPath. Admin execution identity required",
+            "Start a server that outlives the calling session, RedCompute and RedLeaf: { name, command (one cmd.exe line), workingDirectory, port?, description?, environment?, restart? }. It is created outside RedCompute's jobs, parented to the desktop shell, with the user's environment plus `environment` (never RedCompute's). restart: \"never\" (default) or \"on-exit\" (relaunched with backoff; 5 exits in a row within 30 s stop it). Output goes to logPath. Admin execution identity required",
             async (HttpContext context) =>
             {
                 if (Admin(context) is not { } owner) return Forbidden();
                 var request = await ReadAsync<LongLivedLaunchRequest>(context);
-                if (request is null) return Results.BadRequest(new { error = "invalid_body", message = "Body must be { name, command, workingDirectory, port? }" });
+                if (request is null) return Results.BadRequest(new { error = "invalid_body", message = "Body must be { name, command, workingDirectory, port?, restart? }" });
                 return ToResult(registry.Launch(request, owner));
             });
 
@@ -44,7 +44,7 @@ public static class LongLivedProcessEndpoints
             });
 
         endpoints.MapDelete("/processes/long-lived/{id}",
-            "Stop a registered long-lived server (its whole tree, only if it is still the same process) and remove it. Admin execution identity required",
+            "Stop a registered long-lived server (its whole tree, only if it is still the same process) and remove it; also clears an exited entry. Admin execution identity required",
             (HttpContext context, string id) => Admin(context) is null ? Forbidden() : ToResult(registry.Stop(id)));
     }
 

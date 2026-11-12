@@ -531,7 +531,18 @@ public static class SessionProcessContainment
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
-        public static bool HasExited(IntPtr process) => WaitForSingleObject(process, 0) == 0;
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+        private const uint StillActive = 259;
+
+        /// <summary>
+        /// Exited, or being torn down: TerminateProcess sets the exit code at once, but the process
+        /// is signalled only when its threads are gone. A dying process must never be taken back.
+        /// </summary>
+        public static bool HasExited(IntPtr process)
+            => WaitForSingleObject(process, 0) == 0
+               || (GetExitCodeProcess(process, out var exitCode) && exitCode != StillActive);
 
         private static long FileTimeToUtcTicks(long fileTime) => DateTime.FromFileTimeUtc(fileTime).Ticks;
 
@@ -570,6 +581,7 @@ public sealed class ContainedProcessTree
     private readonly Dictionary<int, long> _escapees = new();
     private readonly string? _keepLedger;
     private long _lastActivity = DateTime.UtcNow.Ticks;
+    private long _lastExitUtcTicks;
     private string _persisted = "";
     private bool _reaped;
 
@@ -607,6 +619,46 @@ public sealed class ContainedProcessTree
                 return _tracked.Where(pair => !SessionProcessContainment.Native.HasExited(pair.Value.Handle))
                     .Select(pair => (pair.Key, pair.Value.Created)).ToArray();
         }
+    }
+
+    /// <summary>
+    /// When the last process this tree released had exited, as the OS recorded it. Once every
+    /// process of a kept tree is gone, this is when the tree ended.
+    /// </summary>
+    public DateTimeOffset? LastExitAt
+    {
+        get
+        {
+            var ticks = Interlocked.Read(ref _lastExitUtcTicks);
+            return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+        }
+    }
+
+    /// <summary>Scan now, then return what is still running (a kept tree is otherwise scanned every 2 s).</summary>
+    public IReadOnlyList<(int Pid, long CreatedUtcTicks)> Refresh()
+    {
+        if (!OperatingSystem.IsWindows()) return [];
+        Scan(SessionProcessContainment.Native.Snapshot());
+        return LiveProcesses;
+    }
+
+    /// <summary>
+    /// Let go of a kept tree without killing anything: its handles and its job (which has no
+    /// kill-on-close) are closed, so whatever still runs keeps running. Used when the tree has
+    /// ended, with its ledger deleted, and when RedCompute stops, with its ledger kept for the
+    /// next RedCompute to resume.
+    /// </summary>
+    public void Release(bool deleteLedger)
+    {
+        if (!IsKept) throw new InvalidOperationException("only a kept tree is released; a session tree is reaped");
+        lock (_gate)
+        {
+            if (_reaped) return;
+            _reaped = true;
+        }
+        if (deleteLedger)
+            try { File.Delete(LedgerPath); } catch { }
+        Abandon();
     }
 
     /// <summary>True when this exact identity is, or was until its exit was examined, part of the tree.</summary>
@@ -749,6 +801,8 @@ public sealed class ContainedProcessTree
             {
                 // A session's root is released by its reap; a kept tree's root is just another process.
                 if ((pid == RootPid && !IsKept) || !_tracked.Remove(pid, out var gone)) continue;
+                var (_, exitedAt) = SessionProcessContainment.Native.Times(gone.Handle);
+                if (exitedAt > _lastExitUtcTicks) _lastExitUtcTicks = exitedAt;
                 SessionProcessContainment.Native.Close(gone.Handle);
                 changed |= _escapees.Remove(pid) || IsKept;
             }
