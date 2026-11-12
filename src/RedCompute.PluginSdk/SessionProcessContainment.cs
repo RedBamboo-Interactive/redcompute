@@ -38,7 +38,7 @@ public static class SessionProcessContainment
     private static readonly ConcurrentDictionary<nuint, ContainedProcessTree> Trees = new();
     private static readonly object PortGate = new();
     private static SafeFileHandle? _port;
-    private static Timer? _scanner;
+    private static Thread? _scanner;
     private static long _nextKey;
     private static long _ticks;
     private static int _scanning;
@@ -76,7 +76,7 @@ public static class SessionProcessContainment
         if (!OperatingSystem.IsWindows()) return null;
         try
         {
-            return ContainCore(root, owner);
+            return ContainCore(root, owner, keepLedger: null);
         }
         catch (Exception ex)
         {
@@ -87,7 +87,7 @@ public static class SessionProcessContainment
 
     /// <summary>True when a live session job holds this process.</summary>
     public static bool IsSessionMember(int pid)
-        => OperatingSystem.IsWindows() && Trees.Values.Any(tree => tree.Contains(pid));
+        => OperatingSystem.IsWindows() && Trees.Values.Any(tree => !tree.IsKept && tree.Contains(pid));
 
     /// <summary>The live contained tree whose root is this PID, if any.</summary>
     public static ContainedProcessTree? FindByRoot(int rootPid)
@@ -138,36 +138,115 @@ public static class SessionProcessContainment
     }
 
     /// <summary>
-    /// A job without kill-on-close holding this process and everything it starts, so a stop can
-    /// end the whole tree while the job handle lives, and nothing ends when the handle closes.
+    /// Keep a deliberately long-lived tree: its own job without kill-on-close, tracked by parentage
+    /// like a session, but never reaped when its root exits (a launcher that returns at once is
+    /// normal). Every live identity is written to <paramref name="ledgerPath"/>, so a later
+    /// RedCompute can <see cref="Resume"/> it. It ends only through <see cref="ContainedProcessTree.Reap"/>.
     /// </summary>
-    [SupportedOSPlatform("windows")]
-    public static SafeFileHandle? CreateStopJob(Process process)
+    public static ContainedProcessTree? Keep(Process root, string owner, string ledgerPath)
     {
-        var job = Native.CreateJobObject(IntPtr.Zero, null);
-        if (job.IsInvalid) return null;
-        if (Native.AssignProcessToJobObject(job, process.SafeHandle)) return job;
-        job.Dispose();
-        return null;
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            return ContainCore(root, owner, ledgerPath);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke($"[Containment] Could not keep {owner} PID {SafeId(root)}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resume a kept tree from its ledger after a restart: only processes whose PID and creation
+    /// time both still match are taken back. Null when none of them is alive.
+    /// </summary>
+    public static ContainedProcessTree? Resume(string owner, string ledgerPath)
+    {
+        if (!OperatingSystem.IsWindows() || !File.Exists(ledgerPath)) return null;
+        try
+        {
+            var ledger = JsonSerializer.Deserialize<EscapeeLedger>(File.ReadAllText(ledgerPath));
+            return ledger is null ? null : ResumeCore(owner, ledgerPath, ledger.Escapees.Select(e => (e.Pid, e.CreatedUtcTicks)));
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke($"[Containment] Could not resume {owner} from {Path.GetFileName(ledgerPath)}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Resume a kept tree from known identities (a record written before ledgers existed).</summary>
+    public static ContainedProcessTree? Resume(string owner, string ledgerPath, IEnumerable<(int Pid, long CreatedUtcTicks)> identities)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            return ResumeCore(owner, ledgerPath, identities);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke($"[Containment] Could not resume {owner}: {ex.Message}");
+            return null;
+        }
     }
 
     [SupportedOSPlatform("windows")]
-    public static bool TerminateJob(SafeFileHandle job) => Native.TerminateJobObject(job, 1);
+    private static ContainedProcessTree? ResumeCore(string owner, string ledgerPath, IEnumerable<(int Pid, long CreatedUtcTicks)> identities)
+    {
+        var alive = new List<(int Pid, IntPtr Handle, long Created)>();
+        foreach (var (pid, created) in identities)
+        {
+            var handle = Native.OpenForIdentity(pid);
+            if (handle == IntPtr.Zero) continue;
+            if (!Native.HasExited(handle) && Native.Times(handle).Created == created) alive.Add((pid, handle, created));
+            else Native.Close(handle);
+        }
+        if (alive.Count == 0)
+        {
+            try { File.Delete(ledgerPath); } catch { }
+            return null;
+        }
+
+        var port = EnsurePort();
+        var job = Native.CreateJobObject(IntPtr.Zero, null);
+        if (job.IsInvalid) throw new Win32Exception();
+        var key = (nuint)Interlocked.Increment(ref _nextKey);
+        var tree = new ContainedProcessTree(job, key, owner, alive[0].Pid, alive[0].Created, ledgerPath);
+        Native.AssociatePort(job, port, key);
+        Trees[key] = tree;
+        foreach (var (pid, handle, created) in alive)
+        {
+            var member = false;
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                member = Native.AssignProcessToJobObject(job, process.SafeHandle);
+            }
+            catch { }
+            tree.Seed(pid, handle, created, member);
+        }
+        tree.Scan(Native.Snapshot());
+        Log?.Invoke($"[Containment] Resumed {owner}: {alive.Count} live process(es)");
+        return tree;
+    }
 
     [SupportedOSPlatform("windows")]
-    private static ContainedProcessTree ContainCore(Process root, string owner)
+    private static ContainedProcessTree ContainCore(Process root, string owner, string? keepLedger)
     {
         var port = EnsurePort();
         var job = Native.CreateJobObject(IntPtr.Zero, null);
         if (job.IsInvalid) throw new Win32Exception();
         var key = (nuint)Interlocked.Increment(ref _nextKey);
-        var tree = new ContainedProcessTree(job, key, owner, root.Id, Native.CreationTicks(root.SafeHandle));
+        var tree = new ContainedProcessTree(job, key, owner, root.Id, Native.CreationTicks(root.SafeHandle), keepLedger);
         try
         {
-            Native.SetKillOnClose(job);
+            // A session dies with RedCompute; a kept server must not.
+            if (keepLedger is null) Native.SetKillOnClose(job);
             Native.AssociatePort(job, port, key);
             Trees[key] = tree;
-            if (!Native.AssignProcessToJobObject(job, root.SafeHandle)) throw new Win32Exception();
+            // A kept process may sit in a job that refuses nesting; parentage still tracks it.
+            if (!Native.AssignProcessToJobObject(job, root.SafeHandle) && keepLedger is null) throw new Win32Exception();
             // A child the root spawned before assignment is not a member; adopt it by ancestry.
             tree.AdoptPreAssignmentChildren();
         }
@@ -190,7 +269,17 @@ public static class SessionProcessContainment
             if (port.IsInvalid) throw new Win32Exception();
             var thread = new Thread(() => Pump(port)) { IsBackground = true, Name = "Session process containment" };
             thread.Start();
-            _scanner = new Timer(_ => ScanTick(), null, ScanInterval, ScanInterval);
+            // Its own thread, not the thread pool: a starved pool would delay scans past the life of
+            // a short-lived packaged pwsh, and its children would then be unprovable.
+            _scanner = new Thread(() =>
+            {
+                while (true)
+                {
+                    Thread.Sleep(ScanInterval);
+                    ScanTick();
+                }
+            }) { IsBackground = true, Name = "Session process scan" };
+            _scanner.Start();
             _port = port;
             return port;
         }
@@ -254,9 +343,9 @@ public static class SessionProcessContainment
     internal static void Forget(ContainedProcessTree tree) => Trees.TryRemove(tree.Key, out _);
 
     /// <summary>Kill a process tree only when PID and creation time both still match.</summary>
-    internal static bool KillIdentity(int pid, long createdUtcTicks, string owner)
+    internal static bool KillIdentity(int pid, long createdUtcTicks, string owner, bool ignoreProtection = false)
     {
-        if (IsProtected?.Invoke(pid, createdUtcTicks) == true)
+        if (!ignoreProtection && IsProtected?.Invoke(pid, createdUtcTicks) == true)
         {
             Log?.Invoke($"[Containment] Leaving PID {pid} ({owner}): registered long-lived process");
             return false;
@@ -479,12 +568,16 @@ public sealed class ContainedProcessTree
     private readonly SafeFileHandle _job;
     private readonly Dictionary<int, Tracked> _tracked = new();
     private readonly Dictionary<int, long> _escapees = new();
+    private readonly string? _keepLedger;
     private long _lastActivity = DateTime.UtcNow.Ticks;
+    private string _persisted = "";
     private bool _reaped;
 
-    internal ContainedProcessTree(SafeFileHandle job, nuint key, string owner, int rootPid, long rootCreatedUtcTicks)
+    internal ContainedProcessTree(SafeFileHandle job, nuint key, string owner, int rootPid, long rootCreatedUtcTicks,
+        string? keepLedger = null)
     {
         _job = job;
+        _keepLedger = keepLedger;
         Key = key;
         Owner = owner;
         RootPid = rootPid;
@@ -499,6 +592,27 @@ public sealed class ContainedProcessTree
     public bool IsReaped
     {
         get { lock (_gate) return _reaped; }
+    }
+
+    /// <summary>A registered long-lived tree, not a session: never reaped when its root exits.</summary>
+    public bool IsKept => _keepLedger is not null;
+
+    /// <summary>Every tracked process still running (pid, creation UTC ticks).</summary>
+    public IReadOnlyList<(int Pid, long CreatedUtcTicks)> LiveProcesses
+    {
+        get
+        {
+            if (!OperatingSystem.IsWindows()) return [];
+            lock (_gate)
+                return _tracked.Where(pair => !SessionProcessContainment.Native.HasExited(pair.Value.Handle))
+                    .Select(pair => (pair.Key, pair.Value.Created)).ToArray();
+        }
+    }
+
+    /// <summary>True when this exact identity is, or was until its exit was examined, part of the tree.</summary>
+    public bool Tracks(int pid, long createdUtcTicks)
+    {
+        lock (_gate) return !_reaped && _tracked.TryGetValue(pid, out var tracked) && tracked.Created == createdUtcTicks;
     }
 
     /// <summary>Recently active: a member started or ended within the last few seconds.</summary>
@@ -518,8 +632,22 @@ public sealed class ContainedProcessTree
         lock (_gate) return !_reaped && _tracked.TryGetValue(pid, out var tracked) && tracked.Member;
     }
 
-    private string LedgerPath => Path.Combine(SessionProcessContainment.LedgerDirectory,
+    private string LedgerPath => _keepLedger ?? Path.Combine(SessionProcessContainment.LedgerDirectory,
         $"{Sanitize(Owner)}-{RootPid}-{RootCreatedUtcTicks}.json");
+
+    /// <summary>Take back a live process after a restart, its handle already open.</summary>
+    internal void Seed(int pid, IntPtr handle, long created, bool member)
+    {
+        lock (_gate)
+        {
+            if (_reaped || !_tracked.TryAdd(pid, new Tracked(handle, created, member)))
+            {
+                if (OperatingSystem.IsWindows()) SessionProcessContainment.Native.Close(handle);
+                return;
+            }
+            if (!member) _escapees[pid] = created;
+        }
+    }
 
     private void Touch() => Interlocked.Exchange(ref _lastActivity, DateTime.UtcNow.Ticks);
 
@@ -554,15 +682,19 @@ public sealed class ContainedProcessTree
         lock (_gate)
         {
             if (_reaped || !_tracked.TryAdd(pid, new Tracked(handle, created, Member: true)))
+            {
                 SessionProcessContainment.Native.Close(handle);
+                return;
+            }
         }
+        if (IsKept) PersistLedger();
     }
 
     [SupportedOSPlatform("windows")]
     internal void OnMemberExited(int pid)
     {
         Touch();
-        if (pid == RootPid)
+        if (pid == RootPid && !IsKept)
         {
             Reap();
             return;
@@ -607,20 +739,18 @@ public sealed class ContainedProcessTree
                     }
                     var member = SessionProcessContainment.Native.InJob(handle, _job);
                     _tracked[pid] = new Tracked(handle, created, member);
-                    if (!member)
-                    {
-                        _escapees[pid] = created;
-                        changed = true;
-                    }
+                    if (!member) _escapees[pid] = created;
+                    changed |= !member || IsKept;
                     grew = true;
                 }
             } while (grew);
 
             foreach (var pid in exitedBeforeSnapshot)
             {
-                if (pid == RootPid || !_tracked.Remove(pid, out var gone)) continue;
+                // A session's root is released by its reap; a kept tree's root is just another process.
+                if ((pid == RootPid && !IsKept) || !_tracked.Remove(pid, out var gone)) continue;
                 SessionProcessContainment.Native.Close(gone.Handle);
-                if (_escapees.Remove(pid)) changed = true;
+                changed |= _escapees.Remove(pid) || IsKept;
             }
         }
         if (changed) PersistLedger();
@@ -635,6 +765,7 @@ public sealed class ContainedProcessTree
     {
         Scan(SessionProcessContainment.Native.Snapshot());
         (int Pid, long Created)[] escapees;
+        (int Pid, long Created)[] unjoined;
         int members;
         lock (_gate)
         {
@@ -643,11 +774,16 @@ public sealed class ContainedProcessTree
             members = _tracked.Count(pair => pair.Value.Member && pair.Key != RootPid
                 && !SessionProcessContainment.Native.HasExited(pair.Value.Handle));
             escapees = _escapees.Select(pair => (pair.Key, pair.Value)).ToArray();
+            // A kept process whose assignment the OS refused is a "member" outside the job.
+            unjoined = _tracked.Where(pair => pair.Value.Member && !SessionProcessContainment.Native.InJob(pair.Value.Handle, _job))
+                .Select(pair => (pair.Key, pair.Value.Created)).ToArray();
         }
 
         SessionProcessContainment.Native.TerminateJobObject(_job, 1);
         var killed = escapees.Count(escapee =>
-            SessionProcessContainment.KillIdentity(escapee.Pid, escapee.Created, $"{Owner} root {RootPid}"));
+            SessionProcessContainment.KillIdentity(escapee.Pid, escapee.Created, $"{Owner} root {RootPid}", ignoreProtection: IsKept));
+        foreach (var (pid, created) in unjoined)
+            SessionProcessContainment.KillIdentity(pid, created, $"{Owner} root {RootPid}", ignoreProtection: IsKept);
         try { File.Delete(LedgerPath); } catch { }
         ReleaseHandles();
 
@@ -683,13 +819,22 @@ public sealed class ContainedProcessTree
         lock (_gate)
         {
             if (_reaped) return;
-            if (_escapees.Count == 0)
+            // A session records what escaped its job (for the boot sweep); a kept tree records every
+            // live process (for its resume).
+            var identities = (IsKept
+                    ? _tracked.Select(pair => (pair.Key, pair.Value.Created))
+                    : _escapees.Select(pair => (pair.Key, pair.Value)))
+                .OrderBy(entry => entry.Item1).ToList();
+            var fingerprint = string.Join(",", identities.Select(entry => $"{entry.Item1}:{entry.Item2}"));
+            if (fingerprint == _persisted) return;
+            _persisted = fingerprint;
+            if (identities.Count == 0 && !IsKept)
             {
                 try { File.Delete(LedgerPath); } catch { }
                 return;
             }
             ledger = new SessionProcessContainment.EscapeeLedger(Owner, RootPid, RootCreatedUtcTicks,
-                _escapees.Select(pair => new SessionProcessContainment.EscapeeIdentity(pair.Key, pair.Value)).ToList(),
+                identities.Select(entry => new SessionProcessContainment.EscapeeIdentity(entry.Item1, entry.Item2)).ToList(),
                 SessionProcessContainment.Writer.Pid, SessionProcessContainment.Writer.CreatedUtcTicks);
         }
         try

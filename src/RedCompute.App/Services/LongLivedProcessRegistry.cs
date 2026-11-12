@@ -1,9 +1,9 @@
 using System.IO;
 using System.Diagnostics;
 using System.Net.NetworkInformation;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Win32.SafeHandles;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services;
@@ -11,10 +11,12 @@ namespace RedCompute.App.Services;
 /// <summary>
 /// Servers an agent deliberately keeps beyond its session (a playtest preview, a portal dev server).
 /// Everything a session starts dies with it (<see cref="SessionProcessContainment"/>); this registry
-/// is the one explicit way out. A launched server runs under RedCompute, never inside a session job,
-/// with its output in a log file so it does not depend on RedCompute's pipes and keeps running
-/// across a RedCompute restart. Each entry is listed and stoppable, and is known only by its exact
-/// identity (PID and creation time), never by name.
+/// is the one explicit way out. Each entry is a kept process tree: its own job without kill-on-close,
+/// tracked by parentage like a session, every live identity (PID and creation time) on disk so a
+/// restarted RedCompute takes it back. A launched server starts through a launcher that exits at
+/// once, so it is never in RedCompute's own process tree and a tree kill of RedCompute cannot reach
+/// it, and writes to a log file rather than a RedCompute pipe. Entries are listed and stoppable,
+/// and known only by exact identity, never by name.
 /// </summary>
 public sealed class LongLivedProcessRegistry
 {
@@ -26,17 +28,17 @@ public sealed class LongLivedProcessRegistry
 
     private readonly object _gate = new();
     private readonly string _statePath;
-    private readonly string _logDirectory;
+    private readonly string _entryDirectory;
     private readonly Action<string> _log;
     private readonly Dictionary<string, LongLivedProcessRecord> _records = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, SafeFileHandle> _jobs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ContainedProcessTree> _trees = new(StringComparer.Ordinal);
 
     internal Func<ProcessStartInfo, Process?> LaunchProcess { get; set; } = Process.Start;
 
     public LongLivedProcessRegistry(string directory, Action<string> log)
     {
         _statePath = Path.Combine(directory, "long-lived-processes.json");
-        _logDirectory = Path.Combine(directory, "long-lived-processes");
+        _entryDirectory = Path.Combine(directory, "long-lived-processes");
         _log = log;
         Load();
     }
@@ -44,11 +46,12 @@ public sealed class LongLivedProcessRegistry
     public static string DefaultDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedCompute");
 
-    /// <summary>The reaper's guard: a registered, still-identical process is never reaped.</summary>
+    /// <summary>The reaper's guard: a process of a registered tree is never reaped by a session.</summary>
     public bool IsProtected(int pid, long createdUtcTicks)
     {
         lock (_gate)
-            return _records.Values.Any(record => record.Pid == pid && record.ProcessCreatedUtcTicks == createdUtcTicks);
+            return _trees.Values.Any(tree => tree.Tracks(pid, createdUtcTicks))
+                   || _records.Values.Any(record => record.Pid == pid && record.ProcessCreatedUtcTicks == createdUtcTicks);
     }
 
     public IReadOnlyList<LongLivedProcessView> List()
@@ -78,16 +81,30 @@ public sealed class LongLivedProcessRegistry
             return LongLivedProcessResult.Invalid("port must be 1-65535");
         if (request.Port is { } listening && IsListening(listening))
             return LongLivedProcessResult.Conflict($"port {listening} is already in use");
+        if (!OperatingSystem.IsWindows())
+            return LongLivedProcessResult.Invalid("long-lived processes are supported on Windows only");
 
         var id = NewId();
-        Directory.CreateDirectory(_logDirectory);
-        var logPath = Path.Combine(_logDirectory, $"{id}.log");
-        // cmd owns the redirection: the server writes to its log file, not to a RedCompute pipe
-        // that would break when RedCompute restarts, and it reads NUL, not RedCompute's stdin.
+        Directory.CreateDirectory(_entryDirectory);
+        var logPath = Path.Combine(_entryDirectory, $"{id}.log");
+        var scriptPath = Path.Combine(_entryDirectory, $"{id}.cmd");
+        // The command runs from a script, so no quoting of it crosses a command line: the server
+        // reads NUL and writes its log, never a RedCompute pipe that a restart would break.
+        File.WriteAllText(scriptPath, string.Join("\r\n",
+            "@echo off",
+            $"cd /d \"{request.WorkingDirectory}\"",
+            $"call :run < NUL >> \"{logPath}\" 2>&1",
+            "exit /b %errorlevel%",
+            ":run",
+            request.Command,
+            "exit /b %errorlevel%",
+            ""), new UTF8Encoding(false));
+        // `start /b` from a cmd that exits at once: the server's parent is gone, so it is outside
+        // RedCompute's process tree; the kept tree's job and parentage hold it instead.
         var startInfo = new ProcessStartInfo
         {
             FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-            Arguments = $"/d /s /c \"{request.Command} < NUL >> \"{logPath}\" 2>&1\"",
+            Arguments = $"/d /c start \"\" /b \"{Path.Combine(Environment.SystemDirectory, "cmd.exe")}\" /d /c \"{scriptPath}\"",
             WorkingDirectory = request.WorkingDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -95,19 +112,22 @@ public sealed class LongLivedProcessRegistry
         foreach (var (key, value) in request.Environment ?? new Dictionary<string, string>())
             startInfo.Environment[key] = value;
 
-        Process process;
+        Process launcher;
         try
         {
-            process = LaunchProcess(startInfo) ?? throw new InvalidOperationException("Process.Start returned no process");
+            launcher = LaunchProcess(startInfo) ?? throw new InvalidOperationException("Process.Start returned no process");
         }
         catch (Exception ex)
         {
             return LongLivedProcessResult.Invalid($"could not start: {ex.Message}");
         }
 
-        using (process)
+        using (launcher)
         {
-            var created = CreationTicks(process);
+            var tree = SessionProcessContainment.Keep(launcher, $"long-lived {id}", LedgerPath(id));
+            if (tree is null)
+                return LongLivedProcessResult.Invalid("could not contain the launched process");
+            var (pid, created) = WaitForServerRoot(tree, launcher.Id);
             var record = new LongLivedProcessRecord
             {
                 Id = id,
@@ -116,7 +136,7 @@ public sealed class LongLivedProcessRegistry
                 Command = request.Command,
                 WorkingDirectory = request.WorkingDirectory,
                 Port = request.Port,
-                Pid = process.Id,
+                Pid = pid,
                 ProcessCreatedUtcTicks = created,
                 LogPath = logPath,
                 Source = "launched",
@@ -128,7 +148,7 @@ public sealed class LongLivedProcessRegistry
             lock (_gate)
             {
                 _records[id] = record;
-                if (OperatingSystem.IsWindows() && OwnJob(process) is { } job) _jobs[id] = job;
+                _trees[id] = tree;
                 Save();
             }
             _log($"[LongLived] Started '{record.Name}' ({id}) PID {record.Pid} in {record.WorkingDirectory}"
@@ -166,63 +186,54 @@ public sealed class LongLivedProcessRegistry
             {
                 if (_records.Values.FirstOrDefault(r => r.Pid == request.Pid && r.ProcessCreatedUtcTicks == created) is { } existing)
                     return LongLivedProcessResult.Ok(View(existing));
-                var id = NewId();
-                var record = new LongLivedProcessRecord
-                {
-                    Id = id,
-                    Name = request.Name.Trim(),
-                    Description = request.Description,
-                    Command = executable ?? process.ProcessName,
-                    Port = request.Port,
-                    Pid = request.Pid,
-                    ProcessCreatedUtcTicks = created,
-                    Source = "adopted",
-                    StartedAt = DateTimeOffset.UtcNow,
-                    OwnerUserId = owner.UserId,
-                    StartedBy = owner.ActorName,
-                    SessionId = owner.SessionId,
-                };
-                _records[id] = record;
-                Save();
-                _log($"[LongLived] Adopted '{record.Name}' ({id}) PID {record.Pid} for {owner.ActorName ?? "unknown"}");
-                return LongLivedProcessResult.Ok(View(record));
             }
+            var id = NewId();
+            Directory.CreateDirectory(_entryDirectory);
+            var tree = SessionProcessContainment.Keep(process, $"long-lived {id}", LedgerPath(id));
+            var record = new LongLivedProcessRecord
+            {
+                Id = id,
+                Name = request.Name.Trim(),
+                Description = request.Description,
+                Command = executable ?? process.ProcessName,
+                Port = request.Port,
+                Pid = request.Pid,
+                ProcessCreatedUtcTicks = created,
+                Source = "adopted",
+                StartedAt = DateTimeOffset.UtcNow,
+                OwnerUserId = owner.UserId,
+                StartedBy = owner.ActorName,
+                SessionId = owner.SessionId,
+            };
+            lock (_gate)
+            {
+                _records[id] = record;
+                if (tree is not null) _trees[id] = tree;
+                Save();
+            }
+            _log($"[LongLived] Adopted '{record.Name}' ({id}) PID {record.Pid} for {owner.ActorName ?? "unknown"}");
+            return LongLivedProcessResult.Ok(View(record));
         }
     }
 
-    /// <summary>Stop the process tree (only if it is still the same process) and forget it.</summary>
+    /// <summary>Stop the whole tree (only processes that are provably still its own) and forget it.</summary>
     public LongLivedProcessResult Stop(string id)
     {
         LongLivedProcessRecord record;
-        SafeFileHandle? job;
+        ContainedProcessTree? tree;
         lock (_gate)
         {
             if (!_records.Remove(id, out record!)) return LongLivedProcessResult.NotFound($"no long-lived process {id}");
-            _jobs.Remove(id, out job);
+            _trees.Remove(id, out tree);
             Save();
         }
 
-        var stopped = false;
-        if (job is not null && OperatingSystem.IsWindows())
-        {
-            stopped = IsAlive(record) && SessionProcessContainment.TerminateJob(job);
-            job.Dispose();
-        }
-        if (!stopped && IsAlive(record))
-        {
-            try
-            {
-                using var process = Process.GetProcessById(record.Pid);
-                if (CreationTicks(process) == record.ProcessCreatedUtcTicks)
-                {
-                    process.Kill(entireProcessTree: true);
-                    stopped = true;
-                }
-            }
-            catch { }
-        }
-        _log($"[LongLived] Removed '{record.Name}' ({id}) PID {record.Pid}{(stopped ? ", stopped" : ", was not running")}");
-        return LongLivedProcessResult.Ok(View(record) with { Running = false });
+        var wasRunning = tree is not null && tree.LiveProcesses.Count > 0;
+        if (tree is not null && OperatingSystem.IsWindows()) tree.Reap();
+        foreach (var path in new[] { LedgerPath(id), Path.Combine(_entryDirectory, $"{id}.cmd") })
+            try { File.Delete(path); } catch { }
+        _log($"[LongLived] Removed '{record.Name}' ({id}) PID {record.Pid}{(wasRunning ? ", stopped" : ", was not running")}");
+        return LongLivedProcessResult.Ok(View(record) with { Running = false, ProcessIds = [] });
     }
 
     private void Load()
@@ -231,9 +242,20 @@ public sealed class LongLivedProcessRegistry
         {
             if (!File.Exists(_statePath)) return;
             var records = JsonSerializer.Deserialize<List<LongLivedProcessRecord>>(File.ReadAllText(_statePath), JsonOptions) ?? [];
-            lock (_gate)
-                foreach (var record in records)
+            foreach (var record in records)
+            {
+                // Its ledger lists every live process of the tree; a record written before ledgers
+                // existed knows only its root.
+                var tree = File.Exists(LedgerPath(record.Id))
+                    ? SessionProcessContainment.Resume($"long-lived {record.Id}", LedgerPath(record.Id))
+                    : SessionProcessContainment.Resume($"long-lived {record.Id}", LedgerPath(record.Id),
+                        [(record.Pid, record.ProcessCreatedUtcTicks)]);
+                lock (_gate)
+                {
                     _records[record.Id] = record;
+                    if (tree is not null) _trees[record.Id] = tree;
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -256,40 +278,35 @@ public sealed class LongLivedProcessRegistry
         }
     }
 
-    private static LongLivedProcessView View(LongLivedProcessRecord record) => new(
-        record.Id, record.Name, record.Description, record.Command, record.WorkingDirectory, record.Port,
-        record.Pid, new DateTimeOffset(new DateTime(record.ProcessCreatedUtcTicks, DateTimeKind.Utc)),
-        IsAlive(record), record.Source, record.StartedAt, record.StartedBy, record.SessionId, record.LogPath);
-
-    private static bool IsAlive(LongLivedProcessRecord record)
+    private LongLivedProcessView View(LongLivedProcessRecord record)
     {
-        try
-        {
-            using var process = Process.GetProcessById(record.Pid);
-            return !process.HasExited && CreationTicks(process) == record.ProcessCreatedUtcTicks;
-        }
-        catch
-        {
-            return false;
-        }
+        var live = _trees.TryGetValue(record.Id, out var tree) ? tree.LiveProcesses : [];
+        return new LongLivedProcessView(
+            record.Id, record.Name, record.Description, record.Command, record.WorkingDirectory, record.Port,
+            record.Pid, new DateTimeOffset(new DateTime(record.ProcessCreatedUtcTicks, DateTimeKind.Utc)),
+            live.Count > 0, live.Select(entry => entry.Pid).Order().ToArray(), record.Source, record.StartedAt,
+            record.StartedBy, record.SessionId, record.LogPath);
     }
+
+    /// <summary>The server's own root: the script's cmd, once the launcher has started it.</summary>
+    private static (int Pid, long Created) WaitForServerRoot(ContainedProcessTree tree, int launcherPid)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        while (DateTime.UtcNow < deadline)
+        {
+            var root = tree.LiveProcesses.Where(entry => entry.Pid != launcherPid).OrderBy(entry => entry.CreatedUtcTicks)
+                .FirstOrDefault();
+            if (root.Pid != 0) return root;
+            Thread.Sleep(50);
+        }
+        return tree.LiveProcesses.OrderBy(entry => entry.CreatedUtcTicks).FirstOrDefault() is { Pid: not 0 } any
+            ? any
+            : (launcherPid, tree.RootCreatedUtcTicks);
+    }
+
+    private string LedgerPath(string id) => Path.Combine(_entryDirectory, $"{id}.processes.json");
 
     private static long CreationTicks(Process process) => SessionProcessContainment.CreationUtcTicks(process);
-
-    /// <summary>Own job (no kill-on-close) so Stop ends a server that detached children of its own.</summary>
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private SafeFileHandle? OwnJob(Process process)
-    {
-        try
-        {
-            return SessionProcessContainment.CreateStopJob(process);
-        }
-        catch (Exception ex)
-        {
-            _log($"[LongLived] No job for PID {process.Id}: {ex.Message}");
-        }
-        return null;
-    }
 
     private static bool IsListening(int port)
     {
@@ -317,7 +334,7 @@ public sealed record LongLivedAdoptRequest(
 
 public sealed record LongLivedProcessView(
     string Id, string Name, string? Description, string Command, string? WorkingDirectory, int? Port,
-    int Pid, DateTimeOffset ProcessStartedAt, bool Running, string Source, DateTimeOffset RegisteredAt,
+    int Pid, DateTimeOffset ProcessStartedAt, bool Running, int[] ProcessIds, string Source, DateTimeOffset RegisteredAt,
     string? StartedBy, string? SessionId, string? LogPath);
 
 public sealed record LongLivedProcessResult(int Status, LongLivedProcessView? Process, string? Error)

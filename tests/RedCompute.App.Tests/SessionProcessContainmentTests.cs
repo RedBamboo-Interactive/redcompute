@@ -170,14 +170,43 @@ public sealed class SessionProcessContainmentTests : IDisposable
         Assert.False(SessionProcessContainment.IsSessionMember(view.Pid));
         await WaitUntilAsync(() => File.Exists(view.LogPath) && ReadShared(view.LogPath!).Contains("listening"), "log written");
 
-        // A restart reloads the same identity from disk.
+        // Started through a launcher that exited: not in this (RedCompute's) process tree.
+        await WaitUntilAsync(() => !ParentAlive(view.Pid), "the launcher to exit, leaving the server outside this tree");
+        await WaitUntilAsync(() => registry.Get(view.Id)!.ProcessIds.Contains(server), "the server tracked by parentage");
+
+        // A restarted RedCompute takes the whole tree back from its ledger and can stop it.
         var reloaded = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
         Assert.True(reloaded.Get(view.Id)!.Running);
+        Assert.True(reloaded.IsProtected(server, ProcessCreated(server)));
+
+        Assert.Equal(200, reloaded.Stop(view.Id).Status);
+        await AssertGoneAsync(server);
+        await AssertGoneAsync(view.Pid);
+        Assert.Equal(404, reloaded.Stop(view.Id).Status);
+    }
+
+    [Fact]
+    public async Task A_long_lived_server_whose_own_root_exited_stays_listed_running_and_stoppable()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var pidFile = Path.Combine(_root, "detached-server.pid");
+        // The command itself detaches and returns, the way `pnpm exec` trees lost their root on 12 Nov.
+        var result = registry.Launch(new LongLivedLaunchRequest("detaching server",
+            $"start \"probe\" /b \"{WindowsPowerShell}\" -NoProfile -ExecutionPolicy Bypass -File \"{Sleeper}\" \"{pidFile}\"",
+            _root), new LongLivedOwner("user", "Nova", null));
+        Assert.True(result.Status == 200, result.Error);
+        var server = await WaitForPidAsync(pidFile);
+        // Let the script's own cmd finish: only the detached server (and its console host) remain.
+        await Task.Delay(1500);
+
+        await WaitUntilAsync(() => registry.Get(result.Process!.Id)!.ProcessIds.Contains(server), "the server tracked by parentage");
+        var view = registry.Get(result.Process!.Id)!;
+        Assert.True(view.Running);
+        Assert.True(registry.IsProtected(server, ProcessCreated(server)));
 
         Assert.Equal(200, registry.Stop(view.Id).Status);
         await AssertGoneAsync(server);
-        await AssertGoneAsync(view.Pid);
-        Assert.Equal(404, registry.Stop(view.Id).Status);
     }
 
     [Fact]
@@ -257,6 +286,12 @@ public sealed class SessionProcessContainmentTests : IDisposable
         catch { }
     }
 
+    private static long ProcessCreated(int pid)
+    {
+        using var process = Process.GetProcessById(pid);
+        return SessionProcessContainment.CreationUtcTicks(process);
+    }
+
     private static (int Pid, long Created) Identity(Process process)
         => (process.Id, SessionProcessContainment.CreationUtcTicks(process));
 
@@ -312,7 +347,6 @@ public sealed class SessionProcessContainmentTests : IDisposable
 
     private static bool ParentAlive(int pid)
     {
-        using var process = Process.GetProcessById(pid);
         using var query = Process.Start(new ProcessStartInfo(WindowsPowerShell)
         {
             ArgumentList = { "-NoProfile", "-Command", $"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId" },
@@ -322,7 +356,9 @@ public sealed class SessionProcessContainmentTests : IDisposable
         })!;
         var parent = int.Parse(query.StandardOutput.ReadToEnd().Trim());
         query.WaitForExit();
-        return IsAlive(parent);
+        // A live process under that PID created after the child is a reuse, not its parent.
+        try { return IsAlive(parent) && ProcessCreated(parent) <= ProcessCreated(pid); }
+        catch { return false; }
     }
 
     private static string ReadShared(string path)
