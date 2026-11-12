@@ -976,17 +976,11 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             if (value is JsonElement je)
             {
                 if (je.ValueKind == JsonValueKind.Object && je.TryGetProperty("assetUrl", out var urlProp))
-                    assetUrl = urlProp.GetString();
+                    assetUrl = NormalizeRedLeafAssetReference(urlProp.GetString());
                 else if (je.ValueKind == JsonValueKind.Object && je.TryGetProperty("assetId", out var idProp))
-                    assetUrl = $"http://127.0.0.1:18804/api/assets/{idProp.GetString()}";
+                    assetUrl = NormalizeRedLeafAssetReference(idProp.GetString());
                 else if (je.ValueKind == JsonValueKind.String && param.Type is "image" or "video" or "audio")
-                {
-                    var str = je.GetString();
-                    if (!string.IsNullOrEmpty(str) && !str.StartsWith("http"))
-                        assetUrl = $"http://127.0.0.1:18804/api/assets/{str}";
-                    else if (!string.IsNullOrEmpty(str))
-                        assetUrl = str;
-                }
+                    assetUrl = NormalizeRedLeafAssetReference(je.GetString());
             }
 
             if (string.IsNullOrEmpty(assetUrl)) continue;
@@ -1000,6 +994,14 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             else
                 _log($"[ComfyUI] Warning: failed to resolve asset for param '{param.Name}'");
         }
+    }
+
+    internal static string? NormalizeRedLeafAssetReference(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (Uri.TryCreate(value, UriKind.Absolute, out _)) return value;
+        if (value.StartsWith('/')) return $"http://127.0.0.1:18804{value}";
+        return $"http://127.0.0.1:18804/api/assets/{value}";
     }
 
     private async Task<string?> UploadFileToComfyAsync(string fileUrl, CancellationToken ct)

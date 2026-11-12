@@ -13,6 +13,15 @@ namespace RedCompute.App.Tests;
 
 public sealed class ComfyUIProviderTests
 {
+    [Theory]
+    [InlineData("/api/assets/mask.png", "http://127.0.0.1:18804/api/assets/mask.png")]
+    [InlineData("mask.png", "http://127.0.0.1:18804/api/assets/mask.png")]
+    [InlineData("https://example.test/mask.png", "https://example.test/mask.png")]
+    public void Asset_references_accept_server_relative_bare_and_absolute_urls(string value, string expected)
+    {
+        Assert.Equal(expected, ComfyUIProvider.NormalizeRedLeafAssetReference(value));
+    }
+
     [Fact]
     public void Default_config_does_not_assume_a_machine_specific_ComfyUI_checkout()
     {
