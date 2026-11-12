@@ -117,7 +117,7 @@ public static class RedComputeHost
         // for a container. This flag only forces the daemon up front, to trade a slower boot
         // for a faster first containerised session.
         if (ConfigManager.Config.AutoStartDocker)
-            _ = DockerDesktopService.EnsureRunningAsync(s => Log(s));
+            _ = DetachedWork.Start(() => DockerDesktopService.EnsureRunningAsync(s => Log(s)));
 
         var plannedRestart = PlannedRestartCheckpoint.LoadForStartup();
         var recovered = JobTracker.RecoverOrphanedJobs(PlannedRestartCheckpoint.JobIds());
@@ -131,7 +131,7 @@ public static class RedComputeHost
         InitializeCapabilities();
         HardwareMonitor.Start(Registry);
         await StartRelayServer();
-        _ = ProbeRunningBackends();
+        _ = DetachedWork.Start(ProbeRunningBackends);
     }
 
     public static async Task StopAsync()

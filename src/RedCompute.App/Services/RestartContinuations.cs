@@ -48,8 +48,13 @@ internal sealed class RestartContinuations
         _checkpoint = checkpoint; _bootedAt = bootedAt; _log = log;
     }
 
-    /// <summary>Two passes: once providers have recovered and started, and once more for a late one.</summary>
-    internal async Task RunAfterBootAsync(CancellationToken ct)
+    /// <summary>
+    /// Two passes: once providers have recovered and started, and once more for a late one.
+    /// Context-free: continuations never run on the caller's SynchronizationContext (see DetachedWork).
+    /// </summary>
+    internal Task RunAfterBootAsync(CancellationToken ct) => DetachedWork.Start(() => RunAfterBootCoreAsync(ct));
+
+    private async Task RunAfterBootCoreAsync(CancellationToken ct)
     {
         foreach (var delay in new[] { TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(3) })
         {

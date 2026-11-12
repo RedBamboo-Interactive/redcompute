@@ -373,8 +373,10 @@ public class OpenCodeSessionService
         process.EnableRaisingEvents = true;
         process.Exited += (_, _) => OnProcessExited(info.Id);
 
-        _ = ReadStdout(session);
-        _ = ReadStderr(session);
+        // Context-free: the readers never run on the caller's SynchronizationContext, whoever
+        // launched the session (an HTTP request, the input queue, recovery at boot).
+        _ = DetachedWork.Start(() => ReadStdout(session));
+        _ = DetachedWork.Start(() => ReadStderr(session));
 
         try
         {

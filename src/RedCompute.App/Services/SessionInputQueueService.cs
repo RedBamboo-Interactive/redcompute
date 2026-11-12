@@ -134,7 +134,10 @@ public sealed class SessionInputQueueService
             source.PluginEvent += OnProviderEvent;
     }
 
-    public async Task RunAsync(CancellationToken ct)
+    /// <summary>Context-free: continuations never run on the caller's SynchronizationContext (see DetachedWork).</summary>
+    public Task RunAsync(CancellationToken ct) => DetachedWork.Start(() => RunLoopAsync(ct));
+
+    private async Task RunLoopAsync(CancellationToken ct)
     {
         await RecoverSteeringDeliveriesAsync(ct);
         var recovered = await _store.RecoverExpiredLeasesAsync(ct);

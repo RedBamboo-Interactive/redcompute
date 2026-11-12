@@ -86,7 +86,10 @@ public sealed class SessionRollbackService
     /// One pass at startup over rollbacks a restart interrupted. What cannot finish yet waits for the
     /// next thing that needs it: the input queue before it delivers, a resume, or the person asking again.
     /// </summary>
-    public async Task RecoverAsync(CancellationToken ct)
+    /// <summary>Context-free: continuations never run on the caller's SynchronizationContext (see DetachedWork).</summary>
+    public Task RecoverAsync(CancellationToken ct) => DetachedWork.Start(() => RecoverCoreAsync(ct));
+
+    private async Task RecoverCoreAsync(CancellationToken ct)
     {
         foreach (var sessionId in _ledger.ListIncomplete().Select(row => row.SessionId).Distinct(StringComparer.Ordinal).ToList())
         {

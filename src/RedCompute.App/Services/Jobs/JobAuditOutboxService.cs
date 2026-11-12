@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using RedBamboo.AppHost.Streams;
 using RedCompute.App.Data;
 using RedCompute.Core.Jobs;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services.Jobs;
 
@@ -29,7 +30,10 @@ public sealed class JobAuditOutboxService
         _dbFactory = dbFactory ?? (() => new RedComputeDbContext());
     }
 
-    public async Task RunAsync(CancellationToken ct)
+    /// <summary>Context-free: continuations never run on the caller's SynchronizationContext (see DetachedWork).</summary>
+    public Task RunAsync(CancellationToken ct) => DetachedWork.Start(() => RunLoopAsync(ct));
+
+    private async Task RunLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {

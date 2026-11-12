@@ -174,7 +174,7 @@ public sealed class VoiceSessionCoordinator
                 request.Instructions, request.Provenance, request.InitialHistory),
                 evt => HandleProviderEventAsync(state, evt), ct);
             state.ProviderSessionId = created.ProviderSessionId;
-            _ = WatchSessionLifetimeAsync(state);
+            _ = DetachedWork.Start(() => WatchSessionLifetimeAsync(state));
             return new(Snapshot(state), created.AnswerSdp);
         }
         catch

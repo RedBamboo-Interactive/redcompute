@@ -80,7 +80,10 @@ public sealed class IdleSessionParkingCoordinator
         }
     }
 
-    public async Task RunAsync(CancellationToken ct)
+    /// <summary>Context-free: continuations never run on the caller's SynchronizationContext (see DetachedWork).</summary>
+    public Task RunAsync(CancellationToken ct) => DetachedWork.Start(() => RunLoopAsync(ct));
+
+    private async Task RunLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {

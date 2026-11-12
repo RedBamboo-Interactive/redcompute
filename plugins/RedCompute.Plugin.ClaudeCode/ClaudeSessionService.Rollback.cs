@@ -130,7 +130,10 @@ public partial class ClaudeSessionService
             }
         }
 
-        var probe = ProbeFork(ForkProbeStartInfo(claudePath, record, target), CancellationToken.None).GetAwaiter().GetResult();
+        // Synchronous caller: run the probe on the pool so its awaits never need the blocked thread
+        // (on a UI thread they would wait on it forever), as the transcript persistence bridge does.
+        var startInfo = ForkProbeStartInfo(claudePath, record, target);
+        var probe = Task.Run(() => ProbeFork(startInfo, CancellationToken.None)).GetAwaiter().GetResult();
         switch (probe.Status)
         {
             case ClaudeForkProbeStatus.Accepted:

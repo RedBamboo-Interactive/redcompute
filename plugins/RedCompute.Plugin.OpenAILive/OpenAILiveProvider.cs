@@ -128,7 +128,7 @@ public sealed class OpenAILiveProvider : IPluginProvider, IVoiceSessionProvider
             throw;
         }
 
-        var reader = ReadSidebandAsync(providerSessionId, socket, onEvent, lifetime.Token);
+        var reader = DetachedWork.Start(() => ReadSidebandAsync(providerSessionId, socket, onEvent, lifetime.Token));
         if (!_connections.TryAdd(providerSessionId, new LiveConnection(socket, lifetime, reader)))
         {
             lifetime.Cancel();

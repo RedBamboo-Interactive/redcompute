@@ -138,7 +138,7 @@ public class RelayServer
         // by the kernel and talking through the /compute/* proxy.
 
         var jwt = BadgeSigning.Shared;
-        _ = BadgeSigningBootstrap.ConfirmInBackground(jwt, redSuiteDir, "redcompute", m => RedComputeHost.LogService.Log(RedBamboo.AppHost.Logging.LogLevel.Info, "auth", m));
+        _ = DetachedWork.Start(() => BadgeSigningBootstrap.ConfirmInBackground(jwt, redSuiteDir, "redcompute", m => RedComputeHost.LogService.Log(RedBamboo.AppHost.Logging.LogLevel.Info, "auth", m)));
         var authFactory = _app.Services.GetRequiredService<AuthenticatedHttpClientFactory>();
         _callbacks = new SessionCallbackRegistry(_log, authFactory);
         _voiceSessions = new VoiceSessionCoordinator(
@@ -393,10 +393,12 @@ public class RelayServer
         SessionProcessContainment.SweepLedgers();
         LongLivedProcessEndpoints.Map(registry, longLived);
         VoiceSessionEndpoints.Map(registry, _registry, _voiceSessions);
-        _ = RunAttachmentCleanupAsync(ct);
+        _ = DetachedWork.Start(() => RunAttachmentCleanupAsync(ct));
         GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
 
         RegisterWsEvents(broadcaster, transcriptPipeline, inputQueue);
+        // Every loop below starts context-free (DetachedWork): none of its continuations can run on
+        // a caller's SynchronizationContext. Their synchronous boot prefixes still run here, in order.
         _ = rollbacks.RecoverAsync(ct);
         _ = inputQueue.RunAsync(ct);
         // Read now: the host consumes the planned-restart checkpoint once providers have started.
@@ -438,8 +440,8 @@ public class RelayServer
 
         // Provider entities were synchronously loaded before capability initialization. Keep
         // retrying only when that initial RedLeaf/cache sync could not supply an entity snapshot.
-        _ = _providerConfig.EnsureLoadedAsync(ct);
-        _ = _qualityModes.EnsureLoadedAsync(ct);
+        _ = DetachedWork.Start(() => _providerConfig.EnsureLoadedAsync(ct));
+        _ = DetachedWork.Start(() => _qualityModes.EnsureLoadedAsync(ct));
     }
 
     private void RegisterWsEvents(WebSocketBroadcaster broadcaster, SessionTranscriptPipeline transcriptPipeline,
@@ -555,7 +557,7 @@ public class RelayServer
 
         _hardwareMonitor.SnapshotUpdated += snapshot => broadcaster.Broadcast("hardware.snapshot", snapshot);
 
-        _ = PollCapabilityStatus(broadcaster);
+        _ = DetachedWork.Start(() => PollCapabilityStatus(broadcaster));
     }
 
     private async Task PollCapabilityStatus(WebSocketBroadcaster broadcaster)
