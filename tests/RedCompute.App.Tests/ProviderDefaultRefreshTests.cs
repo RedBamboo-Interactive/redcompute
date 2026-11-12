@@ -94,7 +94,7 @@ public class ProviderDefaultRefreshTests
                     return Task.FromResult(new HttpResponseMessage(SuiteConfigStatus));
                 return Json(SuiteConfigBody ?? (DefaultProvider is null
                     ? """{"items":[{"slug":"default","data":{}}]}"""
-                    : $$"""{"items":[{"slug":"default","data":{"default_provider":"{{DefaultProvider}}"}}]}"""));
+                    : $$$"""{"items":[{"slug":"default","data":{"default_provider":"{{{DefaultProvider}}}"}}]}"""));
             }
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }
