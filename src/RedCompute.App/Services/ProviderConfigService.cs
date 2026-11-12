@@ -161,6 +161,54 @@ public class ProviderConfigService
         }
     }
 
+    /// <summary>
+    /// Re-reads only the installation's default provider (suite-config <c>default_provider</c>):
+    /// RedLeaf sets it when onboarding's Connect AI chooses a provider, after this process loaded
+    /// its snapshot, so without this the default stayed the fallback order's first provider
+    /// (Claude Code) until a restart, and Code's New Session preselected it (Linux e2e,
+    /// 2026-11-09). One request, bounded by <paramref name="timeout"/>; any failure keeps the
+    /// current default.
+    /// </summary>
+    public async Task RefreshDefaultProviderAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        List<ProviderEntityConfig> providers;
+        lock (_lock) { providers = _providers.Values.ToList(); }
+        if (providers.Count == 0) return;
+        try
+        {
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(timeout);
+            RefreshServiceAuthorization();
+            var json = await _http.GetStringAsync(
+                $"{_config.RedLeafUrl.TrimEnd('/')}/api/entities?type=suite-config&limit=1", bounded.Token);
+            if (!TryReadSuiteConfig(json)) return;
+            var slug = ParseDefaultProviderFromSuiteConfig(json, providers);
+            string? before;
+            lock (_lock) { before = _defaultProviderSlug; _defaultProviderSlug = slug; }
+            if (!string.Equals(before, slug, StringComparison.OrdinalIgnoreCase))
+                _log($"[ProviderConfig] Default provider from suite-config: {slug ?? "(none; fallback order)"}", null);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+        {
+            // Keep the current default; the next call tries again.
+        }
+    }
+
+    /// <summary>True when <paramref name="json"/> is a readable suite-config listing (an empty one included).</summary>
+    private static bool TryReadSuiteConfig(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == JsonValueKind.Array
+                || doc.RootElement.ValueKind == JsonValueKind.Object && TryFindArray(doc.RootElement, out _);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     public bool LoadedFromRedLeaf => _loadedFromRedLeaf;
     public bool LoadedFromCache => _loadedFromCache;
 

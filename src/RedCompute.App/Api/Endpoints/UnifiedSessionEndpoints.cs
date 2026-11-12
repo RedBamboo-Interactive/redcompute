@@ -1926,11 +1926,13 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapGet("/ai-session/providers/configured",
-            "List active AI inference Provider entities admitted by capability or quality mode, including their runtime binding and models. Use these slugs in the provider field.", () =>
+            "List active AI inference Provider entities admitted by capability or quality mode, including their runtime binding and models. Use these slugs in the provider field. isDefault is the installation's default provider as RedLeaf currently has it.", async (HttpContext ctx) =>
         {
             if (_providerConfig == null || _quality == null)
                 return Error(503, "not_configured", "Provider and quality mode services are not available");
 
+            // The default can change in RedLeaf (onboarding, Settings) after this process loaded it.
+            await _providerConfig.RefreshDefaultProviderAsync(TimeSpan.FromSeconds(2), ctx.RequestAborted);
             var defaultSlug = _providerConfig.DefaultProviderSlug;
             var entry = registry.Get("ai-session");
             var providers = FilterInferenceProviders(_providerConfig.GetAll(), _quality.GetAll()).Select(p =>
