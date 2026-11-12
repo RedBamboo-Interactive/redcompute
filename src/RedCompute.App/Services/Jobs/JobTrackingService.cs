@@ -47,6 +47,7 @@ public class JobTrackingService : IJobTracker
     private readonly Dictionary<Guid, HashSet<TaskCompletionSource<bool>>> _terminalWaiters = new();
     private readonly Func<RedComputeDbContext> _dbFactory;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly JobExecutionCancellation _executions = new();
 
     public JobTrackingService(Func<RedComputeDbContext>? dbFactory = null,
         Func<DateTimeOffset>? clock = null)
@@ -422,11 +423,34 @@ public class JobTrackingService : IJobTracker
         }, JobEventKind.Failed, data: new { errorMessage, errorDetails });
 
     public void MarkCancelled(Guid jobId)
-        => Mutate(jobId, job =>
+    {
+        Mutate(jobId, job =>
         {
             job.Status = JobStatus.Cancelled;
             job.CompletedAt = DateTimeOffset.UtcNow;
         }, JobEventKind.Cancelled);
+        // The record is terminal first, so a provider unwinding on the token can never land a
+        // Completed or Failed over it; then the running invocation is told to stop its work.
+        _executions.Cancel(jobId);
+    }
+
+    /// <summary>
+    /// Opens the cancellation scope for one provider invocation of <paramref name="jobId"/>.
+    /// <see cref="MarkCancelled"/> cancels the scope's token, as does <paramref name="caller"/>.
+    /// A job that is already cancelled gets an already-cancelled token, so a DELETE that races
+    /// the start of execution still stops it.
+    /// </summary>
+    public JobExecutionScope BeginExecution(Guid jobId, CancellationToken caller = default)
+    {
+        // Register before reading the status: MarkCancelled writes the status before it looks
+        // for the registration, so one of the two always sees the other.
+        var scope = _executions.Begin(jobId, caller);
+        if (GetJob(jobId)?.Status == JobStatus.Cancelled)
+            _executions.Cancel(jobId);
+        return scope;
+    }
+
+    internal bool HasActiveExecution(Guid jobId) => _executions.IsActive(jobId);
 
     public void MarkSkipped(Guid jobId, string reason, string? resultJson = null)
         => Mutate(jobId, job =>

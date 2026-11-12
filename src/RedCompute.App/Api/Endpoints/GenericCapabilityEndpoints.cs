@@ -192,14 +192,18 @@ public static class GenericCapabilityEndpoints
 
                 if (isAsync)
                 {
+                    // The request returns 202 now, so only cancelling the job can stop this
+                    // invocation: DELETE /jobs/{id} marks it cancelled, which cancels the scope.
+                    var asyncExecution = jobTracker.BeginExecution(job.Id);
                     _ = Task.Run(async () =>
                     {
+                        using var execution = asyncExecution;
                         try
                         {
-                            var result = await provider.ExecuteAsync(request);
+                            var result = await provider.ExecuteAsync(request, execution.Token);
                             await HandleResult(job.Id, slug, result, jobTracker, log);
                         }
-                        catch (OperationCanceledException)
+                        catch (OperationCanceledException) when (execution.Token.IsCancellationRequested)
                         {
                             if (jobTracker.GetJob(job.Id)?.Status != JobStatus.Cancelled)
                                 jobTracker.MarkCancelled(job.Id);
@@ -214,10 +218,11 @@ public static class GenericCapabilityEndpoints
                     return Results.Json(new { jobId = job.Id, status = "running" }, statusCode: 202);
                 }
 
-                // Synchronous execution
+                // Synchronous execution: the caller hanging up or the job being cancelled both stop it.
+                using var syncExecution = jobTracker.BeginExecution(job.Id, ctx.RequestAborted);
                 try
                 {
-                    var result = await provider.ExecuteAsync(request, ctx.RequestAborted);
+                    var result = await provider.ExecuteAsync(request, syncExecution.Token);
                     if (result is { Success: true, OutputStream: not null })
                     {
                         await using var outputStream = result.OutputStream;
@@ -260,10 +265,14 @@ public static class GenericCapabilityEndpoints
                     _ = provider.GetStatusAsync();
                     return Error(502, "backend_unavailable", $"Backend connection failed: {ex.Message}");
                 }
-                catch (TaskCanceledException)
+                catch (OperationCanceledException) when (syncExecution.Token.IsCancellationRequested)
                 {
-                    jobTracker.MarkCancelled(job.Id);
-                    return Results.Empty;
+                    if (jobTracker.GetJob(job.Id)?.Status != JobStatus.Cancelled)
+                        jobTracker.MarkCancelled(job.Id);
+                    if (ctx.RequestAborted.IsCancellationRequested)
+                        return Results.Empty;
+                    ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+                    return Error(409, "job_cancelled", $"Job {job.Id} was cancelled");
                 }
                 catch (Exception ex)
                 {

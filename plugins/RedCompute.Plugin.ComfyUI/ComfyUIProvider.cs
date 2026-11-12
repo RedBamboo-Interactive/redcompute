@@ -42,6 +42,9 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly double _pollTimeoutSeconds;
 
     internal TimeSpan CacheReleaseTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    internal TimeSpan PromptSubmitTimeout { get; init; } = TimeSpan.FromSeconds(60);
+    internal TimeSpan PromptCancelTimeout { get; init; } = TimeSpan.FromSeconds(20);
+    internal TimeSpan PromptCancelPollInterval { get; init; } = TimeSpan.FromMilliseconds(250);
 
     public string Name => "ComfyUI";
     public string CapabilitySlug => _capabilitySlug;
@@ -720,9 +723,13 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         return value;
     }
 
-    private async Task<string?> QueuePromptAsync(Dictionary<string, JsonElement> workflow, string clientId, CancellationToken ct)
+    private async Task<string?> QueuePromptAsync(Dictionary<string, JsonElement> workflow, string clientId)
     {
         var payload = new { prompt = workflow, client_id = clientId };
+        // Deliberately not the job's token: a cancellation that lands while /prompt is in flight
+        // must still learn the prompt id, or the prompt would be queued with nobody to cancel it.
+        using var submit = new CancellationTokenSource(PromptSubmitTimeout);
+        var ct = submit.Token;
         try
         {
             var resp = await _http.PostAsJsonAsync($"{BaseUrl}/prompt", payload, ct);
@@ -742,6 +749,137 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         }
     }
 
+    /// <summary>
+    /// Takes one of our prompts back out of ComfyUI: a running prompt is interrupted, a pending one
+    /// is dequeued, and the call waits until ComfyUI no longer lists it so the accelerator lease is
+    /// only released once the GPU is actually free.
+    ///
+    /// Never stops a prompt that is not <paramref name="promptId"/>. Builds with the per-id cancel
+    /// (POST /api/jobs/{id}/cancel) check and interrupt atomically. Older builds fall back to
+    /// /queue delete and an /interrupt that is only sent after GET /queue shows this exact prompt
+    /// running, and it carries the prompt_id so builds that support targeted interrupts check again.
+    /// </summary>
+    internal async Task<PromptCancelOutcome> CancelPromptAsync(string promptId, string reason)
+    {
+        using var budget = new CancellationTokenSource(PromptCancelTimeout);
+        var ct = budget.Token;
+        var method = "none";
+        try
+        {
+            if (await TryCancelByIdAsync(promptId, ct))
+            {
+                method = "jobs-cancel";
+            }
+            else
+            {
+                method = "queue-delete";
+                using (var delete = await _http.PostAsJsonAsync($"{BaseUrl}/queue",
+                           new { delete = new[] { promptId } }, ct))
+                {
+                    if (!delete.IsSuccessStatusCode)
+                        _log($"[ComfyUI] /queue delete for {promptId} answered HTTP {(int)delete.StatusCode}");
+                }
+
+                var snapshot = await ReadQueueAsync(ct);
+                if (snapshot is { } queue && queue.Running.Contains(promptId))
+                {
+                    method = "interrupt";
+                    using var interrupt = await _http.PostAsJsonAsync($"{BaseUrl}/interrupt",
+                        new { prompt_id = promptId }, ct);
+                    if (!interrupt.IsSuccessStatusCode)
+                        _log($"[ComfyUI] /interrupt for {promptId} answered HTTP {(int)interrupt.StatusCode}");
+                }
+                else if (snapshot is { } other && other.Running.Count > 0)
+                {
+                    _log($"[ComfyUI] Not interrupting: the running prompt is {string.Join(", ", other.Running)}, not {promptId}");
+                }
+            }
+
+            while (true)
+            {
+                var queue = await ReadQueueAsync(ct);
+                if (queue is null)
+                {
+                    _log($"[ComfyUI] Cancelled prompt {promptId} ({reason}, {method}); queue state unreadable");
+                    return new PromptCancelOutcome(method, Settled: false);
+                }
+                if (!queue.Value.Running.Contains(promptId) && !queue.Value.Pending.Contains(promptId))
+                {
+                    _log($"[ComfyUI] Cancelled prompt {promptId} ({reason}, {method}); ComfyUI released it");
+                    return new PromptCancelOutcome(method, Settled: true);
+                }
+                await Task.Delay(PromptCancelPollInterval, ct);
+            }
+        }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            _log($"[ComfyUI] Prompt {promptId} was still listed {PromptCancelTimeout.TotalSeconds:0.#}s after cancelling it ({reason}, {method})");
+            return new PromptCancelOutcome(method, Settled: false);
+        }
+        catch (Exception ex)
+        {
+            _log($"[ComfyUI] Cancelling prompt {promptId} failed ({reason}, {method}): {ex.Message}");
+            return new PromptCancelOutcome(method, Settled: false);
+        }
+    }
+
+    private async Task<bool> TryCancelByIdAsync(string promptId, CancellationToken ct)
+    {
+        try
+        {
+            using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+            using var response = await _http.PostAsync(
+                $"{BaseUrl}/api/jobs/{Uri.EscapeDataString(promptId)}/cancel", content, ct);
+            if (!response.IsSuccessStatusCode) return false;
+            // Only a JSON answer with the cancelled flag is the real route; anything else (an
+            // older build's catch-all, a proxy page) falls back to the guarded path.
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+            return body.ValueKind == JsonValueKind.Object
+                && body.TryGetProperty("cancelled", out var cancelled)
+                && cancelled.ValueKind is JsonValueKind.True or JsonValueKind.False;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private async Task<QueueSnapshot?> ReadQueueAsync(CancellationToken ct)
+    {
+        using var response = await _http.GetAsync($"{BaseUrl}/queue", ct);
+        if (!response.IsSuccessStatusCode) return null;
+        var queue = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        if (!TryReadQueueIds(queue, "queue_running", out var running)
+            || !TryReadQueueIds(queue, "queue_pending", out var pending))
+            return null;
+        return new QueueSnapshot(running, pending);
+    }
+
+    /// <summary>ComfyUI queue items are arrays: [number, prompt_id, prompt, extra_data, outputs].</summary>
+    private static bool TryReadQueueIds(JsonElement queue, string propertyName, out HashSet<string> ids)
+    {
+        ids = new HashSet<string>(StringComparer.Ordinal);
+        if (queue.ValueKind != JsonValueKind.Object
+            || !queue.TryGetProperty(propertyName, out var items)
+            || items.ValueKind != JsonValueKind.Array)
+            return false;
+        foreach (var item in items.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Array && item.GetArrayLength() > 1
+                && item[1].ValueKind == JsonValueKind.String)
+                ids.Add(item[1].GetString()!);
+        }
+        return true;
+    }
+
+    private readonly record struct QueueSnapshot(HashSet<string> Running, HashSet<string> Pending);
+
+    internal readonly record struct PromptCancelOutcome(string Method, bool Settled);
+
     private async Task<(MemoryStream? stream, string? contentType, string? error)?> RunWithWebSocketAsync(
         Dictionary<string, JsonElement> workflow, string outputNode, string clientId, Action<double>? progressCallback, CancellationToken ct)
     {
@@ -759,13 +897,38 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             return (null, null, $"WebSocket connection failed: {ex.Message}");
         }
 
-        var promptId = await QueuePromptAsync(workflow, clientId, ct);
+        ct.ThrowIfCancellationRequested();
+        var promptId = await QueuePromptAsync(workflow, clientId);
         if (promptId == null)
             return (null, null, "Failed to queue prompt");
 
         _log($"[ComfyUI] Queued prompt {promptId}");
 
-        var totalNodes = Math.Max(workflow.Count, 1);
+        // From here the prompt exists in ComfyUI's queue. Any exit other than ComfyUI reporting
+        // it finished (cancellation, timeout, a dropped socket, an exception) must take it back
+        // out, or it keeps the GPU after RedCompute has released the accelerator lease.
+        var promptSettled = false;
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            return await FollowPromptAsync(ws, promptId, workflow.Count, outputNode,
+                progressCallback, () => promptSettled = true, ct);
+        }
+        finally
+        {
+            if (!promptSettled)
+            {
+                var reason = ct.IsCancellationRequested ? "job cancelled" : "run ended before the prompt finished";
+                await CancelPromptAsync(promptId, reason);
+            }
+        }
+    }
+
+    private async Task<(MemoryStream? stream, string? contentType, string? error)?> FollowPromptAsync(
+        ClientWebSocket ws, string promptId, int workflowNodeCount, string outputNode,
+        Action<double>? progressCallback, Action markSettled, CancellationToken ct)
+    {
+        var totalNodes = Math.Max(workflowNodeCount, 1);
         var nodesCached = 0;
         var nonCachedTotal = totalNodes;
         var executingSeen = 0;
@@ -827,6 +990,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                     }
                     if (data.TryGetProperty("node", out var nodeProp) && nodeProp.ValueKind == JsonValueKind.Null)
                     {
+                        markSettled();
                         progressCallback?.Invoke(1.0);
                         goto fetchOutput;
                     }
@@ -844,15 +1008,25 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                     break;
 
                 case "execution_success":
+                    markSettled();
                     progressCallback?.Invoke(1.0);
                     goto fetchOutput;
 
                 case "execution_error":
+                    markSettled();
                     var errorMsg = data.TryGetProperty("exception_message", out var exMsg)
                         ? exMsg.GetString() ?? "Unknown error"
                         : "ComfyUI execution error";
                     _log($"[ComfyUI] Execution error: {errorMsg}");
                     return (null, null, errorMsg);
+
+                case "execution_interrupted":
+                    // Our own cancel ends with this message too, but then the token is already
+                    // cancelled and the caller sees the cancellation, not this failure.
+                    markSettled();
+                    ct.ThrowIfCancellationRequested();
+                    _log($"[ComfyUI] Prompt {promptId} was interrupted outside RedCompute");
+                    return (null, null, "ComfyUI interrupted the prompt before it finished");
             }
         }
 
