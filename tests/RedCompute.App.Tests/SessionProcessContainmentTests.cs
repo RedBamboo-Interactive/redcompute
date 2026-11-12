@@ -210,6 +210,28 @@ public sealed class SessionProcessContainmentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_long_lived_command_that_chains_to_a_batch_file_without_call_runs()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        // pnpm.cmd and npm.cmd are batch files: on 12 Nov `pnpm.cmd ... exec vite` never started
+        // ("cannot find the batch label specified") because the command ran inside `call :run`.
+        var chain = Path.Combine(_root, "chain.cmd");
+        File.WriteAllText(chain, $"@\"{WindowsPowerShell}\" -NoProfile -ExecutionPolicy Bypass -File \"{Sleeper}\" %1" + "\r\n");
+        var pidFile = Path.Combine(_root, "chained.pid");
+        var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });
+        var result = registry.Launch(new LongLivedLaunchRequest("chained",
+            $"set CHAINED=1&& \"{chain}\" \"{pidFile}\"", _root), new LongLivedOwner("user", "Nova", null));
+        Assert.True(result.Status == 200, result.Error);
+
+        var server = await WaitForPidAsync(pidFile);
+        await WaitUntilAsync(() => registry.Get(result.Process!.Id)!.ProcessIds.Contains(server), "the server tracked by parentage");
+        Assert.DoesNotContain("batch label", ReadShared(result.Process!.LogPath!));
+
+        Assert.Equal(200, registry.Stop(result.Process.Id).Status);
+        await AssertGoneAsync(server);
+    }
+
+    [Fact]
     public void Launch_refuses_a_port_in_use_and_a_relative_directory()
     {
         var registry = new LongLivedProcessRegistry(Path.Combine(_root, "registry"), _ => { });

@@ -88,16 +88,19 @@ public sealed class LongLivedProcessRegistry
         Directory.CreateDirectory(_entryDirectory);
         var logPath = Path.Combine(_entryDirectory, $"{id}.log");
         var scriptPath = Path.Combine(_entryDirectory, $"{id}.cmd");
-        // The command runs from a script, so no quoting of it crosses a command line: the server
-        // reads NUL and writes its log, never a RedCompute pipe that a restart would break.
+        var commandPath = Path.Combine(_entryDirectory, $"{id}.run.cmd");
+        // The command runs from a script of its own, so no quoting of it crosses a command line,
+        // and it is that script's top level: a command that chains to a batch file without `call`
+        // (pnpm.cmd, npm.cmd) never returns, which inside a `call :label` loses the caller's label.
+        // The outer script gives it NUL and the log, never a RedCompute pipe a restart would break.
+        File.WriteAllText(commandPath, string.Join("\r\n",
+            "@echo off",
+            request.Command,
+            ""), new UTF8Encoding(false));
         File.WriteAllText(scriptPath, string.Join("\r\n",
             "@echo off",
             $"cd /d \"{request.WorkingDirectory}\"",
-            $"call :run < NUL >> \"{logPath}\" 2>&1",
-            "exit /b %errorlevel%",
-            ":run",
-            request.Command,
-            "exit /b %errorlevel%",
+            $"\"%ComSpec%\" /d /c \"\"{commandPath}\"\" < NUL >> \"{logPath}\" 2>&1",
             ""), new UTF8Encoding(false));
         // `start /b` from a cmd that exits at once: the server's parent is gone, so it is outside
         // RedCompute's process tree; the kept tree's job and parentage hold it instead.
@@ -230,7 +233,7 @@ public sealed class LongLivedProcessRegistry
 
         var wasRunning = tree is not null && tree.LiveProcesses.Count > 0;
         if (tree is not null && OperatingSystem.IsWindows()) tree.Reap();
-        foreach (var path in new[] { LedgerPath(id), Path.Combine(_entryDirectory, $"{id}.cmd") })
+        foreach (var path in new[] { LedgerPath(id), Path.Combine(_entryDirectory, $"{id}.cmd"), Path.Combine(_entryDirectory, $"{id}.run.cmd") })
             try { File.Delete(path); } catch { }
         _log($"[LongLived] Removed '{record.Name}' ({id}) PID {record.Pid}{(wasRunning ? ", stopped" : ", was not running")}");
         return LongLivedProcessResult.Ok(View(record) with { Running = false, ProcessIds = [] });
