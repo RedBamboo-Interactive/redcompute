@@ -361,6 +361,80 @@ public sealed class ReleaseToolTests
         Assert.Throws<InvalidDataException>(() => ArchiveInputs.Enumerate(root, path => attributes[path], Entries));
     }
 
+    [Fact]
+    public void A_linux_archive_stores_unix_modes_and_the_windows_archive_stores_none()
+    {
+        using var temp = new TemporaryDirectory();
+        var source = Directory.CreateDirectory(Path.Combine(temp.Path, "source")).FullName;
+        File.WriteAllText(Path.Combine(source, "RedCompute"), "apphost");
+        File.WriteAllBytes(Path.Combine(source, "createdump"), [0x7F, (byte)'E', (byte)'L', (byte)'F', 2]);
+        File.WriteAllText(Path.Combine(source, "libcoreclr.so"), "lib");
+        File.WriteAllText(Path.Combine(source, "RedCompute.deps.json"), "{}");
+        var windows = Path.Combine(temp.Path, "windows.zip");
+        var linux = Path.Combine(temp.Path, "linux.zip");
+
+        Assert.Equal(0, ReleaseToolProgram.Run(["archive", "create", "--source", source, "--output", windows]));
+        Assert.Equal(0, ReleaseToolProgram.Run(["archive", "create", "--source", source, "--output", linux, "--target-os", "linux"]));
+
+        using (var archive = System.IO.Compression.ZipFile.OpenRead(windows))
+            Assert.All(archive.Entries, entry => Assert.Equal(0, entry.ExternalAttributes));
+        using (var archive = System.IO.Compression.ZipFile.OpenRead(linux))
+        {
+            int Mode(string name) => (archive.GetEntry(name)!.ExternalAttributes >> 16) & 0xFFFF;
+            Assert.Equal(0x81ED, Mode("RedCompute"));
+            Assert.Equal(0x81ED, Mode("createdump"));
+            Assert.Equal(0x81ED, Mode("libcoreclr.so"));
+            Assert.Equal(0x81A4, Mode("RedCompute.deps.json"));
+        }
+        Assert.NotEqual(0, ReleaseToolProgram.Run(["archive", "create", "--source", source, "--output", linux, "--target-os", "macos"]));
+    }
+
+    [Fact]
+    public void A_linux_descriptor_names_linux_from_its_evidence()
+    {
+        using var temp = new TemporaryDirectory();
+        var artifact = Path.Combine(temp.Path, "redcompute-linux-x64.zip");
+        var evidencePath = Path.Combine(temp.Path, "evidence.json");
+        var output = Path.Combine(temp.Path, "descriptor.json");
+        File.WriteAllBytes(artifact, "artifact"u8.ToArray());
+        File.WriteAllText(evidencePath, ComponentJson.Serialize(Evidence() with { TargetRid = "linux-x64" }));
+
+        Assert.Equal(0, BuildDescriptor(artifact, evidencePath, output));
+
+        var descriptor = ComponentJson.Deserialize<RedComputeComponentInput>(File.ReadAllText(output));
+        Assert.Equal("linux", descriptor.Compatibility.OperatingSystem);
+        Assert.Equal("linux-x64", descriptor.Artifact.TargetRid);
+        Assert.Throws<InvalidDataException>(() => ComponentJson.Validate(descriptor with
+        {
+            Compatibility = descriptor.Compatibility with { OperatingSystem = "windows" },
+        }));
+        Assert.Throws<InvalidDataException>(() => ComponentJson.Validate(Evidence() with { TargetRid = "osx-x64" }));
+    }
+
+    [Fact]
+    public void Each_build_names_its_runtime_files_and_lock_files()
+    {
+        Assert.Equal(["RedCompute.exe", "RedCompute.deps.json", "RedCompute.runtimeconfig.json", "hostfxr.dll", "coreclr.dll"],
+            RedComputeRuntime.RequiredFiles("win-x64"));
+        Assert.Equal(["RedCompute", "RedCompute.deps.json", "RedCompute.runtimeconfig.json", "libhostfxr.so", "libcoreclr.so"],
+            RedComputeRuntime.RequiredFiles("linux-x64"));
+        Assert.Equal("packages.lock.json", RedComputeRuntime.LockFileName("win-x64"));
+        Assert.Equal("packages.linux.lock.json", RedComputeRuntime.LockFileName("linux-x64"));
+    }
+
+    [Fact]
+    public void The_linux_schema_differs_from_the_windows_one_only_in_its_platform()
+    {
+        var windows = File.ReadAllText(Path.Combine(RepositoryRoot(), "schemas", "redcompute-component-input.v1.schema.json"))
+            .ReplaceLineEndings("\n");
+        var linux = File.ReadAllText(Path.Combine(RepositoryRoot(), "schemas", "redcompute-component-input.linux-x64.v1.schema.json"))
+            .ReplaceLineEndings("\n");
+        Assert.Equal(windows
+            .Replace("\"targetRid\": { \"const\": \"win-x64\" }", "\"targetRid\": { \"const\": \"linux-x64\" }")
+            .Replace("\"operatingSystem\": { \"const\": \"windows\" }", "\"operatingSystem\": { \"const\": \"linux\" }")
+            .Replace("redcompute-component-input.v1.schema.json\"", "redcompute-component-input.linux-x64.v1.schema.json\""), linux);
+    }
+
     private static int BuildDescriptor(string artifact, string evidence, string output)
         => ReleaseToolProgram.Run([
             "descriptor", "build", "--artifact", artifact, "--evidence", evidence,

@@ -30,21 +30,29 @@ public static class ReleaseToolProgram
 
     private static int CreateArchive(Arguments options)
     {
-        options.EnsureOnly("source", "output");
-        DeterministicArchive.Create(options.Required("source"), options.Required("output"));
+        options.EnsureOnly("source", "output", "target-os");
+        // Without --target-os the archive is the Windows one, byte for byte (no Unix modes).
+        var targetOs = options.Optional("target-os") ?? "windows";
+        if (targetOs is not ("windows" or "linux"))
+            throw new ArgumentException("--target-os must be windows or linux.");
+        DeterministicArchive.Create(options.Required("source"), options.Required("output"),
+            unixModes: targetOs == "linux");
         Console.WriteLine("Created deterministic archive from sorted regular-file inputs.");
         return 0;
     }
 
     private static int BuildEvidence(Arguments options)
     {
-        options.EnsureOnly("repository-root", "publish-root", "output", "version", "repository-url", "source-commit", "source-dependencies", "provider-graph", "dotnet-sdk", "dotnet-runtime", "msbuild", "nuget");
+        options.EnsureOnly("repository-root", "publish-root", "output", "version", "repository-url", "source-commit", "source-dependencies", "provider-graph", "dotnet-sdk", "dotnet-runtime", "msbuild", "nuget", "target-rid");
+        // win-x64 unless --target-rid names the linux-x64 build.
+        var rid = options.Optional("target-rid") ?? "win-x64";
+        var lockFileName = RedComputeRuntime.LockFileName(rid);
         var repositoryRoot = Path.GetFullPath(options.Required("repository-root"));
         var publishRoot = Path.GetFullPath(options.Required("publish-root"));
         var output = Path.GetFullPath(options.Required("output"));
         EnsureInside(publishRoot, output, "Evidence output");
 
-        var locks = EnumerateRepositoryFiles(repositoryRoot, "packages.lock.json")
+        var locks = EnumerateRepositoryFiles(repositoryRoot, lockFileName)
             .Select(path =>
             {
                 var facts = ComponentJson.Inspect(path);
@@ -55,13 +63,13 @@ public static class ReleaseToolProgram
                 };
             })
             .OrderBy(x => x.Path, StringComparer.Ordinal).ToArray();
-        if (locks.Length == 0) throw new InvalidDataException("No committed packages.lock.json files were found.");
+        if (locks.Length == 0) throw new InvalidDataException($"No committed {lockFileName} files were found.");
         var commit = options.Required("source-commit");
         var repositoryUrl = options.Required("repository-url");
         var sourceSet = ComponentJson.Deserialize<SourceDependencyFile>(File.ReadAllText(options.Required("source-dependencies")));
         if (sourceSet.SchemaVersion != 1 || sourceSet.Dependencies.Count != 1 || sourceSet.Dependencies[0].Id != "redbamboo-apphost")
             throw new InvalidDataException("Source dependency input must contain exactly RedBamboo.AppHost.");
-        if (!locks.Any(x => x.Path == "release/locks/redbamboo-apphost/packages.lock.json"))
+        if (!locks.Any(x => x.Path == $"release/locks/redbamboo-apphost/{lockFileName}"))
             throw new InvalidDataException("The pinned RedBamboo.AppHost NuGet lock is missing.");
 
         var graph = ComponentJson.Deserialize<ProviderGraphFile>(File.ReadAllText(options.Required("provider-graph")));
@@ -73,7 +81,7 @@ public static class ReleaseToolProgram
         foreach (var dependency in provider.Dependencies)
             if (!ids.Contains(dependency)) throw new InvalidDataException($"Provider '{provider.Id}' references unknown provider '{dependency}'.");
 
-        VerifySelfContainedPublish(publishRoot);
+        VerifySelfContainedPublish(publishRoot, rid);
         var expectedPluginFiles = graph.Providers.Select(item =>
         {
             var projectPath = Path.Combine(repositoryRoot, item.Project.Replace('/', Path.DirectorySeparatorChar));
@@ -96,7 +104,7 @@ public static class ReleaseToolProgram
             ComponentId = "redcompute",
             Version = options.Required("version"),
             Configuration = "Release",
-            TargetRid = "win-x64",
+            TargetRid = rid,
             Deterministic = true,
             SelfContained = true,
             WebShellIncluded = false,
@@ -158,7 +166,7 @@ public static class ReleaseToolProgram
                 RequiresKernelApi = options.Required("requires-kernel-api"),
                 CompatibleProductVersion = options.Required("compatible-product-version"),
                 ProvidesComputeApi = options.Required("provides-compute-api"),
-                OperatingSystem = "windows", Architecture = "x64",
+                OperatingSystem = RedComputeRuntime.OperatingSystem(evidence.TargetRid), Architecture = "x64",
             },
             Evidence = evidence,
         };
@@ -177,9 +185,9 @@ public static class ReleaseToolProgram
         return 0;
     }
 
-    private static void VerifySelfContainedPublish(string root)
+    private static void VerifySelfContainedPublish(string root, string rid)
     {
-        foreach (var relative in new[] { "RedCompute.exe", "RedCompute.deps.json", "RedCompute.runtimeconfig.json", "hostfxr.dll", "coreclr.dll" })
+        foreach (var relative in RedComputeRuntime.RequiredFiles(rid))
             if (!File.Exists(Path.Combine(root, relative))) throw new InvalidDataException($"Self-contained publish smoke failed: missing {relative}.");
         if (!Directory.Exists(Path.Combine(root, "plugins")) || !Directory.Exists(Path.Combine(root, "capabilities")))
             throw new InvalidDataException("Publish smoke failed: installed runtime content is missing.");
@@ -252,6 +260,7 @@ public static class ReleaseToolProgram
             return new Arguments(values);
         }
         public string Required(string name) => _values.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value) ? value : throw new ArgumentException($"Missing required option '--{name}'.");
+        public string? Optional(string name) => _values.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value) ? value : null;
         public void EnsureOnly(params string[] names)
         {
             var allowed = names.ToHashSet(StringComparer.Ordinal);

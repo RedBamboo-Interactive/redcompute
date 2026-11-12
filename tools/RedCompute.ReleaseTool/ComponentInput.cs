@@ -152,8 +152,9 @@ public static partial class ComponentJson
         if (!Phase1VersionRange.IsValid(value.Compatibility.RequiresKernelApi)) throw new InvalidDataException("Invalid requiresKernelApi range.");
         if (!Phase1VersionRange.IsValid(value.Compatibility.CompatibleProductVersion)) throw new InvalidDataException("Invalid compatibleProductVersion range.");
         Semver(value.Compatibility.ProvidesComputeApi, "providesComputeApi");
-        if (value.Compatibility.OperatingSystem != "windows" || value.Compatibility.Architecture != "x64")
-            throw new InvalidDataException("Phase 1B component input must target windows/x64.");
+        if (value.Compatibility.Architecture != "x64" || !RedComputeRuntime.IsSupported(value.Artifact.TargetRid)
+            || value.Compatibility.OperatingSystem != RedComputeRuntime.OperatingSystem(value.Artifact.TargetRid))
+            throw new InvalidDataException("Phase 1B component input must target windows/x64 (win-x64) or linux/x64 (linux-x64).");
         Validate(value.Evidence);
         if (value.Version != value.Evidence.Version || value.Artifact.TargetRid != value.Evidence.TargetRid)
             throw new InvalidDataException("Descriptor and evidence version/RID must agree.");
@@ -164,8 +165,8 @@ public static partial class ComponentJson
         if (value.SchemaVersion != 1 || value.EvidenceType != "redcompute-build-evidence" || value.ComponentId != "redcompute")
             throw new InvalidDataException("Unsupported build-evidence contract.");
         Semver(value.Version, "evidence version");
-        if (value.TargetRid != "win-x64" || !value.Deterministic || !value.SelfContained || value.WebShellIncluded)
-            throw new InvalidDataException("Evidence must describe the deterministic, self-contained win-x64 runtime without a web shell.");
+        if (!RedComputeRuntime.IsSupported(value.TargetRid) || !value.Deterministic || !value.SelfContained || value.WebShellIncluded)
+            throw new InvalidDataException("Evidence must describe the deterministic, self-contained win-x64 or linux-x64 runtime without a web shell.");
         foreach (var source in new[] { value.Repository, value.PluginSdk, value.AppHost }) Validate(source);
         if (value.Repository.Id != "redcompute" || value.PluginSdk.Id != "redcompute-plugin-sdk" || value.AppHost.Id != "redbamboo-apphost") throw new InvalidDataException("Required source identities are missing.");
         if (value.Repository.Commit != value.PluginSdk.Commit || value.Repository.RepositoryUrl != value.PluginSdk.RepositoryUrl || value.PluginSdk.SourcePath != "src/RedCompute.PluginSdk") throw new InvalidDataException("PluginSdk source must be tied to the RedCompute repository input.");
@@ -179,7 +180,7 @@ public static partial class ComponentJson
     private static void Validate(ComponentArtifactInput value)
     {
         FileName(value.FileName, "artifact fileName"); Facts(value.SizeBytes, value.Sha256, "artifact"); Relative(value.InstallPath, "installPath");
-        if (value.TargetRid != "win-x64" || !value.SelfContained || value.WebShellIncluded)
+        if (!RedComputeRuntime.IsSupported(value.TargetRid) || !value.SelfContained || value.WebShellIncluded)
             throw new InvalidDataException("Artifact facts do not describe the required RedCompute runtime.");
     }
 
