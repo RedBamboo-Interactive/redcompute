@@ -13,7 +13,13 @@ namespace RedCompute.App;
 public partial class App : Application
 {
     /// <summary>How long a closing app waits for the host's graceful stop before it exits anyway.</summary>
-    internal static readonly TimeSpan StopBound = TimeSpan.FromSeconds(15);
+    /// <remarks>
+    /// Below the kernel's 10 s grace (ComputeStopGrace in redleaf
+    /// src/RedLeaf.App/Api/StaticServer.cs), after which RedLeaf kills the process tree. Under it,
+    /// a stop that finishes in time is never cut off mid-flush (StopAsync disposes the loggers and
+    /// log persistence after Registry.StopAll), and a slow one ends here rather than by a kill.
+    /// </remarks>
+    internal static readonly TimeSpan StopBound = TimeSpan.FromSeconds(8);
 
     protected override async void OnStartup(StartupEventArgs e)
     {
