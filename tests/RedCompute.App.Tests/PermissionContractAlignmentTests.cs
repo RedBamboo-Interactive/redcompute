@@ -441,6 +441,9 @@ public sealed class PermissionContractAlignmentTests : IDisposable
         internal readonly List<Dictionary<string, object?>> Calls = [];
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             switch (method!.Name)
             {

@@ -319,7 +319,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public ImageAttachmentSupport GetImageAttachmentSupport(string sessionId)
     {
-        var (info, _) = _interactive.GetSession(sessionId);
+        var info = _interactive.GetSessionInfo(sessionId);
         return info is null
             ? new(false, $"Session '{sessionId}' was not found")
             : SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
@@ -442,6 +442,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         var (info, history) = _interactive.GetSession(sessionId);
         return (info != null ? ToUnified(info) : null, history.Select(ToUnifiedMessage).ToList());
     }
+
+    public UnifiedSessionInfo? GetSessionInfo(string sessionId)
+        => _interactive.GetSessionInfo(sessionId) is { } info ? ToUnified(info) : null;
 
     public (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSessionByJobId(Guid jobId)
     {

@@ -192,6 +192,9 @@ public sealed class MaintenanceSessionDrainTests
         public string? ForceKillReason { get; private set; }
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             if (method!.Name == nameof(ISessionProvider.GetSessions))
             {

@@ -2264,6 +2264,17 @@ public class OpenCodeSessionService
         return (ToSessionInfo(record), _store.GetMessages(sessionId));
     }
 
+    /// <summary>
+    /// <see cref="GetSession"/>'s Info without the messages: the same live object or the same
+    /// mapping of the session row. No field of it is derived from messages.
+    /// </summary>
+    public OpenCodeSessionInfo? GetSessionInfo(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var managed))
+            return managed.Info;
+        return _store.FindSession(sessionId) is { } record ? ToSessionInfo(record) : null;
+    }
+
     public (OpenCodeSessionInfo? info, List<OpenCodeMessageRecord> messages) GetSessionByJobId(Guid jobId)
     {
         var managed = _sessions.Values.FirstOrDefault(s => s.Info.JobId == jobId);

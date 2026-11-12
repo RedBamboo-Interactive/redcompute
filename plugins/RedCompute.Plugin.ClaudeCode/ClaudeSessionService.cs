@@ -2089,6 +2089,17 @@ public partial class ClaudeSessionService
         return (ToUnloadedSessionInfo(record), GetHistory(sessionId));
     }
 
+    /// <summary>
+    /// <see cref="GetSession"/>'s Info without the history: the same live object or the same
+    /// mapping of the session row. No field of it is derived from messages.
+    /// </summary>
+    public ClaudeSessionInfo? GetSessionInfo(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+            return session.Info;
+        return _sessionStore.FindSession(sessionId) is { } record ? ToUnloadedSessionInfo(record) : null;
+    }
+
     public Dictionary<Guid, SessionStatus> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds)
     {
         var result = new Dictionary<Guid, SessionStatus>();

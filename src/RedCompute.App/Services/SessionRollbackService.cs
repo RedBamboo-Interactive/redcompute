@@ -105,7 +105,7 @@ public sealed class SessionRollbackService
         foreach (var row in _ledger.ListIncomplete().Where(row => row.SessionId == sessionId))
         {
             var provider = _registry.FindProviders<ISessionProvider>().FirstOrDefault(candidate =>
-                candidate.GetSession(sessionId).Info is not null);
+                candidate.GetSessionInfo(sessionId) is not null);
             if (provider is null) continue;
             try
             {
@@ -258,7 +258,7 @@ public sealed class SessionRollbackService
     private async Task<IReadOnlyList<string>> BlockersAsync(ISessionProvider provider, string sessionId, CancellationToken ct)
     {
         var blockers = new List<string>();
-        var info = provider.GetSession(sessionId).Info;
+        var info = provider.GetSessionInfo(sessionId);
         if (info?.Status is SessionStatus.Active or SessionStatus.Starting)
             blockers.Add(SessionRollbackBlockers.TurnActive);
         else if (info?.Status is SessionStatus.Error
@@ -284,7 +284,7 @@ public sealed class SessionRollbackService
     };
 
     private static string TranscriptProviderOf(ISessionProvider provider, string sessionId) =>
-        provider.GetSession(sessionId).Info?.Provider ?? provider.ProviderId;
+        provider.GetSessionInfo(sessionId)?.Provider ?? provider.ProviderId;
 
     private static List<SessionRollbackUserTurn> UserTurns(IEnumerable<UnifiedMessageRecord> records) =>
         records.Where(record => record.Role == "user" && !string.IsNullOrWhiteSpace(record.MessageUid))

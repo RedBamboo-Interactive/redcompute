@@ -54,7 +54,8 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
     public OpenCodeSessionRecord? FindSession(string sessionId)
     {
         using var db = new OpenCodeDbContext();
-        return db.Sessions.Find(sessionId);
+        // Read-only: the context is disposed on return, so tracking the row would buy nothing.
+        return db.Sessions.AsNoTracking().FirstOrDefault(s => s.Id == sessionId);
     }
 
     public OpenCodeSessionRecord? FindSessionByJobId(Guid jobId)
@@ -209,6 +210,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
     {
         using var db = new OpenCodeDbContext();
         return db.Messages
+            .AsNoTracking()
             .Where(m => m.SessionId == sessionId)
             .OrderByDescending(m => m.Id)
             .Take(limit)

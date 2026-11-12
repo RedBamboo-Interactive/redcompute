@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -65,7 +66,8 @@ public class ClaudeSessionStore : IClaudeSessionStore
     public ClaudeSessionRecord? FindSession(string sessionId)
     {
         using var db = new ClaudeDbContext();
-        return db.Sessions.Find(sessionId);
+        // Read-only: the context is disposed on return, so tracking the row would buy nothing.
+        return db.Sessions.AsNoTracking().FirstOrDefault(s => s.Id == sessionId);
     }
 
     public ClaudeSessionRecord? FindSessionByJobId(Guid jobId)
@@ -233,6 +235,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     {
         using var db = new ClaudeDbContext();
         return db.Messages
+            .AsNoTracking()
             .Where(m => m.SessionId == sessionId && !m.RolledBack)
             .OrderByDescending(m => m.Id)
             .Take(limit)

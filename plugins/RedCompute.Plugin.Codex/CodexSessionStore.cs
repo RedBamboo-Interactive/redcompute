@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.Codex;
@@ -57,7 +58,8 @@ public class CodexSessionStore : ICodexSessionStore
     public CodexSessionRecord? FindSession(string sessionId)
     {
         using var db = new CodexDbContext();
-        return db.Sessions.Find(sessionId);
+        // Read-only: the context is disposed on return, so tracking the row would buy nothing.
+        return db.Sessions.AsNoTracking().FirstOrDefault(s => s.Id == sessionId);
     }
 
     public CodexSessionRecord? FindSessionByJobId(Guid jobId)
@@ -226,6 +228,7 @@ public class CodexSessionStore : ICodexSessionStore
     {
         using var db = new CodexDbContext();
         return db.Messages
+            .AsNoTracking()
             .Where(m => m.SessionId == sessionId && !m.RolledBack)
             .OrderByDescending(m => m.Id)
             .Take(limit)

@@ -85,7 +85,7 @@ public sealed class SessionAccessService(
             try
             {
                 if (provider.SupportedAccessLevels.Count == 0 || provider.GetAccessState(id) is not { } state) continue;
-                if (provider.GetSession(id).Info is not { } info) continue;
+                if (provider.GetSessionInfo(id) is not { } info) continue;
                 if (!canRead(info)) return Unresolved(id, "this caller cannot read it");
                 // Every launch since access levels records one, so a running parent has a level;
                 // one without is a stopped legacy row, and Ask is the safe reading.
@@ -273,7 +273,7 @@ public sealed class SessionAccessService(
     {
         var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0 || provider.GetAccessState(sessionId) is not { } state) return;
-        var info = provider.GetSession(sessionId).Info;
+        var info = provider.GetSessionInfo(sessionId);
         var current = await ReadPolicyAsync(ct);
         var agent = info is null ? null : AgentEntityId(info);
 

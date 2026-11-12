@@ -690,7 +690,10 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         internal ClaudeSessionService Service = null!;
         internal string[] Sessions = [];
 
-        protected override object? Invoke(MethodInfo? method, object?[]? args) => method!.Name switch
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args) => method!.Name switch
         {
             "get_ProviderId" => "claude-code",
             "get_ProviderDisplayName" => "Claude Code",

@@ -149,7 +149,10 @@ public sealed class BackgroundTaskStopEndpointTests
         public bool Confidential { get; set; }
         public List<(string, string)> Calls { get; } = [];
 
-        protected override object? Invoke(MethodInfo? method, object?[]? args) => method!.Name switch
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args) => method!.Name switch
         {
             "get_ProviderId" => "test",
             "get_ProviderDisplayName" => "Test",

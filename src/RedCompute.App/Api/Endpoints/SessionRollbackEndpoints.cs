@@ -45,7 +45,7 @@ public static class SessionRollbackEndpoints
             UnifiedSessionInfo? info = null;
             foreach (var candidate in registry.FindProviders<ISessionProvider>())
             {
-                info = candidate.GetSession(id).Info;
+                info = candidate.GetSessionInfo(id);
                 if (info is null) continue;
                 provider = candidate;
                 break;

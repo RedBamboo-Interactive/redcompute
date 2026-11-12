@@ -5,7 +5,8 @@ namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeDbContext : DbContext
 {
-    private static readonly string DbPath;
+    // Settable so a test can never reach the real database.
+    internal static string DbPath { get; set; }
 
     public DbSet<OpenCodeSessionRecord> Sessions => Set<OpenCodeSessionRecord>();
     public DbSet<OpenCodeMessageRecord> Messages => Set<OpenCodeMessageRecord>();

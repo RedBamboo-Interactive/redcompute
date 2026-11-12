@@ -345,11 +345,11 @@ public class RelayServer
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         _callbacks.AttachDurableStore(_inputAttachments.DatabasePath, inputQueueStore,
-            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSession(sessionId).Info).FirstOrDefault(i => i is not null));
+            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null));
         _callbacks.AttachQuestionSource(
             sessionId => _registry.FindProviders<ISessionProvider>()
                 .Select(p => p.GetPendingQuestions(sessionId)).FirstOrDefault(q => q.Count > 0) ?? [],
-            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSession(sessionId).Info).FirstOrDefault(i => i is not null));
+            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null));
         var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
             _jobTracker, broadcaster, _log,
             sessionId => _confidentialSessions.Any(pair =>
@@ -402,7 +402,7 @@ public class RelayServer
         // Read now: the host consumes the planned-restart checkpoint once providers have started.
         if (_callbacks.Durable is { } durableCallbacks)
             _ = new RestartContinuations(durableCallbacks, inputQueueStore, inputQueue.AdmitAsync,
-                sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSession(sessionId).Info).FirstOrDefault(i => i is not null),
+                sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null),
                 PlannedRestartCheckpoint.Current, DateTimeOffset.UtcNow, _log).RunAfterBootAsync(ct);
         // Always runs: its eligibility clock also tells completion callbacks a session settled.
         // A zero idle timeout disables only the parking itself.

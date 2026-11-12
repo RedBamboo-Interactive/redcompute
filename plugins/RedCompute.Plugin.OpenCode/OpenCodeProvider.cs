@@ -68,7 +68,23 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,
             acceleratorAdmission: acceleratorAdmission);
+        WireEvents();
+    }
 
+    /// <summary>Test seam: a provider over an existing service and store, as the Claude and Codex providers have.</summary>
+    internal OpenCodeProvider(string capabilitySlug, OpenCodeSessionService opencode, OpenCodeSessionStore store,
+        IJobTracker jobTracker, Action<string, Guid?> log)
+    {
+        _capabilitySlug = capabilitySlug;
+        _opencode = opencode;
+        _store = store;
+        _jobTracker = jobTracker;
+        _log = log;
+        WireEvents();
+    }
+
+    private void WireEvents()
+    {
         _opencode.SessionCreated += session => PluginEvent?.Invoke("session.created", ToUnified(session));
         _opencode.SessionUpdated += session => PluginEvent?.Invoke("session.updated", ToUnified(session));
         _opencode.SessionEnded += (id, reason) => PluginEvent?.Invoke("session.ended", new { id, reason });
@@ -229,6 +245,9 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         var (info, history) = _opencode.GetSession(sessionId);
         return (info != null ? ToUnified(info) : null, history.Select(ToUnifiedMessage).ToList());
     }
+
+    public UnifiedSessionInfo? GetSessionInfo(string sessionId)
+        => _opencode.GetSessionInfo(sessionId) is { } info ? ToUnified(info) : null;
 
     public (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSessionByJobId(Guid jobId)
     {

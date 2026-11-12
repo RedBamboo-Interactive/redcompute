@@ -978,7 +978,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/message",
             "Durably admit a user message, then deliver now, steer into the active turn, or queue after it according to delivery policy.", async (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1150,7 +1150,7 @@ public static class UnifiedSessionEndpoints
                     idempotencyKey);
                 var resumeAttempted = IsAutoResumable(provider, info);
                 var admitted = await AdmitWithCurrentCallerAsync(ctx, provider, info, submission, _inputQueue!, ctx.RequestAborted);
-                var (_, currentInfo, _) = FindSessionAcrossProviders(registry, id);
+                var (_, currentInfo) = FindSessionAcrossProviders(registry, id);
                 var resumed = resumeAttempted && currentInfo?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
                 var queueSummary = admitted.Queue;
                 return Results.Json(new
@@ -1229,7 +1229,7 @@ public static class UnifiedSessionEndpoints
             "List the durable FIFO for a session. Active items are returned by default; includeTerminal exposes 24-hour delivery and cancellation receipts.",
             async (HttpContext ctx, string id) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1251,7 +1251,7 @@ public static class UnifiedSessionEndpoints
             "Get one durable queue item or terminal receipt for exact delivery verification",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1269,7 +1269,7 @@ public static class UnifiedSessionEndpoints
             "Cancel a pending or failed queue item and release its attachments back to draft state",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1291,7 +1291,7 @@ public static class UnifiedSessionEndpoints
             "Retry a failed queue head after inspecting its structured error",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1313,7 +1313,7 @@ public static class UnifiedSessionEndpoints
             "Ask one pending queued input to join the running turn instead of waiting for it to end. It never interrupts. Asking again, or asking about an input already steering or delivered, changes nothing. When steering is unavailable the answer says why (outcome unavailable, with reason) and the input stays queued; if the turn ended meanwhile the input runs as the next turn (deliveryReason no_active_turn), once.",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1353,7 +1353,7 @@ public static class UnifiedSessionEndpoints
             "Interrupt the active turn and deliver the durable queue in its own order once the provider reports a safe idle state: interrupt-current input first, then FIFO. The interrupt is attributed to the input that runs next.",
             async (HttpContext ctx, string id) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1386,7 +1386,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/inject",
             "Inject a message into the session history without triggering a model turn", async (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1437,7 +1437,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/answer",
             "Answer a pending question from the session", async (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1471,7 +1471,7 @@ public static class UnifiedSessionEndpoints
             "(cancelled, session_ended) has no decision.",
             async (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1603,7 +1603,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/interrupt",
             "Interrupt the session's current operation", (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1622,7 +1622,7 @@ public static class UnifiedSessionEndpoints
             + "The response confirms the request; the task's terminal state arrives as a `task` record and session.updated.",
             async (HttpContext ctx, string id, string taskId) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             if (!CanReadSession(ctx, info))
@@ -1648,7 +1648,7 @@ public static class UnifiedSessionEndpoints
         {
             if (_maintenance?.IsDraining == true)
                 return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1679,7 +1679,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/stop",
             "Stop a running session gracefully", async (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1693,7 +1693,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/dismiss",
             "Mark a session as dismissed (hidden from default listings)", async (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1708,7 +1708,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/restore",
             "Clear a dismissal so the session returns to default listings. Does not start a process; resume separately.", (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             if (!CanReadSession(ctx, info))
@@ -1723,7 +1723,7 @@ public static class UnifiedSessionEndpoints
             "Explicitly supersede only an exact never-delivered pending deployment verification target with a declared admitted replacement. Preserves terminal audit; ordinary inputs cannot be superseded.",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", "Session not found");
             if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
             var userId = ResolveUserId(ctx);
@@ -1751,7 +1751,7 @@ public static class UnifiedSessionEndpoints
             if (_callbacks == null)
                 return Error(503, "not_configured", "Callback registry not available");
 
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1812,7 +1812,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapDelete("/ai-session/sessions/{id}/callback/unaccepted",
             "Remove only an exact owner-authorized prompt preregistration after definitive admission rejection; accepted input is never removed.", async (HttpContext ctx, string id) =>
         {
-            var (_, info, _) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSessionAcrossProviders(registry, id);
             if (info is null) return Error(404, "not_found", "Session not found");
             if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
             var owner = ResolveUserId(ctx);
@@ -1830,7 +1830,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapDelete("/ai-session/sessions/{id}",
             "Force-kill a session", async (HttpContext ctx, string id) =>
         {
-            var (provider, info, _) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -2786,16 +2786,17 @@ public static class UnifiedSessionEndpoints
         return null;
     }
 
-    private static (ISessionProvider? provider, UnifiedSessionInfo? info, List<UnifiedMessageRecord>? history)
+    /// <summary>The owning provider and the session's metadata; never reads the transcript.</summary>
+    private static (ISessionProvider? provider, UnifiedSessionInfo? info)
         FindSessionAcrossProviders(CapabilityRegistry registry, string sessionId)
     {
         foreach (var provider in registry.FindProviders<ISessionProvider>())
         {
-            var (info, history) = provider.GetSession(sessionId);
+            var info = provider.GetSessionInfo(sessionId);
             if (info != null)
-                return (provider, info, history);
+                return (provider, info);
         }
-        return (null, null, null);
+        return (null, null);
     }
 
     private static bool IsAutoResumable(ISessionProvider provider, UnifiedSessionInfo info)

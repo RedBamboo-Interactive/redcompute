@@ -267,6 +267,9 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         return (info != null ? ToUnified(info) : null, history.Select(ToUnifiedMessage).ToList());
     }
 
+    public UnifiedSessionInfo? GetSessionInfo(string sessionId)
+        => _claude.GetSessionInfo(sessionId) is { } info ? ToUnified(info) : null;
+
     public (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSessionByJobId(Guid jobId)
     {
         var (info, history) = _claude.GetSessionByJobId(jobId);

@@ -462,6 +462,9 @@ public sealed class SessionInterruptTurnTests
         internal List<string> Delivered = [];
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             switch (method!.Name)
             {

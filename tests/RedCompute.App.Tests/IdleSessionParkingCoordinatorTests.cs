@@ -331,6 +331,9 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
         internal void Emit(string type) => _pluginEvent?.Invoke(type, Info);
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             switch (method!.Name)
             {

@@ -903,7 +903,9 @@ public sealed class SessionInputQueueService
     {
         foreach (var provider in _registry.FindProviders<ISessionProvider>())
         {
-            var (info, _) = provider.GetSession(sessionId);
+            // Metadata only: this runs on every queue pass and every summary read, and a
+            // transcript can hold tens of thousands of messages.
+            var info = provider.GetSessionInfo(sessionId);
             if (info is not null) return (provider, info);
         }
         return (null, null);

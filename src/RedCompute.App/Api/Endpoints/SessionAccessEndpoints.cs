@@ -257,7 +257,7 @@ public static class SessionAccessEndpoints
             return Error(result.Status, result.Error, result.Message ?? result.Error);
         if (legacyMode is null)
             return Results.Json(new { accessLevel = result.AccessLevel, ok = result.Ok });
-        var native = provider.GetSession(info.Id).Info?.PermissionMode;
+        var native = provider.GetSessionInfo(info.Id)?.PermissionMode;
         return Results.Json(new { mode = native ?? legacyMode, ok = result.Ok, accessLevel = result.AccessLevel });
     }
 
@@ -282,7 +282,7 @@ public static class SessionAccessEndpoints
     {
         foreach (var candidate in registry.FindProviders<ISessionProvider>())
         {
-            var info = candidate.GetSession(id).Info;
+            var info = candidate.GetSessionInfo(id);
             if (info is null) continue;
             var job = info.Confidential && info.JobId is { } jobId ? jobTracker.GetJob(jobId) : null;
             if (!ComputeResourceAccess.CanReadSession(ctx, info, job))

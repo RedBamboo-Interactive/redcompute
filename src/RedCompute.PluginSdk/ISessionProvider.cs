@@ -77,7 +77,7 @@ public interface ISessionProvider
         string sessionId, IReadOnlyList<SessionInputPart> input,
         string? attachmentsJson = null, string? messageUid = null)
     {
-        var (info, _) = GetSession(sessionId);
+        var info = GetSessionInfo(sessionId);
         if (info is null)
             return SessionInputDeliveryResult.Unavailable("session_not_found", $"Session '{sessionId}' was not found");
         if (info.Status is SessionStatus.Active or SessionStatus.Starting)
@@ -104,7 +104,7 @@ public interface ISessionProvider
         string sessionId, IReadOnlyList<SessionInputPart> input,
         string? attachmentsJson, string? messageUid, string? displayContent)
     {
-        var (info, _) = GetSession(sessionId);
+        var info = GetSessionInfo(sessionId);
         if (info is null)
             return SessionInputDeliveryResult.Unavailable("session_not_found", $"Session '{sessionId}' was not found");
         if (info.Status is SessionStatus.Active or SessionStatus.Starting)
@@ -132,7 +132,7 @@ public interface ISessionProvider
     /// </summary>
     private SessionInputDeliveryResult AfterRefusedSend(string sessionId)
     {
-        var (after, _) = GetSession(sessionId);
+        var after = GetSessionInfo(sessionId);
         if (after?.Status is SessionStatus.Active or SessionStatus.Starting)
             return SessionInputDeliveryResult.Busy();
         if (after?.Status is SessionStatus.Stopped or SessionStatus.Error)
@@ -253,6 +253,15 @@ public interface ISessionProvider
     // Querying
     List<UnifiedSessionInfo> GetSessions(int limit = 20, bool includeDismissed = false);
     (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSession(string sessionId);
+
+    /// <summary>
+    /// The session's metadata alone: exactly <c>GetSession(sessionId).Info</c>, without reading or
+    /// mapping a single transcript message. Status checks, ownership and routing use this; only a
+    /// caller that needs the history calls <see cref="GetSession"/>. Null when the session is
+    /// unknown to this provider. The default keeps older provider plugins compiling and correct;
+    /// a provider whose history is large should answer from its session row.
+    /// </summary>
+    UnifiedSessionInfo? GetSessionInfo(string sessionId) => GetSession(sessionId).Info;
     (UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History) GetSessionByJobId(Guid jobId);
     Dictionary<Guid, SessionStatus> GetSessionStatusesByJobIds(IEnumerable<Guid> jobIds);
 

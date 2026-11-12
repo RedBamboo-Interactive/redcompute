@@ -139,7 +139,10 @@ public sealed class SessionWorkStateTests
         public List<PendingSessionQuestion> Pending { get; } = [];
         public IReadOnlyList<BackgroundTaskInfo> Tasks { get; set; } = [];
 
-        protected override object? Invoke(MethodInfo? method, object?[]? args) => method!.Name switch
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args) => method!.Name switch
         {
             "get_ProviderId" => "test",
             "get_ProviderDisplayName" => "Test",

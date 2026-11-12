@@ -2134,6 +2134,17 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         return record == null ? (null, []) : (ToInfo(record), _store.GetMessages(sessionId));
     }
 
+    /// <summary>
+    /// <see cref="GetSession"/>'s Info without the messages: the same live object or the same
+    /// mapping of the session row. No field of it is derived from messages.
+    /// </summary>
+    public CodexSessionInfo? GetSessionInfo(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var live))
+            return live.Info;
+        return _store.FindSession(sessionId) is { } record ? ToInfo(record) : null;
+    }
+
     public bool IsLive(string sessionId) => _sessions.ContainsKey(sessionId);
 
     public async Task StopAllAsync()

@@ -455,6 +455,9 @@ public sealed class SessionRecoveryTests
         internal Action? OnDelivery;
         internal bool ResumeHadFreshIdentity, DeliveryHadFreshIdentity;
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             switch (method!.Name)
             {

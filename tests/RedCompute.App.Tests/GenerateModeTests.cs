@@ -591,6 +591,9 @@ public sealed class GenerateModeTests
         public SessionGenerateRequest? LastRequest { get; private set; }
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             return method!.Name switch
             {

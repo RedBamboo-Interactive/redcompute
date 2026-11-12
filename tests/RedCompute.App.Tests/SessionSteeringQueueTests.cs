@@ -537,6 +537,9 @@ public sealed class SessionSteeringQueueTests
         internal SessionInputDeliveryResult SteerResult = SessionInputDeliveryResult.Accepted();
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             switch (method!.Name)
             {

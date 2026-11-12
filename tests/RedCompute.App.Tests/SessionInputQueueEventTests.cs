@@ -196,6 +196,9 @@ public sealed class SessionInputQueueEventTests : IDisposable
         public readonly TaskCompletionSource<SessionInputDeliveryResult> Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly UnifiedSessionInfo _info = new() { Id = "session-a", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner-a", Status = SessionStatus.Idle };
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             if (method!.Name == nameof(ISessionProvider.GetSession)) return (_info, new List<UnifiedMessageRecord>());
             if (method.Name == nameof(ISessionProvider.TrySendInputAsync))
@@ -219,6 +222,9 @@ public sealed class SessionInputQueueEventTests : IDisposable
         public SessionInputDeliveryResult Result = SessionInputDeliveryResult.Accepted();
         private readonly UnifiedSessionInfo _info = new() { Id = "session-a", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner-a", Status = SessionStatus.Idle };
         protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => SessionProviderProxy.Route(method, args, InvokeProvider);
+
+        private object? InvokeProvider(MethodInfo? method, object?[]? args)
         {
             if (method!.Name == nameof(ISessionProvider.GetSession))
                 return (_info, Recorded.Select(uid => new UnifiedMessageRecord
