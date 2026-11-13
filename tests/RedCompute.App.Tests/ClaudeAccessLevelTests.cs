@@ -510,6 +510,58 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.DoesNotContain(Live(), e => e.Type == "question");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Full_answers_the_cli_safety_check_itself_and_never_parks(bool unattended)
+    {
+        // CLI 2.1.323 under bypassPermissions still asks for "$$(" inside a quoted heredoc.
+        var lines = Fixture("can-use-tool-bypass-safety-check");
+        var ask = JsonNode.Parse(lines[1])!;
+        Assert.Equal("safetyCheck", ask["request"]!["decision_reason_type"]!.GetValue<string>());
+        var requestId = ask["request_id"]!.GetValue<string>();
+        var id = Start(new SessionAccessState(Full, Unattended: unattended));
+        Assert.True(_service.ProcessOutputLine(id, lines[0]));
+        _written.Clear();
+
+        Assert.True(_service.ProcessOutputLine(id, lines[1]));
+
+        Assert.Empty(_service.GetPendingQuestions(id));
+        var verdict = Response(requestId);
+        Assert.Equal("allow", verdict["behavior"]!.GetValue<string>());
+        Assert.True(JsonNode.DeepEquals(ask["request"]!["input"], verdict["updatedInput"]));
+        Assert.Null(verdict["updatedPermissions"]);
+        Assert.DoesNotContain(Live(), e => e.Type is "question" or "permission_denied");
+        Assert.True(_service.ProcessOutputLine(id, lines[2]));
+    }
+
+    [Theory]
+    [InlineData(SessionAccessLevels.Ask)]
+    [InlineData(SessionAccessLevels.Auto)]
+    public void Below_full_the_cli_safety_check_still_goes_to_a_person(string level)
+    {
+        var lines = Fixture("can-use-tool-bypass-safety-check");
+        var requestId = JsonNode.Parse(lines[1])!["request_id"]!.GetValue<string>();
+        var id = Start(new SessionAccessState(level));
+        _written.Clear();
+
+        Assert.True(_service.ProcessOutputLine(id, lines[1]));
+
+        Assert.Equal(requestId, Assert.Single(_service.GetPendingQuestions(id)).RequestId);
+        Assert.DoesNotContain(_written, json => json.Contains("control_response"));
+    }
+
+    [Fact]
+    public void Full_still_parks_an_ask_that_is_not_a_safety_check()
+    {
+        var id = Start(new SessionAccessState(Full));
+        _written.Clear();
+
+        Assert.True(_service.ProcessOutputLine(id, CanUseTool("hook-ask", "Bash", new { command = "echo hi" })));
+
+        Assert.Equal("hook-ask", Assert.Single(_service.GetPendingQuestions(id)).RequestId);
+    }
+
     [Fact]
     public async Task An_unanswered_permission_is_denied_when_it_expires()
     {

@@ -2335,7 +2335,8 @@ public partial class ClaudeSessionService
             // self-deny them: under ask and auto those become the permission cards a person
             // answers. Under bypassPermissions the evaluator allows Bash/Edit/etc before the ask
             // path, so only tools that declare requiresUserInteraction() -- AskUserQuestion,
-            // ExitPlanMode -- reach us. Without this flag an ask has nowhere to go and comes back
+            // ExitPlanMode -- and the CLI's own safety checks reach us; HandlePermissionRequest
+            // answers the safety checks itself at Full. Without this flag an ask has nowhere to go and comes back
             // to the model as `<error>Answer questions?</error>` (the ask's own text as the denial).
             "--permission-prompt-tool", "stdio",
             // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
@@ -3208,6 +3209,8 @@ public partial class ClaudeSessionService
     // safety gate, and the answer rides back in the tool's own input. Everything else that
     // reaches the ask path is a genuine permission prompt with no UI behind it.
     private const string AskUserQuestionTool = "AskUserQuestion";
+    /// <summary>can_use_tool decision_reason_type of the CLI checks bypassPermissions does not skip.</summary>
+    internal const string SafetyCheckReasonType = "safetyCheck";
 
     // A parked question holds a turn open, so this is sized for "a human wandered off",
     // not for "how long does answering take". On expiry we deny explicitly rather than
@@ -3319,6 +3322,24 @@ public partial class ClaudeSessionService
             Input = input,
             Cwd = session.Info.ProjectPath,
         };
+
+        // bypassPermissions does not cover the CLI's own safety checks (CLI 2.1.323, captured in
+        // Fixtures/claude-permissions/can-use-tool-bypass-safety-check.jsonl): a command its parser
+        // cannot fully read, for example "$$(" inside a quoted heredoc, still asks with
+        // decision_reason_type "safetyCheck" ("Dangerous rm operation not ruled out ..."). Full is
+        // the owner's accepted promise that an agent runs any command without asking, and a
+        // command that parses cleanly already runs unasked, so RedCompute answers these itself,
+        // attended or not. Every other ask (a tool that needs a person, a hook) is left alone.
+        if (session.Info.Access.AccessLevel == Core.Sessions.SessionAccessLevels.Full
+            && request.TryGetProperty("decision_reason_type", out var reasonType)
+            && reasonType.ValueKind == JsonValueKind.String && reasonType.GetString() == SafetyCheckReasonType)
+        {
+            var why = request.TryGetProperty("decision_reason", out var dr) && dr.ValueKind == JsonValueKind.String
+                ? dr.GetString() : null;
+            _log($"[Claude] Session {session.Info.Id} is at Full; allowed '{toolName}' past the CLI safety check ({why ?? "no reason given"}): {permission.Summary}", null);
+            RespondPermissionAllow(session, requestId, input, null);
+            return;
+        }
 
         if (session.Info.Access.Unattended)
         {
