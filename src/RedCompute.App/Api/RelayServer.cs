@@ -231,7 +231,7 @@ public class RelayServer
             ]));
         _streamClient.DefineStream(new StreamDefinition(
             "session-messages", "Session Messages",
-            "Messages and tool events from AI sessions", RetentionDays: 180, ParentType: "ai-session"));
+            "Messages and tool events from AI sessions", RetentionDays: null, ParentType: "ai-session"));
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
         var transcriptPipeline = new SessionTranscriptPipeline(
             _streamClient, broadcaster, _log,
