@@ -47,6 +47,54 @@ public sealed class TranscriptMirrorOrderTests
         Assert.Equal(["tool_use:1"], redLeaf.Arrivals);
     }
 
+    // LIVE fe9ef992, 13 Nov 14:56Z: RedLeaf committed an inline final answer but answered after
+    // the 15 s client timeout. The fallback re-sent it through the batched writer without its
+    // idempotency key, and the session read showed the text twice under one sequence.
+    [Fact]
+    public async Task InlineWriteWhoseAcknowledgementIsLostIsStoredOnce()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start(loseFirstRecordAcknowledgement: true);
+        var pipeline = redLeaf.Pipeline();
+        var at = new DateTimeOffset(2026, 11, 13, 14, 56, 1, 148, TimeSpan.Zero);
+
+        pipeline.MirrorMessages([new AiMessageSnapshot
+        {
+            Provider = "claude-code", SessionId = "session-1", Role = "assistant", EventType = "text",
+            Content = "It's 16:00, time for Tinder's gaba.", Phase = "final_answer",
+            MessageId = "msg_1:1", MessageUid = "turn-1", Timestamp = at,
+        }]);
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (redLeaf.RecordPosts.Count < 2 && DateTime.UtcNow < deadline)
+            await Task.Delay(50);
+
+        Assert.Equal(
+            [("transcript:epoch:1", at), ("transcript:epoch:1", at)],
+            redLeaf.RecordPosts.ToArray());
+        Assert.Equal(["text:1"], redLeaf.Arrivals);
+    }
+
+    // The completed-prefix publisher retries a failed part under its receipt's stamp. A payload
+    // write RedLeaf committed before the acknowledgement was lost must not become a second row.
+    [Fact]
+    public async Task PayloadRetryAfterALostAcknowledgementIsStoredOnce()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start(loseFirstPayloadAcknowledgement: true);
+        var pipeline = redLeaf.Pipeline();
+        var result = new AiMessageSnapshot
+        {
+            Provider = "claude-code", SessionId = "session-1", Role = "assistant", EventType = "tool_result",
+            ToolName = "Bash", ToolResult = "alpha", MessageId = "toolu_1", ProviderPartId = "part-1",
+            MessageUid = "turn-1", Timestamp = DateTimeOffset.UtcNow,
+        };
+
+        Assert.ThrowsAny<Exception>(() => pipeline.MirrorCompletedMessages([result]));
+        pipeline.MirrorCompletedMessages([result]);
+
+        Assert.Equal(["transcript:epoch:1", "transcript:epoch:1"], redLeaf.PayloadExternalIds.ToArray());
+        Assert.Equal(["tool_result:1"], redLeaf.Arrivals);
+    }
+
     // Background work is attributed by id. RedLeaf record data is schemaless, so the key must be
     // written on every record path a child can take: inline (tool_use, task), payload (results).
     [Fact]
@@ -110,7 +158,12 @@ public sealed class TranscriptMirrorOrderTests
         private readonly WebApplication _server;
         private RedLeafStreamClient _client = null!;
         private int _rejectRecordWrites;
+        private int _loseRecordAcknowledgements;
+        private int _losePayloadAcknowledgements;
+        private readonly ConcurrentDictionary<string, byte> _stored = new();
         public ConcurrentQueue<string> Arrivals { get; } = new();
+        public ConcurrentQueue<(string? ExternalId, DateTimeOffset CreatedAt)> RecordPosts { get; } = new();
+        public ConcurrentQueue<string> PayloadExternalIds { get; } = new();
         public ConcurrentBag<string> ExternalIds { get; } = [];
         public ConcurrentQueue<JsonElement> Data { get; } = new();
 
@@ -119,12 +172,18 @@ public sealed class TranscriptMirrorOrderTests
         public SessionTranscriptPipeline Pipeline() =>
             new(_client, new WebSocketBroadcaster(), (_, _) => { }, null, new Sequences());
 
-        public static async Task<FakeRedLeaf> Start(bool rejectFirstRecordWrite = false)
+        public static async Task<FakeRedLeaf> Start(bool rejectFirstRecordWrite = false,
+            bool loseFirstRecordAcknowledgement = false, bool loseFirstPayloadAcknowledgement = false)
         {
             var builder = WebApplication.CreateSlimBuilder();
             builder.Logging.ClearProviders();
             var server = builder.Build();
-            var f = new FakeRedLeaf(server) { _rejectRecordWrites = rejectFirstRecordWrite ? 1 : 0 };
+            var f = new FakeRedLeaf(server)
+            {
+                _rejectRecordWrites = rejectFirstRecordWrite ? 1 : 0,
+                _loseRecordAcknowledgements = loseFirstRecordAcknowledgement ? 1 : 0,
+                _losePayloadAcknowledgements = loseFirstPayloadAcknowledgement ? 1 : 0,
+            };
             server.MapGet("/api/entities/{slug}", () => Results.Ok(new { id = Guid.Parse("11111111-1111-1111-1111-111111111111") }));
             server.MapPost("/api/streams/{stream}/records", async (HttpContext ctx) =>
             {
@@ -132,17 +191,27 @@ public sealed class TranscriptMirrorOrderTests
                 using var body = await JsonDocument.ParseAsync(ctx.Request.Body);
                 foreach (var record in body.RootElement.GetProperty("records").EnumerateArray())
                 {
+                    string? externalId = null;
                     if (record.TryGetProperty("external_id", out var id) && id.ValueKind == JsonValueKind.String)
-                        f.ExternalIds.Add(id.GetString()!);
+                        f.ExternalIds.Add(externalId = id.GetString()!);
+                    f.RecordPosts.Enqueue((externalId, record.GetProperty("created_at").GetDateTimeOffset()));
+                    // RedLeaf's contract: an external_id is unique within the stream.
+                    if (externalId is not null && !f._stored.TryAdd(externalId, 0)) continue;
                     var data = record.GetProperty("data");
                     f.Arrive(data.ValueKind == JsonValueKind.String ? data.GetString()! : data.GetRawText());
                 }
+                // Committed, but the producer never learns it (a timeout after RedLeaf's commit).
+                if (Interlocked.Exchange(ref f._loseRecordAcknowledgements, 0) == 1) return Results.StatusCode(503);
                 return Results.Ok(new { created = 1 });
             });
             server.MapPost("/api/streams/{stream}/records/payload", async (HttpContext ctx) =>
             {
                 var form = await ctx.Request.ReadFormAsync();
-                f.Arrive(form["data"].ToString());
+                var externalId = form.ContainsKey("external_id") ? form["external_id"].ToString() : null;
+                f.PayloadExternalIds.Enqueue(externalId ?? "(none)");
+                if (externalId is null || f._stored.TryAdd(externalId, 0))
+                    f.Arrive(form["data"].ToString());
+                if (Interlocked.Exchange(ref f._losePayloadAcknowledgements, 0) == 1) return Results.StatusCode(503);
                 return Results.Ok(new
                 {
                     id = 42L,

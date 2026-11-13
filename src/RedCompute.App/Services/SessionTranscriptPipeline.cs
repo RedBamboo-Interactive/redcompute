@@ -162,7 +162,7 @@ public sealed class SessionTranscriptPipeline
                 message.Timestamp, message.AttachmentsJson, output, stamp, message.ParentToolUseId));
 
         PersistSynchronously(() => _streams.AppendForEntityAsync("session-messages", SessionEntitySlug(message.Provider, message.SessionId),
-            InlineData(message, stamp), $"transcript:{stamp.Epoch}:{stamp.Sequence}",
+            InlineData(message, stamp), TranscriptRecordId(stamp),
             createdAt: message.Timestamp));
         return null;
     }
@@ -230,14 +230,16 @@ public sealed class SessionTranscriptPipeline
     // already are, so storage order is sequence order. Batched, a tool_use could reach RedLeaf
     // after its own synchronously written result; a history page holding that result then
     // advertised a sequence beyond the missing tool_use, and clients dropped its live square
-    // until the next flush. A failed write falls back to the batched writer's retries.
+    // until the next flush. A failed write falls back to the batched writer's retries, under the
+    // same record identity: a timeout can arrive after RedLeaf committed the write, and the retry
+    // must then be absorbed rather than stored as a second copy of the event.
     private void AppendInline(AiMessageSnapshot message, TranscriptStamp stamp)
     {
         try
         {
             PersistSynchronously(() => _streams.AppendForEntityAsync("session-messages",
                 SessionEntitySlug(message.Provider, message.SessionId), InlineData(message, stamp),
-                $"transcript:{stamp.Epoch}:{stamp.Sequence}", createdAt: message.Timestamp));
+                TranscriptRecordId(stamp), createdAt: message.Timestamp));
         }
         catch (Exception ex)
         {
@@ -293,7 +295,8 @@ public sealed class SessionTranscriptPipeline
             bytes,
             "text/plain; charset=utf-8",
             "utf-8",
-            createdAt: timestamp);
+            createdAt: timestamp,
+            externalId: TranscriptRecordId(stamp));
 
         return new TranscriptPayloadRef
         {
@@ -340,7 +343,8 @@ public sealed class SessionTranscriptPipeline
             image.Bytes,
             image.ContentType,
             "binary",
-            createdAt: timestamp);
+            createdAt: timestamp,
+            externalId: TranscriptRecordId(stamp));
 
         return new TranscriptPayloadRef
         {
@@ -355,7 +359,14 @@ public sealed class SessionTranscriptPipeline
     }
 
     private void EnqueueInline(AiMessageSnapshot message, TranscriptStamp stamp) =>
-        _streams.EnqueueForEntity("session-messages", SessionEntitySlug(message.Provider, message.SessionId), InlineData(message, stamp));
+        _streams.EnqueueIdempotentForEntity("session-messages", SessionEntitySlug(message.Provider, message.SessionId),
+            InlineData(message, stamp), TranscriptRecordId(stamp), createdAt: message.Timestamp);
+
+    /// <summary>
+    /// RedLeaf idempotency key of the one durable record an (epoch, sequence) stamp may have.
+    /// Every write path uses it, so retries after an ambiguous acknowledgement never duplicate.
+    /// </summary>
+    internal static string TranscriptRecordId(TranscriptStamp stamp) => $"transcript:{stamp.Epoch}:{stamp.Sequence}";
 
     private static object InlineData(AiMessageSnapshot message, TranscriptStamp stamp) => new
         {
