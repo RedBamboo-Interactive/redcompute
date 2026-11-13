@@ -101,6 +101,13 @@ public class RedComputeDbContext : DbContext
             );
             CREATE UNIQUE INDEX IF NOT EXISTS IX_JobOutbox_MessageId ON JobOutbox(MessageId);
             CREATE INDEX IF NOT EXISTS IX_JobOutbox_Pending ON JobOutbox(AcknowledgedAt, NextAttemptAt);
+            CREATE INDEX IF NOT EXISTS IX_JobOutbox_JobId ON JobOutbox(JobId);
+
+            CREATE TABLE IF NOT EXISTS JobAuditState (
+                Key TEXT PRIMARY KEY,
+                Value TEXT NOT NULL,
+                UpdatedAt TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS IX_Jobs_IdempotencyFingerprint ON Jobs(IdempotencyFingerprint);
             CREATE INDEX IF NOT EXISTS IX_Jobs_IdempotencyScope_Key ON Jobs(IdempotencyScope, IdempotencyKey);
             CREATE INDEX IF NOT EXISTS IX_Jobs_ParentJobId ON Jobs(ParentJobId);
