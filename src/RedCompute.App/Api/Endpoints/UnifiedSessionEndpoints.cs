@@ -8,6 +8,7 @@ using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.App.Services.SessionArtifacts;
+using RedCompute.App.Services.SessionTitles;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
@@ -55,6 +56,8 @@ public static class UnifiedSessionEndpoints
     private static SessionArtifactIndex _artifactIndex = new();
     private static MaintenanceDeploymentCoordinator? _maintenance;
     private static SessionAccessService? _access;
+    private static SessionTitleStore? _titles;
+    private static Action<UnifiedSessionInfo>? _titleChanged;
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
@@ -65,7 +68,8 @@ public static class UnifiedSessionEndpoints
         RepositoryReferenceValidator? repositoryValidator = null,
         MaintenanceDeploymentCoordinator? maintenance = null,
         Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null,
-        SessionAccessService? access = null)
+        SessionAccessService? access = null,
+        SessionTitleStore? titles = null, Action<UnifiedSessionInfo>? titleChanged = null)
     {
         // Without a policy source (tests, hosts with no RedLeaf) the contract's no-record defaults
         // apply: auto (ask where the provider has no auto), Full disabled.
@@ -81,6 +85,8 @@ public static class UnifiedSessionEndpoints
         _attachmentStore = attachmentStore ?? new InputAttachmentStore(config);
         _inputQueue = inputQueue ?? throw new ArgumentNullException(nameof(inputQueue));
         _maintenance = maintenance;
+        _titles = titles;
+        _titleChanged = titleChanged;
 
         bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
             => ComputeResourceAccess.CanReadSession(
@@ -95,6 +101,8 @@ public static class UnifiedSessionEndpoints
         // only after the next session.updated event.
         UnifiedSessionInfo WithLiveCapabilities(UnifiedSessionInfo session)
         {
+            // A rename or requested title update outranks the provider's own title everywhere.
+            _titles?.Apply(session);
             var provider = registry.FindProviders<ISessionProvider>().FirstOrDefault(candidate =>
                 string.Equals(candidate.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase));
             session.SupportsSteering = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsSteering) == true;
@@ -807,6 +815,184 @@ public static class UnifiedSessionEndpoints
             .WithParam("limit", "integer", description: "Page size, clamped to 1..500", defaultValue: 200, location: ParamLocation.Query)
             .WithParam("cursor", "string", description: "Opaque cursor returned in page.nextCursor", location: ParamLocation.Query)
             .WithResponse(ArtifactsResponseSchema);
+
+        endpoints.MapGet("/ai-session/sessions/search",
+            "Search sessions by title and by user and assistant transcript text (never thinking, tool calls or tool output), newest first. " +
+            "Served from RedLeaf's search indexes in two bounded queries (at most 100 title and 100 transcript candidates), filtered by the caller's read access. " +
+            "Confidential sessions are not in the ambient index and never match. Each item is { session, snippet, messageUid, archived }: snippet is the " +
+            "matching transcript excerpt (or the title excerpt for a title-only match) and messageUid the matching message, null for a title match. " +
+            "400 invalid_query when q is shorter than 2 or longer than 512 characters.", async (HttpContext ctx) =>
+        {
+            var q = ctx.Request.Query["q"].FirstOrDefault()?.Trim() ?? "";
+            if (q.Length is < MinSearchQueryLength or > MaxSearchQueryLength)
+                return Error(400, "invalid_query", $"q must be {MinSearchQueryLength}-{MaxSearchQueryLength} characters");
+            var limit = int.TryParse(ctx.Request.Query["limit"].FirstOrDefault(), out var requestedLimit)
+                ? Math.Clamp(requestedLimit, 1, MaxSearchLimit)
+                : DefaultSearchLimit;
+            var includeArchived = true;
+            if (ctx.Request.Query["includeArchived"].FirstOrDefault() is { } archivedValue
+                && !bool.TryParse(archivedValue, out includeArchived))
+                return Error(400, "invalid_include_archived", "includeArchived must be true or false");
+
+            IReadOnlyList<SessionSearchCandidate> candidates;
+            try
+            {
+                candidates = await _redLeafReader!.SearchSessionsAsync(q, ctx.RequestAborted);
+            }
+            catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session search: {ex.Message}");
+            }
+
+            var items = candidates
+                .Where(candidate => CanReadSession(ctx, candidate.Info) && (includeArchived || !candidate.Info.Dismissed))
+                .OrderByDescending(candidate => candidate.UpdatedAt)
+                .ThenByDescending(candidate => candidate.Info.StartedAt)
+                .Take(limit)
+                .Select(candidate => new
+                {
+                    session = WithLiveCapabilities(candidate.Info),
+                    snippet = candidate.Snippet,
+                    messageUid = candidate.MessageUid,
+                    archived = candidate.Info.Dismissed,
+                })
+                .ToList();
+            return Results.Json(new { items });
+        })
+            .WithResponse(SessionSearchResponseSchema)
+            .WithParam("q", "string", required: true, description: "Search text, 2-512 characters after trimming. Bare words are ANDed; \"quoted phrases\", OR and -exclusions work as in RedLeaf search", location: ParamLocation.Query)
+            .WithParam("limit", "integer", description: "Max items, clamped to 1-50", defaultValue: DefaultSearchLimit, location: ParamLocation.Query)
+            .WithParam("includeArchived", "boolean", description: "Include dismissed (archived) sessions; each item says whether it is archived", defaultValue: true, location: ParamLocation.Query);
+
+        // The session a title route acts on: its durable record, readable by the caller. Unknown is
+        // 404; a session the caller may not change answers like every other session mutation.
+        async Task<(SessionEntityRead? Entity, IResult? Failure)> ReadTitleTargetAsync(HttpContext ctx, string id)
+        {
+            SessionEntityRead? entity;
+            try { entity = await _redLeafReader!.GetSessionEntityAsync(id, ctx.RequestAborted); }
+            catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                return (null, Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}"));
+            }
+            if (entity is null)
+                return (null, Error(404, "not_found", $"Session '{id}' not found"));
+            if (!CanReadSession(ctx, entity.Info))
+                return (null, ComputeResourceAccess.SessionDenied(entity.Info));
+            return (entity, null);
+        }
+
+        // Records an explicit title here and on the durable record, or neither: a RedLeaf failure
+        // puts the previous title back. Live clients hear session.updated (opaque for confidential).
+        async Task<(UnifiedSessionInfo? Session, IResult? Failure)> StoreTitleAsync(
+            HttpContext ctx, SessionEntityRead entity, string title, string source)
+        {
+            if (_titles is null)
+                return (null, Error(503, "titles_unavailable", "Session titles are not available on this host"));
+            var previous = _titles.Set(entity.Info.Id, entity.Info.Provider, title, source);
+            try
+            {
+                await _redLeafReader!.UpdateSessionTitleAsync(entity, title, source, _titles.Get(entity.Info.Id)!.SetAt,
+                    ctx.RequestAborted);
+            }
+            catch (Exception ex)
+            {
+                _titles.Restore(entity.Info.Id, previous);
+                return (null, Error(503, "redleaf_unavailable", $"The title could not be saved to RedLeaf: {ex.Message}"));
+            }
+            var session = WithLiveCapabilities(entity.Info);
+            try { _titleChanged?.Invoke(session); }
+            catch (Exception ex) { log($"[Sessions] Title change notification failed for {session.Id}: {ex.Message}", null); }
+            return (session, null);
+        }
+
+        endpoints.MapPut("/ai-session/sessions/{id}/title",
+            "Rename a session. A manual title is never replaced by the provider's own titling (Claude ai-title, Codex thread names, OpenCode); " +
+            "a later rename or title update replaces it. Whitespace runs become single spaces. Saved in RedCompute and on the RedLeaf ai-session record " +
+            "(name, data.title_source manual), and announced with session.updated. Returns the session, shaped like session in GET /ai-session/sessions/{id}. " +
+            "400 invalid_title when blank or longer than 200 characters; 404 unknown; 403 (404 when confidential) when the caller may not change it.",
+            async (HttpContext ctx, string id) =>
+        {
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            var title = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("title", out var titleValue)
+                && titleValue.ValueKind == JsonValueKind.String
+                    ? CollapseWhitespace(titleValue.GetString()!)
+                    : "";
+            if (title.Length is 0 or > MaxManualTitleLength)
+                return Error(400, "invalid_title", $"title must be 1-{MaxManualTitleLength} characters");
+
+            var (entity, failure) = await ReadTitleTargetAsync(ctx, id);
+            if (failure is not null) return failure;
+            var (session, storeFailure) = await StoreTitleAsync(ctx, entity!, title, SessionTitleSources.Manual);
+            return storeFailure ?? Results.Json(session);
+        })
+            .WithResponse(SessionTitleSessionSchema)
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("title", "string", required: true, location: ParamLocation.Body, description: "The new title, 1-200 characters after trimming");
+
+        endpoints.MapPost("/ai-session/sessions/{id}/title/generate",
+            "Generate a title from the session's conversation: the last 500 transcript records, user and assistant text only, run as a stateless " +
+            "fast-tier completion (at most six words, maxTokens 48) under the caller's signed identity, as a job named by X-Job-Name (default " +
+            "\"Update session title\") and confidential when the session is. The answer is cleaned (last line, no label, quotes or ending punctuation, " +
+            "at most 70 characters). apply=true (default) stores it as a generated title, which provider titling never replaces and a later rename " +
+            "or update does; apply=false only returns it. Responds { title, jobId, qualityTier: \"fast\", session } and X-Job-Id. " +
+            "409 transcript_empty when there is no user or assistant text yet; title_generation_failed { message, jobId } when no usable title came " +
+            "back, with the upstream status (502 when none).",
+            async (HttpContext ctx, string id) =>
+        {
+            ctx.Items["Telemetry.Kind"] = "job";
+            var apply = true;
+            if (ctx.Request.Query["apply"].FirstOrDefault() is { } applyValue && !bool.TryParse(applyValue, out apply))
+                return Error(400, "invalid_apply", "apply must be true or false");
+            string? assistantLabel = null;
+            if (ctx.Request.Query.ContainsKey("assistantLabel"))
+            {
+                assistantLabel = ctx.Request.Query["assistantLabel"].FirstOrDefault()?.Trim() ?? "";
+                if (assistantLabel.Length is 0 or > MaxAssistantLabelLength)
+                    return Error(400, "invalid_assistant_label", $"assistantLabel must be 1-{MaxAssistantLabelLength} characters");
+            }
+
+            var (entity, failure) = await ReadTitleTargetAsync(ctx, id);
+            if (failure is not null) return failure;
+            var info = entity!.Info;
+
+            List<UnifiedMessageRecord> history;
+            try { (_, history) = await _redLeafReader!.GetSessionAsync(id, SessionTitleGeneration.TranscriptTail); }
+            catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
+            }
+
+            _titles?.Apply(info);
+            var prompt = SessionTitleGeneration.BuildPrompt(info.Title, history, assistantLabel);
+            if (prompt is null)
+                return Error(409, "transcript_empty", "The session has no conversation to title yet");
+
+            var generated = await GenerateTitleAsync(ctx, registry, jobTracker, prompt, info.Confidential,
+                "/ai-session/sessions/{id}/title/generate");
+            if (generated.Failure is not null) return generated.Failure;
+
+            var session = WithLiveCapabilities(info);
+            if (apply)
+            {
+                var (stored, storeFailure) = await StoreTitleAsync(ctx, entity, generated.Title!, SessionTitleSources.Generated);
+                if (storeFailure is not null) return storeFailure;
+                session = stored!;
+            }
+            return Results.Json(new
+            {
+                title = generated.Title,
+                jobId = generated.JobId,
+                qualityTier = SessionTitleGeneration.QualityTier,
+                session,
+            });
+        })
+            .WithResponse(SessionTitleGenerateResponseSchema)
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("apply", "boolean", description: "Store the generated title (true) or only return it (false)", defaultValue: true, location: ParamLocation.Query)
+            .WithParam("assistantLabel", "string", description: "How the prompt labels the assistant's lines, 1-40 characters after trimming (400 invalid_assistant_label otherwise); Nova passes Nova",
+                defaultValue: SessionTitleGeneration.DefaultAssistantLabel, location: ParamLocation.Query);
 
         endpoints.MapPut("/ai-session/sessions/{id}/confidential",
             "Permanently tighten a session and its linked job to the verified owning Agent and beneficiary user.",
@@ -2439,6 +2625,99 @@ public static class UnifiedSessionEndpoints
         }
     }
 
+    internal const int MaxManualTitleLength = 200;
+    internal const int MaxAssistantLabelLength = 40;
+    internal const int MinSearchQueryLength = 2;
+    internal const int MaxSearchQueryLength = 512;
+    internal const int DefaultSearchLimit = 20;
+    internal const int MaxSearchLimit = 50;
+    internal const string DefaultTitleJobName = "Update session title";
+
+    private static string CollapseWhitespace(string value)
+        => string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    private sealed record GeneratedTitle(string? Title, Guid? JobId, IResult? Failure);
+
+    /// <summary>
+    /// The title's stateless fast-tier completion, recorded as its own job under the caller's
+    /// provenance. Shares quality and provider resolution and the result document with
+    /// <c>/ai-session/generate</c>, which it does not call and does not change.
+    /// </summary>
+    private static async Task<GeneratedTitle> GenerateTitleAsync(HttpContext ctx, CapabilityRegistry registry,
+        IJobTracker jobTracker, string prompt, bool confidential, string route)
+    {
+        using var request = JsonDocument.Parse(JsonSerializer.Serialize(new { qualityTier = SessionTitleGeneration.QualityTier }));
+        var (q, qualityError) = ResolveQuality(ctx, request.RootElement);
+        if (qualityError != null) return new(null, null, TitleFailure(qualityError, null));
+        var (provider, resolveError) = ResolveProviderFromBody(ctx, registry, request.RootElement, q.ProviderName, q.BackendName);
+        if (resolveError != null) return new(null, null, TitleFailure(resolveError, null));
+        if (!provider!.Capabilities.HasFlag(SessionCapabilities.Generate))
+            return new(null, null, TitleFailure(NotSupported(provider.ProviderId, "LLM completion"), null));
+
+        var messagesJson = JsonSerializer.Serialize(new[] { new { role = "user", content = prompt } });
+        using var messages = JsonDocument.Parse(messagesJson);
+        var inputJson = JsonSerializer.Serialize(new
+        {
+            model = q.Model ?? "default", messageCount = 1, maxTokens = SessionTitleGeneration.MaxTokens, effort = q.Effort,
+            prompt, system = SessionTitleGeneration.SystemPrompt, messages = messages.RootElement,
+            provider = provider.ProviderId, requireToolFree = false, qualityTier = SessionTitleGeneration.QualityTier,
+        });
+        var jobName = ctx.Request.Headers.TryGetValue("X-Job-Name", out var jn) && !string.IsNullOrWhiteSpace(jn.ToString())
+            ? jn.ToString()
+            : DefaultTitleJobName;
+
+        JobProvenance provenance;
+        try { provenance = await ProvenanceCapture.ResolveAsync(ctx, route); }
+        catch (JobProvenanceValidationException ex) { return new(null, null, Error(422, "invalid_provenance", ex.Message)); }
+        var job = jobTracker.CreateJob(new JobSubmission("ai-session", provider.ProviderDisplayName,
+            inputJson, provenance, Name: jobName, Confidential: confidential));
+        jobTracker.StartInvocation(job.Id, provenance);
+        ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
+
+        try
+        {
+            var result = await provider.GenerateAsync(new SessionGenerateRequest(
+                q.Model, SessionTitleGeneration.SystemPrompt, messagesJson, SessionTitleGeneration.MaxTokens, q.Effort,
+                null, false, null, null), ctx.RequestAborted);
+            if (!result.Success)
+            {
+                jobTracker.MarkFailed(job.Id, result.Error ?? "Unknown error");
+                return new(null, job.Id, TitleFailed(502, result.Error ?? "Unknown error", job.Id));
+            }
+
+            var resultJson = GenerateResultJson(result, result.Isolation ?? SessionIsolation.Unverified, null,
+                provider.Capabilities.HasFlag(SessionCapabilities.GenerateVision), 0);
+            jobTracker.MarkCompleted(job.Id, resultJson: resultJson, costUsd: result.CostUsd);
+            var title = SessionTitleGeneration.CleanGeneratedTitle(result.Text);
+            return title is null
+                ? new(null, job.Id, TitleFailed(502, "The fast model did not return a usable title.", job.Id))
+                : new(title, job.Id, null);
+        }
+        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            jobTracker.MarkCancelled(job.Id);
+            return new(null, job.Id, Results.Empty);
+        }
+        catch (Exception ex)
+        {
+            jobTracker.MarkFailed(job.Id, ex.Message);
+            return new(null, job.Id, TitleFailed(500, ex.Message, job.Id));
+        }
+    }
+
+    /// <summary>A refusal before the completion ran, as title_generation_failed with its status and message.</summary>
+    private static IResult TitleFailure(IResult upstream, Guid? jobId)
+    {
+        var status = upstream is IStatusCodeHttpResult { StatusCode: { } code } && code >= 400 ? code : 502;
+        var message = upstream is IValueHttpResult { Value: ErrorResponse error } && !string.IsNullOrWhiteSpace(error.Message)
+            ? error.Message
+            : "The fast model did not return a usable title.";
+        return TitleFailed(status, message, jobId);
+    }
+
+    private static IResult TitleFailed(int status, string message, Guid? jobId)
+        => Results.Json(new { error = "title_generation_failed", message, jobId }, statusCode: status);
+
     /// <summary>
     /// Generate's request body limit. Kestrel's 30,000,000-byte default cannot hold four images at
     /// the base64 cap (4 x <see cref="GenerateImageValidator.MaxBase64Length"/> is about 28 MB) plus a
@@ -3384,4 +3663,61 @@ public static class UnifiedSessionEndpoints
         _ => ".png",
     };
 
+    private static readonly object SessionTitleSessionSchema = new
+    {
+        type = "object",
+        description = "The session, shaped like session in GET /ai-session/sessions/{id}",
+        required = new[] { "id", "provider", "title", "titleSource" },
+        properties = new
+        {
+            id = new { type = "string" },
+            provider = new { type = "string" },
+            title = new { type = new[] { "string", "null" } },
+            titleSource = new
+            {
+                type = new[] { "string", "null" },
+                @enum = new object?[] { SessionTitleSources.Manual, SessionTitleSources.Generated, SessionTitleSources.Provider, null },
+                description = "manual: a person renamed it; generated: a requested title update; provider: the provider's own titling, " +
+                    "which never replaces manual or generated. Null while untitled",
+            },
+        },
+    };
+
+    private static readonly object SessionTitleGenerateResponseSchema = new
+    {
+        type = "object",
+        required = new[] { "title", "jobId", "qualityTier", "session" },
+        properties = new
+        {
+            title = new { type = "string", description = "Cleaned title, at most 70 characters" },
+            jobId = new { type = "string", format = "uuid", description = "The fast-tier completion's job" },
+            qualityTier = new { type = "string", @enum = new[] { SessionTitleGeneration.QualityTier } },
+            session = SessionTitleSessionSchema,
+        },
+    };
+
+    private static readonly object SessionSearchResponseSchema = new
+    {
+        type = "object",
+        required = new[] { "items" },
+        properties = new
+        {
+            items = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    required = new[] { "session", "snippet", "messageUid", "archived" },
+                    properties = new
+                    {
+                        session = SessionTitleSessionSchema,
+                        snippet = new { type = new[] { "string", "null" }, description = "Matching transcript excerpt, or the title excerpt for a title-only match" },
+                        messageUid = new { type = new[] { "string", "null" }, description = "The matching message; null for a title match" },
+                        archived = new { type = "boolean", description = "The session is dismissed" },
+                    },
+                },
+            },
+        },
+    };
 }

@@ -23,6 +23,7 @@ using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
+using RedCompute.App.Services.SessionTitles;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -51,6 +52,10 @@ public class RelayServer
     private CancellationTokenSource? _jobAuditCts;
     private Task? _jobAuditTask;
     private readonly ConcurrentDictionary<string, bool> _confidentialSessions = new(StringComparer.OrdinalIgnoreCase);
+    // The latest snapshot each session mirrored, so a title change can supersede a pending
+    // debounced upsert that still carries the previous name.
+    private readonly ConcurrentDictionary<string, AiSessionSnapshot> _lastSessionSnapshots = new(StringComparer.OrdinalIgnoreCase);
+    private SessionTitleStore? _titles;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
@@ -221,6 +226,8 @@ public class RelayServer
                 new { name = "Output Tokens", fieldType = "number" },
                 new { name = "Session ID", fieldType = "string", description = "Provider-local session key" },
                 new { name = "App", fieldType = "string", description = "Owning Red Suite app" },
+                new { name = "Title Source", fieldType = "string", description = "Who set the name: manual (a rename), generated (a requested title update) or provider. Provider titling never replaces manual or generated" },
+                new { name = "Title Updated At", fieldType = "date", description = "When a manual or generated title was set" },
             ]));
         _streamClient.DefineStream(new StreamDefinition(
             "session-messages", "Session Messages",
@@ -231,8 +238,14 @@ public class RelayServer
             (provider, sessionId) => _confidentialSessions.TryGetValue(
                 SessionConfidentialityKey(provider, sessionId), out var confidential) && confidential);
 
+        var titles = _titles = new SessionTitleStore();
         SuiteMirror.SessionUpserted = snap =>
         {
+            _lastSessionSnapshots[SessionConfidentialityKey(snap.Provider, snap.Id)] = snap;
+            // An explicit title (rename or requested update) outranks the provider's title.
+            var explicitTitle = titles.Get(snap.Id);
+            var (mirroredName, titleSource) = SessionTitleStore.ForMirror(
+                snap.Title, $"{snap.ProjectName} ({snap.Provider})", explicitTitle);
             var job = snap.JobId is { } jobId ? _jobTracker.GetJob(jobId) : null;
             var ownerAgentId = job?.CreationProvenance?.Actor.EntityId
                 ?? job?.CreationProvenance?.Actor.Id;
@@ -241,7 +254,7 @@ public class RelayServer
             _streamClient.UpsertEntity(
                 SessionEntitySlug(snap.Provider, snap.Id),
                 "ai-session",
-                snap.Title ?? $"{snap.ProjectName} ({snap.Provider})",
+                mirroredName,
                 new
                 {
                 provider = snap.Provider,
@@ -274,6 +287,8 @@ public class RelayServer
                 owner_agent_id = ownerAgentId,
                 confidential = job?.Confidential ?? false,
                 app = "redcompute",
+                title_source = titleSource,
+                title_updated_at = explicitTitle?.SetAt.ToString("O"),
                 });
         };
 
@@ -380,7 +395,26 @@ public class RelayServer
                         ?? job.CreationProvenance?.Actor.Id,
                     confidential = true,
                 }, token),
-            access);
+            access,
+            titles,
+            session =>
+            {
+                var key = SessionConfidentialityKey(session.Provider, session.Id);
+                // Re-mirror the latest snapshot: latest-wins replaces a pending upsert with the old name.
+                if (_lastSessionSnapshots.TryGetValue(key, out var snapshot))
+                    SuiteMirror.SessionUpserted?.Invoke(snapshot);
+                if (session.Confidential
+                    || (_confidentialSessions.TryGetValue(key, out var confidential) && confidential))
+                    broadcaster.Broadcast("ai-session.changed", new
+                    {
+                        provider = session.Provider,
+                        sessionId = session.Id,
+                        confidential = true,
+                        timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                    });
+                else
+                    broadcaster.Broadcast("session.updated", session);
+            });
         SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access);
         SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
         CliVersionEndpoints.Map(registry, _registry);
@@ -464,7 +498,7 @@ public class RelayServer
             ["id", "provider", "projectName", "projectPath", "status", "startedAt", "model", "providerSessionId", "title", "messageCount", "permissionMode", "supportsSteering", "supportsRollback", "backgroundTasks", "workState"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.updated",
             "Fired when a session's status, tokens, cost, title, or live background tasks change (background progress coalesced to ~500 ms)", "UnifiedSessionInfo",
-            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "supportsRollback", "backgroundTasks", "workState", "lastTurnOutcome", "lastTurn"]));
+            ["id", "provider", "projectName", "status", "stopReason", "model", "title", "titleSource", "messageCount", "costUsd", "inputTokens", "outputTokens", "supportsSteering", "supportsRollback", "backgroundTasks", "workState", "lastTurnOutcome", "lastTurn"]));
         broadcaster.RegisterEvent(new WsEventSchema("session.ended",
             "Fired when a session stops or errors out",
             Fields: ["id", "reason", "stopReason"]));
@@ -504,6 +538,7 @@ public class RelayServer
 
                 if (data is UnifiedSessionInfo session)
                 {
+                    _titles?.Apply(session);
                     SessionEventProjection.ApplyWorkState(session, sessionProvider, _log);
                     // How the last turn ended, interrupt included, so clients stop calling an
                     // interrupted turn completed. The queue's own handler has already closed it.

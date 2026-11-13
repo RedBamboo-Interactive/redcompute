@@ -7,6 +7,11 @@ using RedCompute.Core.Sessions;
 
 namespace RedCompute.App.Services;
 
+internal sealed record SessionEntityRead(UnifiedSessionInfo Info, string EntityId, string Slug);
+
+/// <summary>One searched session: where it matched (a transcript snippet and message, or its title) and its record's age.</summary>
+internal sealed record SessionSearchCandidate(UnifiedSessionInfo Info, DateTimeOffset UpdatedAt, string? Snippet, string? MessageUid);
+
 internal sealed record TranscriptPageReadResult(
     IReadOnlyList<UnifiedMessageRecord> Messages,
     long? OldestRecordId,
@@ -230,6 +235,126 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         if (items.GetArrayLength() == 0) return (null, null);
         var entity = items[0];
         return (MapSession(entity), entity.GetProperty("id").GetString());
+    }
+
+    /// <summary>The session's durable record with the entity id and the exact slug the mirror upserts by.</summary>
+    internal async Task<SessionEntityRead?> GetSessionEntityAsync(string sessionId, CancellationToken ct = default)
+    {
+        using var doc = await GetJsonAsync(
+            $"api/entities?type=ai-session&data.session_id={Uri.EscapeDataString(sessionId)}&limit=1", ct);
+        var items = doc.RootElement.GetProperty("items");
+        if (items.GetArrayLength() == 0) return null;
+        var entity = items[0];
+        var info = MapSession(entity);
+        var entityId = entity.TryGetProperty("id", out var id) ? id.GetString() : null;
+        var slug = entity.TryGetProperty("slug", out var s) ? s.GetString() : null;
+        return info is null || entityId is null || slug is null ? null : new SessionEntityRead(info, entityId, slug);
+    }
+
+    /// <summary>
+    /// Mirrors an explicit title onto the durable record: <c>title_source</c> and
+    /// <c>title_updated_at</c> merged into data, then the name through the by-slug upsert, which
+    /// keeps the slug (PATCH of a name would re-slug the entity and fork the mirror).
+    /// </summary>
+    internal async Task UpdateSessionTitleAsync(SessionEntityRead entity, string title, string source,
+        DateTimeOffset at, CancellationToken ct = default)
+    {
+        using (var patch = await _http.PatchAsJsonAsync($"api/entities/{Uri.EscapeDataString(entity.EntityId)}/data",
+            new Dictionary<string, object?> { ["title_source"] = source, ["title_updated_at"] = at.ToString("O") }, ct))
+            patch.EnsureSuccessStatusCode();
+        using var rename = await _http.PutAsJsonAsync($"api/entities/by-slug/{Uri.EscapeDataString(entity.Slug)}",
+            new { name = title }, ct);
+        rename.EnsureSuccessStatusCode();
+    }
+
+    internal const int MaxSearchCandidates = 100;
+
+    /// <summary>
+    /// Sessions matching <paramref name="query"/> in their title or in user and assistant text,
+    /// from RedLeaf's search indexes: two bounded queries, never a transcript scan. Title matches
+    /// come from the entity index restricted to the name path; transcript matches from the
+    /// session-messages index restricted to text records (thinking and tool records excluded,
+    /// re-checked here so an older RedLeaf that ignores the filter cannot leak them). Confidential
+    /// sessions are not in the ambient indexes. The caller filters authorization and orders.
+    /// </summary>
+    internal async Task<IReadOnlyList<SessionSearchCandidate>> SearchSessionsAsync(string query, CancellationToken ct = default)
+    {
+        var candidates = new Dictionary<string, SessionSearchCandidate>(StringComparer.Ordinal);
+
+        var url = "api/search/conversations?q=" + Uri.EscapeDataString(query)
+            + "&streams=session-messages&event_type=text"
+            + "&record_fields=message_uid,event_type,parent_tool_use_id"
+            + $"&include_data=true&limit={MaxSearchCandidates}&snippets=3";
+        using (var transcript = await GetJsonAsync(url, ct))
+        {
+            if (transcript.RootElement.TryGetProperty("conversations", out var conversations)
+                && conversations.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var group in conversations.EnumerateArray())
+                {
+                    if (Str(group, "entityType") != "ai-session"
+                        || !group.TryGetProperty("entityData", out var data)
+                        || MapSessionData(Str(group, "entityName"), data) is not { } info)
+                        continue;
+                    var hit = group.TryGetProperty("hits", out var hits) && hits.ValueKind == JsonValueKind.Array
+                        ? hits.EnumerateArray().FirstOrDefault(IsConversationText)
+                        : default;
+                    if (hit.ValueKind != JsonValueKind.Object) continue;
+                    var fields = hit.GetProperty("fields");
+                    candidates[info.Id] = new SessionSearchCandidate(info, UpdatedAt(group, "entityUpdatedAt"),
+                        Str(hit, "snippet"), Str(fields, "message_uid"));
+                }
+            }
+        }
+
+        using (var titles = await PostJsonAsync("api/search/query", new
+        {
+            query,
+            sources = new[] { "entities" },
+            entityTypes = new[] { "ai-session" },
+            fieldPaths = new[] { "name" },
+            pageSize = MaxSearchCandidates,
+        }, ct))
+        {
+            if (titles.RootElement.TryGetProperty("entities", out var section)
+                && section.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in items.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("entity", out var entity)
+                        || Str(entity, "typeSlug") != "ai-session"
+                        || !entity.TryGetProperty("data", out var data)
+                        || MapSessionData(Str(entity, "name"), data) is not { } info
+                        || candidates.ContainsKey(info.Id))
+                        continue;
+                    // Identity fragments also cover slug and type; only a title match counts.
+                    var match = item.TryGetProperty("matches", out var matches) && matches.ValueKind == JsonValueKind.Array
+                        ? matches.EnumerateArray().FirstOrDefault(m => Str(m, "fieldPath") == "name")
+                        : default;
+                    if (match.ValueKind != JsonValueKind.Object) continue;
+                    candidates[info.Id] = new SessionSearchCandidate(info, UpdatedAt(entity, "updatedAt"),
+                        Str(match, "excerpt") ?? info.Title, null);
+                }
+            }
+        }
+
+        return candidates.Values.ToList();
+
+        static bool IsConversationText(JsonElement hit)
+            => Str(hit, "role") is "user" or "assistant"
+                && hit.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Object
+                && Str(fields, "event_type") == "text"
+                && string.IsNullOrEmpty(Str(fields, "parent_tool_use_id"));
+
+        static DateTimeOffset UpdatedAt(JsonElement element, string key)
+            => Str(element, key) is { } value && DateTimeOffset.TryParse(value, out var at) ? at : DateTimeOffset.MinValue;
+    }
+
+    private async Task<JsonDocument> PostJsonAsync(string url, object body, CancellationToken ct)
+    {
+        using var response = await _http.PostAsJsonAsync(url, body, ct);
+        response.EnsureSuccessStatusCode();
+        return JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
     }
 
     internal async Task<TranscriptPageReadResult> GetTranscriptPageAsync(
@@ -624,9 +749,23 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
     }
 
     private UnifiedSessionInfo? MapSession(JsonElement entity)
+        => entity.TryGetProperty("data", out var data)
+            ? MapSessionData(entity.TryGetProperty("name", out var name) ? name.GetString() : null, data)
+            : null;
+
+    /// <summary>
+    /// An ai-session from its entity name and data. The entity routes return data as a JSON
+    /// string; the search routes return it as an object. Both are accepted.
+    /// </summary>
+    private UnifiedSessionInfo? MapSessionData(string? name, JsonElement dataElement)
     {
-        using var data = JsonDocument.Parse(entity.GetProperty("data").GetString()!);
-        var d = data.RootElement;
+        if (dataElement.ValueKind == JsonValueKind.String)
+        {
+            using var parsed = JsonDocument.Parse(dataElement.GetString()!);
+            return MapSessionData(name, parsed.RootElement.Clone());
+        }
+        if (dataElement.ValueKind != JsonValueKind.Object) return null;
+        var d = dataElement;
 
         var sessionId = Str(d, "session_id");
         if (sessionId == null) return null;
@@ -665,7 +804,8 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             StartedAt = Str(d, "started_at") is { } sa && DateTimeOffset.TryParse(sa, out var t) ? t : default,
             Model = model,
             ProviderSessionId = Str(d, "external_session_id"),
-            Title = entity.GetProperty("name").GetString(),
+            Title = name,
+            TitleSource = Str(d, "title_source"),
             MessageCount = Int(d, "message_count") ?? 0,
             CostUsd = estimatedCost ?? reportedCost,
             CostEstimated = estimatedCost.HasValue,

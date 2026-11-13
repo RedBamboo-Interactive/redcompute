@@ -15,6 +15,12 @@ public class UnifiedSessionInfo
     public string? Model { get; set; }
     public string? ProviderSessionId { get; set; }
     public string? Title { get; set; }
+    /// <summary>
+    /// Who set <see cref="Title"/>: <c>manual</c> (a person renamed it), <c>generated</c> (an explicit
+    /// fast-tier title update) or <c>provider</c> (the provider's own titling). Provider titling never
+    /// replaces a manual or generated title. Null while the session has no title.
+    /// </summary>
+    public string? TitleSource { get; set; }
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
     public bool CostEstimated { get; set; }
