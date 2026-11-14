@@ -1,0 +1,22 @@
+{
+  "argumentList": [
+    "--version"
+  ],
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": null
+  },
+  "environmentTouched": false,
+  "fileName": "<root>\\npm\\claude.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": false,
+    "stdout": true
+  },
+  "seam": "cli.ProcessCliCommandRunner",
+  "useShellExecute": false,
+  "workingDirectory": ""
+}

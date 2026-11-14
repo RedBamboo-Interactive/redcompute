@@ -106,7 +106,7 @@ public sealed class CodexLaunchGoldenProcessTests : IDisposable
 
     public void Dispose() => _probe.Dispose();
 
-    private sealed class NoQualityModes : IProviderQualityModeResolver
+    internal sealed class NoQualityModes : IProviderQualityModeResolver
     {
         public bool TryResolveRequested(string qualityTier, string? preferredProvider, out ProviderQualityMode? resolved)
         {
@@ -115,7 +115,7 @@ public sealed class CodexLaunchGoldenProcessTests : IDisposable
         }
     }
 
-    private sealed class GoldenJobTracker : IJobTracker
+    internal sealed class GoldenJobTracker : IJobTracker
     {
         private readonly Dictionary<Guid, JobRecord> _jobs = [];
         public JobRecord CreateJob(JobSubmission submission)
@@ -137,7 +137,7 @@ public sealed class CodexLaunchGoldenProcessTests : IDisposable
         public JobRecord? GetJob(Guid jobId) { lock (_jobs) return _jobs.GetValueOrDefault(jobId); }
     }
 
-    private sealed class GoldenStore : ICodexSessionStore
+    internal sealed class GoldenStore : ICodexSessionStore
     {
         private readonly Dictionary<string, CodexSessionRecord> _sessions = [];
         public CodexSessionRecord? FindSession(string sessionId) { lock (_sessions) return _sessions.GetValueOrDefault(sessionId); }

@@ -1,0 +1,20 @@
+{
+  "arguments": "main.py --listen 127.0.0.1 --port 18999 --models-directory <root>\\models --output-directory <root>\\output --user-directory <root>\\user --database-url sqlite:///<root>/user/comfyui.db --preview-method auto",
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": null
+  },
+  "environmentTouched": false,
+  "fileName": "<root>\\venv\\Scripts\\python.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": false,
+    "stdout": true
+  },
+  "seam": "comfyui.server",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\Comfy UI"
+}

@@ -1,0 +1,27 @@
+{
+  "argumentList": [
+    "-d",
+    "Golden-Distro",
+    "--",
+    "bash",
+    "-lc",
+    "printf '%s' 'c2V0IC1ldW8gcGlwZWZhaWw7IGNvbW1hbmQ9JChwcmludGYgJyVzJyAnYVdZZ1d5QXRaaUF2YUc5dFpTOW5iMnhrWlc0dmRtVnVkaTlpYVc0dllXTjBhWFpoZEdVZ1hUc2dkR2hsYmlCemIzVnlZMlVnTDJodmJXVXZaMjlzWkdWdUwzWmxibll2WW1sdUwyRmpkR2wyWVhSbE95Qm1hVHNnWTJRZ0p5OW9iMjFsTDJkdmJHUmxiaTl6WlhKMlpYSW5JQ1ltSUdWNFpXTWdjSGwwYUc5dU15QnpaWEoyWlhJdWNIa2dMUzF3YjNKMElERTRPVGs0JyB8IGJhc2U2NCAtZCk7IHNldHNpZCBiYXNoIC1sYyAiJGNvbW1hbmQiICYgY2hpbGQ9JCE7IHN0YXJ0PSQoYXdrICd7cHJpbnQgJDIyfScgIi9wcm9jLyRjaGlsZC9zdGF0Iik7IHByaW50ZiAnUkVEQ09NUFVURV9MT0NBTFdTTF9QUk9DRVNTPSVzOiVzXG4nICIkY2hpbGQiICIkc3RhcnQiOyBjbGVhbnVwKCkgeyBjdXJyZW50PSQoYXdrICd7cHJpbnQgJDIyfScgIi9wcm9jLyRjaGlsZC9zdGF0IiAyPi9kZXYvbnVsbCB8fCB0cnVlKTsgWyAiJGN1cnJlbnQiID0gIiRzdGFydCIgXSAmJiBraWxsIC1URVJNIC0tICItJGNoaWxkIiAyPi9kZXYvbnVsbCB8fCB0cnVlOyB9OyB0cmFwIGNsZWFudXAgVEVSTSBJTlQgRVhJVDsgd2FpdCAiJGNoaWxkIg==' | base64 -d | bash"
+  ],
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": null
+  },
+  "environmentTouched": false,
+  "fileName": "wsl.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": false,
+    "stdout": true
+  },
+  "seam": "localwsl.server",
+  "useShellExecute": false,
+  "workingDirectory": ""
+}

@@ -1,0 +1,4 @@
+{
+  "codex.LaunchAppServerProcess": "session:codex",
+  "codex.LaunchExecProcess": "session:codex-exec"
+}

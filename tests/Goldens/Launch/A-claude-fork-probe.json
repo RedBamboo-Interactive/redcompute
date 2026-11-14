@@ -1,0 +1,45 @@
+{
+  "argumentList": [
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--permission-mode",
+    "acceptEdits",
+    "--allow-dangerously-skip-permissions",
+    "--permission-prompt-tool",
+    "stdio",
+    "--thinking-display",
+    "summarized",
+    "--model",
+    "haiku",
+    "--effort",
+    "high",
+    "--resume",
+    "c1a0de00-0000-4000-8000-000000000001",
+    "--resume-session-at",
+    "11111111-1111-4111-8111-11111111aaaa",
+    "--resume-drops-turn",
+    "P2"
+  ],
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentTouched": false,
+  "fileName": "<root>\\cli\\claude.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "claude.ProbeFork",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\project"
+}

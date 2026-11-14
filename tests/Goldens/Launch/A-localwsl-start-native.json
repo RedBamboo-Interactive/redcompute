@@ -1,0 +1,20 @@
+{
+  "arguments": "/c cd /d \"<root>\\server\" && python3 server.py --port 18998",
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": null
+  },
+  "environmentTouched": false,
+  "fileName": "cmd.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": false,
+    "stdout": true
+  },
+  "seam": "localwsl.server",
+  "useShellExecute": false,
+  "workingDirectory": ""
+}

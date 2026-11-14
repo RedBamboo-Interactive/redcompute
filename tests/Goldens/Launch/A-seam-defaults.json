@@ -1,0 +1,5 @@
+{
+  "claude.LaunchAgentProcess": "session:claude-code-agent",
+  "claude.LaunchOneshotProcess": "session:claude-code-oneshot",
+  "claude.LaunchSessionProcess": "session:claude-code"
+}

@@ -122,27 +122,7 @@ public sealed class LaunchGoldenProcessTests : IDisposable
     [WindowsFact("containment is a Windows Job Object and the probe replaces claude.exe")]
     public async Task Claude_fork_probe()
     {
-        var store = new ClaudeRollbackTests.ForkStore();
-        store.SaveSession(new ClaudeSessionRecord
-        {
-            Id = "s", ClaudeSessionId = ClaudeConversation, ProjectName = "Golden", ProjectPath = _project,
-            Model = "haiku", Effort = "high", UserId = "owner", Status = "Stopped",
-            StopReason = SessionStopReasons.IdleTimeout, StartedAt = DateTimeOffset.UtcNow, MessageCount = 2,
-            ScratchDirectory = _scratch,
-        });
-        foreach (var (uid, prompt, text) in new[] { ("u1", "P1", "first"), ("u2", "P2", "second") })
-        {
-            store.AddMessage(new ClaudeMessageRecord
-            {
-                SessionId = "s", Role = "user", EventType = "text", Content = text, MessageUid = uid,
-                PromptUuid = prompt, Timestamp = DateTimeOffset.UtcNow,
-            });
-            store.AddMessage(new ClaudeMessageRecord
-            {
-                SessionId = "s", Role = "assistant", EventType = "text", Content = "reply", MessageUid = "a" + uid,
-                Timestamp = DateTimeOffset.UtcNow,
-            });
-        }
+        var store = SeedRollback(_project, _scratch);
         var projects = Path.Combine(_probe.Root, "projects");
         WriteTwoTurnChain(Path.Combine(projects, "golden"));
         var service = Claude(store, new JsonObject
@@ -156,8 +136,7 @@ public sealed class LaunchGoldenProcessTests : IDisposable
         var launches = await _probe.RunAsync(async () =>
         {
             using var _ = SessionScratch.PushExecutionToken(Token);
-            result = await service.RollbackAsync(new SessionRollbackRequest("s", "rollback-1", "u2",
-                [new SessionRollbackUserTurn("u1", "first")], [new SessionRollbackUserTurn("u2", "second")]));
+            result = await service.RollbackAsync(RollbackRequest());
         });
         Assert.Equal(SessionRollbackStatus.Applied, result!.Status);
         LaunchGoldens.Verify("B-claude-fork-probe", Single(launches));
@@ -265,7 +244,37 @@ public sealed class LaunchGoldenProcessTests : IDisposable
         return files;
     }
 
-    private static void WriteTwoTurnChain(string folder)
+    /// <summary>A stopped two-turn session "s" the rollback to its second turn forks from.</summary>
+    internal static ClaudeRollbackTests.ForkStore SeedRollback(string project, string scratch)
+    {
+        var store = new ClaudeRollbackTests.ForkStore();
+        store.SaveSession(new ClaudeSessionRecord
+        {
+            Id = "s", ClaudeSessionId = ClaudeConversation, ProjectName = "Golden", ProjectPath = project,
+            Model = "haiku", Effort = "high", UserId = "owner", Status = "Stopped",
+            StopReason = SessionStopReasons.IdleTimeout, StartedAt = DateTimeOffset.UtcNow, MessageCount = 2,
+            ScratchDirectory = scratch,
+        });
+        foreach (var (uid, prompt, text) in new[] { ("u1", "P1", "first"), ("u2", "P2", "second") })
+        {
+            store.AddMessage(new ClaudeMessageRecord
+            {
+                SessionId = "s", Role = "user", EventType = "text", Content = text, MessageUid = uid,
+                PromptUuid = prompt, Timestamp = DateTimeOffset.UtcNow,
+            });
+            store.AddMessage(new ClaudeMessageRecord
+            {
+                SessionId = "s", Role = "assistant", EventType = "text", Content = "reply", MessageUid = "a" + uid,
+                Timestamp = DateTimeOffset.UtcNow,
+            });
+        }
+        return store;
+    }
+
+    internal static SessionRollbackRequest RollbackRequest() => new("s", "rollback-1", "u2",
+        [new SessionRollbackUserTurn("u1", "first")], [new SessionRollbackUserTurn("u2", "second")]);
+
+    internal static void WriteTwoTurnChain(string folder)
     {
         Directory.CreateDirectory(folder);
         string? parent = null;

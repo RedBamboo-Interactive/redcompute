@@ -1,0 +1,34 @@
+{
+  "argumentList": [
+    "exec",
+    "-",
+    "--json",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "read-only",
+    "-c",
+    "model_reasoning_effort=\"high\"",
+    "--model",
+    "gpt-golden"
+  ],
+  "containment": "session:codex-exec",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentChanges": {
+    "GOLDEN_EXEC_ENV": "1"
+  },
+  "environmentTouched": true,
+  "fileName": "<root>\\cli\\codex.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "codex.LaunchExecProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\project"
+}

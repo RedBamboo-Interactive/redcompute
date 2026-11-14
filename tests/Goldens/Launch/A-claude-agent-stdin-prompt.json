@@ -1,0 +1,50 @@
+{
+  "argumentList": [
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--max-turns",
+    "3",
+    "--permission-mode",
+    "dontAsk",
+    "--append-system-prompt",
+    "Permissions: this session runs at Ask. Nobody watches it, so anything that needs approval is denied at once. A denied tool or command without a reason was denied for that. The installation owner can change this in RedLeaf Settings > Agent permissions, or raise this session in its Info panel. Continue without it.",
+    "--tools",
+    "Read,Bash",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--thinking-display",
+    "summarized",
+    "--model",
+    "claude-golden-model",
+    "--effort",
+    "high",
+    "--allowed-tools",
+    "Read",
+    "--add-dir",
+    "<root>\\scratch"
+  ],
+  "containment": "session:claude-code-agent",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentChanges": {
+    "GOLDEN_AGENT_ENV": "1"
+  },
+  "environmentTouched": true,
+  "fileName": "<root>\\cli\\claude.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "claude.LaunchAgentProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\project"
+}

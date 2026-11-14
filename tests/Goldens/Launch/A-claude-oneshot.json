@@ -1,0 +1,42 @@
+{
+  "argumentList": [
+    "-p",
+    "[User]: hello",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "claude-golden-model",
+    "--no-session-persistence",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--setting-sources",
+    "",
+    "--thinking-display",
+    "summarized",
+    "--system-prompt",
+    "be brief",
+    "--effort",
+    "low"
+  ],
+  "containment": "session:claude-code-oneshot",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentTouched": false,
+  "fileName": "<root>\\cli\\claude.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "claude.LaunchOneshotProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<isolated-cwd>"
+}
