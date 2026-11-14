@@ -17,6 +17,9 @@ public class LocalWslProvider : IPluginProvider
     private readonly string _providerType;
     private readonly Action<string> _log;
     private Process? _process;
+
+    /// <summary>Launch seam for the backend server process.</summary>
+    internal Func<ProcessStartInfo, Process?> LaunchServerProcess { get; set; } = startInfo => Process.Start(startInfo);
     private int? _wslProcessGroupId;
     private string? _wslStartTime;
     private BackendStatus _status = BackendStatus.Stopped;
@@ -77,7 +80,7 @@ public class LocalWslProvider : IPluginProvider
         try
         {
             var startInfo = BuildStartInfo();
-            _process = Process.Start(startInfo);
+            _process = LaunchServerProcess(startInfo);
             if (_process == null)
             {
                 _status = BackendStatus.Error;

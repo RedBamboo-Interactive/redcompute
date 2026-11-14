@@ -21,6 +21,12 @@ public class OpenCodeSessionService
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly Action<string, Guid?> _log;
 
+    /// <summary>Launch seams for the ACP session process and the non-interactive exec process.</summary>
+    internal Func<ProcessStartInfo, Process?> LaunchAcpProcess { get; set; } =
+        startInfo => SessionProcessContainment.Start(startInfo, "opencode");
+    internal Func<ProcessStartInfo, Process?> LaunchExecProcess { get; set; } =
+        startInfo => SessionProcessContainment.Start(startInfo, "opencode-exec");
+
     public event Action<OpenCodeSessionInfo>? SessionCreated;
     public event Action<OpenCodeSessionInfo>? SessionUpdated;
     public event Action<string, string>? SessionEnded;
@@ -358,7 +364,7 @@ public class OpenCodeSessionService
         Process process;
         try
         {
-            process = SessionProcessContainment.Start(startInfo, "opencode")!;
+            process = LaunchAcpProcess(startInfo)!;
         }
         catch (Exception ex)
         {
@@ -1877,7 +1883,7 @@ public class OpenCodeSessionService
         BuildExecArgs(startInfo, model);
 
         var sw = Stopwatch.StartNew();
-        using var process = SessionProcessContainment.Start(startInfo, "opencode-exec");
+        using var process = LaunchExecProcess(startInfo);
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start opencode process");
         if (streamKey != null)

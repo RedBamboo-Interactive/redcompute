@@ -33,6 +33,9 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly IDisposable? _acceleratorRegistration;
     private readonly string _acceleratorId;
     private Process? _process;
+
+    /// <summary>Launch seam for the ComfyUI server process.</summary>
+    internal Func<ProcessStartInfo, Process?> LaunchServerProcess { get; set; } = startInfo => Process.Start(startInfo);
     private readonly ConcurrentQueue<string> _startupErrors = new();
     private BackendStatus _status = BackendStatus.Stopped;
     private DateTime _lastHealthCheck;
@@ -144,7 +147,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             while (_startupErrors.TryDequeue(out _)) { }
             EnsureConfiguredDirectories();
             var startInfo = BuildStartInfo();
-            _process = Process.Start(startInfo);
+            _process = LaunchServerProcess(startInfo);
             if (_process == null)
             {
                 _status = BackendStatus.Error;
