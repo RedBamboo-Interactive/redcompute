@@ -1451,7 +1451,7 @@ public partial class ClaudeSessionService
             var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
             PersistMessage(sessionId, "user", "text", transcriptContent, null, null, null, null, attachmentsJson,
                 messageUid ?? Guid.NewGuid().ToString("N"), promptUuid: promptUuid);
-            EnsureTitle(session, transcriptContent);
+            EnsureTitle(session, transcriptContent, SessionTitleFormatter.DescribeAttachments(input));
 
             return true;
         }
@@ -1523,18 +1523,19 @@ public partial class ClaudeSessionService
         }
     }
 
-    private void EnsureTitle(ManagedSession session, string firstUserMessage)
+    private void EnsureTitle(ManagedSession session, string firstUserMessage,
+        IReadOnlyList<TitleAttachment> attachments)
     {
         if (!string.IsNullOrWhiteSpace(session.Info.Title)) return;
 
-        var fallback = SessionTitleFormatter.DeriveFallback(firstUserMessage);
+        var fallback = SessionTitleFormatter.DeriveFallback(firstUserMessage, attachments);
         if (fallback is not null)
             ApplyTitle(session, fallback);
 
         if (_titleQualityTier() is not { } qualityTier) return;
 
         var candidate = new Lazy<Task>(
-            () => GenerateTitleAsync(session, firstUserMessage, qualityTier),
+            () => GenerateTitleAsync(session, firstUserMessage, attachments, qualityTier),
             LazyThreadSafetyMode.ExecutionAndPublication);
         var tracked = _titleTasks.GetOrAdd(session.Info.Id, candidate);
         if (ReferenceEquals(tracked, candidate))
@@ -1548,10 +1549,11 @@ public partial class ClaudeSessionService
     private async Task GenerateTitleAsync(
         ManagedSession session,
         string firstUserMessage,
+        IReadOnlyList<TitleAttachment> attachments,
         string qualityTier)
     {
         var opening = SessionTitleFormatter.StripContext(firstUserMessage);
-        if (string.IsNullOrWhiteSpace(opening)) return;
+        if (string.IsNullOrWhiteSpace(opening) && attachments.Count == 0) return;
 
         var provider = session.Info.ProviderEntity ?? "claude-code";
         if (!_qualityModes.TryResolveRequested(qualityTier, provider, out var quality)
@@ -1574,7 +1576,7 @@ public partial class ClaudeSessionService
         {
             var messages = JsonSerializer.SerializeToElement(new[]
             {
-                new { role = "user", content = SessionTitleFormatter.BuildPrompt(opening) },
+                new { role = "user", content = SessionTitleFormatter.BuildPrompt(opening, attachments) },
             });
             var result = await ExecuteOneshotAsync(
                 quality.Model,

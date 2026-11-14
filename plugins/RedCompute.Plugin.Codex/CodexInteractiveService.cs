@@ -675,7 +675,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         info.MessageCount++;
         info.Status = "Active";
         info.LastActivity = DateTimeOffset.UtcNow;
-        EnsureTitle(session, transcriptContent);
+        EnsureTitle(session, transcriptContent, SessionTitleFormatter.DescribeAttachments(input));
         Persist(info);
         SessionUpdated?.Invoke(info);
 
@@ -1951,18 +1951,19 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// sidebar is never blank. When configured, a separately audited asynchronous inference then
     /// upgrades it using the provider's entity-backed quality tier.
     /// </summary>
-    private void EnsureTitle(ManagedSession session, string firstUserMessage)
+    private void EnsureTitle(ManagedSession session, string firstUserMessage,
+        IReadOnlyList<TitleAttachment> attachments)
     {
         if (!string.IsNullOrWhiteSpace(session.Info.Title)) return;
 
-        var derived = DeriveTitle(firstUserMessage);
+        var derived = DeriveTitle(firstUserMessage, attachments);
         if (derived != null) ApplyTitle(session, derived);
 
         if (!SessionExecutionProfile.IsConversationOnly(session.Info.ExecutionProfile)
             && _titleQualityTier() is { } qualityTier)
         {
             var candidate = new Lazy<Task>(
-                () => GenerateTitleAsync(session, firstUserMessage, qualityTier),
+                () => GenerateTitleAsync(session, firstUserMessage, attachments, qualityTier),
                 LazyThreadSafetyMode.ExecutionAndPublication);
             var tracked = _titleTasks.GetOrAdd(session.Info.Id, candidate);
             if (ReferenceEquals(tracked, candidate))
@@ -1977,10 +1978,11 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     private async Task GenerateTitleAsync(
         ManagedSession session,
         string firstUserMessage,
+        IReadOnlyList<TitleAttachment> attachments,
         string qualityTier)
     {
         var opening = StripContext(firstUserMessage);
-        if (string.IsNullOrWhiteSpace(opening)) return;
+        if (string.IsNullOrWhiteSpace(opening) && attachments.Count == 0) return;
 
         var provider = session.Info.ProviderEntity ?? "codex";
         if (!_qualityModes.TryResolveRequested(qualityTier, provider, out var quality)
@@ -2003,7 +2005,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         try
         {
             var result = await _exec.ExecuteExecAsync(
-                BuildTitlePrompt(opening),
+                BuildTitlePrompt(opening, attachments),
                 container: null,
                 workingDir: null,
                 model: quality.Model,
@@ -2050,8 +2052,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         }
     }
 
-    internal static string BuildTitlePrompt(string opening)
-        => SessionTitleFormatter.BuildPrompt(opening);
+    internal static string BuildTitlePrompt(string opening, IReadOnlyList<TitleAttachment>? attachments = null)
+        => SessionTitleFormatter.BuildPrompt(opening, attachments);
 
     /// <summary>Models editorialise. Strip wrappers and reject prose instead of replacing a safe fallback.</summary>
     public static string? CleanGeneratedTitle(string raw)
@@ -2088,8 +2090,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// Turns an opening message into a short label, used as the immediate title and as the fallback
     /// when model-generated naming is off or fails.
     /// </summary>
-    public static string? DeriveTitle(string? message)
-        => SessionTitleFormatter.DeriveFallback(message);
+    public static string? DeriveTitle(string? message, IReadOnlyList<TitleAttachment>? attachments = null)
+        => SessionTitleFormatter.DeriveFallback(message, attachments);
 
     private static List<string> QuestionIds(JsonElement questions)
     {
