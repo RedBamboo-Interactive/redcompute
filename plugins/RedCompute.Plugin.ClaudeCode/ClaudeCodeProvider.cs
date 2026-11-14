@@ -424,6 +424,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         BackgroundTasks = s.BackgroundTasks,
         LastTurnOutcome = s.LastTurnOutcome,
         LastTurnEndedAt = s.LastTurnEndedAt,
+        LastTurnError = s.LastTurnError,
         ProviderMetadata = new()
         {
             ["cacheReadInputTokens"] = s.CacheReadInputTokens,

@@ -97,24 +97,28 @@ public static class SessionInterruptResults
 public sealed record SessionTurnRecord(
     string SessionId, string TurnId, DateTimeOffset OpenedAt, bool ActiveSeen, DateTimeOffset? EndedAt,
     string? Status, string? StopReason, string? Outcome, int BackgroundTasksRunning,
-    string? InterruptSource, string? InterruptedByMessageUid)
+    string? InterruptSource, string? InterruptedByMessageUid,
+    // The provider's error, recorded only for a failed turn.
+    string? Error = null)
 {
     public bool Interrupted => Outcome == SessionTurnOutcomes.Interrupted;
 
     /// <summary>The turn for clients; interrupt attribution only when the interrupt ended it.</summary>
     public SessionTurnSummary Summary => new(TurnId, Outcome, EndedAt,
-        Interrupted ? InterruptSource : null, Interrupted ? InterruptedByMessageUid : null);
+        Interrupted ? InterruptSource : null, Interrupted ? InterruptedByMessageUid : null,
+        Outcome == SessionTurnOutcomes.Failed ? Error : null);
 }
 
 /// <summary>The session state a turn ended in, as handed to <see cref="SessionInputQueueStore.CloseTurn"/>.</summary>
 public sealed record SessionTurnEnd(string Status, string? StopReason, string? ProviderOutcome,
-    DateTimeOffset? ProviderEndedAt, int BackgroundTasksRunning)
+    DateTimeOffset? ProviderEndedAt, int BackgroundTasksRunning, string? ProviderError = null)
 {
     /// <param name="endedStatus">"Ended" when the session itself ended; the live status otherwise.</param>
     public static SessionTurnEnd From(UnifiedSessionInfo session, string? endedStatus = null) => new(
         endedStatus ?? session.Status.ToString(), session.StopReason, session.LastTurnOutcome, session.LastTurnEndedAt,
         endedStatus is null && session.Status == SessionStatus.Idle
-            ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0);
+            ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0,
+        session.LastTurnError);
 }
 
 public sealed record SessionInputQueueSubmission(
@@ -1202,6 +1206,16 @@ public sealed class SessionInputQueueStore
             cmd.CommandText = $"ALTER TABLE SessionQueuedInputs ADD COLUMN {column} {type}";
             cmd.ExecuteNonQuery();
         }
+
+        var turnColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        cmd.CommandText = "PRAGMA table_info(SessionTurns)";
+        using (var reader = cmd.ExecuteReader())
+            while (reader.Read()) turnColumns.Add(reader.GetString(1));
+        if (!turnColumns.Contains("Error"))
+        {
+            cmd.CommandText = "ALTER TABLE SessionTurns ADD COLUMN Error TEXT NULL";
+            cmd.ExecuteNonQuery();
+        }
     }
 
     // ===== Turn ledger =====================================================================
@@ -1258,15 +1272,18 @@ public sealed class SessionInputQueueStore
                     : end.Status == nameof(SessionStatus.Error) ? SessionTurnOutcomes.Failed
                     : end.Status is nameof(SessionStatus.Stopped) or "Ended" ? SessionTurnOutcomes.Stopped
                     : null);
+            // The provider's error belongs to the turn only when the provider itself reported it failed.
+            var error = providerOutcome == SessionTurnOutcomes.Failed ? SessionTurnErrors.Clip(end.ProviderError) : null;
             var close = connection.CreateCommand();
             close.Transaction = transaction;
             close.CommandText = """
                 UPDATE SessionTurns SET EndedAt=$now, Status=$status, StopReason=$stopReason, Outcome=$outcome,
-                    BackgroundTasksRunning=$background
+                    BackgroundTasksRunning=$background, Error=$error
                 WHERE SessionId=$sessionId AND TurnId=$turnId AND EndedAt IS NULL
                 """;
             Add(close, "$now", now.ToString("O")); Add(close, "$status", end.Status);
             AddNullable(close, "$stopReason", end.StopReason); AddNullable(close, "$outcome", outcome);
+            AddNullable(close, "$error", error);
             Add(close, "$background", end.BackgroundTasksRunning);
             Add(close, "$sessionId", sessionId); Add(close, "$turnId", open.TurnId);
             close.ExecuteNonQuery();
@@ -1440,7 +1457,7 @@ public sealed class SessionInputQueueStore
                 Text("EndedAt") is { } ended ? DateTimeOffset.Parse(ended) : null,
                 Text("Status"), Text("StopReason"), Text("Outcome"),
                 reader.GetInt32(reader.GetOrdinal("BackgroundTasksRunning")),
-                Text("InterruptSource"), Text("InterruptedByMessageUid")));
+                Text("InterruptSource"), Text("InterruptedByMessageUid"), Text("Error")));
         }
         return turns;
     }

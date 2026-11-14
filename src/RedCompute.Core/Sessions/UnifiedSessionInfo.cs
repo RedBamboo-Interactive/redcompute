@@ -75,6 +75,8 @@ public class UnifiedSessionInfo
     // Live provider state; an outcome older than the turn being closed is not that turn's.
     public string? LastTurnOutcome { get; set; }
     public DateTimeOffset? LastTurnEndedAt { get; set; }
+    // The provider's error when that turn failed (SessionTurnErrors); null for any other outcome.
+    public string? LastTurnError { get; set; }
     // RedCompute's record of the most recent turn: outcome plus the interrupt that ended it, if
     // any. Overlaid on reads and events, never provider-written.
     public SessionTurnSummary? LastTurn { get; set; }

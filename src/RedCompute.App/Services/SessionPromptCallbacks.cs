@@ -84,6 +84,15 @@ internal sealed class SessionPromptCallbacks
     /// <summary>An in-memory (non-durable) completion registration still covers this session's turn.</summary>
     internal Func<string, bool> HasLiveRegistration { get; set; } = _ => false;
 
+    /// <summary>
+    /// The prompt's turn failed on a transient error and RedCompute will retry it
+    /// (<see cref="TransientTurnRetries"/>): its completion waits for the retry, which takes the
+    /// registration over. Nothing is held once the retries are exhausted or no longer apply; the
+    /// completion then reports the failure with its error.
+    /// </summary>
+    internal Func<string, SessionInputQueueItem, SessionTurnRecord?, UnifiedSessionInfo?, bool> HoldForRetry { get; set; }
+        = (_, _, _, _) => false;
+
     internal SessionPromptCallbacks(string path, SessionInputQueueStore queue,
         Func<string, UnifiedSessionInfo?> current, HttpClient http,
         Action<string, Guid?>? log = null, Func<DateTimeOffset>? now = null, TimeSpan? backgroundNoticeWindow = null)
@@ -320,6 +329,7 @@ internal sealed class SessionPromptCallbacks
                     && turn.TurnId == prompt.TurnId;
                 if (entry.Payload is null && turnRan && (observedActive || session?.Status == SessionStatus.Active))
                 {
+                    if (HoldForRetry(sessionId, prompt, turn, session)) continue;
                     // The turn ended idle and the session is already running the next one (an
                     // interrupt-current input delivered ahead, a woken or unprompted turn). Report
                     // the ended turn from its record instead of waiting for, and borrowing, the next.
@@ -355,6 +365,10 @@ internal sealed class SessionPromptCallbacks
                 if (restartPaused && prompt.State == SessionInputQueueState.Pending && !entry.ActiveSeen
                     && session!.StoppedAt is { } stoppedAt && stoppedAt < prompt.CreatedAt) continue;
                 if (paused && entry.PauseReason == session!.StopReason) continue;
+                // A transient failure RedCompute is about to retry: say nothing yet. The supervisor
+                // would otherwise be woken into the same outage (2026-11-14) to read a failure that
+                // the retry is already handling.
+                if (!cancelled && entry.Payload is null && HoldForRetry(sessionId, prompt, turn, session)) continue;
                 if (!cancelled && !paused && session!.Status is not (SessionStatus.Idle or SessionStatus.Stopped or SessionStatus.Error)) continue;
                 if (!cancelled && !paused && session!.Status == SessionStatus.Idle
                     && (prompt.State != SessionInputQueueState.Delivered || !(entry.ActiveSeen || turnRan))
@@ -549,7 +563,11 @@ internal sealed class SessionPromptCallbacks
             turnId = turn?.TurnId,
             turnOutcome = turn?.EndedAt is null ? null : turn.Outcome,
             interruptedBy = InterruptedBy(turn),
+            turnError = TurnError(turn),
         };
+
+    private static string? TurnError(SessionTurnRecord? turn)
+        => turn is { EndedAt: not null, Outcome: SessionTurnOutcomes.Failed } ? turn.Error : null;
 
     private static object? InterruptedBy(SessionTurnRecord? turn)
         => turn is { Interrupted: true, InterruptSource: { } source }
@@ -584,6 +602,7 @@ internal sealed class SessionPromptCallbacks
             node["turnId"] = turn.TurnId;
             node["turnOutcome"] = turn.Outcome;
             node["interruptedBy"] = JsonSerializer.SerializeToNode(InterruptedBy(turn));
+            if (TurnError(turn) is { } error) node["turnError"] = error;
         }
         node["backgroundTasksRunning"] = endedReason is null && session?.Status == SessionStatus.Idle
             ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;

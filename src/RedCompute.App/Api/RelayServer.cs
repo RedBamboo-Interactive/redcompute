@@ -440,6 +440,12 @@ public class RelayServer
             _ = new RestartContinuations(durableCallbacks, inputQueueStore, inputQueue.AdmitAsync,
                 sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null),
                 PlannedRestartCheckpoint.Current, DateTimeOffset.UtcNow, _log).RunAfterBootAsync(ct);
+        // A delegated turn that failed on a network or provider blip is retried with backoff; its
+        // completion waits for the retry (2026-11-14 DNS outage).
+        if (_callbacks.Durable is { } retryCallbacks)
+            _ = new TransientTurnRetries(retryCallbacks, inputQueueStore, inputQueue.AdmitAsync,
+                sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null),
+                _log).RunAsync(ct);
         // Always runs: its eligibility clock also tells completion callbacks a session settled.
         // A zero idle timeout disables only the parking itself.
         var idleParking = new IdleSessionParkingCoordinator(

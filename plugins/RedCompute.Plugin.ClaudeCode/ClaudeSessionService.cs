@@ -4113,10 +4113,12 @@ public partial class ClaudeSessionService
     /// turn's observers read the outcome with the status. A success that raced an interrupt is
     /// completed: nothing was aborted.
     /// </summary>
-    private static void MarkTurnEnded(ManagedSession session, string outcome)
+    private static void MarkTurnEnded(ManagedSession session, string outcome, string? error = null)
     {
         session.Info.LastTurnOutcome = outcome;
         session.Info.LastTurnEndedAt = DateTimeOffset.UtcNow;
+        session.Info.LastTurnError = outcome == Core.Sessions.SessionTurnOutcomes.Failed
+            ? Core.Sessions.SessionTurnErrors.Clip(error) : null;
     }
 
     private ClaudeStreamEvent? ParseResultEvent(JsonElement root, ManagedSession session)
@@ -4223,6 +4225,12 @@ public partial class ClaudeSessionService
             {
                 session.Info.StopReason = "authentication_failed";
             }
+            else
+            {
+                // The previous turn's "completed" must not survive into a failed one: a callback
+                // reading it reported the 2026-11-14 DNS failures as completions. Same rule as Codex.
+                session.Info.StopReason = null;
+            }
 
             if (!session.PendingSteers.IsEmpty)
             {
@@ -4264,7 +4272,7 @@ public partial class ClaudeSessionService
             }
 
             session.Info.Status = SessionStatus.Idle;
-            MarkTurnEnded(session, Core.Sessions.SessionTurnOutcomes.Failed);
+            MarkTurnEnded(session, Core.Sessions.SessionTurnOutcomes.Failed, error);
             if (root.TryGetProperty("total_cost_usd", out var errCost))
                 session.Info.CostUsd = errCost.GetDouble();
             ParseTokenUsage(root, session);

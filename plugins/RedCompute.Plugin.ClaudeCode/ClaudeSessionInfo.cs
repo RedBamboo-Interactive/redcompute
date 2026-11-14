@@ -43,4 +43,5 @@ public class ClaudeSessionInfo
     // How the most recent turn ended (Core.Sessions.SessionTurnOutcomes) and when. Live state only.
     public string? LastTurnOutcome { get; set; }
     public DateTimeOffset? LastTurnEndedAt { get; set; }
+    public string? LastTurnError { get; set; }
 }

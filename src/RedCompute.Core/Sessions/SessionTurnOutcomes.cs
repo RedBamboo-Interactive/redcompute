@@ -37,4 +37,11 @@ public sealed record SessionTurnSummary(
     string? Outcome,
     DateTimeOffset? EndedAt,
     string? InterruptSource,
-    string? InterruptedByMessageUid);
+    string? InterruptedByMessageUid,
+    // The provider's error, for a failed turn (SessionTurnErrors); null otherwise.
+    string? Error = null)
+{
+    /// <summary>The turn failed on a transient network or provider error: retrying it later may succeed.
+    /// RedCompute owns this classification, so clients never keep their own copy of it.</summary>
+    public bool Transient => Outcome == SessionTurnOutcomes.Failed && SessionTurnErrors.IsTransient(Error);
+}

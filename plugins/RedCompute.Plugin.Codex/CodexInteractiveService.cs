@@ -1083,6 +1083,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         // a fresh info, so RedCompute's record of the requested interrupt carries the outcome there.
         session.Info.LastTurnOutcome = Core.Sessions.SessionTurnOutcomes.Interrupted;
         session.Info.LastTurnEndedAt = DateTimeOffset.UtcNow;
+        session.Info.LastTurnError = null;
 
         // Remove before disposing so OnExited sees no session and stays quiet: a forced interrupt
         // must not surface as SessionEnded, which would tell every client the session died.
@@ -1174,6 +1175,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                     @params, session.HasFinalOutput, session.InterruptRequested, session.HasCompletedFinalAnswer);
                 var outcome = TurnOutcome(@params, session.InterruptRequested, completionError);
                 session.Info.LastTurnOutcome = outcome;
+                session.Info.LastTurnError = outcome == Core.Sessions.SessionTurnOutcomes.Failed
+                    ? Core.Sessions.SessionTurnErrors.Clip(completionError) : null;
                 // Same vocabulary as Claude Code: a clean end says "completed", anything else clears
                 // the previous turn's reason so callbacks never inherit a stale one.
                 session.Info.StopReason = outcome == Core.Sessions.SessionTurnOutcomes.Completed ? "completed" : null;

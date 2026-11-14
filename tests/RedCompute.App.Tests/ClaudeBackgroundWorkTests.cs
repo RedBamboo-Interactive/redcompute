@@ -520,6 +520,30 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         Assert.Equal(SessionTurnOutcomes.Failed, h.Info.LastTurnOutcome);
     }
 
+    // 2026-11-14: the DNS outage's result. The error reaches the turn, and the previous turn's
+    // "completed" does not survive into this one (it made the callback read as a completion).
+    [Fact]
+    public async Task A_network_failure_after_a_completed_turn_records_its_error_and_clears_the_stale_stop_reason()
+    {
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("work")], messageUid: "user-1"));
+        h.Feed("""{"type":"result","subtype":"success","is_error":false,"result":"Done.","total_cost_usd":0.01}""");
+        Assert.Equal("completed", h.Info.StopReason);
+        Assert.Null(h.Info.LastTurnError);
+
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("more")], messageUid: "user-2"));
+        h.Feed("""{"type":"result","subtype":"success","is_error":true,"result":"API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)","total_cost_usd":0.01}""");
+
+        Assert.Equal(SessionTurnOutcomes.Failed, h.Info.LastTurnOutcome);
+        Assert.Equal("API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)", h.Info.LastTurnError);
+        Assert.Null(h.Info.StopReason);
+        Assert.True(SessionTurnErrors.IsTransient(h.Info.LastTurnError));
+
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("again")], messageUid: "user-3"));
+        h.Feed("""{"type":"result","subtype":"success","is_error":false,"result":"Done.","total_cost_usd":0.01}""");
+        Assert.Null(h.Info.LastTurnError);
+    }
+
     // --- harness ---
 
     private sealed record Entry(string? Proc, JsonElement? Line, JsonElement? Sent, string? Note);

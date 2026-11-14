@@ -595,6 +595,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         SupportsRollback = CodexInteractiveService.SupportsRollback(s.HistoryMode),
         LastTurnOutcome = s.LastTurnOutcome,
         LastTurnEndedAt = s.LastTurnEndedAt,
+        LastTurnError = s.LastTurnError,
     };
 
     private static UnifiedStreamEvent ToUnifiedEvent(CodexStreamEvent e) => new()
