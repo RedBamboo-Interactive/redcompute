@@ -60,6 +60,35 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         return caps;
     }
 
+    /// <summary>
+    /// The <c>nodes</c> area: the computers RedCompute runs work on. Its routes are read from the
+    /// route table under <c>/nodes</c>; the concept tells an Agent what a node is.
+    /// </summary>
+    public override Task<IReadOnlyList<DiscoveryArea>> GetAreasAsync()
+        => Task.FromResult<IReadOnlyList<DiscoveryArea>>([NodesArea]);
+
+    internal static readonly DiscoveryArea NodesArea = new(
+        Id: "nodes",
+        Name: "Computers",
+        Kind: "kernel",
+        RoutePrefix: "/nodes",
+        Summary: "The computers RedCompute runs work on, read-only. Phase 1 has one: this machine, node zero. "
+            + "Each node reports its platform, a hardware summary, and the capabilities and providers it runs with their status. "
+            + "Use 'local' as the id of this machine.",
+        Concepts:
+        [
+            new DiscoveryConcept("node", "Computer",
+                "A machine RedCompute runs work on. Its id is generated once and kept in node.json, so it is stable across restarts.",
+                [
+                    new DiscoveryField("id", "string", Required: true, Description: "Stable node id (node_<ulid>); 'local' is an alias for this machine"),
+                    new DiscoveryField("name", "string", Required: true, Description: "Display name: the machine name"),
+                    new DiscoveryField("kind", "string", Required: true, Description: "local (remote nodes arrive with pairing)"),
+                    new DiscoveryField("status", "string", Required: true, Description: "online, offline or revoked"),
+                    new DiscoveryField("isLocal", "boolean", Required: true, Description: "True for the machine this RedCompute runs on"),
+                    new DiscoveryField("capabilities", "array", Description: "Capabilities on this node, each with its providers and their status"),
+                ]),
+        ]);
+
     public override Task<object?> GetHealthExtrasAsync()
     {
         return Task.FromResult<object?>(new

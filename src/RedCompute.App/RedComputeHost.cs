@@ -5,6 +5,7 @@ using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
+using RedCompute.App.Services.Nodes;
 using RedCompute.App.Api;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
@@ -47,6 +48,8 @@ public static class RedComputeHost
     public static CapabilityManifestLoader ManifestLoader { get; } = new();
     public static JobTrackingService JobTracker { get; } = new();
     public static HardwareMonitorService HardwareMonitor { get; } = new();
+    /// <summary>The computers RedCompute runs work on: node zero, this machine (Phase 1).</summary>
+    public static NodeRegistry Nodes { get; private set; } = null!;
     public static ProviderConfigService ProviderConfig { get; private set; } = null!;
     public static QualityModeService QualityModes { get; private set; } = null!;
     public static AcceleratorAdmissionCoordinator AcceleratorAdmission { get; } =
@@ -125,6 +128,10 @@ public static class RedComputeHost
             Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");
         if (plannedRestart is not null)
             Log($"[App] Recovering {plannedRestart.Sessions.Count} session(s) from planned restart {plannedRestart.RunId}");
+
+        // Node identity before any provider exists: work is attributed to this node from the start.
+        Nodes = NodeRegistry.Open(NodeIdentityStore.DefaultDirectory, RedComputeServiceDescriptor.AppVersion, s => Log(s));
+        Log($"[App] Node zero: {Nodes.LocalNodeId} ({Nodes.Local.MachineName})");
 
         ProviderDiscovery = new ProviderDiscovery(s => Log(s));
         ProviderDiscovery.ScanAssemblies();
@@ -324,7 +331,7 @@ public static class RedComputeHost
         _relayCts = new CancellationTokenSource();
         _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger,
             ConfigManager, HardwareMonitor, ProviderConfig, QualityModes,
-            (msg, jobId) => Log(msg, jobId));
+            (msg, jobId) => Log(msg, jobId), Nodes);
 
         try
         {

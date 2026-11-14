@@ -23,6 +23,7 @@ using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
+using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.SessionTitles;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Sessions;
@@ -39,6 +40,7 @@ public class RelayServer
     private readonly LoggingService _logger;
     private readonly ConfigManager _configManager;
     private readonly HardwareMonitorService _hardwareMonitor;
+    private readonly NodeRegistry? _nodes;
     private readonly DockerContainerService _docker;
     private readonly QualityModeService _qualityModes;
     private readonly ProviderConfigService _providerConfig;
@@ -60,8 +62,9 @@ public class RelayServer
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
         HardwareMonitorService hardwareMonitor, ProviderConfigService providerConfig,
-        QualityModeService qualityModes, Action<string, Guid?> log)
+        QualityModeService qualityModes, Action<string, Guid?> log, NodeRegistry? nodes = null)
     {
+        _nodes = nodes;
         _config = config;
         _registry = registry;
         _jobTracker = jobTracker;
@@ -343,6 +346,8 @@ public class RelayServer
         GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger);
         UsageEndpoints.Map(registry, new UsageCountsService());
         HardwareEndpoints.Map(registry, _hardwareMonitor);
+        if (_nodes is not null)
+            NodeEndpoints.Map(registry, _nodes, _registry, _hardwareMonitor);
         SettingsEndpoints.Map(registry, _configManager, _registry, _providerConfig);
 
         SuiteTelemetryEndpoints.Map(registry);
