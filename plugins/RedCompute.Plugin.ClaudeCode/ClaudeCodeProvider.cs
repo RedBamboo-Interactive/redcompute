@@ -59,7 +59,15 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _jobTracker = jobTracker;
 
         using (var db = new ClaudeDbContext()) { db.Initialize(); }
-        _store = new ClaudeSessionStore();
+        var runtimeOwner = RuntimeOwnerOf(config);
+        if (runtimeOwner is not null)
+        {
+            // Before the service recovers: rows from before owners existed come home first.
+            var adopted = ClaudeSessionStore.AdoptLegacySessions(runtimeOwner, [config.EntitySlug, config.EntityId]);
+            if (adopted > 0)
+                log($"[Claude] Dedicated provider '{runtimeOwner}' adopted {adopted} earlier session(s) of its entity", null);
+        }
+        _store = new ClaudeSessionStore(runtimeOwner);
         var claudeConfig = BuildConfig(config);
         _claude = new ClaudeSessionService(
             claudeConfig, jobTracker, _store, qualityModes,
@@ -68,6 +76,16 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _claude.LaunchGate = _cliVersionManager;
         WireSessionEvents();
     }
+
+    /// <summary>
+    /// The instance that owns a session row: a dedicated provider entity's slug, the key it is
+    /// registered under, or null for the shared instance every other Claude profile runs on.
+    /// </summary>
+    internal static string? RuntimeOwnerOf(ProviderConfig config)
+        => string.Equals(config.RuntimeBinding, "dedicated", StringComparison.OrdinalIgnoreCase)
+           && !string.IsNullOrWhiteSpace(config.EntitySlug)
+            ? config.EntitySlug.Trim()
+            : null;
 
     /// <summary>Test seam: binds the provider to an existing service and store.</summary>
     internal ClaudeCodeProvider(string capabilitySlug, ClaudeSessionService claude,

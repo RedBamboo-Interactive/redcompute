@@ -26,6 +26,13 @@ public class ClaudeSessionRecord
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }
     /// <summary>
+    /// The Claude provider instance that runs this session: a dedicated provider's slug, or null for
+    /// the shared instance. Several instances share claude.db, and each claims only its own rows, so a
+    /// dedicated account's session is never resumed under another instance's binary. Written once at
+    /// insert by <see cref="ClaudeSessionStore"/>; saving a session never changes it.
+    /// </summary>
+    public string? RuntimeOwner { get; set; }
+    /// <summary>
     /// Provider-native developer instructions supplied when the session was created. Reapplied
     /// as <c>--append-system-prompt</c> on every CLI launch for this session (start and resume).
     /// </summary>

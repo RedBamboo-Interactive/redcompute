@@ -103,8 +103,7 @@ public static class UnifiedSessionEndpoints
         {
             // A rename or requested title update outranks the provider's own title everywhere.
             _titles?.Apply(session);
-            var provider = registry.FindProviders<ISessionProvider>().FirstOrDefault(candidate =>
-                string.Equals(candidate.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase));
+            var provider = FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id);
             session.SupportsSteering = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsSteering) == true;
             session.SupportsRollback = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsRollback) == true
                 && provider.SupportsRollback(session.Id);
@@ -129,8 +128,7 @@ public static class UnifiedSessionEndpoints
         // unaffected.
         IReadOnlyList<PendingSessionQuestion> PendingQuestions(UnifiedSessionInfo session)
         {
-            var provider = registry.FindProviders<ISessionProvider>().FirstOrDefault(candidate =>
-                string.Equals(candidate.ProviderId, session.Provider, StringComparison.OrdinalIgnoreCase));
+            var provider = FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id);
             try
             {
                 return provider?.GetPendingQuestions(session.Id) ?? [];
@@ -3065,8 +3063,28 @@ public static class UnifiedSessionEndpoints
         return null;
     }
 
-    /// <summary>The owning provider and the session's metadata; never reads the transcript.</summary>
-    private static (ISessionProvider? provider, UnifiedSessionInfo? info)
+    /// <summary>
+    /// The provider instance that runs <paramref name="sessionId"/> among those reporting
+    /// <paramref name="providerId"/>. A dedicated instance shares its provider id with the shared one
+    /// (both are <c>claude-code</c>), so when several match only the one that knows the session owns
+    /// it. One match is returned as is, without a lookup.
+    /// </summary>
+    internal static ISessionProvider? FindSessionOwner(
+        IEnumerable<ISessionProvider> providers, string? providerId, string sessionId)
+    {
+        var matching = providers
+            .Where(candidate => string.Equals(candidate.ProviderId, providerId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return matching.Count <= 1
+            ? matching.FirstOrDefault()
+            : matching.FirstOrDefault(candidate => candidate.GetSessionInfo(sessionId) is not null);
+    }
+
+    /// <summary>
+    /// The owning provider and the session's metadata; never reads the transcript. Each provider
+    /// instance answers only for its own sessions, so the first answer is the owner's.
+    /// </summary>
+    internal static (ISessionProvider? provider, UnifiedSessionInfo? info)
         FindSessionAcrossProviders(CapabilityRegistry registry, string sessionId)
     {
         foreach (var provider in registry.FindProviders<ISessionProvider>())

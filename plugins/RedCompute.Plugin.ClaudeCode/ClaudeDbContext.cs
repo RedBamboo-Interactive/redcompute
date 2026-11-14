@@ -88,6 +88,15 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        // Nullable: every row written before dedicated instances were told apart belongs to the
+        // shared instance, except those a dedicated instance adopts by its entity at startup.
+        if (!columns.Contains("RuntimeOwner"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN RuntimeOwner TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         if (!columns.Contains("RepositoryId"))
         {
             using var alter = conn.CreateCommand();

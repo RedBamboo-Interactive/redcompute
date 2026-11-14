@@ -7,6 +7,66 @@ namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeSessionStore : IClaudeSessionStore
 {
+    private readonly string? _owner;
+
+    /// <summary>The store the shared Claude instance uses: rows with no runtime owner.</summary>
+    public ClaudeSessionStore() : this(null) { }
+
+    /// <summary>
+    /// A view of claude.db that holds only <paramref name="runtimeOwner"/>'s sessions (null = the
+    /// shared instance). Every session-row read is filtered and every inserted row is stamped, so two
+    /// provider instances never claim, recover, list or resume each other's sessions. Message reads go
+    /// by a session id the caller already owns.
+    /// </summary>
+    public ClaudeSessionStore(string? runtimeOwner)
+        => _owner = string.IsNullOrWhiteSpace(runtimeOwner) ? null : runtimeOwner.Trim();
+
+    public string? RuntimeOwner => _owner;
+
+    private IQueryable<ClaudeSessionRecord> Owned(ClaudeDbContext db)
+    {
+        var owner = _owner;
+        return owner is null
+            ? db.Sessions.Where(s => s.RuntimeOwner == null)
+            : db.Sessions.Where(s => s.RuntimeOwner == owner);
+    }
+
+    /// <summary>
+    /// Gives a dedicated instance the rows written for its provider entity before rows carried an
+    /// owner. Without it those sessions stay with the shared instance and resume on its account.
+    /// Returns the number of rows adopted.
+    /// </summary>
+    public static int AdoptLegacySessions(string runtimeOwner, IEnumerable<string?> entityReferences)
+    {
+        var references = entityReferences
+            .Where(reference => !string.IsNullOrWhiteSpace(reference))
+            .Select(reference => reference!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (string.IsNullOrWhiteSpace(runtimeOwner) || references.Count == 0) return 0;
+
+        using var db = new ClaudeDbContext();
+        var conn = db.Database.GetDbConnection();
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        var names = new List<string>();
+        for (var i = 0; i < references.Count; i++)
+        {
+            var parameter = cmd.CreateParameter();
+            parameter.ParameterName = $"$r{i}";
+            parameter.Value = references[i];
+            cmd.Parameters.Add(parameter);
+            names.Add(parameter.ParameterName);
+        }
+        var owner = cmd.CreateParameter();
+        owner.ParameterName = "$owner";
+        owner.Value = runtimeOwner.Trim();
+        cmd.Parameters.Add(owner);
+        cmd.CommandText = "UPDATE Sessions SET RuntimeOwner = $owner WHERE RuntimeOwner IS NULL "
+            + $"AND ProviderEntity COLLATE NOCASE IN ({string.Join(", ", names)})";
+        return cmd.ExecuteNonQuery();
+    }
+
     private static AiSessionSnapshot ToSnapshot(ClaudeSessionRecord r) => new()
     {
         Provider = "claude-code",
@@ -67,19 +127,19 @@ public class ClaudeSessionStore : IClaudeSessionStore
     {
         using var db = new ClaudeDbContext();
         // Read-only: the context is disposed on return, so tracking the row would buy nothing.
-        return db.Sessions.AsNoTracking().FirstOrDefault(s => s.Id == sessionId);
+        return Owned(db).AsNoTracking().FirstOrDefault(s => s.Id == sessionId);
     }
 
     public ClaudeSessionRecord? FindSessionByJobId(Guid jobId)
     {
         using var db = new ClaudeDbContext();
-        return db.Sessions.FirstOrDefault(s => s.JobId == jobId);
+        return Owned(db).FirstOrDefault(s => s.JobId == jobId);
     }
 
     public List<ClaudeSessionRecord> GetActiveSessions()
     {
         using var db = new ClaudeDbContext();
-        return db.Sessions
+        return Owned(db)
             .Where(s => s.Status == "Active" || s.Status == "Idle" || s.Status == "Starting")
             .ToList();
     }
@@ -87,7 +147,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     public List<ClaudeSessionRecord> GetStrandedIdleExitSessions()
     {
         using var db = new ClaudeDbContext();
-        return db.Sessions
+        return Owned(db)
             .Where(s => s.Status == "Error" && s.StopReason == "completed")
             .ToList();
     }
@@ -95,7 +155,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     public List<ClaudeSessionRecord> GetSessionsWithBackgroundTasks()
     {
         using var db = new ClaudeDbContext();
-        return db.Sessions
+        return Owned(db)
             .Where(s => s.BackgroundTasksJson != null && s.BackgroundTasksJson != "" && s.BackgroundTasksJson != "[]")
             .ToList();
     }
@@ -113,7 +173,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     public List<ClaudeSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false)
     {
         using var db = new ClaudeDbContext();
-        var query = db.Sessions.Where(s => !excludeIds.Contains(s.Id));
+        var query = Owned(db).Where(s => !excludeIds.Contains(s.Id));
         if (!includeDismissed) query = query.Where(s => !s.Dismissed);
         return query
             .OrderByDescending(s => s.StartedAt)
@@ -127,6 +187,9 @@ public class ClaudeSessionStore : IClaudeSessionStore
         var existing = db.Sessions.Find(record.Id);
         if (existing != null)
         {
+            // Another instance's row: never write over it, and never move it.
+            if (!string.Equals(existing.RuntimeOwner, _owner, StringComparison.Ordinal)) return;
+
             existing.ProjectName = record.ProjectName;
             existing.ProjectPath = record.ProjectPath;
             existing.ScratchDirectory = record.ScratchDirectory;
@@ -168,6 +231,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         }
         else
         {
+            record.RuntimeOwner = _owner;
             db.Sessions.Add(record);
         }
         db.SaveChanges();
@@ -177,7 +241,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     public void DismissSession(string sessionId)
     {
         using var db = new ClaudeDbContext();
-        var record = db.Sessions.Find(sessionId);
+        var record = Owned(db).FirstOrDefault(s => s.Id == sessionId);
         if (record != null)
         {
             record.Dismissed = true;
@@ -258,7 +322,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
     {
         var jobIdSet = new HashSet<Guid>(jobIds);
         using var db = new ClaudeDbContext();
-        return db.Sessions
+        return Owned(db)
             .Where(s => s.JobId != null && jobIdSet.Contains(s.JobId.Value))
             .Select(s => new { s.JobId, s.Status })
             .ToList()

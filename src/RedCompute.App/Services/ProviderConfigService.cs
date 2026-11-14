@@ -503,10 +503,13 @@ public class ProviderConfigService
 
     // ---- entity → ProviderConfig mapping -------------------------------------------------------
 
-    private static string? FindMatchingProviderName(CapabilityConfig cap, string entityType, ProviderEntityConfig entity)
+    internal static string? FindMatchingProviderName(CapabilityConfig cap, string entityType, ProviderEntityConfig entity)
     {
+        // A dedicated instance is its own entity's runtime, never a shared profile's: matching a
+        // shared entity onto it would rewrite its identity and account settings.
         var matches = cap.Providers
-            .Where(p => string.Equals(p.Value.Type, entityType, StringComparison.OrdinalIgnoreCase))
+            .Where(p => string.Equals(p.Value.Type, entityType, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(p.Value.RuntimeBinding, "dedicated", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (matches.Count == 1) return matches[0].Key;
