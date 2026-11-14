@@ -1,0 +1,31 @@
+{
+  "argumentList": [
+    "run",
+    "--format",
+    "json",
+    "--auto",
+    "-m",
+    "golden/model"
+  ],
+  "containment": "session:opencode-exec",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=3",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentChanges": {
+    "GOLDEN_EXEC_ENV": "1",
+    "XDG_DATA_HOME": "<root>\\opencode-data"
+  },
+  "environmentTouched": true,
+  "fileName": "<root>\\cli\\opencode.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "opencode.LaunchExecProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\project"
+}

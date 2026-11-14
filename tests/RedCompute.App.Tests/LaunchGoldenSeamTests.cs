@@ -8,6 +8,7 @@ using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
 using RedCompute.Plugin.ComfyUI;
 using RedCompute.Plugin.LocalWsl;
+using RedCompute.Plugin.OpenCode;
 using RedCompute.PluginSdk;
 using Xunit;
 
@@ -191,6 +192,104 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         BackendPort = 18998,
         StartupTimeoutSeconds = 5,
     };
+
+    // ---- through the start seams: the same goldens, captured where StartAsync hands them over ------------
+
+    [Theory]
+    [InlineData("A-comfyui-start-native", false)]
+    [InlineData("A-comfyui-start-wsl", true)]
+    public async Task ComfyUI_start_through_its_seam(string golden, bool wsl)
+    {
+        // Before launching, StartAsync only probes 127.0.0.1:18999 over HTTP; the seam spawns nothing.
+        var provider = new ComfyUIProvider(ComfyConfig(wsl), "image-gen", _ => { })
+        {
+            LaunchServerProcess = start => { Capture(start); return null; },
+        };
+        Assert.False(await provider.StartAsync());
+        Verify(golden, "comfyui.server", "none");
+    }
+
+    /// <summary>
+    /// Native only: in WSL mode StartAsync first resolves the distro's address by running
+    /// wsl.exe, a real process outside this harness. The WSL start info is pinned by the
+    /// builder golden above.
+    /// </summary>
+    [Fact]
+    public async Task LocalWsl_native_start_through_its_seam()
+    {
+        var provider = new LocalWslProvider(LocalWslConfig(wsl: false), "tts", _ => { })
+        {
+            LaunchServerProcess = start => { Capture(start); return null; },
+        };
+        Assert.False(await provider.StartAsync());
+        Verify("A-localwsl-start-native", "localwsl.server", "none");
+    }
+
+    // ---- OpenCode, through the seams added in node zero (G0b) -----------------------------------------
+
+    [Fact]
+    public async Task OpenCode_acp_session()
+    {
+        var service = OpenCode();
+        service.LaunchAcpProcess = start => { Capture(start); return null; };
+        try
+        {
+            using (SessionScratch.PushExecutionToken(Token))
+                await service.StartSession(_project, null, "owner", null, null, null, null, null, null, null,
+                    null, null, Provenance(), _scratch);
+        }
+        catch (NullReferenceException)
+        {
+            // The ACP launch dereferences the process it was handed; a capturing seam hands none.
+        }
+        ProcessStartInfo start;
+        lock (_launches) start = Assert.Single(_launches);
+        // The access note of the default level is written for the new session and named in
+        // OPENCODE_CONFIG_CONTENT (as in B-opencode-acp): record that file, then delete exactly it.
+        var config = JsonNode.Parse(start.Environment["OPENCODE_CONFIG_CONTENT"]!)!;
+        var instructions = config["instructions"]!.AsArray().Single()!.GetValue<string>();
+        _normalizer.Add(Path.GetFileNameWithoutExtension(instructions), "<session-id>");
+        var golden = LaunchGoldens.FromStartInfo(start, "opencode.LaunchAcpProcess", "session:opencode", _normalizer);
+        golden["instructionFile"] = _normalizer.Apply(File.ReadAllText(instructions));
+        File.Delete(instructions);
+        LaunchGoldens.Verify("A-opencode-acp", golden);
+    }
+
+    [Fact]
+    public async Task OpenCode_exec()
+    {
+        var service = OpenCode();
+        service.LaunchExecProcess = start => { Capture(start); return null; };
+        await service.ExecuteAsync("golden prompt", null, _project, "golden/model", 60, CancellationToken.None,
+            env: new Dictionary<string, string> { ["GOLDEN_EXEC_ENV"] = "1" });
+        Verify("A-opencode-exec", "opencode.LaunchExecProcess", "session:opencode-exec");
+    }
+
+    [WindowsFact("containment is a Windows Job Object")]
+    public async Task Node_zero_seam_defaults_contain_as_recorded()
+    {
+        var seams = new JsonObject
+        {
+            ["opencode.LaunchAcpProcess"] = await ContainmentOf(OpenCode().LaunchAcpProcess),
+            ["opencode.LaunchExecProcess"] = await ContainmentOf(OpenCode().LaunchExecProcess),
+            ["comfyui.LaunchServerProcess"] = await ContainmentOf(
+                new ComfyUIProvider(ComfyConfig(false), "image-gen", _ => { }).LaunchServerProcess),
+            ["localwsl.LaunchServerProcess"] = await ContainmentOf(
+                new LocalWslProvider(LocalWslConfig(false), "tts", _ => { }).LaunchServerProcess),
+        };
+        LaunchGoldens.Verify("A-seam-defaults-node-zero", seams);
+    }
+
+    private OpenCodeSessionService OpenCode()
+    {
+        var path = Path.Combine(_root, "cli", "opencode.exe");
+        File.WriteAllText(path, "seam only, never executed");
+        var dataHome = Path.Combine(_root, "opencode-data");
+        Directory.CreateDirectory(dataHome);
+        return new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path, OpenCodeDataHome = dataHome },
+            new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), new LaunchGoldenProcessTests.GoldenOpenCodeStore(),
+            (_, _) => { });
+    }
 
     // ---- CLI version manager: the npm runner's start info ---------------------------------------------
 

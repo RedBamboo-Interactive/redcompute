@@ -1,0 +1,6 @@
+{
+  "comfyui.LaunchServerProcess": "none",
+  "localwsl.LaunchServerProcess": "none",
+  "opencode.LaunchAcpProcess": "session:opencode",
+  "opencode.LaunchExecProcess": "session:opencode-exec"
+}
