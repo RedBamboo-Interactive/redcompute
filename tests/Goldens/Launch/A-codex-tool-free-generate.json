@@ -1,0 +1,52 @@
+{
+  "argumentList": [
+    "exec",
+    "-",
+    "--json",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "read-only",
+    "-c",
+    "model_reasoning_effort=\"low\"",
+    "--model",
+    "gpt-golden",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--disable",
+    "enable_request_compression",
+    "-c",
+    "model_provider=\"redcompute_tool_free\"",
+    "-c",
+    "model_providers.redcompute_tool_free.name=\"RedCompute tool-free relay\"",
+    "-c",
+    "model_providers.redcompute_tool_free.base_url=\"<relay-base-url>\"",
+    "-c",
+    "model_providers.redcompute_tool_free.wire_api=\"responses\"",
+    "-c",
+    "model_providers.redcompute_tool_free.requires_openai_auth=true",
+    "-c",
+    "model_providers.redcompute_tool_free.request_max_retries=0",
+    "-c",
+    "model_providers.redcompute_tool_free.stream_max_retries=0",
+    "-c",
+    "model_providers.redcompute_tool_free.stream_idle_timeout_ms=120000"
+  ],
+  "containment": "session:codex-exec",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentTouched": false,
+  "fileName": "<root>\\cli\\codex.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "codex.LaunchExecProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<isolated-cwd>"
+}

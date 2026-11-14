@@ -1,0 +1,47 @@
+{
+  "argumentList": [
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--permission-mode",
+    "plan",
+    "--allow-dangerously-skip-permissions",
+    "--permission-prompt-tool",
+    "stdio",
+    "--thinking-display",
+    "summarized",
+    "--model",
+    "claude-golden-model",
+    "--effort",
+    "high"
+  ],
+  "containment": "session:claude-code",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentChanges": {
+    "REDLEAF_EXECUTION_TOKEN": "golden-execution-token",
+    "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+    "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+    "TEMP": "<root>\\scratch",
+    "TMP": "<root>\\scratch",
+    "TMPDIR": "<root>\\scratch"
+  },
+  "environmentTouched": true,
+  "fileName": "<root>\\cli\\claude.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "claude.LaunchSessionProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\project"
+}

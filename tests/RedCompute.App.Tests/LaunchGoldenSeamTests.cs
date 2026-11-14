@@ -85,6 +85,21 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         Verify("A-claude-session-start", "claude.LaunchSessionProcess", "session:claude-code");
     }
 
+    [Theory]
+    [InlineData(SessionAccessLevels.Plan)]
+    [InlineData(SessionAccessLevels.Ask)]
+    [InlineData(SessionAccessLevels.Auto)]
+    [InlineData(SessionAccessLevels.Full)]
+    public async Task Claude_session_start_at_access_level(string level)
+    {
+        var service = Claude(new ClaudeDeveloperInstructionsTests.MemoryStore());
+        using (SessionAccessScope.Push(new SessionAccessState(level)))
+        using (SessionScratch.PushExecutionToken(Token))
+            await service.StartSessionAsync(_project, "claude-golden-model", "owner", null, null, "high", null, null,
+                null, Provenance(), scratchDirectory: _scratch);
+        Verify($"A-claude-session-start-{level}", "claude.LaunchSessionProcess", "session:claude-code");
+    }
+
     [Fact]
     public async Task Claude_session_resume()
     {
@@ -265,6 +280,37 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         Verify("A-opencode-exec", "opencode.LaunchExecProcess", "session:opencode-exec");
     }
 
+    /// <summary>At Full there is no access note, so no instruction file and no OPENCODE_CONFIG_CONTENT.</summary>
+    [Fact]
+    public async Task OpenCode_acp_session_at_full()
+    {
+        var service = OpenCode();
+        service.LaunchAcpProcess = start => { Capture(start); return null; };
+        try
+        {
+            using (SessionAccessScope.Push(new SessionAccessState(SessionAccessLevels.Full)))
+            using (SessionScratch.PushExecutionToken(Token))
+                await service.StartSession(_project, null, "owner", null, null, null, null, null, null, null,
+                    null, null, Provenance(), _scratch);
+        }
+        catch (NullReferenceException)
+        {
+            // The ACP launch dereferences the process it was handed; a capturing seam hands none.
+        }
+        Verify("A-opencode-acp-full", "opencode.LaunchAcpProcess", "session:opencode");
+    }
+
+    [Fact]
+    public async Task OpenCode_exec_docker()
+    {
+        // Docker exec refuses a configured OpenCodeDataHome, so this service has none.
+        var service = OpenCode(dataHome: false);
+        service.LaunchExecProcess = start => { Capture(start); return null; };
+        await service.ExecuteAsync("golden prompt", "golden-container", _project, "golden/model", 60,
+            CancellationToken.None, env: new Dictionary<string, string> { ["GOLDEN_EXEC_ENV"] = "1" });
+        Verify("A-opencode-exec-docker", "opencode.LaunchExecProcess", "session:opencode-exec");
+    }
+
     [WindowsFact("containment is a Windows Job Object")]
     public async Task Node_zero_seam_defaults_contain_as_recorded()
     {
@@ -280,13 +326,13 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         LaunchGoldens.Verify("A-seam-defaults-node-zero", seams);
     }
 
-    private OpenCodeSessionService OpenCode()
+    private OpenCodeSessionService OpenCode(bool dataHome = true)
     {
         var path = Path.Combine(_root, "cli", "opencode.exe");
         File.WriteAllText(path, "seam only, never executed");
-        var dataHome = Path.Combine(_root, "opencode-data");
-        Directory.CreateDirectory(dataHome);
-        return new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path, OpenCodeDataHome = dataHome },
+        var home = dataHome ? Path.Combine(_root, "opencode-data") : null;
+        if (home != null) Directory.CreateDirectory(home);
+        return new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path, OpenCodeDataHome = home },
             new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), new LaunchGoldenProcessTests.GoldenOpenCodeStore(),
             (_, _) => { });
     }

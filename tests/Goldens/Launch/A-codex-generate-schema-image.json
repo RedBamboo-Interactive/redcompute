@@ -1,0 +1,38 @@
+{
+  "argumentList": [
+    "exec",
+    "-",
+    "--json",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "read-only",
+    "-c",
+    "model_reasoning_effort=\"low\"",
+    "--model",
+    "gpt-golden",
+    "--output-schema",
+    "<schema-dir>\\output-schema.json",
+    "--image=<image-dir>\\image-1.png"
+  ],
+  "containment": "session:codex-exec",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentTouched": false,
+  "fileName": "<root>\\cli\\codex.exe",
+  "files": {
+    "image": "89504E47",
+    "schema": "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false}"
+  },
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "codex.LaunchExecProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<isolated-cwd>"
+}

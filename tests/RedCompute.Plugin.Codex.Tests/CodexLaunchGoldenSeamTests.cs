@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Sessions;
 using RedCompute.Plugin.Codex;
 using RedCompute.PluginSdk;
 using Xunit;
@@ -101,6 +103,60 @@ public sealed class CodexLaunchGoldenSeamTests : IDisposable
         Verify("A-codex-generate", "codex.LaunchExecProcess", "session:codex-exec", isolatedCwd: true);
     }
 
+    /// <summary>
+    /// A strict response schema and an image are written to their own isolated directories outside the
+    /// empty working directory, and named on the command line. Their contents are part of the launch.
+    /// </summary>
+    [Fact]
+    public async Task Codex_generate_with_schema_and_image()
+    {
+        var (_, exec) = Services(capture: false);
+        var files = new JsonObject();
+        exec.LaunchExecProcess = start =>
+        {
+            Capture(start);
+            var schema = start.ArgumentList[start.ArgumentList.IndexOf("--output-schema") + 1];
+            var image = start.ArgumentList.Single(a => a.StartsWith("--image=", StringComparison.Ordinal))["--image=".Length..];
+            _normalizer.Add(Path.GetDirectoryName(schema), "<schema-dir>").Add(Path.GetDirectoryName(image), "<image-dir>");
+            files["schema"] = File.ReadAllText(schema);
+            files["image"] = Convert.ToHexString(File.ReadAllBytes(image));
+            return null;
+        };
+        using var schemaJson = JsonDocument.Parse(
+            "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false}");
+        Assert.True(ResponseSchema.TryParse(schemaJson.RootElement, out var schema, out var errors), string.Join("; ", errors));
+        await exec.ExecuteGenerateAsync("golden prompt", "gpt-golden", 60, CancellationToken.None, "low", schema,
+            [new GenerateImage("image/png", [0x89, 0x50, 0x4E, 0x47], 1, 1, "golden-sha")]);
+        Verify("A-codex-generate-schema-image", "codex.LaunchExecProcess", "session:codex-exec", isolatedCwd: true,
+            extra: golden => golden["files"] = files);
+    }
+
+    /// <summary>The tool-free generate points Codex at a loopback relay lease; its URL is per lease.</summary>
+    [Fact]
+    public async Task Codex_tool_free_generate()
+    {
+        await using var relay = new CodexToolFreeRelay((_, _) => { }, new RefuseUpstream(),
+            new Uri("https://upstream.invalid/"), new Uri("https://upstream.invalid/v1/"));
+        var (_, exec) = Services(capture: false);
+        exec.ToolFreeRelay = relay;
+        exec.LaunchExecProcess = start =>
+        {
+            Capture(start);
+            const string prefix = "model_providers.redcompute_tool_free.base_url=";
+            var url = start.ArgumentList.Single(a => a.StartsWith(prefix, StringComparison.Ordinal))[prefix.Length..].Trim('"');
+            _normalizer.Add(url.TrimEnd('/'), "<relay-base-url>");
+            return null;
+        };
+        await exec.ExecuteToolFreeGenerateAsync("golden prompt", "gpt-golden", 60, CancellationToken.None, "low");
+        Verify("A-codex-tool-free-generate", "codex.LaunchExecProcess", "session:codex-exec", isolatedCwd: true);
+    }
+
+    private sealed class RefuseUpstream : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => throw new InvalidOperationException("the launch goldens never reach an upstream");
+    }
+
     private (CodexInteractiveService Interactive, CodexSessionService Exec) Services(bool capture = true)
     {
         var jobs = new CodexLaunchGoldenProcessTests.GoldenJobTracker();
@@ -122,14 +178,17 @@ public sealed class CodexLaunchGoldenSeamTests : IDisposable
         lock (_launches) _launches.Add(start);
     }
 
-    private void Verify(string golden, string seam, string containment, bool isolatedCwd = false)
+    private void Verify(string golden, string seam, string containment, bool isolatedCwd = false,
+        Action<JsonObject>? extra = null)
     {
         ProcessStartInfo start;
         lock (_launches) start = Assert.Single(_launches);
         // A generate runs in a fresh isolated directory: its name is the only run-specific part.
         if (isolatedCwd && !string.IsNullOrEmpty(start.WorkingDirectory))
             _normalizer.Add(start.WorkingDirectory, "<isolated-cwd>");
-        LaunchGoldens.Verify(golden, LaunchGoldens.FromStartInfo(start, seam, containment, _normalizer));
+        var canonical = LaunchGoldens.FromStartInfo(start, seam, containment, _normalizer);
+        extra?.Invoke(canonical);
+        LaunchGoldens.Verify(golden, canonical);
     }
 
     private static JobProvenance Provenance() => JobProvenance.DirectRedCompute(

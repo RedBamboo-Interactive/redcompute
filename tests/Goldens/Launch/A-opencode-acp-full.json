@@ -1,0 +1,32 @@
+{
+  "argumentList": [
+    "acp"
+  ],
+  "containment": "session:opencode",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": null,
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentChanges": {
+    "OPENCODE_PERMISSION": "{\"bash\":\"ask\",\"webfetch\":\"ask\",\"websearch\":\"ask\",\"external_directory\":\"ask\"}",
+    "REDLEAF_EXECUTION_TOKEN": "golden-execution-token",
+    "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+    "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+    "TEMP": "<root>\\scratch",
+    "TMP": "<root>\\scratch",
+    "TMPDIR": "<root>\\scratch",
+    "XDG_DATA_HOME": "<root>\\opencode-data"
+  },
+  "environmentTouched": true,
+  "fileName": "<root>\\cli\\opencode.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "opencode.LaunchAcpProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\project"
+}

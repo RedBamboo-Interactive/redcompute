@@ -1,0 +1,35 @@
+{
+  "argumentList": [
+    "exec",
+    "-i",
+    "-w",
+    "<root>\\project",
+    "-e",
+    "GOLDEN_EXEC_ENV=1",
+    "golden-container",
+    "opencode",
+    "run",
+    "--format",
+    "json",
+    "--auto",
+    "-m",
+    "golden/model"
+  ],
+  "containment": "session:opencode-exec",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=3",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentTouched": false,
+  "fileName": "docker",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "opencode.LaunchExecProcess",
+  "useShellExecute": false,
+  "workingDirectory": ""
+}
