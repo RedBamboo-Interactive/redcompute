@@ -1,0 +1,29 @@
+{
+  "args": [
+    "--print",
+    "golden prompt",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--max-turns",
+    "3",
+    "--permission-mode",
+    "dontAsk",
+    "--append-system-prompt",
+    "Permissions: this session runs at Ask. Nobody watches it, so anything that needs approval is denied at once. A denied tool or command without a reason was denied for that. The installation owner can change this in RedLeaf Settings > Agent permissions, or raise this session in its Info panel. Continue without it.",
+    "--thinking-display",
+    "summarized",
+    "--model",
+    "claude-golden-model",
+    "--effort",
+    "high",
+    "--allowed-tools",
+    "Read,Glob,Grep,Edit,Write,NotebookEdit"
+  ],
+  "cli": "claude",
+  "commandLine": "\"<root>\\cli\\claude.exe\" --print \"golden prompt\" --output-format stream-json --verbose --include-partial-messages --max-turns 3 --permission-mode dontAsk --append-system-prompt \"Permissions: this session runs at Ask. Nobody watches it, so anything that needs approval is denied at once. A denied tool or command without a reason was denied for that. The installation owner can change this in RedLeaf Settings > Agent permissions, or raise this session in its Info panel. Continue without it.\" --thinking-display summarized --model claude-golden-model --effort high --allowed-tools Read,Glob,Grep,Edit,Write,NotebookEdit",
+  "containment": "session:claude-code-agent",
+  "cwd": "<root>\\project",
+  "environmentChanges": {}
+}

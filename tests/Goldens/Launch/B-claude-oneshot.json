@@ -1,0 +1,30 @@
+{
+  "args": [
+    "-p",
+    "[User]: hello",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "claude-golden-model",
+    "--no-session-persistence",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--setting-sources",
+    "",
+    "--thinking-display",
+    "summarized",
+    "--system-prompt",
+    "be brief",
+    "--effort",
+    "low"
+  ],
+  "cli": "claude",
+  "commandLine": "\"<root>\\cli\\claude.exe\" -p \"[User]: hello\" --output-format stream-json --verbose --model claude-golden-model --no-session-persistence --tools \"\" --strict-mcp-config --mcp-config \"{\\\"mcpServers\\\":{}}\" --setting-sources \"\" --thinking-display summarized --system-prompt \"be brief\" --effort low",
+  "containment": "session:claude-code-oneshot",
+  "cwd": "<isolated-cwd>",
+  "environmentChanges": {}
+}

@@ -531,6 +531,9 @@
         "dependencies": {
           "RedCompute.Core": "[1.0.0, )"
         }
+      },
+      "redcompute.testprobe": {
+        "type": "Project"
       }
     },
     "net9.0/linux-x64": {

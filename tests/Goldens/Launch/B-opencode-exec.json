@@ -1,0 +1,18 @@
+{
+  "args": [
+    "run",
+    "--format",
+    "json",
+    "--auto",
+    "-m",
+    "golden/model"
+  ],
+  "cli": "opencode",
+  "commandLine": "\"<root>\\cli\\opencode.exe\" run --format json --auto -m golden/model",
+  "containment": "session:opencode-exec",
+  "cwd": "<root>\\project",
+  "environmentChanges": {
+    "GOLDEN_EXEC_ENV": "1",
+    "XDG_DATA_HOME": "<root>\\opencode-data"
+  }
+}

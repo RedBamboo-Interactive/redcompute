@@ -1,0 +1,34 @@
+{
+  "args": [
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--permission-mode",
+    "acceptEdits",
+    "--allow-dangerously-skip-permissions",
+    "--permission-prompt-tool",
+    "stdio",
+    "--thinking-display",
+    "summarized",
+    "--model",
+    "claude-golden-model",
+    "--effort",
+    "high"
+  ],
+  "cli": "claude",
+  "commandLine": "\"<root>\\cli\\claude.exe\" --output-format stream-json --verbose --input-format stream-json --include-partial-messages --replay-user-messages --permission-mode acceptEdits --allow-dangerously-skip-permissions --permission-prompt-tool stdio --thinking-display summarized --model claude-golden-model --effort high",
+  "containment": "session:claude-code",
+  "cwd": "<root>\\project",
+  "environmentChanges": {
+    "REDLEAF_EXECUTION_TOKEN": "golden-execution-token",
+    "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+    "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+    "TEMP": "<root>\\scratch",
+    "TMP": "<root>\\scratch",
+    "TMPDIR": "<root>\\scratch"
+  }
+}

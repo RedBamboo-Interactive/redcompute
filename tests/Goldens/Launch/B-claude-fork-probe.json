@@ -1,0 +1,33 @@
+{
+  "args": [
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--permission-mode",
+    "acceptEdits",
+    "--allow-dangerously-skip-permissions",
+    "--permission-prompt-tool",
+    "stdio",
+    "--thinking-display",
+    "summarized",
+    "--model",
+    "haiku",
+    "--effort",
+    "high",
+    "--resume",
+    "c1a0de00-0000-4000-8000-000000000001",
+    "--resume-session-at",
+    "11111111-1111-4111-8111-11111111aaaa",
+    "--resume-drops-turn",
+    "P2"
+  ],
+  "cli": "claude",
+  "commandLine": "\"<root>\\cli\\claude.exe\" --output-format stream-json --verbose --input-format stream-json --include-partial-messages --replay-user-messages --permission-mode acceptEdits --allow-dangerously-skip-permissions --permission-prompt-tool stdio --thinking-display summarized --model haiku --effort high --resume c1a0de00-0000-4000-8000-000000000001 --resume-session-at 11111111-1111-4111-8111-11111111aaaa --resume-drops-turn P2",
+  "containment": "none",
+  "cwd": "<root>\\project",
+  "environmentChanges": {}
+}

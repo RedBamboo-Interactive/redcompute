@@ -31,6 +31,8 @@
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.SttLocal\RedCompute.Plugin.SttLocal.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.DiarizationLocal\RedCompute.Plugin.DiarizationLocal.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenAILive\RedCompute.Plugin.OpenAILive.csproj" />
+    <!-- Stand-in CLI for the launch goldens; its apphost is copied beside the tests. -->
+    <ProjectReference Include="..\RedCompute.TestProbe\RedCompute.TestProbe.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\rebuild.ps1" Link="rebuild.ps1">
@@ -54,6 +56,7 @@
   <ItemGroup>
     <!-- Platform-aware test attributes and stand-in processes, shared by every test project. -->
     <Compile Include="..\Shared\PlatformFacts.cs" Link="Shared\PlatformFacts.cs" />
+    <Compile Include="..\Shared\LaunchGoldens.cs" Link="Shared\LaunchGoldens.cs" />
     <Using Include="RedCompute.Tests" />
   </ItemGroup>
 </Project>

@@ -14,6 +14,8 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Codex\RedCompute.Plugin.Codex.csproj" />
+    <!-- Stand-in CLI for the launch goldens; its apphost is copied beside the tests. -->
+    <ProjectReference Include="..\RedCompute.TestProbe\RedCompute.TestProbe.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\Fixtures\vision\*" LinkBase="Fixtures\vision">
@@ -23,6 +25,7 @@
   <ItemGroup>
     <!-- Platform-aware test attributes and stand-in processes, shared by every test project. -->
     <Compile Include="..\Shared\PlatformFacts.cs" Link="Shared\PlatformFacts.cs" />
+    <Compile Include="..\Shared\LaunchGoldens.cs" Link="Shared\LaunchGoldens.cs" />
     <Using Include="RedCompute.Tests" />
   </ItemGroup>
 </Project>

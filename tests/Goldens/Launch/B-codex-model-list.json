@@ -1,0 +1,12 @@
+[
+  {
+    "args": [
+      "app-server"
+    ],
+    "cli": "codex",
+    "commandLine": "\"<root>\\cli\\codex.exe\" app-server",
+    "containment": "session:codex",
+    "cwd": "<host-cwd>",
+    "environmentChanges": {}
+  }
+]

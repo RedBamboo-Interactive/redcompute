@@ -1,0 +1,38 @@
+{
+  "commandScript": "@echo off\r\n\"<root>\\cli\\server.exe\" --serve\r\n",
+  "entryScript": "@echo off\r\ncd /d \"<root>\\work\"\r\n\"%ComSpec%\" /d /c \"\"<root>\\long-lived-processes\\<id>.run.cmd\"\" < NUL >> \"<root>\\long-lived-processes\\<id>.log\" 2>&1\r\n",
+  "launch": {
+    "args": [
+      "--serve"
+    ],
+    "cwd": "<root>\\work",
+    "hostOnlyVariableInherited": false,
+    "overlay": "1",
+    "protected": true,
+    "sessionMember": false
+  },
+  "state": {
+    "command": "\"<root>\\cli\\server.exe\" --serve",
+    "description": "golden",
+    "environment": {
+      "GOLDEN_LONG_LIVED": "1"
+    },
+    "id": "<id>",
+    "lastLaunchedAt": "<volatile>",
+    "lastSeenAliveAt": "<volatile>",
+    "launchedVia": "desktop",
+    "logPath": "<root>\\long-lived-processes\\<id>.log",
+    "name": "golden server",
+    "ownerUserId": "user",
+    "pid": "<volatile>",
+    "processCreatedUtcTicks": "<volatile>",
+    "quickExits": 0,
+    "restart": "on-exit",
+    "restartCount": 0,
+    "sessionId": "session-1",
+    "source": "launched",
+    "startedAt": "2026-11-14T12:00:00+00:00",
+    "startedBy": "Nova",
+    "workingDirectory": "<root>\\work"
+  }
+}

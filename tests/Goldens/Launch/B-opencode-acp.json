@@ -1,0 +1,26 @@
+{
+  "args": [
+    "acp"
+  ],
+  "cli": "opencode",
+  "commandLine": "\"<root>\\cli\\opencode.exe\" acp",
+  "containment": "session:opencode",
+  "cwd": "<root>\\project",
+  "environmentChanges": {
+    "OPENCODE_CONFIG_CONTENT": "{\"instructions\":[\"<localappdata>\\\\RedCompute\\\\plugins\\\\opencode\\\\instructions\\\\<session-id>.md\"]}",
+    "OPENCODE_PERMISSION": "{\"bash\":\"ask\",\"webfetch\":\"ask\",\"websearch\":\"ask\",\"external_directory\":\"ask\"}",
+    "REDLEAF_EXECUTION_TOKEN": "golden-execution-token",
+    "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+    "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+    "TEMP": "<root>\\scratch",
+    "TMP": "<root>\\scratch",
+    "TMPDIR": "<root>\\scratch",
+    "XDG_DATA_HOME": "<root>\\opencode-data"
+  },
+  "instructionFiles": [
+    {
+      "content": "Permissions: this session runs at Ask. Anything that needs approval waits for a person and is denied if nobody approves it within 30 minutes. A denied tool or command without a reason was denied for that. The installation owner can change this in RedLeaf Settings > Agent permissions, or raise this session in its Info panel. Continue without it.",
+      "path": "<localappdata>\\RedCompute\\plugins\\opencode\\instructions\\<session-id>.md"
+    }
+  ]
+}

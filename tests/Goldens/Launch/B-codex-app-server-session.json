@@ -1,0 +1,19 @@
+[
+  {
+    "args": [
+      "app-server"
+    ],
+    "cli": "codex",
+    "commandLine": "\"<root>\\cli\\codex.exe\" app-server",
+    "containment": "session:codex",
+    "cwd": "<root>\\project",
+    "environmentChanges": {
+      "REDLEAF_EXECUTION_TOKEN": "golden-execution-token",
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    }
+  }
+]

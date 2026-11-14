@@ -1,0 +1,21 @@
+[
+  {
+    "args": [
+      "exec",
+      "-",
+      "--json",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "read-only",
+      "--model",
+      "gpt-golden"
+    ],
+    "cli": "codex",
+    "commandLine": "\"<root>\\cli\\codex.exe\" exec - --json --skip-git-repo-check --sandbox read-only --model gpt-golden",
+    "containment": "session:codex-exec",
+    "cwd": "<root>\\project",
+    "environmentChanges": {
+      "GOLDEN_EXEC_ENV": "1"
+    }
+  }
+]
