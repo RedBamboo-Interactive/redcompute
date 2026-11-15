@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using Microsoft.EntityFrameworkCore;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.Plugin.OpenCode;
 
@@ -14,9 +15,7 @@ public class OpenCodeDbContext : DbContext
 
     static OpenCodeDbContext()
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute", "plugins", "opencode");
+        var dir = ComputeStorage.Current.PluginDirectory("opencode");
         Directory.CreateDirectory(dir);
         DbPath = Path.Combine(dir, "opencode.db");
     }

@@ -6,14 +6,13 @@ using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Jobs;
 using RedCompute.PluginSdk;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Api.Endpoints;
 
 internal static class JobApiResponse
 {
-    public static readonly string OutputDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RedCompute", "outputs");
+    public static readonly string OutputDirectory = ComputeStorage.Current.Outputs;
 
     private const string StageDescription =
         "admitted=durably accepted but not invoked; waiting=Running while waiting for the provider/GPU and before its first progress signal; executing=the provider has emitted progress; completed, failed, cancelled, skipped, and timed_out mirror terminal outcomes.";

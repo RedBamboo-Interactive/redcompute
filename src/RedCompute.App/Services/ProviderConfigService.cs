@@ -5,6 +5,7 @@ using System.Text.Json;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Auth.Vault;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
 
@@ -41,9 +42,8 @@ public class ProviderConfigService
     private readonly HttpClient _http;
     private readonly Func<string?> _serviceToken;
 
-    private static readonly string CacheDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedCompute");
-    private static readonly string CachePath = Path.Combine(CacheDir, "entity-cache.json");
+    private static readonly string CachePath = ComputeStorage.Current.EntityCache;
+    private static readonly string CacheDir = Path.GetDirectoryName(CachePath)!;
 
     private readonly object _lock = new();
     private Dictionary<string, ProviderEntityConfig> _providers;

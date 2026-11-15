@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.Core.Sessions;
 
@@ -31,9 +32,7 @@ public static class PlannedRestartCheckpoint
 
     public static PlannedRestartData? Current => Volatile.Read(ref _current);
 
-    public static string DefaultPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RedCompute", "planned-restart.json");
+    public static string DefaultPath => ComputeStorage.Current.PlannedRestartCheckpoint;
 
     public static void Write(PlannedRestartData checkpoint, string? path = null)
     {

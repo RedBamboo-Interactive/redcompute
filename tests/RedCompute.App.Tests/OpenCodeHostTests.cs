@@ -348,5 +348,6 @@ public sealed class OpenCodeHostTests : IDisposable
         public string? GetEnvironmentVariable(string name)
             => variables.TryGetValue(name, out var value) ? value : inner.GetEnvironmentVariable(name);
         public string GetFolderPath(Environment.SpecialFolder folder) => inner.GetFolderPath(folder);
+        public string ComputeDataRoot => inner.ComputeDataRoot;
     }
 }

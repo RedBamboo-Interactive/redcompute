@@ -23,6 +23,12 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        if (!StorageStartupCheck.Run())
+        {
+            Shutdown(RedCompute.Core.Storage.ComputeStorage.ConfigurationErrorExitCode);
+            return;
+        }
+
         // The single-instance mutex is owned by this thread, which also releases it in OnExit.
         if (!RedComputeHost.TryEnterSingleInstance())
         {

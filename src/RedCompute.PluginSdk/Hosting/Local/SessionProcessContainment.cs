@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.PluginSdk.Hosting.Local;
 
@@ -60,9 +61,7 @@ internal static class SessionProcessContainment
     public static Func<int, long, bool>? IsProtected { get; set; }
 
     /// <summary>Where escapee ledgers survive a RedCompute restart.</summary>
-    public static string LedgerDirectory { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RedCompute", "session-processes");
+    public static string LedgerDirectory { get; set; } = ComputeStorage.Current.SessionProcesses;
 
     /// <summary>
     /// <see cref="Process.Start(ProcessStartInfo)"/>, then contain the new process. Containment

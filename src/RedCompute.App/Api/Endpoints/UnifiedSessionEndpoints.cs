@@ -3614,10 +3614,7 @@ public static class UnifiedSessionEndpoints
     /// <summary>A fresh, empty workspace for a conversation-only session, on the host it runs on.</summary>
     internal static string CreateConversationWorkspace(IExecutionHost host)
     {
-        var root = Path.Combine(
-            host.Platform.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute",
-            "conversation-sessions");
+        var root = host.PathRules.Combine(host.Platform.ComputeDataRoot, "conversation-sessions");
         host.Files.CreateDirectory(host.Path(root));
         var directory = Path.Combine(root, Guid.NewGuid().ToString("N"));
         host.Files.CreateDirectory(host.Path(directory));

@@ -8,6 +8,7 @@ using RedCompute.App.Data;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services.Jobs;
 
@@ -1101,7 +1102,7 @@ public class JobTrackingService : IJobTracker
         var cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays);
         var old = db.Jobs.Where(j => j.QueuedAt < cutoff).ToList();
         var ids = old.Select(j => j.Id).ToList();
-        var outputDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedCompute", "outputs");
+        var outputDir = ComputeStorage.Current.Outputs;
         foreach (var job in old)
         {
             if (job.OutputLocation != null && File.Exists(job.OutputLocation))

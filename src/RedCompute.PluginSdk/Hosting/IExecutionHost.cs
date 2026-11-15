@@ -351,7 +351,18 @@ public interface IHostPlatform
     bool CanLaunchLocalBackends { get; }
 
     string? GetEnvironmentVariable(string name);
+
+    /// <summary>
+    /// The OS folder itself. For RedCompute's own data use <see cref="ComputeDataRoot"/>; this is for
+    /// locations RedCompute does not own (CLI homes and installs).
+    /// </summary>
     string GetFolderPath(Environment.SpecialFolder folder);
+
+    /// <summary>
+    /// The root of RedCompute's persistent data on this host. Locally it is
+    /// <see cref="RedCompute.Core.Storage.ComputeStorage.Current"/>'s data root.
+    /// </summary>
+    string ComputeDataRoot { get; }
 }
 
 // ---- hardware ------------------------------------------------------------------------------------

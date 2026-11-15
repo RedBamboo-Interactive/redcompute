@@ -2,14 +2,13 @@ using System.IO;
 using System.Text.Json;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
 
 public class CapabilityManifestLoader
 {
-    private static readonly string UserCapabilitiesDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RedCompute", "capabilities");
+    private static readonly string UserCapabilitiesDir = ComputeStorage.Current.CapabilityOverrides;
 
     private static readonly string ShippedCapabilitiesDir = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..", "capabilities");

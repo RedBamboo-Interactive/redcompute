@@ -10,6 +10,9 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        if (!StorageStartupCheck.Run())
+            return RedCompute.Core.Storage.ComputeStorage.ConfigurationErrorExitCode;
+
         if (!RedComputeHost.TryEnterSingleInstance())
             return RedComputeHost.SecondInstanceExitCode;
 

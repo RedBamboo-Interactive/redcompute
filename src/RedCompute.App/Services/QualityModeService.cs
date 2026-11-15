@@ -4,6 +4,7 @@ using System.Text.Json;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
 
@@ -60,9 +61,7 @@ public class QualityModeService : IProviderQualityModeResolver
     private volatile bool _loadedFromRedLeaf;
     private volatile bool _loadedFromCache;
 
-    private static readonly string DefaultCachePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RedCompute", "quality-mode-cache.json");
+    private static readonly string DefaultCachePath = ComputeStorage.Current.QualityModeCache;
 
     public QualityModeService(RedComputeConfig config, Action<string, Guid?> log, ProviderConfigService providerConfig)
         : this(config, log, providerConfig,

@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using RedCompute.Core.Hardware;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.PluginSdk.Hosting.Local;
 
@@ -379,6 +380,7 @@ public sealed class LocalExecutionHost : IExecutionHost
         public bool CanLaunchLocalBackends => PlatformSupport.CanLaunchLocalBackends;
         public string? GetEnvironmentVariable(string name) => Environment.GetEnvironmentVariable(name);
         public string GetFolderPath(Environment.SpecialFolder folder) => Environment.GetFolderPath(folder);
+        public string ComputeDataRoot => ComputeStorage.Current.DataRoot;
     }
 
     /// <summary>

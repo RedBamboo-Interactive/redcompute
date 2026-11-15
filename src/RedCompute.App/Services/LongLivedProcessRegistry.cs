@@ -75,9 +75,8 @@ public sealed class LongLivedProcessRegistry : IDisposable
         if (monitor) _monitor = new Timer(_ => Tick(), null, TimeSpan.Zero, MonitorInterval);
     }
 
-    /// <summary>%LOCALAPPDATA%/RedCompute on <paramref name="host"/>.</summary>
-    public static string DefaultDirectory(IExecutionHost host) => Path.Combine(
-        host.Platform.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedCompute");
+    /// <summary>RedCompute's data root on <paramref name="host"/> (<c>%LOCALAPPDATA%/RedCompute</c> by default).</summary>
+    public static string DefaultDirectory(IExecutionHost host) => host.Platform.ComputeDataRoot;
 
     /// <summary>The reaper's guard: a process of a registered tree is never reaped by a session.</summary>
     public bool IsProtected(int pid, long createdUtcTicks)

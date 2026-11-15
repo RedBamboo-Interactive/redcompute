@@ -3,6 +3,7 @@ using System.IO;
 using Microsoft.EntityFrameworkCore;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Logging;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Data;
 
@@ -17,11 +18,8 @@ public class RedComputeDbContext : DbContext
 
     public RedComputeDbContext()
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute");
-        Directory.CreateDirectory(dir);
-        _dbPath = Path.Combine(dir, "redcompute.db");
+        _dbPath = ComputeStorage.Current.Database;
+        Directory.CreateDirectory(Path.GetDirectoryName(_dbPath)!);
     }
 
     public RedComputeDbContext(string dbPath)

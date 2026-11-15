@@ -1,14 +1,13 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
 
 public static class DefenderExclusionService
 {
-    private static readonly string MarkerPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RedCompute", ".defender-exclusions");
+    private static readonly string MarkerPath = ComputeStorage.Current.DefenderExclusionsMarker;
 
     private static readonly string[] ExcludedProcesses =
     [

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using Microsoft.Data.Sqlite;
 using RedCompute.Core.Sessions;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services.SessionTitles;
 
@@ -38,9 +39,7 @@ public sealed class SessionTitleStore
     public SessionTitleStore(string? databasePath = null)
     {
         var usePooling = databasePath is null;
-        databasePath ??= Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute", "redcompute.db");
+        databasePath ??= ComputeStorage.Current.Database;
         var directory = Path.GetDirectoryName(databasePath);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
         _connectionString = new SqliteConnectionStringBuilder

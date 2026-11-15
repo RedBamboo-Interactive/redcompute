@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services.Nodes;
 
@@ -30,8 +31,7 @@ public static class NodeIdentityStore
 {
     public const string FileName = "node.json";
 
-    public static string DefaultDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedCompute");
+    public static string DefaultDirectory => ComputeStorage.Current.NodeIdentityDirectory;
 
     public static NodeIdentityResult LoadOrCreate(string directory, Action<string> log,
         Func<DateTimeOffset>? clock = null)

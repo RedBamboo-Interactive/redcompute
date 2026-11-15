@@ -1,6 +1,7 @@
 using System.IO;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Auth.Vault;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
 
@@ -12,8 +13,7 @@ namespace RedCompute.App.Services;
 /// </summary>
 internal static class BadgeSigning
 {
-    internal static string SuiteDirectory { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite");
+    internal static string SuiteDirectory { get; } = ComputeStorage.Current.SuiteRoot;
 
     private static readonly Lazy<JwtOptions> LazyOptions = new(() =>
         BadgeSigningBootstrap.Resolve(SuiteDirectory, "redcompute",

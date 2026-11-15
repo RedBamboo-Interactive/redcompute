@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
 
@@ -333,9 +334,7 @@ internal sealed class SessionRollbackLedger
     public SessionRollbackLedger(string? databasePath = null)
     {
         var usePooling = databasePath is null;
-        databasePath ??= Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute", "redcompute.db");
+        databasePath ??= ComputeStorage.Current.Database;
         var directory = Path.GetDirectoryName(databasePath);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
         _connectionString = new SqliteConnectionStringBuilder

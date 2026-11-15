@@ -35,13 +35,14 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.PluginSdk.Hosting.Local.OwnedProcessKiller",
             "RedCompute.PluginSdk.Hosting.Local.SessionProcessContainment",
         ]),
-        // ---- RedCompute's own state under %LOCALAPPDATA%/RedCompute, on the server ---------------------
+        // ---- RedCompute's own state under its data root (%LOCALAPPDATA%/RedCompute by default) ----------
+        ("server state: the data root resolver (asks the OS for the default folder)", [
+            "RedCompute.Core.Storage.ComputeStorage",
+        ]),
         ("server state", [
             "RedCompute.App.Api.Endpoints.GenericCapabilityEndpoints",
             "RedCompute.App.Api.Endpoints.JobApiResponse",
-            "RedCompute.App.Api.Endpoints.SettingsEndpoints",
             "RedCompute.App.Data.RedComputeDbContext",
-            "RedCompute.App.Services.BadgeSigning",
             "RedCompute.App.Services.CapabilityManifestLoader",
             "RedCompute.App.Services.ConfigManager",
             "RedCompute.App.Services.DeploymentVerification",

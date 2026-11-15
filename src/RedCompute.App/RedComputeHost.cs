@@ -41,6 +41,8 @@ public static class RedComputeHost
         BufferCapacity = 4096,
         Persistence = LogPersistence,
     });
+    // TODO(phase-1A): FileLogger takes only an app name and writes %LOCALAPPDATA%\RedCompute\Logs.
+    // Pass ComputeStorage.Current.Logs once RedBamboo.AppHost accepts a log directory.
     public static FileLogger FileLogger { get; } = new("RedCompute");
     public static LoggingService Logger { get; private set; } = null!;
     public static ConfigManager ConfigManager { get; } = new();
@@ -96,6 +98,8 @@ public static class RedComputeHost
         ConfigManager.Load();
         ApplyCliArgs(args);
         Log("[App] Configuration loaded");
+        if (RedCompute.Core.Storage.ComputeStorage.Current.IsRelocated)
+            Log($"[App] Data root: {RedCompute.Core.Storage.ComputeStorage.Current.DataRoot} ({RedCompute.Core.Storage.ComputeStorage.DataRootVariable})");
         Log($"[App] Thread pool minimum: {_threadPoolFloor.Workers} workers, {_threadPoolFloor.CompletionPorts} completion ports");
 
         ProviderConfig = new ProviderConfigService(ConfigManager.Config, (msg, _) => Log(msg));

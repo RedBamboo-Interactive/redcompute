@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using Microsoft.EntityFrameworkCore;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -14,9 +15,7 @@ public class CodexDbContext : DbContext
 
     static CodexDbContext()
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute", "plugins", "codex");
+        var dir = ComputeStorage.Current.PluginDirectory("codex");
         Directory.CreateDirectory(dir);
         DbPath = Path.Combine(dir, "codex.db");
     }

@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Sessions;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
 
@@ -50,9 +51,7 @@ public sealed class InputAttachmentStore
     public InputAttachmentStore(RedComputeConfig config, string? root = null, string? databasePath = null)
     {
         _config = config;
-        _root = Path.GetFullPath(root ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute", "input-attachments"));
+        _root = Path.GetFullPath(root ?? ComputeStorage.Current.InputAttachments);
         Directory.CreateDirectory(_root);
         _databasePath = Path.GetFullPath(databasePath ?? Path.Combine(_root, "attachments.db"));
         _connectionString = new SqliteConnectionStringBuilder { DataSource = _databasePath, Pooling = false }.ToString();

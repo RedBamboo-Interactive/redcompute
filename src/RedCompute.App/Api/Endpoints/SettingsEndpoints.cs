@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Api.Endpoints;
 
@@ -209,12 +210,7 @@ public static class SettingsEndpoints
         };
     }
 
-    private static string GetConfigPath()
-    {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute", "config.json");
-    }
+    private static string GetConfigPath() => ComputeStorage.Current.ConfigFile;
 
     internal static bool IsRedLeafService(ClaimsPrincipal user)
         => user.Identity?.IsAuthenticated == true

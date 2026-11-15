@@ -2470,7 +2470,7 @@ public class OpenCodeSessionService
 
     /// <summary>
     /// Writes the instructions where OpenCode reads them, on the host
-    /// (<c>%LOCALAPPDATA%/RedCompute/plugins/opencode/instructions/&lt;session&gt;.md</c>), and names the
+    /// (<c>&lt;ComputeDataRoot&gt;/plugins/opencode/instructions/&lt;session&gt;.md</c>, by default under <c>%LOCALAPPDATA%/RedCompute</c>), and names the
     /// file first in <c>OPENCODE_CONFIG_CONTENT</c>, merged over the value the launch would otherwise
     /// carry: one already set in <paramref name="environment"/>, else the one inherited from the host.
     /// </summary>
@@ -2480,8 +2480,7 @@ public class OpenCodeSessionService
         if (string.IsNullOrWhiteSpace(developerInstructions)) return;
 
         var directory = host.PathRules.Combine(
-            host.Platform.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RedCompute", "plugins", "opencode", "instructions");
+            host.Platform.ComputeDataRoot, "plugins", "opencode", "instructions");
         host.Files.CreateDirectory(host.Path(directory));
         var path = host.PathRules.Combine(directory, $"{sessionId}.md");
         host.Files.WriteAllText(host.Path(path), developerInstructions, new UTF8Encoding(false));

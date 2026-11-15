@@ -30,6 +30,7 @@ using RedCompute.Core.Nodes;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 using RedCompute.PluginSdk.Hosting.Local;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Api;
 
@@ -107,10 +108,17 @@ public class RelayServer
             });
         });
         builder.Services.AddAppHostWebSocket();
-        builder.Services.AddAppHostTelemetry(opts => opts.AppName = "RedCompute");
+        var storage = ComputeStorage.Current;
+        builder.Services.AddAppHostTelemetry(opts =>
+        {
+            opts.AppName = "RedCompute";
+            opts.DbPath = storage.TelemetryDatabase;
+        });
 
-        var redSuiteDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RedSuite");
-        var googleAuth = SigningKeyPersistence.LoadGoogleOAuth(redSuiteDir);
+        var redSuiteDir = storage.SuiteRoot;
+        var googleAuth = GoogleTokenLocation.WithDirectory(
+            SigningKeyPersistence.LoadGoogleOAuth(redSuiteDir),
+            GoogleTokenLocation.Resolve(storage, OperatingSystem.IsLinux(), File.Exists));
         builder.Services.AddAppHostAuth(new AuthOptions
         {
             Jwt = BadgeSigning.Options,
@@ -478,6 +486,8 @@ public class RelayServer
         // Tunnel and autostart endpoints are skipped: the Leaf kernel owns the one tunnel
         // and the one autostart entry. The dormant tunnel service only satisfies the
         // discovery endpoint's signature.
+        // TODO(phase-1A): its default state file is %LOCALAPPDATA%\RedCompute\cloudflared-process.json
+        // (computed, never written while the tunnel stays dormant); the path constructor is internal to AppHost.
         var descriptor = new RedComputeServiceDescriptor(_config, _registry, RedComputeHost.LogService, registry);
         _app.MapAppHostEndpoints(descriptor, new CloudflareTunnelService(logger: null), "RedCompute",
             () => new RedBamboo.AppHost.Tunnel.TunnelConfig { Enabled = false },
