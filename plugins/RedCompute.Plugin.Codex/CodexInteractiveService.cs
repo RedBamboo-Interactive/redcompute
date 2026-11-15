@@ -939,8 +939,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         var networkAccess = full || info.AccessLevel == Core.Sessions.SessionAccessLevels.Auto;
         // Codex's Windows sandbox cannot enforce the tmp roots workspaceWrite adds by default ("split
         // writable root sets"), so without these two every command is refused and asks. The project
-        // stays the only writable root.
-        if (OperatingSystem.IsWindows())
+        // stays the only writable root. The session's execution host decides, as for the launch argv.
+        if (_host.Platform.IsWindows)
             return new
             {
                 type = "workspaceWrite",
