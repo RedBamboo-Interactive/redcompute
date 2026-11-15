@@ -30,6 +30,13 @@ public interface INodeRegistry
     /// <summary>The node with this id (or <see cref="LocalAlias"/>), or null when none is known.</summary>
     NodeDescriptor? Find(string nodeId);
 
+    /// <summary>
+    /// The id new rows are stamped with: <see cref="LocalNodeId"/> when it is persisted in
+    /// <c>node.json</c>, otherwise null. A run whose identity could not be persisted uses an id no
+    /// later run shares, so it never writes it: its rows stay NULL and read as <see cref="LegacyNodeId"/>.
+    /// </summary>
+    string? StampNodeId { get; }
+
     /// <summary>A stored node id as a real id: NULL (a row older than node ids) is the legacy node.</summary>
     string Resolve(string? storedNodeId) => storedNodeId ?? LegacyNodeId;
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using Microsoft.EntityFrameworkCore;
 using RedCompute.Core.Jobs;
@@ -30,11 +31,28 @@ public class RedComputeDbContext : DbContext
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
     }
 
+    /// <summary>
+    /// How long adding <c>Jobs.NodeId</c> took, when this <see cref="MigrateSchema"/> added it; null
+    /// when the column already existed. Logged at boot so the cost on a large live database is recorded.
+    /// </summary>
+    public TimeSpan? NodeIdColumnAddedIn { get; private set; }
+
     public void MigrateSchema()
     {
         var conn = Database.GetDbConnection();
         conn.Open();
         using var cmd = conn.CreateCommand();
+
+        // Nullable, no default, no CHECK, no index: SQLite rewrites only the schema text, never a
+        // row, whatever the table's size. Old rows read NULL, which means the legacy node.
+        cmd.CommandText = "ALTER TABLE Jobs ADD COLUMN NodeId TEXT";
+        var timer = Stopwatch.StartNew();
+        try
+        {
+            cmd.ExecuteNonQuery();
+            NodeIdColumnAddedIn = timer.Elapsed;
+        }
+        catch { /* column already exists */ }
         foreach (var col in new[]
         {
             ("Progress", "REAL"), ("ProviderStartedAt", "TEXT"), ("ResultJson", "TEXT"), ("Name", "TEXT"),

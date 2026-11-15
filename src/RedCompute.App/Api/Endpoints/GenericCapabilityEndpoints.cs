@@ -25,7 +25,7 @@ public static class GenericCapabilityEndpoints
 
     public static void Map(WebApplication app, EndpointRegistry endpoints, CapabilityRegistry registry,
         JobTrackingService jobTracker, Action<string, Guid?> log,
-        HardwareMonitorService? hardwareMonitor = null, RedComputeConfig? config = null)
+        HardwareMonitorService? hardwareMonitor = null, RedComputeConfig? config = null, INodeRegistry? nodes = null)
     {
         _hardwareMonitor = hardwareMonitor;
         _config = config;
@@ -316,7 +316,7 @@ public static class GenericCapabilityEndpoints
                     return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
                 if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
 
-                return Results.Ok(JobApiResponse.Progress(job));
+                return Results.Ok(JobApiResponse.Progress(job, nodes: nodes));
             });
             progressEndpoint
                 .WithParam("waitSeconds", "integer", description: "Server-side terminal long-poll duration. Returns immediately when terminal; otherwise waits until terminal or timeout. Clamped to 0..60; non-numeric values return 400.", defaultValue: 0, location: ParamLocation.Query)

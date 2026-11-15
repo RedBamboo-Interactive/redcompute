@@ -84,6 +84,7 @@ public sealed class NodeRegistry : INodeRegistry
 
     public string LocalNodeId => Identity.Identity.Id;
     public string LegacyNodeId => Identity.Identity.LegacyRowsNodeId;
+    public string? StampNodeId => Identity.Persisted ? LocalNodeId : null;
 
     public NodeDescriptor Local => new(
         LocalNodeId,

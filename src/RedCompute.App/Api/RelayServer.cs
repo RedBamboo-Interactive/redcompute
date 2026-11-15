@@ -343,7 +343,7 @@ public class RelayServer
         registry.MapAuthEndpoints();
 
         GlobalEndpoints.Initialize();
-        GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger);
+        GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger, _nodes);
         UsageEndpoints.Map(registry, new UsageCountsService());
         HardwareEndpoints.Map(registry, _hardwareMonitor);
         if (_nodes is not null)
@@ -433,7 +433,7 @@ public class RelayServer
         LongLivedProcessEndpoints.Map(registry, longLived);
         VoiceSessionEndpoints.Map(registry, _registry, _voiceSessions);
         _ = DetachedWork.Start(() => RunAttachmentCleanupAsync(ct));
-        GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config);
+        GenericCapabilityEndpoints.Map(_app, registry, _registry, _jobTracker, _log, _hardwareMonitor, _config, _nodes);
 
         RegisterWsEvents(broadcaster, transcriptPipeline, inputQueue);
         // Every loop below starts context-free (DetachedWork): none of its continuations can run on

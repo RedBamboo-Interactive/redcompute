@@ -40,6 +40,7 @@ public class JobTrackingService : IJobTracker
         AttemptCount = j.AttemptCount,
         LeaseOwner = j.LeaseOwner,
         LeaseExpiresAt = j.LeaseExpiresAt,
+        NodeId = j.NodeId,
         InputJson = "{}",
     };
     private readonly object _lock = new();
@@ -55,6 +56,12 @@ public class JobTrackingService : IJobTracker
         _dbFactory = dbFactory ?? (() => new RedComputeDbContext());
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
     }
+
+    /// <summary>
+    /// The node new jobs are stamped with (<see cref="RedCompute.PluginSdk.INodeRegistry.StampNodeId"/>).
+    /// Null stamps NULL, which reads as the legacy node; set once at boot, before any job is created.
+    /// </summary>
+    public string? StampNodeId { get; set; }
 
     public event Action<JobRecord>? JobCreated;
     public event Action<JobRecord>? JobUpdated;
@@ -139,6 +146,7 @@ public class JobTrackingService : IJobTracker
                         ? parentJobId : null,
                     Status = JobStatus.Queued,
                     QueuedAt = _clock(),
+                    NodeId = StampNodeId,
                 };
 
                 db.Jobs.Add(result);

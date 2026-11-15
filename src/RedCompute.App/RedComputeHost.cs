@@ -133,6 +133,7 @@ public static class RedComputeHost
         // Node identity before any provider exists: work is attributed to this node from the start.
         Nodes = NodeRegistry.Open(NodeIdentityStore.DefaultDirectory, RedComputeServiceDescriptor.AppVersion, s => Log(s));
         Log($"[App] Node zero: {Nodes.LocalNodeId} ({Nodes.Local.MachineName})");
+        JobTracker.StampNodeId = Nodes.StampNodeId;
 
         ProviderDiscovery = new ProviderDiscovery(s => Log(s));
         ProviderDiscovery.ScanAssemblies();
@@ -161,6 +162,8 @@ public static class RedComputeHost
             using var db = new RedComputeDbContext();
             db.Database.EnsureCreated();
             db.MigrateSchema();
+            if (db.NodeIdColumnAddedIn is { } added)
+                Log($"[App] Added Jobs.NodeId in {added.TotalMilliseconds:0.#} ms");
             Log("[App] Database initialized");
         }
         catch (Exception ex)

@@ -71,6 +71,13 @@ public class JobRecord
     // still has work, idle parking keeps the supervisor resident. Last binding wins.
     public string? SupervisorSessionId { get; set; }
 
+    /// <summary>
+    /// The node that executes the job, stamped when the job is created. Null on a row older than
+    /// node ids (and on a run whose node identity is not persisted): it reads as the registry's
+    /// legacy node, this machine.
+    /// </summary>
+    public string? NodeId { get; set; }
+
     public long? DurationMs => CompletedAt.HasValue && StartedAt.HasValue
         ? (long)(CompletedAt.Value - StartedAt.Value).TotalMilliseconds
         : null;

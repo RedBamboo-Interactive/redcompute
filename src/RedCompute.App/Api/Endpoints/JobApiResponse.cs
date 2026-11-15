@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services.Jobs;
 using RedCompute.Core.Jobs;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
 
@@ -17,9 +18,10 @@ internal static class JobApiResponse
     private const string StageDescription =
         "admitted=durably accepted but not invoked; waiting=Running while waiting for the provider/GPU and before its first progress signal; executing=the provider has emitted progress; completed, failed, cancelled, skipped, and timed_out mirror terminal outcomes.";
 
-    public static Dictionary<string, object?> Progress(JobRecord job, string? outputDirectory = null)
+    public static Dictionary<string, object?> Progress(JobRecord job, string? outputDirectory = null,
+        INodeRegistry? nodes = null)
     {
-        var response = Common(job, outputDirectory);
+        var response = Common(job, outputDirectory, nodes);
         response["id"] = job.Id;
         response["status"] = job.Status.ToString();
         response["progress"] = job.Progress;
@@ -29,9 +31,10 @@ internal static class JobApiResponse
         return response;
     }
 
-    public static Dictionary<string, object?> Details(JobRecord job, string? outputDirectory = null)
+    public static Dictionary<string, object?> Details(JobRecord job, string? outputDirectory = null,
+        INodeRegistry? nodes = null)
     {
-        var response = Common(job, outputDirectory);
+        var response = Common(job, outputDirectory, nodes);
         response["id"] = job.Id;
         response["capability"] = job.CapabilitySlug;
         response["providerName"] = job.ProviderName;
@@ -69,9 +72,14 @@ internal static class JobApiResponse
         return response;
     }
 
-    private static Dictionary<string, object?> Common(JobRecord job, string? outputDirectory) => new()
+    /// <summary>The node that executes the job: a row older than node ids reads as the legacy node.</summary>
+    internal static string? NodeId(JobRecord job, INodeRegistry? nodes)
+        => nodes is null ? job.NodeId : nodes.Resolve(job.NodeId);
+
+    private static Dictionary<string, object?> Common(JobRecord job, string? outputDirectory, INodeRegistry? nodes) => new()
     {
         ["terminal"] = JobTrackingService.IsTerminal(job.Status),
+        ["nodeId"] = NodeId(job, nodes),
         ["stage"] = Stage(job),
         ["result"] = ParseResultObject(job.ResultJson),
         ["outputs"] = Outputs(job, outputDirectory ?? OutputDirectory),
@@ -141,6 +149,7 @@ internal static class JobApiResponse
             ["durationMs"] = Field("integer", "Elapsed execution duration for terminal jobs; nullable."),
             ["resultJson"] = Field("string", "Compatibility raw result JSON string; nullable."),
             ["terminal"] = Field("boolean", "True for Completed, Failed, Cancelled, Skipped, or TimedOut."),
+            ["nodeId"] = Field("string", "The node (computer) that executes the job; see GET /nodes. Jobs older than node ids report the local node."),
             ["stage"] = new { type = "string", description = StageDescription,
                 @enum = new[] { "admitted", "waiting", "executing", "completed", "failed", "cancelled", "skipped", "timed_out" } },
             ["result"] = Field("object", "resultJson parsed only when it is a JSON object; otherwise null."),

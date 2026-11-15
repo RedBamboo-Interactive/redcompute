@@ -17,7 +17,8 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class GlobalEndpoints
 {
-    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger)
+    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger,
+        INodeRegistry? nodes = null)
     {
         ExternalJobEndpoints.Map(endpoints, jobTracker);
 
@@ -144,7 +145,8 @@ public static class GlobalEndpoints
                     j.LeaseExpiresAt,
                     creationProvenance = j.CreationProvenance,
                     auditComplete = JobTrackingService.IsAuditComplete(j.CreationProvenance),
-                    sessionStatus = sessionStatuses.TryGetValue(j.Id, out var ss) ? ss : (string?)null
+                    sessionStatus = sessionStatuses.TryGetValue(j.Id, out var ss) ? ss : (string?)null,
+                    nodeId = JobApiResponse.NodeId(j, nodes),
                 }),
                 total = totalCount
             });
@@ -184,7 +186,7 @@ public static class GlobalEndpoints
             job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
             if (!ComputeResourceAccess.CanReadJob(ctx, job)) return ComputeResourceAccess.JobDenied();
-            return Results.Ok(JobApiResponse.Details(job));
+            return Results.Ok(JobApiResponse.Details(job, nodes: nodes));
         });
         jobDetailEndpoint
             .WithParam("waitSeconds", "integer", description: "Server-side terminal long-poll duration. Returns immediately when terminal; otherwise waits until terminal or timeout. Clamped to 0..60; non-numeric values return 400.", defaultValue: 0, location: ParamLocation.Query)
