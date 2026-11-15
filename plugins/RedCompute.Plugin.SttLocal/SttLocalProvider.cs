@@ -8,6 +8,7 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.LocalWsl;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.SttLocal;
 
@@ -18,11 +19,12 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
     private readonly string _capabilitySlug;
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(30) };
 
-    public SttLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
+    public SttLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
+        IExecutionHost? host = null)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
-        _inner = new LocalWslProvider(config, capabilitySlug, log);
+        _inner = new LocalWslProvider(config, capabilitySlug, log, host);
     }
 
     // IBackendProvider delegation

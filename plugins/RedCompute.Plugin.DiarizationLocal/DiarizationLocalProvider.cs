@@ -7,6 +7,7 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.LocalWsl;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.DiarizationLocal;
 
@@ -15,9 +16,10 @@ public sealed class DiarizationLocalProvider : IPluginProvider, ICustomEndpointP
     private readonly LocalWslProvider _inner;
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(30) };
 
-    public DiarizationLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
+    public DiarizationLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
+        IExecutionHost? host = null)
     {
-        _inner = new LocalWslProvider(config, capabilitySlug, log);
+        _inner = new LocalWslProvider(config, capabilitySlug, log, host);
         CapabilitySlug = capabilitySlug;
     }
 

@@ -4,6 +4,7 @@ using RedCompute.Core.Providers;
 using RedCompute.Plugin.DiarizationLocal;
 using RedCompute.Plugin.LocalWsl;
 using RedCompute.Plugin.SttLocal;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -134,7 +135,7 @@ public sealed class SpeechDiarizationCapabilityTests
             ModelRevision = "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
         }, "diarization", _ => { });
 
-        var start = provider.BuildStartInfo();
+        var start = LocalExecutionHost.ToStartInfo(provider.BuildSpawnSpec());
         var wrapper = start.ArgumentList[^1];
         var command = provider.BuildWslBackendCommand();
 

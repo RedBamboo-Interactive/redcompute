@@ -180,8 +180,8 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     public void LocalWsl_start(string golden, bool wsl)
     {
         var provider = new LocalWslProvider(LocalWslConfig(wsl), "tts", _ => { });
-        _launches.Add(provider.BuildStartInfo());
-        Verify(golden, "localwsl.server", "none");
+        HostConverts(provider.BuildSpawnSpec());
+        VerifyHosted(golden, "localwsl.server");
     }
 
     internal ProviderConfig ComfyConfig(bool wsl) => new()
@@ -224,19 +224,19 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     }
 
     /// <summary>
-    /// Native only: in WSL mode StartAsync first resolves the distro's address by running
-    /// wsl.exe, a real process outside this harness. The WSL start info is pinned by the
-    /// builder golden above.
+    /// In WSL mode StartAsync first resolves the distro's address (<c>wsl.exe hostname -I</c>); that
+    /// launch now goes through the host too, so it is answered with nothing instead of reaching a
+    /// real wsl.exe, and only the server launch is captured.
     /// </summary>
-    [Fact]
-    public async Task LocalWsl_native_start_through_its_seam()
+    [Theory]
+    [InlineData("A-localwsl-start-native", false)]
+    [InlineData("A-localwsl-start-wsl", true)]
+    public async Task LocalWsl_start_through_its_seam(string golden, bool wsl)
     {
-        var provider = new LocalWslProvider(LocalWslConfig(wsl: false), "tts", _ => { })
-        {
-            LaunchServerProcess = start => { Capture(start); return null; },
-        };
+        var provider = new LocalWslProvider(LocalWslConfig(wsl), "tts", _ => { },
+            host: CapturingHost(captures: owner => owner == "localwsl"));
         Assert.False(await provider.StartAsync());
-        Verify("A-localwsl-start-native", "localwsl.server", "none");
+        VerifyHosted(golden, "localwsl.server");
     }
 
     // ---- stop: recorded through a seam on the pre-move code, then where the host hands it over ---------
@@ -249,10 +249,40 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         config.StartupTimeoutSeconds = 1;
         // The server launch gets a real process (the stop runs only for a live one); the stop is captured.
         var provider = new ComfyUIProvider(config, "image-gen", _ => { },
-            host: CapturingHost(runs: start => start.ArgumentList.Contains("-lc")));
+            host: CapturingHost(runs: owner => owner == "comfyui"));
         Assert.False(await provider.StartAsync());
         await provider.StopAsync();
         VerifyHosted("A-comfyui-stop-wsl", "comfyui.stop");
+    }
+
+    /// <summary>The distro address lookup that precedes every WSL backend start (<c>wsl.exe hostname -I</c>).</summary>
+    [WindowsFact("the lookup runs only before a Windows launch")]
+    public async Task LocalWsl_hostname()
+    {
+        var provider = new LocalWslProvider(LocalWslConfig(wsl: true), "tts", _ => { },
+            host: CapturingHost(captures: owner => owner == "localwsl-hostname"));
+        Assert.False(await provider.StartAsync());
+        VerifyHosted("A-localwsl-hostname", "localwsl.hostname");
+    }
+
+    /// <summary>
+    /// The WSL stop kills the backend's process group inside the distro, only while its start time
+    /// still matches the identity the launch script printed.
+    /// </summary>
+    [WindowsFact("the stop runs only after a Windows launch")]
+    public async Task LocalWsl_stop_wsl()
+    {
+        var config = LocalWslConfig(wsl: true);
+        config.StartupTimeoutSeconds = 1;
+        // The server launch gets a live stand-in that prints the identity marker; the lookup gets nothing.
+        var provider = new LocalWslProvider(config, "tts", _ => { },
+            host: CapturingHost(
+                runs: owner => owner == "localwsl",
+                firstLine: "REDCOMPUTE_LOCALWSL_PROCESS=4242:987654",
+                captures: owner => owner == "localwsl-stop"));
+        // Never healthy: the start gives up and stops the backend it launched.
+        Assert.False(await provider.StartAsync());
+        VerifyHosted("A-localwsl-stop-wsl", "localwsl.stop");
     }
 
     /// <summary>A real process that keeps running, redirected like a backend, optionally printing a first line.</summary>
@@ -350,13 +380,14 @@ public sealed class LaunchGoldenSeamTests : IDisposable
             ["opencode.LaunchAcpProcess"] = await ContainmentOf(OpenCode().LaunchAcpProcess),
             ["opencode.LaunchExecProcess"] = await ContainmentOf(OpenCode().LaunchExecProcess),
             ["comfyui.LaunchServerProcess"] = await ContainmentOf(Comfy().LaunchServerProcess, Comfy().BuildSpawnSpec()),
-            ["localwsl.LaunchServerProcess"] = await ContainmentOf(
-                new LocalWslProvider(LocalWslConfig(false), "tts", _ => { }).LaunchServerProcess),
+            ["localwsl.LaunchServerProcess"] = await ContainmentOf(LocalWsl().LaunchServerProcess, LocalWsl().BuildSpawnSpec()),
         };
         LaunchGoldens.Verify("A-seam-defaults-node-zero", seams);
     }
 
     private ComfyUIProvider Comfy() => new(ComfyConfig(false), "image-gen", _ => { });
+
+    private LocalWslProvider LocalWsl() => new(LocalWslConfig(false), "tts", _ => { });
 
     /// <summary>
     /// The containment a spec seam's production default gives the provider's own spec: the spec's
@@ -411,14 +442,18 @@ public sealed class LaunchGoldenSeamTests : IDisposable
 
     /// <summary>
     /// An execution host that captures, at the single point where it hands a start info to the OS,
-    /// every launch and the containment it would apply. <paramref name="runs"/> picks launches that
-    /// get a real, long-running stand-in instead (a stop runs only for a live process).
+    /// every launch and the containment it would apply. Launches are picked by owner label:
+    /// <paramref name="runs"/> get a real, long-running stand-in printing <paramref name="firstLine"/>
+    /// (a stop runs only for a live process); when <paramref name="captures"/> is given, any other
+    /// launch is answered with no process and not recorded.
     /// </summary>
-    private LocalExecutionHost CapturingHost(Func<ProcessStartInfo, bool>? runs = null) => new("golden-node")
+    private LocalExecutionHost CapturingHost(
+        Func<string, bool>? runs = null, string? firstLine = null, Func<string, bool>? captures = null) => new("golden-node")
     {
         StartProcess = (start, mode, owner) =>
         {
-            if (runs?.Invoke(start) == true) return Running();
+            if (runs?.Invoke(owner) == true) return Running(firstLine);
+            if (captures is not null && !captures(owner)) return null;
             lock (_hosted) _hosted.Add((start, LocalExecutionHost.DescribeContainment(mode, owner)));
             return null;
         },

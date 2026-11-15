@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using RedCompute.Core.Configuration;
@@ -6,6 +5,8 @@ using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.LocalWsl;
 
@@ -16,10 +17,17 @@ public class LocalWslProvider : IPluginProvider
     private readonly string _capabilitySlug;
     private readonly string _providerType;
     private readonly Action<string> _log;
-    private Process? _process;
+    private readonly IExecutionHost _executionHost;
+    private IHostProcess? _process;
 
-    /// <summary>Launch seam for the backend server process.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchServerProcess { get; set; } = startInfo => Process.Start(startInfo);
+    /// <summary>Launch seam for the backend server process; the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchServerProcess { get; set; }
+
+    /// <summary>Launch seam for the WSL stop script; the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchStopProcess { get; set; }
+
+    /// <summary>Launch seam for the distro address lookup (<c>hostname -I</c>); the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchHostnameProcess { get; set; }
     private int? _wslProcessGroupId;
     private string? _wslStartTime;
     private BackendStatus _status = BackendStatus.Stopped;
@@ -40,12 +48,17 @@ public class LocalWslProvider : IPluginProvider
     public ReturnSchema OutputSchema => new ReturnSchema { ContentType = "application/octet-stream", Streaming = false };
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(5);
 
-    public LocalWslProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
+    public LocalWslProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
+        IExecutionHost? host = null)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
         _providerType = config.Type; // "LocalWsl" or "LocalNative"
         _log = log;
+        _executionHost = host ?? LocalExecutionHost.Shared;
+        LaunchServerProcess = spec => _executionHost.Processes.Start(spec);
+        LaunchStopProcess = spec => _executionHost.Processes.Start(spec);
+        LaunchHostnameProcess = spec => _executionHost.Processes.Start(spec);
     }
 
     public string? StatusDetail { get; private set; }
@@ -56,7 +69,7 @@ public class LocalWslProvider : IPluginProvider
 
         // Both launch paths (wsl.exe, and cmd.exe for LocalNative) are Windows-only. Fail fast
         // with a typed status rather than spawning, probing a WSL host, or waiting on a timeout.
-        if (!PlatformSupport.CanLaunchLocalBackends)
+        if (!_executionHost.Platform.CanLaunchLocalBackends)
         {
             _status = BackendStatus.Unsupported;
             StatusDetail = PlatformSupport.LocalBackendUnsupported($"{_capabilitySlug} ({_providerType})");
@@ -79,8 +92,7 @@ public class LocalWslProvider : IPluginProvider
 
         try
         {
-            var startInfo = BuildStartInfo();
-            _process = LaunchServerProcess(startInfo);
+            _process = LaunchServerProcess(BuildSpawnSpec());
             if (_process == null)
             {
                 _status = BackendStatus.Error;
@@ -89,19 +101,19 @@ public class LocalWslProvider : IPluginProvider
 
             var ownedWsl = new TaskCompletionSource<(int Pid, string StartTime)>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            _process.OutputDataReceived += (_, e) =>
+            _process.OutputLine += line =>
             {
-                if (e.Data == null) return;
-                if (TryParseProcessMarker(e.Data, out var pid, out var startTime))
+                if (line == null) return;
+                if (TryParseProcessMarker(line, out var pid, out var startTime))
                 {
                     _wslProcessGroupId = pid;
                     _wslStartTime = startTime;
                     ownedWsl.TrySetResult((pid, startTime));
                     return;
                 }
-                _log($"[Backend] {e.Data}");
+                _log($"[Backend] {line}");
             };
-            _process.ErrorDataReceived += (_, e) => { if (e.Data != null) _log($"[Backend:err] {e.Data}"); };
+            _process.ErrorLine += line => { if (line != null) _log($"[Backend:err] {line}"); };
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
 
@@ -173,7 +185,7 @@ public class LocalWslProvider : IPluginProvider
     public string? GetProxyTargetUrl()
     {
         if (_status != BackendStatus.Running) return null;
-        return $"http://{_backendHost ?? "127.0.0.1"}:{_config.BackendPort}";
+        return _executionHost.Network.ResolveServiceBaseUrl($"http://{_backendHost ?? "127.0.0.1"}:{_config.BackendPort}");
     }
 
     public Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default) => Task.FromResult<JobResult?>(null);
@@ -183,7 +195,8 @@ public class LocalWslProvider : IPluginProvider
         await StopAsync();
     }
 
-    internal ProcessStartInfo BuildStartInfo()
+    /// <summary>The backend launch: uncontained, as local backends always ran (design section 6).</summary>
+    internal HostSpawnSpec BuildSpawnSpec()
     {
         var extraArgs = BuildBackendArguments();
 
@@ -209,31 +222,29 @@ public class LocalWslProvider : IPluginProvider
             var lifecycleEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(lifecycleScript));
             var wrapper = $"printf '%s' '{lifecycleEncoded}' | base64 -d | bash";
 
-            var startInfo = new ProcessStartInfo
+            return new HostSpawnSpec
             {
                 FileName = "wsl.exe",
+                ArgumentList = ["-d", _config.WslDistro, "--", "bash", "-lc", wrapper],
                 CreateNoWindow = true,
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
+                StandardOutput = StdioMode.Pipe,
+                StandardError = StdioMode.Pipe,
+                Containment = ContainmentMode.None,
+                OwnerLabel = "localwsl",
             };
-            startInfo.ArgumentList.Add("-d");
-            startInfo.ArgumentList.Add(_config.WslDistro);
-            startInfo.ArgumentList.Add("--");
-            startInfo.ArgumentList.Add("bash");
-            startInfo.ArgumentList.Add("-lc");
-            startInfo.ArgumentList.Add(wrapper);
-            return startInfo;
         }
 
-        return new ProcessStartInfo
+        return new HostSpawnSpec
         {
             FileName = "cmd.exe",
-            Arguments = $"/c cd /d \"{_config.ServerPath}\" && python3 server.py{extraArgs}",
+            RawArguments = $"/c cd /d \"{_config.ServerPath}\" && python3 server.py{extraArgs}",
             CreateNoWindow = true,
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            Containment = ContainmentMode.None,
+            OwnerLabel = "localwsl",
         };
     }
 
@@ -275,21 +286,17 @@ public class LocalWslProvider : IPluginProvider
                 _wslProcessGroupId is { } pid &&
                 _wslStartTime is { } startTime)
             {
-                var stopInfo = new ProcessStartInfo
+                using var stop = LaunchStopProcess(new HostSpawnSpec
                 {
                     FileName = "wsl.exe",
+                    ArgumentList = ["-d", _config.WslDistro, "--", "bash", "-lc", BuildWslStopScript(pid, startTime)],
                     CreateNoWindow = true,
                     UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
-                stopInfo.ArgumentList.Add("-d");
-                stopInfo.ArgumentList.Add(_config.WslDistro);
-                stopInfo.ArgumentList.Add("--");
-                stopInfo.ArgumentList.Add("bash");
-                stopInfo.ArgumentList.Add("-lc");
-                stopInfo.ArgumentList.Add(BuildWslStopScript(pid, startTime));
-                using var stop = Process.Start(stopInfo);
+                    StandardOutput = StdioMode.Pipe,
+                    StandardError = StdioMode.Pipe,
+                    Containment = ContainmentMode.None,
+                    OwnerLabel = "localwsl-stop",
+                });
                 if (stop is not null) await stop.WaitForExitAsync(ct);
             }
             else if (!process.HasExited)
@@ -353,7 +360,8 @@ public class LocalWslProvider : IPluginProvider
         {
             var host = _backendHost ?? "127.0.0.1";
             var endpoint = _config.HealthEndpoint ?? "/health";
-            var response = await HealthClient.GetAsync($"http://{host}:{_config.BackendPort}{endpoint}");
+            var baseUrl = _executionHost.Network.ResolveServiceBaseUrl($"http://{host}:{_config.BackendPort}");
+            var response = await HealthClient.GetAsync($"{baseUrl}{endpoint}");
             return response.IsSuccessStatusCode;
         }
         catch
@@ -362,17 +370,19 @@ public class LocalWslProvider : IPluginProvider
         }
     }
 
-    private static string? ResolveWslHost(string distro)
+    private string? ResolveWslHost(string distro)
     {
         try
         {
-            var proc = Process.Start(new ProcessStartInfo
+            var proc = LaunchHostnameProcess(new HostSpawnSpec
             {
                 FileName = "wsl.exe",
-                Arguments = $"-d {distro} hostname -I",
+                RawArguments = $"-d {distro} hostname -I",
                 CreateNoWindow = true,
                 UseShellExecute = false,
-                RedirectStandardOutput = true
+                StandardOutput = StdioMode.Pipe,
+                Containment = ContainmentMode.None,
+                OwnerLabel = "localwsl-hostname",
             });
             if (proc == null) return null;
             var output = proc.StandardOutput.ReadToEnd().Trim();

@@ -10,6 +10,8 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.LocalWsl;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.TtsLocal;
 
@@ -23,14 +25,19 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
 
     private static readonly string[] BuiltinVoices = ["Serena", "Aiden", "Ryan", "Vivian"];
 
-    public TtsLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log)
+    public TtsLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
+        IExecutionHost? host = null)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
         _log = log;
-        _inner = new LocalWslProvider(config, capabilitySlug, log);
+        Host = host ?? LocalExecutionHost.Shared;
+        _inner = new LocalWslProvider(config, capabilitySlug, log, Host);
         _voicesBasePath = config.VoicesBasePath ?? "";
     }
+
+    /// <summary>The host the backend and its voice files are on.</summary>
+    private IExecutionHost Host { get; }
 
     // IBackendProvider delegation
     public string Name => "TTS Local";
@@ -142,13 +149,13 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
     private List<string> GetVoiceNames()
     {
         var voices = new List<string> { "Serena", "Aiden", "Ryan", "Vivian" };
-        if (!string.IsNullOrEmpty(_voicesBasePath) && Directory.Exists(_voicesBasePath))
+        if (!string.IsNullOrEmpty(_voicesBasePath) && Host.Files.DirectoryExists(Host.Path(_voicesBasePath)))
         {
-            foreach (var dir in Directory.GetDirectories(_voicesBasePath))
+            foreach (var dir in Host.Files.EnumerateDirectories(Host.Path(_voicesBasePath), "*", SearchOption.TopDirectoryOnly))
             {
-                var safetensorsPath = Path.Combine(dir, "model", "checkpoint", "model.safetensors");
-                if (File.Exists(safetensorsPath))
-                    voices.Add(Path.GetFileName(dir));
+                var safetensorsPath = Host.PathRules.Combine(dir.Value, "model", "checkpoint", "model.safetensors");
+                if (Host.Files.FileExists(Host.Path(safetensorsPath)))
+                    voices.Add(Path.GetFileName(dir.Value));
             }
         }
         return voices;
@@ -201,8 +208,8 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
         }
         else
         {
-            var windowsPath = Path.Combine(_voicesBasePath, speaker, "model", "checkpoint");
-            checkpointPath = ConvertToWslPath(windowsPath);
+            var windowsPath = Host.Path(Host.PathRules.Combine(_voicesBasePath, speaker, "model", "checkpoint"));
+            checkpointPath = ConvertToWslPath(windowsPath.Value);
         }
 
         if (string.IsNullOrEmpty(checkpointPath))
