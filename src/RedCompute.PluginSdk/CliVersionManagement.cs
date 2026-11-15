@@ -1,7 +1,7 @@
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.PluginSdk;
 
@@ -79,12 +79,18 @@ public interface ICliCommandRunner
     Task<CliCommandResult> RunAsync(CliCommand command, CancellationToken ct = default);
 }
 
+/// <summary>Runs a CLI command on an execution host, uncontained, and collects its output.</summary>
 public sealed class ProcessCliCommandRunner : ICliCommandRunner
 {
+    private readonly IExecutionHost _host;
+
+    /// <param name="host">Where the command runs; the shared local host when none is given.</param>
+    public ProcessCliCommandRunner(IExecutionHost? host = null) => _host = host ?? LocalExecutionHost.Shared;
+
     public async Task<CliCommandResult> RunAsync(CliCommand command, CancellationToken ct = default)
     {
-        using var process = new Process { StartInfo = CreateStartInfo(command) };
-        process.Start();
+        using var process = _host.Processes.Start(CreateSpec(_host, command))
+            ?? throw new InvalidOperationException($"{command.FileName} did not start");
         var stdout = process.StandardOutput.ReadToEndAsync(ct);
         var stderr = process.StandardError.ReadToEndAsync(ct);
         try
@@ -100,32 +106,27 @@ public sealed class ProcessCliCommandRunner : ICliCommandRunner
         return new CliCommandResult(process.ExitCode, await stdout, await stderr);
     }
 
-    private static ProcessStartInfo CreateStartInfo(CliCommand command)
+    /// <summary>
+    /// A batch file (an npm shim) runs under the host's command interpreter; anything else directly.
+    /// Stdout and stderr piped, no window, no shell.
+    /// </summary>
+    private static HostSpawnSpec CreateSpec(IExecutionHost host, CliCommand command)
     {
-        ProcessStartInfo startInfo;
         var extension = Path.GetExtension(command.FileName);
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+        var batch = host.Platform.IsWindows
             && (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
-                || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)))
+                || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase));
+        return new HostSpawnSpec
         {
-            startInfo = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe");
-            startInfo.ArgumentList.Add("/d");
-            startInfo.ArgumentList.Add("/s");
-            startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add(FormatWindowsBatchCommand(command));
-        }
-        else
-        {
-            startInfo = new ProcessStartInfo(command.FileName);
-            foreach (var argument in command.Arguments)
-                startInfo.ArgumentList.Add(argument);
-        }
-
-        startInfo.UseShellExecute = false;
-        startInfo.CreateNoWindow = true;
-        startInfo.RedirectStandardOutput = true;
-        startInfo.RedirectStandardError = true;
-        return startInfo;
+            FileName = batch ? host.Platform.GetEnvironmentVariable("ComSpec") ?? "cmd.exe" : command.FileName,
+            ArgumentList = batch ? ["/d", "/s", "/c", FormatWindowsBatchCommand(command)] : [.. command.Arguments],
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            Containment = ContainmentMode.None,
+            OwnerLabel = "cli",
+        };
     }
 
     private static string FormatWindowsBatchCommand(CliCommand command)
@@ -135,42 +136,49 @@ public sealed class ProcessCliCommandRunner : ICliCommandRunner
     }
 }
 
+/// <summary>
+/// The CLI's processes RedCompute did not start: every process on the host whose executable lies in
+/// the package directory and that does not descend from an owned root (parentage from the host's
+/// process list, on Windows; elsewhere only the roots themselves are known).
+/// </summary>
 public sealed class SystemCliProcessInspector : ICliProcessInspector
 {
+    private readonly IExecutionHost _host;
+
+    /// <param name="host">The host whose processes are inspected; the shared local host when none is given.</param>
+    public SystemCliProcessInspector(IExecutionHost? host = null) => _host = host ?? LocalExecutionHost.Shared;
+
     public IReadOnlyList<CliProcessInfo> FindPackageProcesses(
         string packageDirectory,
         IReadOnlyCollection<int> ownedRootProcessIds)
     {
-        if (string.IsNullOrWhiteSpace(packageDirectory) || !Directory.Exists(packageDirectory))
+        if (string.IsNullOrWhiteSpace(packageDirectory) || !_host.Files.DirectoryExists(_host.Path(packageDirectory)))
             return [];
 
-        var comparison = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+        var comparison = _host.Platform.IsWindows
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(packageDirectory))
             + Path.DirectorySeparatorChar;
-        var parentProcesses = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? ReadWindowsParentProcesses()
-            : new Dictionary<int, int>();
+        var processes = _host.Processes.List(executablePaths: true);
+        var parentProcesses = new Dictionary<int, int>();
+        if (_host.Platform.IsWindows)
+            foreach (var process in processes)
+                parentProcesses[process.Pid] = process.ParentPid;
         var ownedRoots = ownedRootProcessIds.Where(pid => pid > 0).ToHashSet();
         var result = new List<CliProcessInfo>();
 
-        foreach (var process in Process.GetProcesses())
+        foreach (var process in processes)
         {
-            using (process)
-            {
-                string? executable;
-                try { executable = process.MainModule?.FileName; }
-                catch { continue; }
-                if (string.IsNullOrWhiteSpace(executable)) continue;
+            var executable = process.ExecutablePath;
+            if (string.IsNullOrWhiteSpace(executable)) continue;
 
-                string fullPath;
-                try { fullPath = Path.GetFullPath(executable); }
-                catch { continue; }
-                if (!fullPath.StartsWith(root, comparison)) continue;
-                if (IsOwnedProcessTree(process.Id, ownedRoots, parentProcesses)) continue;
-                result.Add(new CliProcessInfo(process.Id, fullPath));
-            }
+            string fullPath;
+            try { fullPath = Path.GetFullPath(executable); }
+            catch { continue; }
+            if (!fullPath.StartsWith(root, comparison)) continue;
+            if (IsOwnedProcessTree(process.Pid, ownedRoots, parentProcesses)) continue;
+            result.Add(new CliProcessInfo(process.Pid, fullPath));
         }
 
         return result;
@@ -190,56 +198,6 @@ public sealed class SystemCliProcessInspector : ICliProcessInspector
         }
         return false;
     }
-
-    private static Dictionary<int, int> ReadWindowsParentProcesses()
-    {
-        var result = new Dictionary<int, int>();
-        var snapshot = CreateToolhelp32Snapshot(0x00000002, 0);
-        if (snapshot == new IntPtr(-1)) return result;
-        try
-        {
-            var entry = new ProcessEntry32 { Size = (uint)Marshal.SizeOf<ProcessEntry32>() };
-            if (!Process32First(snapshot, ref entry)) return result;
-            do
-            {
-                result[(int)entry.ProcessId] = (int)entry.ParentProcessId;
-                entry.Size = (uint)Marshal.SizeOf<ProcessEntry32>();
-            } while (Process32Next(snapshot, ref entry));
-        }
-        finally
-        {
-            CloseHandle(snapshot);
-        }
-        return result;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-    private struct ProcessEntry32
-    {
-        public uint Size;
-        public uint Usage;
-        public uint ProcessId;
-        public IntPtr DefaultHeapId;
-        public uint ModuleId;
-        public uint Threads;
-        public uint ParentProcessId;
-        public int BasePriority;
-        public uint Flags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-        public string ExecutableFile;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern bool Process32First(IntPtr snapshot, ref ProcessEntry32 entry);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry32 entry);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr handle);
 }
 
 public sealed record CliInstalledVersionResult(string? Version, string? Error);
@@ -329,18 +287,21 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
         Func<string?>? resolveNpmExecutable = null,
         Func<string?>? resolvePackageDirectory = null,
         ICliProcessInspector? processInspector = null,
-        TimeSpan? installTimeout = null)
+        TimeSpan? installTimeout = null,
+        IExecutionHost? host = null)
     {
+        // The CLI, npm and the package all live on the provider's host.
+        host ??= LocalExecutionHost.Shared;
         PackageName = packageName;
         _processDisplayName = processDisplayName;
         _resolveExecutable = resolveExecutable;
         _sessionState = sessionState;
         _parkIdleSessions = parkIdleSessions;
-        _runner = runner ?? new ProcessCliCommandRunner();
-        _resolveNpmExecutable = resolveNpmExecutable ?? ResolveNpmExecutable;
+        _runner = runner ?? new ProcessCliCommandRunner(host);
+        _resolveNpmExecutable = resolveNpmExecutable ?? (() => ResolveNpmExecutable(host));
         _resolvePackageDirectory = resolvePackageDirectory
-            ?? (() => ResolveGlobalNpmPackageDirectory(packageName));
-        _processInspector = processInspector ?? new SystemCliProcessInspector();
+            ?? (() => ResolveGlobalNpmPackageDirectory(host, packageName));
+        _processInspector = processInspector ?? new SystemCliProcessInspector(host);
         _installTimeout = installTimeout ?? TimeSpan.FromMinutes(10);
     }
 
@@ -741,9 +702,14 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
     private string FormatExternalProcessCount(int count)
         => $"{count} {_processDisplayName} {(count == 1 ? "process" : "processes")} still running outside Leaf";
 
+    /// <summary><see cref="ResolveGlobalNpmPackageDirectory(IExecutionHost, string)"/> on this machine.</summary>
     public static string? ResolveGlobalNpmPackageDirectory(string packageName)
+        => ResolveGlobalNpmPackageDirectory(LocalExecutionHost.Shared, packageName);
+
+    /// <summary>Where a global npm install of <paramref name="packageName"/> lives on <paramref name="host"/>.</summary>
+    public static string? ResolveGlobalNpmPackageDirectory(IExecutionHost host, string packageName)
     {
-        var applicationData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var applicationData = host.Platform.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         if (string.IsNullOrWhiteSpace(applicationData)) return null;
         var segments = packageName.Split('/', StringSplitOptions.RemoveEmptyEntries);
         return segments.Length == 0
@@ -751,12 +717,13 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             : Path.Combine([applicationData, "npm", "node_modules", .. segments]);
     }
 
-    private static string? ResolveNpmExecutable()
+    /// <summary>npm on the host's PATH. The PATH separator is this machine's (local path maths, until remote nodes).</summary>
+    private static string? ResolveNpmExecutable(IExecutionHost host)
     {
-        var names = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+        var names = host.Platform.IsWindows
             ? new[] { "npm.cmd", "npm.exe", "npm" }
             : new[] { "npm" };
-        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "")
+        foreach (var directory in (host.Platform.GetEnvironmentVariable("PATH") ?? "")
                      .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
             foreach (var name in names)
@@ -764,7 +731,7 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
                 try
                 {
                     var candidate = Path.Combine(directory.Trim().Trim('"'), name);
-                    if (File.Exists(candidate)) return candidate;
+                    if (host.Files.FileExists(host.Path(candidate))) return candidate;
                 }
                 catch { }
             }

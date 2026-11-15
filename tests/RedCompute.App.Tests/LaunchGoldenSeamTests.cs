@@ -510,11 +510,12 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     [Theory]
     [InlineData("A-npm-runner-cmd-shim", "npm.cmd", new[] { "install", "-g", "@anthropic-ai/claude-code@latest" })]
     [InlineData("A-npm-runner-exe", "claude.exe", new[] { "--version" })]
-    public void Npm_runner(string golden, string file, string[] args)
+    public async Task Npm_runner(string golden, string file, string[] args)
     {
-        var create = typeof(ProcessCliCommandRunner).GetMethod("CreateStartInfo", BindingFlags.Static | BindingFlags.NonPublic)!;
-        _launches.Add((ProcessStartInfo)create.Invoke(null, [new CliCommand(Path.Combine(_root, "npm", file), args)])!);
-        Verify(golden, "cli.ProcessCliCommandRunner", "none");
+        var runner = new ProcessCliCommandRunner(CapturingHost());
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => runner.RunAsync(new CliCommand(Path.Combine(_root, "npm", file), args)));
+        VerifyHosted(golden, "cli.ProcessCliCommandRunner");
     }
 
     // ---- Repository validation: git proves worktree membership ---------------------------------------

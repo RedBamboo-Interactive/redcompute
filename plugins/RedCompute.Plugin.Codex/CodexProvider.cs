@@ -102,7 +102,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             // The CLI exec and the app-servers launch, resolved on their host from the same config.
             () => _codex.ResolveCodexPath(),
             GetCliSessionState,
-            ParkIdleCliSessionsAsync);
+            ParkIdleCliSessionsAsync,
+            host: host);
         _interactive = new CodexInteractiveService(
             codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
             () => GetTitleQualityTier(config), log, host);

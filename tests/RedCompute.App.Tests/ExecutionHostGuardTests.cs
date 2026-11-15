@@ -77,11 +77,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C18 CLI version manager", [
-            "RedCompute.PluginSdk.NpmCliVersionManager",
-            "RedCompute.PluginSdk.ProcessCliCommandRunner",
-            "RedCompute.PluginSdk.SystemCliProcessInspector",
-        ]),
     ];
 
     [Fact]

@@ -137,13 +137,15 @@ public sealed class LocalExecutionHost : IExecutionHost
         public bool KillIdentity(int pid, long createdUtcTicks, string owner)
             => SessionProcessContainment.KillIdentity(pid, createdUtcTicks, owner);
 
-        public IReadOnlyList<HostProcessInfo> List()
+        public IReadOnlyList<HostProcessInfo> List() => List(executablePaths: false);
+
+        public IReadOnlyList<HostProcessInfo> List(bool executablePaths)
         {
             var parents = ParentMap();
             var result = new List<HostProcessInfo>();
             foreach (var process in Process.GetProcesses())
                 using (process)
-                    if (Describe(process, parents, executablePath: false) is { } info) result.Add(info);
+                    if (Describe(process, parents, executablePaths) is { } info) result.Add(info);
             return result;
         }
 

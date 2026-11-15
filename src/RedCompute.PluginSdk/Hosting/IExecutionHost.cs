@@ -186,6 +186,13 @@ public interface IHostProcesses
     bool KillIdentity(int pid, long createdUtcTicks, string owner);
 
     IReadOnlyList<HostProcessInfo> List();
+
+    /// <summary>
+    /// <see cref="List()"/>, with <see cref="HostProcessInfo.ExecutablePath"/> read for each process
+    /// when <paramref name="executablePaths"/> (null where the OS will not say).
+    /// </summary>
+    IReadOnlyList<HostProcessInfo> List(bool executablePaths);
+
     HostProcessInfo? Find(int pid);
 }
 
