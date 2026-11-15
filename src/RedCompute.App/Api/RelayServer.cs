@@ -555,7 +555,7 @@ public class RelayServer
                 if (data is UnifiedSessionInfo session)
                 {
                     _titles?.Apply(session);
-                    if (_nodes is not null) session.NodeId = ((INodeRegistry)_nodes).Resolve(session.NodeId);
+                    SessionEventProjection.ApplyNode(session, _nodes);
                     SessionEventProjection.ApplyWorkState(session, sessionProvider, _log);
                     // How the last turn ended, interrupt included, so clients stop calling an
                     // interrupted turn completed. The queue's own handler has already closed it.
