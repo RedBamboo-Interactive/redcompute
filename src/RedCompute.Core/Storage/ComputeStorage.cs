@@ -126,6 +126,9 @@ public sealed class ComputeStorage
     /// <summary><c>.defender-exclusions</c>: marker that the one-time Defender exclusions ran.</summary>
     public string DefenderExclusionsMarker => Path.Combine(DataRoot, ".defender-exclusions");
 
+    /// <summary><c>backups\</c>: files RedCompute hands to a backup (the job database snapshot). Never referenced by stored rows.</summary>
+    public string Backups => Path.Combine(DataRoot, "backups");
+
     /// <summary><c>telemetry.db</c>: request telemetry (RedBamboo.AppHost).</summary>
     public string TelemetryDatabase => Path.Combine(DataRoot, "telemetry.db");
 

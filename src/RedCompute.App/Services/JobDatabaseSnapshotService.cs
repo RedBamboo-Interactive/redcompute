@@ -24,24 +24,33 @@ public sealed class JobDatabaseSnapshotException(string message, string? quickCh
 /// runs in WAL mode, so that read never blocks a writer (it only holds the checkpoint back, and the WAL
 /// grows meanwhile). The copy keeps the source's page layout, so a block-deduplicating backup stores only
 /// the pages that changed since the last night (<c>VACUUM INTO</c> would rewrite them all).
-/// <para>Every path resolves through <see cref="ComputeStorage"/>. The snapshot is one fixed file in
-/// <see cref="SnapshotDirectory"/>, written under a temporary name and renamed once verified, so the fixed
-/// name is always either absent or a complete, checked copy. One at a time.</para>
+/// <para>The folder is <see cref="ComputeStorage.Backups"/>; nothing about it is stored in a row. A snapshot is
+/// <c>redcompute-snapshot-&lt;UTC timestamp&gt;.db</c> (never mistakable for the live database), written under a
+/// temporary name and renamed once verified. At most one finished snapshot stays: a successful new one removes
+/// the older ones, and DELETE removes it. One at a time.</para>
 /// </summary>
 public sealed class JobDatabaseSnapshotService
 {
-    public const string SnapshotFileName = "redcompute-snapshot.db";
-    private const string TempPrefix = SnapshotFileName + ".tmp-";
+    private const string NamePrefix = "redcompute-snapshot-";
+    private const string TempMarker = ".tmp-";
 
     private readonly ComputeStorage _storage;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public JobDatabaseSnapshotService(ComputeStorage storage) => _storage = storage;
 
-    /// <summary><c>backups\</c> under the data root: RedCompute's own folder for files it hands to a backup.</summary>
-    public string SnapshotDirectory => Path.Combine(_storage.DataRoot, "backups");
+    /// <summary>RedCompute's own folder for files it hands to a backup (<see cref="ComputeStorage.Backups"/>).</summary>
+    public string SnapshotDirectory => _storage.Backups;
 
-    public string SnapshotPath => Path.Combine(SnapshotDirectory, SnapshotFileName);
+    /// <summary>The finished snapshots in the folder (at most one after any call returns), newest name last.</summary>
+    public IReadOnlyList<string> FinishedSnapshots()
+        => Directory.Exists(SnapshotDirectory)
+            ? Directory.EnumerateFiles(SnapshotDirectory, NamePrefix + "*.db")
+                .Where(path => FinishedName.IsMatch(Path.GetFileName(path))).Order(StringComparer.Ordinal).ToList()
+            : [];
+
+    private static readonly System.Text.RegularExpressions.Regex FinishedName =
+        new(@"^redcompute-snapshot-\d{8}T\d{6}Z\.db$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     public bool IsRunning => _gate.CurrentCount == 0;
 
@@ -74,15 +83,15 @@ public sealed class JobDatabaseSnapshotService
         finally { _gate.Release(); }
     }
 
-    /// <summary>Removes the snapshot. Null when one is running (it would be deleted under the writer).</summary>
+    /// <summary>Removes the finished snapshot. Null when one is running (it would be deleted under the writer).</summary>
     public bool? TryDelete()
     {
         if (!_gate.Wait(0)) return null;
         try
         {
-            var existed = File.Exists(SnapshotPath);
-            DeleteDatabaseFiles(SnapshotPath);
-            return existed;
+            var finished = FinishedSnapshots();
+            foreach (var path in finished) DeleteDatabaseFiles(path);
+            return finished.Count > 0;
         }
         finally { _gate.Release(); }
     }
@@ -96,10 +105,13 @@ public sealed class JobDatabaseSnapshotService
 
         Directory.CreateDirectory(SnapshotDirectory);
         // We hold the gate, so any temp file here is a leftover of a killed run.
-        foreach (var stale in Directory.EnumerateFiles(SnapshotDirectory, TempPrefix + "*"))
+        foreach (var stale in Directory.EnumerateFiles(SnapshotDirectory, NamePrefix + "*" + TempMarker + "*"))
             TryDeleteFile(stale);
 
-        var temp = Path.Combine(SnapshotDirectory, TempPrefix + Guid.NewGuid().ToString("N"));
+        var createdAt = DateTimeOffset.UtcNow;
+        var finalPath = Path.Combine(SnapshotDirectory,
+            $"{NamePrefix}{createdAt:yyyyMMdd'T'HHmmss'Z'}.db");
+        var temp = finalPath + TempMarker + Guid.NewGuid().ToString("N");
         try
         {
             long pageCount, pageSize;
@@ -140,11 +152,14 @@ public sealed class JobDatabaseSnapshotService
             var size = new FileInfo(temp).Length;
             var sha = Hash(temp);
 
-            File.Move(temp, SnapshotPath, overwrite: true);
-            DeleteSideFiles(SnapshotPath);
+            File.Move(temp, finalPath, overwrite: true);
+            DeleteSideFiles(finalPath);
+            // Only now, with the new one safely in place, older snapshots go: at most one stays.
+            foreach (var older in FinishedSnapshots())
+                if (!string.Equals(older, finalPath, StringComparison.Ordinal)) DeleteDatabaseFiles(older);
             return new JobDatabaseSnapshotResult(
-                SnapshotPath, size, sha, pageCount, pageSize,
-                Math.Round(clock.Elapsed.TotalSeconds, 2), quickCheck, DateTimeOffset.UtcNow);
+                finalPath, size, sha, pageCount, pageSize,
+                Math.Round(clock.Elapsed.TotalSeconds, 2), quickCheck, createdAt);
         }
         catch (JobDatabaseSnapshotException) { throw; }
         catch (Exception ex)

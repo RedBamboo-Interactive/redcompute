@@ -91,8 +91,8 @@ public sealed class JobDatabaseSnapshotTests : IDisposable
 
         Assert.NotNull(result);
         Assert.Equal("ok", result.QuickCheck);
-        Assert.Equal(Path.Combine(_root, "backups", "redcompute-snapshot.db"), result.Path);
-        Assert.Equal(Path.GetFullPath(result.Path), Path.GetFullPath(service.SnapshotPath));
+        Assert.Equal(_storage.Backups, Path.GetDirectoryName(result.Path));
+        Assert.Matches(@"^redcompute-snapshot-\d{8}T\d{6}Z\.db$", Path.GetFileName(result.Path));
         var snapshotRows = Count(result.Path);
         Assert.InRange(snapshotRows, before, after);
         Assert.Equal(new FileInfo(result.Path).Length, result.SizeBytes);
@@ -100,7 +100,7 @@ public sealed class JobDatabaseSnapshotTests : IDisposable
         using (var stream = File.OpenRead(result.Path))
             Assert.Equal(Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant(), result.Sha256);
         // One file, nothing else: no temp copy, no WAL/SHM beside the snapshot.
-        Assert.Equal(["redcompute-snapshot.db"], BackupFolderFiles());
+        Assert.Equal([Path.GetFileName(result.Path)], BackupFolderFiles());
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public sealed class JobDatabaseSnapshotTests : IDisposable
         var ex = await Assert.ThrowsAsync<JobDatabaseSnapshotException>(service.TryCreateAsync);
         Assert.Contains("disk went away", ex.Message);
 
-        Assert.Equal(["redcompute-snapshot.db"], BackupFolderFiles());
+        Assert.Equal([Path.GetFileName(good.Path)], BackupFolderFiles());
         Assert.Equal(goodBytes, File.ReadAllBytes(good.Path));
         Assert.False(service.IsRunning); // the gate is released: the next run may start
     }
@@ -152,11 +152,11 @@ public sealed class JobDatabaseSnapshotTests : IDisposable
     {
         CreateSourceDatabase(10);
         Directory.CreateDirectory(Path.Combine(_root, "backups"));
-        File.WriteAllText(Path.Combine(_root, "backups", "redcompute-snapshot.db.tmp-dead"), "partial");
+        File.WriteAllText(Path.Combine(_root, "backups", "redcompute-snapshot-20200101T000000Z.db.tmp-dead"), "partial");
 
         var service = new JobDatabaseSnapshotService(_storage);
-        Assert.NotNull(await service.TryCreateAsync());
-        Assert.Equal(["redcompute-snapshot.db"], BackupFolderFiles());
+        var made = await service.TryCreateAsync();
+        Assert.Equal([Path.GetFileName(made!.Path)], BackupFolderFiles());
     }
 
     [Fact]
@@ -166,6 +166,27 @@ public sealed class JobDatabaseSnapshotTests : IDisposable
         await Assert.ThrowsAsync<JobDatabaseSnapshotException>(service.TryCreateAsync);
         Assert.False(File.Exists(_storage.Database));
         Assert.Empty(BackupFolderFiles());
+    }
+
+    [Fact]
+    public async Task A_new_snapshot_replaces_the_older_one_and_a_failed_one_keeps_it()
+    {
+        CreateSourceDatabase(10);
+        Directory.CreateDirectory(_storage.Backups);
+        var older = Path.Combine(_storage.Backups, "redcompute-snapshot-20200101T000000Z.db");
+        File.WriteAllText(older, "old");
+        File.WriteAllText(Path.Combine(_storage.Backups, "unrelated.db"), "keep"); // not ours: never touched
+        var service = new JobDatabaseSnapshotService(_storage);
+
+        service.AfterCopy = _ => throw new IOException("boom");
+        await Assert.ThrowsAsync<JobDatabaseSnapshotException>(service.TryCreateAsync);
+        Assert.True(File.Exists(older)); // a failure removes nothing
+
+        service.AfterCopy = null;
+        var made = await service.TryCreateAsync();
+        Assert.Equal(new[] { Path.GetFileName(made!.Path), "unrelated.db" }.Order(), BackupFolderFiles());
+        Assert.True(service.TryDelete());
+        Assert.Equal(["unrelated.db"], BackupFolderFiles());
     }
 
     [Fact]
@@ -239,7 +260,7 @@ public sealed class JobDatabaseSnapshotTests : IDisposable
         var (status, body) = await Call("POST", Kernel(), service);
         Assert.Equal(200, status);
         var root = body!.RootElement;
-        Assert.Equal(service.SnapshotPath, root.GetProperty("path").GetString());
+        Assert.Equal(Assert.Single(service.FinishedSnapshots()), root.GetProperty("path").GetString());
         Assert.Equal("ok", root.GetProperty("quickCheck").GetString());
         Assert.Equal(64, root.GetProperty("sha256").GetString()!.Length);
         Assert.True(root.GetProperty("pageCount").GetInt64() > 0);
@@ -285,7 +306,7 @@ public sealed class JobDatabaseSnapshotTests : IDisposable
         var other = Path.Combine(_root, "elsewhere");
         var storage = ComputeStorage.FromEnvironment(
             name => name == ComputeStorage.DataRootVariable ? other : null, _ => _root);
-        Assert.Equal(Path.Combine(other, "backups", "redcompute-snapshot.db"),
-            new JobDatabaseSnapshotService(storage).SnapshotPath);
+        Assert.Equal(Path.Combine(other, "backups"), storage.Backups);
+        Assert.Equal(storage.Backups, new JobDatabaseSnapshotService(storage).SnapshotDirectory);
     }
 }

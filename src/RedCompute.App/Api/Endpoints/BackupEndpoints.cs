@@ -15,7 +15,7 @@ public static class BackupEndpoints
     public static void Map(EndpointRegistry endpoints, JobDatabaseSnapshotService snapshots)
     {
         endpoints.MapPost(JobDatabasePath,
-            "Writes a consistent online snapshot of the job database (SQLite online backup, while RedCompute keeps running) to the fixed file backups/redcompute-snapshot.db under the data root. Synchronous: takes minutes on a large database. Returns path, size, sha256, page count, duration and the quick_check result. 409 while one runs. RedLeaf service token only.",
+            "Writes a consistent online snapshot of the job database (SQLite online backup, while RedCompute keeps running) to backups/redcompute-snapshot-<UTC timestamp>.db under the data root; a successful snapshot removes any older one, so at most one stays. Synchronous: takes minutes on a large database. Returns path, size, sha256, page count, duration and the quick_check result. 409 while one runs. RedLeaf service token only.",
             async (HttpContext context) =>
             {
                 if (!IsKernelService(context)) return Forbidden();
