@@ -1,0 +1,24 @@
+{
+  "arguments": "/d /s /c \"cd /d \\\"C:\\Golden Kev\\\" && python serve.py --port 18996\"",
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": null
+  },
+  "environmentChanges": {
+    "KEV_DTYPE": "float16",
+    "KEV_MERGE": "1"
+  },
+  "environmentTouched": true,
+  "fileName": "cmd.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": false,
+    "stdout": true
+  },
+  "seam": "kev.server",
+  "useShellExecute": false,
+  "workingDirectory": ""
+}

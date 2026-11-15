@@ -10,6 +10,7 @@ using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.Kev;
 
@@ -61,12 +62,13 @@ public sealed class KevLocalQualityProvider :
         string capabilitySlug,
         Action<string> log,
         HttpClient? httpClient = null,
-        IKevProcessController? processController = null)
+        IKevProcessController? processController = null,
+        IExecutionHost? host = null)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
         _log = log;
-        _processController = processController ?? new KevProcessController();
+        _processController = processController ?? new KevProcessController(host);
         _http = httpClient ?? new HttpClient();
         _ownsHttp = httpClient is null;
         _http.Timeout = Timeout.InfiniteTimeSpan;

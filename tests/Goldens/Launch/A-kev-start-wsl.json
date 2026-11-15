@@ -1,0 +1,27 @@
+{
+  "argumentList": [
+    "-d",
+    "Golden-Distro",
+    "--",
+    "bash",
+    "-lc",
+    "set -euo pipefail; export KEV_MERGE=1; export KEV_DTYPE='float16'; command=$(printf '%s' 'Y2QgL2hvbWUvZ29sZGVuL2tldiAmJiAuL3ZlbnYvYmluL3B5dGhvbiBzZXJ2ZS5weSAtLXBvcnQgMTg5OTY=' | base64 -d); setsid bash -lc \"exec $command\" & child=$!; start=$(awk '{print $22}' \"/proc/$child/stat\"); printf 'REDCOMPUTE_KEV_PROCESS=%s:%s\n' \"$child\" \"$start\"; cleanup() { current=$(awk '{print $22}' \"/proc/$child/stat\" 2>/dev/null || true); [ \"$current\" = \"$start\" ] && kill -TERM -- \"-$child\" 2>/dev/null || true; }; trap cleanup TERM INT EXIT; wait \"$child\""
+  ],
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": null
+  },
+  "environmentTouched": false,
+  "fileName": "wsl.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": false,
+    "stdout": true
+  },
+  "seam": "kev.server",
+  "useShellExecute": false,
+  "workingDirectory": ""
+}

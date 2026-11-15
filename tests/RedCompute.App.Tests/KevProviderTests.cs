@@ -8,6 +8,7 @@ using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
 using RedCompute.Plugin.Kev;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -389,7 +390,7 @@ public sealed class KevProviderTests
             CancellationToken ct = default)
         {
             onStart();
-            Started = new KevOwnedProcess(Process.GetCurrentProcess(), "Ubuntu-24.04", 4242, "987654");
+            Started = new KevOwnedProcess(new LocalHostProcess("local", Process.GetCurrentProcess()), "Ubuntu-24.04", 4242, "987654");
             return Task.FromResult(Started);
         }
 

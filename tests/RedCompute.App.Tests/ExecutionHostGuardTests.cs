@@ -72,9 +72,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C8 Kev", [
-            "RedCompute.Plugin.Kev.KevProcessController",
-        ]),
         ("C9-C11 Claude Code", [
             "RedCompute.Plugin.ClaudeCode.ClaudeChain",
             "RedCompute.Plugin.ClaudeCode.ClaudeCodeProvider",

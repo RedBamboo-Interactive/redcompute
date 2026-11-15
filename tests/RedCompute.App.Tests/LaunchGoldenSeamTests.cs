@@ -7,6 +7,7 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
 using RedCompute.Plugin.ComfyUI;
+using RedCompute.Plugin.Kev;
 using RedCompute.Plugin.LocalWsl;
 using RedCompute.Plugin.OpenCode;
 using RedCompute.PluginSdk;
@@ -284,6 +285,48 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         Assert.False(await provider.StartAsync());
         VerifyHosted("A-localwsl-stop-wsl", "localwsl.stop");
     }
+
+    // ---- Kev: the sidecar launch and its WSL stop ---------------------------------------------------------
+
+    /// <summary>
+    /// The Kev sidecar launch: in WSL a wrapper that exports the quality knobs and prints the owned
+    /// process identity; natively cmd.exe with the knobs in the environment.
+    /// </summary>
+    [WindowsTheory("Kev launches through wsl.exe/cmd.exe on Windows")]
+    [InlineData("A-kev-start-native", false)]
+    [InlineData("A-kev-start-wsl", true)]
+    public async Task Kev_start(string golden, bool wsl)
+    {
+        var controller = new KevProcessController(CapturingHost());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => controller.StartAsync(KevConfig(wsl), _ => { }));
+        VerifyHosted(golden, "kev.server");
+    }
+
+    /// <summary>The WSL stop kills the sidecar's process group, only while its start time still matches.</summary>
+    [WindowsFact("the stop runs only after a Windows launch")]
+    public async Task Kev_stop_wsl()
+    {
+        // The sidecar launch gets a live stand-in that prints the identity marker; the stop is captured.
+        var controller = new KevProcessController(CapturingHost(
+            runs: owner => owner == "kev", firstLine: "REDCOMPUTE_KEV_PROCESS=4242:987654"));
+        var owned = await controller.StartAsync(KevConfig(wsl: true), _ => { });
+        await controller.StopAsync(owned, _ => { });
+        VerifyHosted("A-kev-stop-wsl", "kev.stop");
+    }
+
+    internal static ProviderConfig KevConfig(bool wsl) => new()
+    {
+        Type = "KevLocalQuality",
+        WslDistro = wsl ? "Golden-Distro" : null,
+        LaunchCommand = wsl
+            ? "cd /home/golden/kev && ./venv/bin/python serve.py --port 18996"
+            : "cd /d \"C:\\Golden Kev\" && python serve.py --port 18996",
+        Extra = new Dictionary<string, object?>
+        {
+            ["MergeLora"] = "true",
+            ["Dtype"] = "float16",
+        },
+    };
 
     /// <summary>A real process that keeps running, redirected like a backend, optionally printing a first line.</summary>
     private Process Running(string? firstLine = null)

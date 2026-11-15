@@ -1,7 +1,8 @@
-using System.Diagnostics;
 using System.Text;
 using RedCompute.Core.Configuration;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.Kev;
 
@@ -21,7 +22,7 @@ public interface IKevProcessController
 public sealed class KevOwnedProcess
 {
     internal KevOwnedProcess(
-        Process hostProcess,
+        IHostProcess hostProcess,
         string? wslDistro,
         int? wslProcessGroupId,
         string? wslStartTime)
@@ -32,7 +33,7 @@ public sealed class KevOwnedProcess
         WslStartTime = wslStartTime;
     }
 
-    internal Process HostProcess { get; }
+    internal IHostProcess HostProcess { get; }
     public int HostProcessId => HostProcess.Id;
     public string? WslDistro { get; }
     public int? WslProcessGroupId { get; }
@@ -43,6 +44,21 @@ public sealed class KevProcessController : IKevProcessController
 {
     private const string Marker = "REDCOMPUTE_KEV_PROCESS=";
 
+    private readonly IExecutionHost _host;
+
+    public KevProcessController(IExecutionHost? host = null)
+    {
+        _host = host ?? LocalExecutionHost.Shared;
+        LaunchServerProcess = spec => _host.Processes.Start(spec);
+        LaunchStopProcess = spec => _host.Processes.Start(spec);
+    }
+
+    /// <summary>Launch seam for the sidecar (WSL wrapper or cmd.exe); the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchServerProcess { get; set; }
+
+    /// <summary>Launch seam for the WSL stop script; the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchStopProcess { get; set; }
+
     public async Task<KevOwnedProcess> StartAsync(
         ProviderConfig config,
         Action<string> log,
@@ -52,7 +68,7 @@ public sealed class KevProcessController : IKevProcessController
             throw new InvalidOperationException("launchCommand is not configured");
 
         // Both launch paths (wsl.exe and cmd.exe) are Windows-only.
-        if (!PlatformSupport.CanLaunchLocalBackends)
+        if (!_host.Platform.CanLaunchLocalBackends)
             throw new PlatformNotSupportedException(PlatformSupport.LocalBackendUnsupported("Launching Kev"));
 
         if (string.IsNullOrWhiteSpace(config.WslDistro))
@@ -75,36 +91,32 @@ public sealed class KevProcessController : IKevProcessController
             $"[ \"{dollar}current\" = \"{dollar}start\" ] && kill -TERM -- \"-{dollar}child\" 2>/dev/null || true; }}; " +
             $"trap cleanup TERM INT EXIT; wait \"{dollar}child\"";
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "wsl.exe",
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        startInfo.ArgumentList.Add("-d");
-        startInfo.ArgumentList.Add(config.WslDistro);
-        startInfo.ArgumentList.Add("--");
-        startInfo.ArgumentList.Add("bash");
-        startInfo.ArgumentList.Add("-lc");
-        startInfo.ArgumentList.Add(wrapper);
-
-        var process = Process.Start(startInfo)
+        // Uncontained, as the sidecar always ran (design section 6).
+        var process = LaunchServerProcess(new HostSpawnSpec
+            {
+                FileName = "wsl.exe",
+                ArgumentList = ["-d", config.WslDistro, "--", "bash", "-lc", wrapper],
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                StandardOutput = StdioMode.Pipe,
+                StandardError = StdioMode.Pipe,
+                Containment = ContainmentMode.None,
+                OwnerLabel = "kev",
+            })
             ?? throw new InvalidOperationException("wsl.exe did not start");
         var owned = new TaskCompletionSource<(int Pid, string StartTime)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        process.OutputDataReceived += (_, e) =>
+        process.OutputLine += line =>
         {
-            if (e.Data is null) return;
-            if (TryParseMarker(e.Data, out var pid, out var startTime))
+            if (line is null) return;
+            if (TryParseMarker(line, out var pid, out var startTime))
                 owned.TrySetResult((pid, startTime));
             // Other output is drained but not forwarded: a sidecar may print
             // request bodies containing raw decision state.
         };
         // Drain only; never copy possible raw decision state into ordinary logs.
-        process.ErrorDataReceived += (_, _) => { };
+        process.ErrorLine += _ => { };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -134,22 +146,17 @@ public sealed class KevProcessController : IKevProcessController
                 owned.WslProcessGroupId is { } pid &&
                 owned.WslStartTime is { } startTime)
             {
-                var stopInfo = new ProcessStartInfo
+                using var stop = LaunchStopProcess(new HostSpawnSpec
                 {
                     FileName = "wsl.exe",
+                    ArgumentList = ["-d", owned.WslDistro, "--", "bash", "-lc", BuildWslStopScript(pid, startTime)],
                     CreateNoWindow = true,
                     UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
-                stopInfo.ArgumentList.Add("-d");
-                stopInfo.ArgumentList.Add(owned.WslDistro);
-                stopInfo.ArgumentList.Add("--");
-                stopInfo.ArgumentList.Add("bash");
-                stopInfo.ArgumentList.Add("-lc");
-                stopInfo.ArgumentList.Add(BuildWslStopScript(pid, startTime));
-
-                using var stop = Process.Start(stopInfo);
+                    StandardOutput = StdioMode.Pipe,
+                    StandardError = StdioMode.Pipe,
+                    Containment = ContainmentMode.None,
+                    OwnerLabel = "kev-stop",
+                });
                 if (stop is not null)
                     await stop.WaitForExitAsync(ct);
             }
@@ -194,24 +201,28 @@ public sealed class KevProcessController : IKevProcessController
             $"[ \"{dollar}current\" = \"{dollar}expected\" ] && kill -KILL -- \"-{dollar}pid\" 2>/dev/null || true; fi";
     }
 
-    private static KevOwnedProcess StartNative(string command, Action<string> log, ProviderConfig config)
+    private KevOwnedProcess StartNative(string command, Action<string> log, ProviderConfig config)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "cmd.exe",
-            Arguments = $"/d /s /c \"{command.Replace("\"", "\\\"", StringComparison.Ordinal)}\"",
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        startInfo.Environment["KEV_MERGE"] = ExtraBool(config, "MergeLora", false) ? "1" : "0";
-        startInfo.Environment["KEV_DTYPE"] = ExtraString(config, "Dtype") ?? "bfloat16";
-        var process = Process.Start(startInfo)
+        var process = LaunchServerProcess(new HostSpawnSpec
+            {
+                FileName = "cmd.exe",
+                RawArguments = $"/d /s /c \"{command.Replace("\"", "\\\"", StringComparison.Ordinal)}\"",
+                EnvironmentOverlay = new Dictionary<string, string>
+                {
+                    ["KEV_MERGE"] = ExtraBool(config, "MergeLora", false) ? "1" : "0",
+                    ["KEV_DTYPE"] = ExtraString(config, "Dtype") ?? "bfloat16",
+                },
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                StandardOutput = StdioMode.Pipe,
+                StandardError = StdioMode.Pipe,
+                Containment = ContainmentMode.None,
+                OwnerLabel = "kev",
+            })
             ?? throw new InvalidOperationException("configured Kev process did not start");
         // Drain child output without relaying possible raw decision state.
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
+        process.OutputLine += _ => { };
+        process.ErrorLine += _ => { };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         return new KevOwnedProcess(process, null, null, null);
