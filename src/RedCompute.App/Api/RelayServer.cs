@@ -265,6 +265,9 @@ public class RelayServer
                 session_id = snap.Id,
                 project_name = snap.ProjectName,
                 project_path = snap.ProjectPath,
+                // As the provider recorded it: a NULL is a session older than node ids and reads as
+                // the legacy node. Never filled in here, so a re-mirrored old session stays NULL.
+                node_id = snap.NodeId,
                 repository = snap.RepositoryId,
                 status = snap.Status,
                 stop_reason = snap.StopReason,
@@ -419,7 +422,8 @@ public class RelayServer
                     });
                 else
                     broadcaster.Broadcast("session.updated", session);
-            });
+            },
+            _nodes);
         SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access);
         SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
         CliVersionEndpoints.Map(registry, _registry);
@@ -550,6 +554,7 @@ public class RelayServer
                 if (data is UnifiedSessionInfo session)
                 {
                     _titles?.Apply(session);
+                    if (_nodes is not null) session.NodeId = ((INodeRegistry)_nodes).Resolve(session.NodeId);
                     SessionEventProjection.ApplyWorkState(session, sessionProvider, _log);
                     // How the last turn ended, interrupt included, so clients stop calling an
                     // interrupted turn completed. The queue's own handler has already closed it.

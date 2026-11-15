@@ -7,6 +7,11 @@ public class UnifiedSessionInfo
     public string? ProviderEntity { get; set; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }
+    /// <summary>
+    /// The node (computer) the session runs on; a session is pinned to it. Null where the provider or
+    /// mirror recorded none (every session older than node ids): the API reports the legacy node.
+    /// </summary>
+    public string? NodeId { get; set; }
     public Guid? RepositoryId { get; set; }
     public SessionStatus Status { get; set; }
     public string? StopReason { get; set; }

@@ -58,6 +58,14 @@ public static class UnifiedSessionEndpoints
     private static SessionAccessService? _access;
     private static SessionTitleStore? _titles;
     private static Action<UnifiedSessionInfo>? _titleChanged;
+    private static INodeRegistry? _nodes;
+
+    /// <summary>A session's node as the API reports it: never null, a session older than node ids is the legacy node.</summary>
+    internal static UnifiedSessionInfo WithNode(UnifiedSessionInfo session, INodeRegistry? nodes)
+    {
+        if (nodes is not null) session.NodeId = nodes.Resolve(session.NodeId);
+        return session;
+    }
 
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
@@ -69,7 +77,8 @@ public static class UnifiedSessionEndpoints
         MaintenanceDeploymentCoordinator? maintenance = null,
         Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null,
         SessionAccessService? access = null,
-        SessionTitleStore? titles = null, Action<UnifiedSessionInfo>? titleChanged = null)
+        SessionTitleStore? titles = null, Action<UnifiedSessionInfo>? titleChanged = null,
+        INodeRegistry? nodes = null)
     {
         // Without a policy source (tests, hosts with no RedLeaf) the contract's no-record defaults
         // apply: auto (ask where the provider has no auto), Full disabled.
@@ -87,6 +96,7 @@ public static class UnifiedSessionEndpoints
         _maintenance = maintenance;
         _titles = titles;
         _titleChanged = titleChanged;
+        _nodes = nodes;
 
         bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
             => ComputeResourceAccess.CanReadSession(
@@ -120,7 +130,7 @@ public static class UnifiedSessionEndpoints
             session.WorkState = SessionWorkStates.Derive(session.Status, PendingQuestions(session).Count, session.BackgroundTasks);
             session.LastTurn = _inputQueue!.LastTurn(session.Id);
             SessionAccessService.Overlay(session, provider);
-            return session;
+            return WithNode(session, _nodes);
         }
 
         // Parked questions are live control state, like background tasks. They are a top-level
@@ -524,7 +534,7 @@ public static class UnifiedSessionEndpoints
             }
             if (keepResident) jobTracker.SetKeepResident(jobId, true);
 
-            return Results.Json(SessionAccessService.Overlay(session, provider));
+            return Results.Json(WithNode(SessionAccessService.Overlay(session, provider), _nodes));
         })
             .WithParam("projectPath", "string", description: "Path to the project directory. Omit for conversation-only sessions, which receive an isolated workspace.", location: ParamLocation.Body)
             .WithParam("repositoryId", "string", description: "Stable RedLeaf Repository entity UUID. When supplied, projectPath must be the Repository's active local_path (exact match) or the root of a git worktree of it (proved with git, usually <local_path>.worktrees/<branch>). Rejected with 422 when the Repository's branch_work is main-only, the worktree folder is missing, or the path is unrelated; the message names the failed rule.", location: ParamLocation.Body)
@@ -1857,7 +1867,7 @@ public static class UnifiedSessionEndpoints
             if (session == null)
                 return Error(500, "resume_failed", provider.LastStartError ?? "Failed to resume session");
 
-            return Results.Json(SessionAccessService.Overlay(session, provider));
+            return Results.Json(WithNode(SessionAccessService.Overlay(session, provider), _nodes));
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/stop",
@@ -3538,6 +3548,7 @@ public static class UnifiedSessionEndpoints
                 properties = new
                 {
                     workState = WorkStateSchema,
+                    nodeId = new { type = "string", description = "The node (computer) the session runs on; see GET /nodes. Sessions older than node ids report the local node." },
                     accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray(),
                         description = "The session's access level; null for a session persisted before access levels and not yet relaunched" },
                     maxAccessLevel = new { type = new[] { "string", "null" }, description = "Hard cap; null when uncapped" },

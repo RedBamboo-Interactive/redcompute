@@ -795,6 +795,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             ProviderEntity = Str(d, "provider_entity"),
             ProjectName = Str(d, "project_name") ?? "",
             ProjectPath = Str(d, "project_path") ?? "",
+            NodeId = Str(d, "node_id"),
             RepositoryId = Str(d, "repository") is { } repositoryId
                 && Guid.TryParse(repositoryId, out var repositoryGuid)
                     ? repositoryGuid

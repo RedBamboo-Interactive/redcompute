@@ -15,6 +15,8 @@ public sealed class AiSessionSnapshot
     public string? Title { get; init; }
     public string ProjectName { get; init; } = "";
     public string? ProjectPath { get; init; }
+    /// <summary>The node the session runs on, as the provider recorded it; null when it recorded none.</summary>
+    public string? NodeId { get; init; }
     public Guid? RepositoryId { get; init; }
     public string Status { get; init; } = "";
     public string? StopReason { get; init; }
