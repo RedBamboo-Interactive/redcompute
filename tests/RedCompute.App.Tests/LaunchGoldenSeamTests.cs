@@ -162,17 +162,14 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         var store = LaunchGoldenProcessTests.SeedRollback(_project, _scratch);
         var projects = Path.Combine(_root, "projects");
         LaunchGoldenProcessTests.WriteTwoTurnChain(Path.Combine(projects, "golden"));
+        // The probe's production default, captured where the host hands it to the OS: uncontained,
+        // as B-claude-fork-probe proves on a real process. The capture starts nothing, so the probe
+        // reports the CLI unavailable; only the launch is pinned here.
         var service = Claude(store);
         service.ProjectsRootOverride = projects;
-        service.ProbeFork = (start, _) =>
-        {
-            Capture(start);
-            return Task.FromResult(new ClaudeForkProbeResult(ClaudeForkProbeStatus.Accepted));
-        };
         using (SessionScratch.PushExecutionToken(Token))
             await service.RollbackAsync(LaunchGoldenProcessTests.RollbackRequest());
-        // ProbeForkWithProcessAsync: a raw Process.Start (Rollback.cs:196), proven by B-claude-fork-probe.
-        Verify("A-claude-fork-probe", "claude.ProbeFork", "none");
+        VerifyHosted("A-claude-fork-probe", "claude.ProbeFork");
     }
 
     // ---- ComfyUI and LocalWsl: the start info each backend's StartAsync launches ------------------------

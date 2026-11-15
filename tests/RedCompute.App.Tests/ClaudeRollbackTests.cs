@@ -518,9 +518,9 @@ public sealed class ClaudeRollbackTests : IDisposable
             store, new NullQualityModes(), () => null, (_, _) => { }, action => action());
         service.LaunchSessionProcess = HostSeams.From(Launch);
         service.ProjectsRootOverride = Path.Combine(_root, "projects");
-        service.ProbeFork = (startInfo, _) =>
+        service.ProbeFork = (spec, _) =>
         {
-            lock (_probes) _probes.Add(startInfo);
+            lock (_probes) _probes.Add(LocalExecutionHost.ToStartInfo(spec));
             return Task.FromResult(_probe);
         };
         return service;

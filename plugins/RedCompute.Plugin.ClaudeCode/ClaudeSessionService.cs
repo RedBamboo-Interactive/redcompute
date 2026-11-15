@@ -19,6 +19,8 @@ public partial class ClaudeSessionService
     internal const string OneshotOwner = "claude-code-oneshot";
     /// <summary>Containment owner of the agent execution.</summary>
     internal const string AgentOwner = "claude-code-agent";
+    /// <summary>Owner label of the rollback fork probe, which runs uncontained (no tree, no ledger).</summary>
+    internal const string ForkProbeOwner = "claude-code-fork-probe";
 
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     // Sessions whose process was killed for an automatic relaunch and is not yet replaced.
@@ -89,6 +91,7 @@ public partial class ClaudeSessionService
         LaunchSessionProcess = spec => _host.Processes.Start(spec);
         LaunchOneshotProcess = spec => _host.Processes.Start(spec);
         LaunchAgentProcess = spec => _host.Processes.Start(spec);
+        ProbeFork = ProbeForkWithProcessAsync;
         _config = config;
         _jobTracker = jobTracker;
         _sessionStore = sessionStore;
@@ -2217,11 +2220,12 @@ public partial class ClaudeSessionService
 
     /// <summary>
     /// A Claude CLI launch: every stream piped (stdin UTF-8 without a BOM, stdout and stderr UTF-8),
-    /// no window, contained as a session under <paramref name="owner"/>. Exactly the start info each
-    /// launch site built before the execution host.
+    /// no window, contained as a session under <paramref name="owner"/> unless told otherwise. Exactly
+    /// the start info each launch site built before the execution host.
     /// </summary>
     private static HostSpawnSpec CliSpec(string fileName, IReadOnlyList<string> arguments, HostPath? workingDirectory,
-        IReadOnlyDictionary<string, string>? environment, string owner) => new()
+        IReadOnlyDictionary<string, string>? environment, string owner,
+        ContainmentMode containment = ContainmentMode.Session) => new()
     {
         FileName = fileName,
         ArgumentList = arguments,
@@ -2235,7 +2239,7 @@ public partial class ClaudeSessionService
         StandardErrorEncoding = Encoding.UTF8,
         CreateNoWindow = true,
         UseShellExecute = false,
-        Containment = ContainmentMode.Session,
+        Containment = containment,
         OwnerLabel = owner,
     };
 

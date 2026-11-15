@@ -9,6 +9,8 @@ using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
 using SessionStatus = RedCompute.Core.Sessions.SessionStatus;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -159,9 +161,10 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         var record = Record("rewound", level);
         var target = new ClaudeForkTarget("rollback-1", "uuid-kept", "uuid-dropped", ["uuid-dropped"]);
 
-        var startInfo = (ProcessStartInfo)typeof(ClaudeSessionService)
-            .GetMethod("ForkProbeStartInfo", BindingFlags.Instance | BindingFlags.NonPublic)!
+        var spec = (HostSpawnSpec)typeof(ClaudeSessionService)
+            .GetMethod("ForkProbeSpec", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(_service, [Path.Combine(_root, "claude.exe"), record, target])!;
+        var startInfo = LocalExecutionHost.ToStartInfo(spec);
 
         Assert.Equal(mode, PermissionModeArg(startInfo));
         Assert.Contains(AllowBypass, startInfo.ArgumentList);

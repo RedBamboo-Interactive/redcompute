@@ -75,9 +75,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C11 Claude Code fork probe", [
-            "RedCompute.Plugin.ClaudeCode.ClaudeSessionService",
-        ]),
         ("C12 Codex", [
             "RedCompute.Plugin.Codex.CodexAppServerConnection",
             "RedCompute.Plugin.Codex.CodexCliEnvironment",

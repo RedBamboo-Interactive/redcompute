@@ -1,8 +1,8 @@
-using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
 using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
@@ -14,8 +14,8 @@ public partial class ClaudeSessionService
 {
     private static readonly TimeSpan ForkProbeTimeout = TimeSpan.FromSeconds(30);
 
-    /// <summary>Test seam: proves a fork to the CLI without a model call.</summary>
-    internal Func<ProcessStartInfo, CancellationToken, Task<ClaudeForkProbeResult>> ProbeFork { get; set; } = ProbeForkWithProcessAsync;
+    /// <summary>Test seam: proves a fork to the CLI without a model call. The default launches it on the host.</summary>
+    internal Func<HostSpawnSpec, CancellationToken, Task<ClaudeForkProbeResult>> ProbeFork { get; set; }
 
     internal string? ProjectsRootOverride { get; set; }
 
@@ -75,7 +75,7 @@ public partial class ClaudeSessionService
             return Conclude(record, request, target);
         }
 
-        var probe = await ProbeFork(ForkProbeStartInfo(claudePath, record, target), ct);
+        var probe = await ProbeFork(ForkProbeSpec(claudePath, record, target), ct);
         return probe.Status switch
         {
             ClaudeForkProbeStatus.Accepted => Conclude(record, request, target),
@@ -132,8 +132,8 @@ public partial class ClaudeSessionService
 
         // Synchronous caller: run the probe on the pool so its awaits never need the blocked thread
         // (on a UI thread they would wait on it forever), as the transcript persistence bridge does.
-        var startInfo = ForkProbeStartInfo(claudePath, record, target);
-        var probe = Task.Run(() => ProbeFork(startInfo, CancellationToken.None)).GetAwaiter().GetResult();
+        var spec = ForkProbeSpec(claudePath, record, target);
+        var probe = Task.Run(() => ProbeFork(spec, CancellationToken.None)).GetAwaiter().GetResult();
         switch (probe.Status)
         {
             case ClaudeForkProbeStatus.Accepted:
@@ -167,41 +167,33 @@ public partial class ClaudeSessionService
         arguments.Add(target.DropsTurnUuid);
     }
 
-    private ProcessStartInfo ForkProbeStartInfo(string claudePath, ClaudeSessionRecord record, ClaudeForkTarget target)
+    /// <summary>
+    /// The probe launch as it has always been: the session's argv plus the fork flags in the project
+    /// directory, uncontained, with RedCompute's own environment untouched (no scratch, no token).
+    /// Containing it would change what dies with the session and what it sees: a separate decision.
+    /// </summary>
+    private HostSpawnSpec ForkProbeSpec(string claudePath, ClaudeSessionRecord record, ClaudeForkTarget target)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = claudePath,
-            WorkingDirectory = record.ProjectPath,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
         var arguments = new List<string>();
         PopulateSessionArgs(arguments, PermissionModeFor(record.AccessLevel), record.ClaudeSessionId, record.Model, record.Effort, record.DeveloperInstructions);
         AddForkArgs(arguments, target);
-        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
-        return startInfo;
+        return CliSpec(claudePath, arguments, _host.Path(record.ProjectPath), environment: null, ForkProbeOwner,
+            ContainmentMode.None);
     }
 
     /// <summary>
     /// The CLI validates the fork as it boots. It answers a control request once that has passed, and
     /// answers with an error result otherwise, so no prompt is sent and no model is called.
     /// </summary>
-    private static async Task<ClaudeForkProbeResult> ProbeForkWithProcessAsync(ProcessStartInfo startInfo, CancellationToken ct)
+    private async Task<ClaudeForkProbeResult> ProbeForkWithProcessAsync(HostSpawnSpec spec, CancellationToken ct)
     {
-        using var process = Process.Start(startInfo);
+        using var process = _host.Processes.Start(spec);
         if (process is null) return new(ClaudeForkProbeStatus.Unavailable, "The CLI did not start");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ForkProbeTimeout);
         try
         {
-            process.ErrorDataReceived += (_, _) => { };
+            process.ErrorLine += _ => { };
             process.BeginErrorReadLine();
             await process.StandardInput.WriteLineAsync(ForkProbeRequest);
             await process.StandardInput.FlushAsync(timeout.Token);
