@@ -10,6 +10,8 @@ using RedCompute.Plugin.ComfyUI;
 using RedCompute.Plugin.LocalWsl;
 using RedCompute.Plugin.OpenCode;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -168,8 +170,8 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     public void ComfyUI_start(string golden, bool wsl)
     {
         var provider = new ComfyUIProvider(ComfyConfig(wsl), "image-gen", _ => { });
-        _launches.Add(provider.BuildStartInfo());
-        Verify(golden, "comfyui.server", "none");
+        HostConverts(provider.BuildSpawnSpec());
+        VerifyHosted(golden, "comfyui.server");
     }
 
     [Theory]
@@ -215,13 +217,10 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     [InlineData("A-comfyui-start-wsl", true)]
     public async Task ComfyUI_start_through_its_seam(string golden, bool wsl)
     {
-        // Before launching, StartAsync only probes 127.0.0.1:18999 over HTTP; the seam spawns nothing.
-        var provider = new ComfyUIProvider(ComfyConfig(wsl), "image-gen", _ => { })
-        {
-            LaunchServerProcess = start => { Capture(start); return null; },
-        };
+        // Before launching, StartAsync only probes 127.0.0.1:18999 over HTTP; the host spawns nothing.
+        var provider = new ComfyUIProvider(ComfyConfig(wsl), "image-gen", _ => { }, host: CapturingHost());
         Assert.False(await provider.StartAsync());
-        Verify(golden, "comfyui.server", "none");
+        VerifyHosted(golden, "comfyui.server");
     }
 
     /// <summary>
@@ -238,6 +237,38 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         };
         Assert.False(await provider.StartAsync());
         Verify("A-localwsl-start-native", "localwsl.server", "none");
+    }
+
+    // ---- stop: recorded through a seam on the pre-move code, then where the host hands it over ---------
+
+    /// <summary>The WSL stop kills ComfyUI's python inside the distro (<c>wsl.exe pkill</c>).</summary>
+    [WindowsFact("the stop runs only after a Windows launch")]
+    public async Task ComfyUI_stop_wsl()
+    {
+        var config = ComfyConfig(wsl: true);
+        config.StartupTimeoutSeconds = 1;
+        // The server launch gets a real process (the stop runs only for a live one); the stop is captured.
+        var provider = new ComfyUIProvider(config, "image-gen", _ => { },
+            host: CapturingHost(runs: start => start.ArgumentList.Contains("-lc")));
+        Assert.False(await provider.StartAsync());
+        await provider.StopAsync();
+        VerifyHosted("A-comfyui-stop-wsl", "comfyui.stop");
+    }
+
+    /// <summary>A real process that keeps running, redirected like a backend, optionally printing a first line.</summary>
+    private Process Running(string? firstLine = null)
+    {
+        var start = new ProcessStartInfo("cmd.exe")
+        {
+            CreateNoWindow = true, UseShellExecute = false,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("/d");
+        start.ArgumentList.Add("/c");
+        start.ArgumentList.Add((firstLine is null ? "" : $"echo {firstLine}& ") + "ping -n 120 127.0.0.1 >nul");
+        var process = Process.Start(start)!;
+        lock (_started) _started.Add(process);
+        return process;
     }
 
     // ---- OpenCode, through the seams added in node zero (G0b) -----------------------------------------
@@ -318,12 +349,36 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         {
             ["opencode.LaunchAcpProcess"] = await ContainmentOf(OpenCode().LaunchAcpProcess),
             ["opencode.LaunchExecProcess"] = await ContainmentOf(OpenCode().LaunchExecProcess),
-            ["comfyui.LaunchServerProcess"] = await ContainmentOf(
-                new ComfyUIProvider(ComfyConfig(false), "image-gen", _ => { }).LaunchServerProcess),
+            ["comfyui.LaunchServerProcess"] = await ContainmentOf(Comfy().LaunchServerProcess, Comfy().BuildSpawnSpec()),
             ["localwsl.LaunchServerProcess"] = await ContainmentOf(
                 new LocalWslProvider(LocalWslConfig(false), "tts", _ => { }).LaunchServerProcess),
         };
         LaunchGoldens.Verify("A-seam-defaults-node-zero", seams);
+    }
+
+    private ComfyUIProvider Comfy() => new(ComfyConfig(false), "image-gen", _ => { });
+
+    /// <summary>
+    /// The containment a spec seam's production default gives the provider's own spec: the spec's
+    /// launch target is swapped for a stand-in that stays alive, everything else is the provider's.
+    /// </summary>
+    private async Task<string> ContainmentOf(Func<HostSpawnSpec, IHostProcess?> seam, HostSpawnSpec production)
+    {
+        using var process = seam(production with
+        {
+            FileName = TestProcesses.StdinSink,
+            ArgumentList = null,
+            RawArguments = null,
+            WorkingDirectory = null,
+            EnvironmentOverlay = null,
+            CreateNoWindow = true,
+            StandardInput = StdioMode.Pipe,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+        })!;
+        var containment = await ProbeHarness.ObserveContainmentAsync(process.Id);
+        process.Kill(entireProcessTree: true);
+        return containment;
     }
 
     private OpenCodeSessionService OpenCode(bool dataHome = true)
@@ -352,6 +407,36 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     // ---- helpers -------------------------------------------------------------------------------
 
     private readonly List<ProcessStartInfo> _launches = [];
+    private readonly List<(ProcessStartInfo Start, string Containment)> _hosted = [];
+
+    /// <summary>
+    /// An execution host that captures, at the single point where it hands a start info to the OS,
+    /// every launch and the containment it would apply. <paramref name="runs"/> picks launches that
+    /// get a real, long-running stand-in instead (a stop runs only for a live process).
+    /// </summary>
+    private LocalExecutionHost CapturingHost(Func<ProcessStartInfo, bool>? runs = null) => new("golden-node")
+    {
+        StartProcess = (start, mode, owner) =>
+        {
+            if (runs?.Invoke(start) == true) return Running();
+            lock (_hosted) _hosted.Add((start, LocalExecutionHost.DescribeContainment(mode, owner)));
+            return null;
+        },
+    };
+
+    /// <summary>A spec as the local host converts it, with the containment it would apply.</summary>
+    private void HostConverts(HostSpawnSpec spec)
+    {
+        lock (_hosted)
+            _hosted.Add((LocalExecutionHost.ToStartInfo(spec), LocalExecutionHost.DescribeContainment(spec.Containment, spec.OwnerLabel)));
+    }
+
+    private void VerifyHosted(string golden, string seam)
+    {
+        (ProcessStartInfo Start, string Containment) launch;
+        lock (_hosted) launch = Assert.Single(_hosted);
+        LaunchGoldens.Verify(golden, LaunchGoldens.FromStartInfo(launch.Start, seam, launch.Containment, _normalizer));
+    }
 
     private void Capture(ProcessStartInfo start)
     {

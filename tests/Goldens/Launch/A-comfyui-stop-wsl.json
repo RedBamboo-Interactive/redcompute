@@ -1,0 +1,20 @@
+{
+  "arguments": "-d Golden-Distro pkill -f \"python.*main.py\"",
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": null
+  },
+  "environmentTouched": false,
+  "fileName": "wsl.exe",
+  "redirect": {
+    "stderr": false,
+    "stdin": false,
+    "stdout": false
+  },
+  "seam": "comfyui.stop",
+  "useShellExecute": false,
+  "workingDirectory": ""
+}

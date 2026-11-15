@@ -7,6 +7,7 @@ using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.ComfyUI;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -91,7 +92,7 @@ public sealed class ComfyUIProviderTests
             },
         }, "image-gen", _ => { });
 
-        var startInfo = provider.BuildStartInfo();
+        var startInfo = LocalExecutionHost.ToStartInfo(provider.BuildSpawnSpec());
 
         Assert.Equal(@"C:\Python Environments\Comfy UI\Scripts\python.exe", startInfo.FileName);
         Assert.Equal(@"C:\Program Files\Comfy UI", startInfo.WorkingDirectory);
@@ -118,7 +119,7 @@ public sealed class ComfyUIProviderTests
             },
         }, "image-gen", _ => { });
 
-        var startInfo = provider.BuildStartInfo();
+        var startInfo = LocalExecutionHost.ToStartInfo(provider.BuildSpawnSpec());
 
         Assert.Contains("--database-url sqlite:///F:/Databases/comfy.db", startInfo.Arguments);
         Assert.DoesNotContain("T:/AI/User/comfyui.db", startInfo.Arguments);
@@ -140,7 +141,7 @@ public sealed class ComfyUIProviderTests
             },
         }, "image-gen", _ => { });
 
-        var startInfo = provider.BuildStartInfo();
+        var startInfo = LocalExecutionHost.ToStartInfo(provider.BuildSpawnSpec());
         var command = startInfo.ArgumentList[4];
 
         Assert.Equal("wsl.exe", startInfo.FileName);

@@ -1,11 +1,9 @@
-using System.Diagnostics;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
@@ -17,6 +15,8 @@ using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.ComfyUI;
 
@@ -32,10 +32,15 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly IDisposable? _acceleratorRegistration;
     private readonly string _acceleratorId;
-    private Process? _process;
+    private readonly IExecutionHost _executionHost;
+    private readonly string _baseUrl;
+    private IHostProcess? _process;
 
-    /// <summary>Launch seam for the ComfyUI server process.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchServerProcess { get; set; } = startInfo => Process.Start(startInfo);
+    /// <summary>Launch seam for the ComfyUI server process; the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchServerProcess { get; set; }
+
+    /// <summary>Launch seam for the WSL stop (<c>pkill</c> inside the distro); the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchStopProcess { get; set; }
     private readonly ConcurrentQueue<string> _startupErrors = new();
     private BackendStatus _status = BackendStatus.Stopped;
     private DateTime _lastHealthCheck;
@@ -58,7 +63,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     public bool SupportsRerun => true;
     public TimeSpan HealthCheckInterval => TimeSpan.FromSeconds(10);
 
-    private string BaseUrl => $"http://{_host}:{_port}";
+    private string BaseUrl => _baseUrl;
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
@@ -84,14 +89,18 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     };
 
     public ComfyUIProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
-        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
         _log = log;
+        _executionHost = host ?? LocalExecutionHost.Shared;
+        LaunchServerProcess = spec => _executionHost.Processes.Start(spec);
+        LaunchStopProcess = spec => _executionHost.Processes.Start(spec);
 
         _host = ProviderHelpers.GetExtra(config, "Host", "127.0.0.1");
         _port = config.BackendPort ?? 8188;
+        _baseUrl = _executionHost.Network.ResolveServiceBaseUrl($"http://{_host}:{_port}");
         _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
         _acceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0");
         _acceleratorAdmission = acceleratorAdmission;
@@ -146,8 +155,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         {
             while (_startupErrors.TryDequeue(out _)) { }
             EnsureConfiguredDirectories();
-            var startInfo = BuildStartInfo();
-            _process = LaunchServerProcess(startInfo);
+            _process = LaunchServerProcess(BuildSpawnSpec());
             if (_process == null)
             {
                 _status = BackendStatus.Error;
@@ -155,13 +163,13 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                 return false;
             }
 
-            _process.OutputDataReceived += (_, e) => { if (e.Data != null) _log($"[ComfyUI] {e.Data}"); };
-            _process.ErrorDataReceived += (_, e) =>
+            _process.OutputLine += line => { if (line != null) _log($"[ComfyUI] {line}"); };
+            _process.ErrorLine += line =>
             {
-                if (e.Data == null) return;
-                _startupErrors.Enqueue(e.Data);
+                if (line == null) return;
+                _startupErrors.Enqueue(line);
                 while (_startupErrors.Count > 12) _startupErrors.TryDequeue(out var _discarded);
-                _log($"[ComfyUI:err] {e.Data}");
+                _log($"[ComfyUI:err] {line}");
             };
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
@@ -211,12 +219,14 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             {
                 if (_config.WslDistro != null)
                 {
-                    var kill = Process.Start(new ProcessStartInfo
+                    var kill = LaunchStopProcess(new HostSpawnSpec
                     {
                         FileName = "wsl.exe",
-                        Arguments = $"-d {_config.WslDistro} pkill -f \"python.*main.py\"",
+                        RawArguments = $"-d {_config.WslDistro} pkill -f \"python.*main.py\"",
                         CreateNoWindow = true,
-                        UseShellExecute = false
+                        UseShellExecute = false,
+                        Containment = ContainmentMode.None,
+                        OwnerLabel = "comfyui-stop",
                     });
                     kill?.WaitForExit(5000);
                 }
@@ -379,7 +389,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
     // --- Private methods ---
 
-    internal ProcessStartInfo BuildStartInfo()
+    /// <summary>The server launch: uncontained, as ComfyUI always ran (design section 6).</summary>
+    internal HostSpawnSpec BuildSpawnSpec()
     {
         var arguments = BuildComfyArguments(_config.WslDistro != null);
         var serverArgs = ProviderHelpers.GetExtra(_config, "ServerArgs", "");
@@ -399,47 +410,49 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             if (!string.IsNullOrWhiteSpace(serverArgs))
                 command.Append(' ').Append(serverArgs.Trim());
 
-            var startInfo = new ProcessStartInfo
+            return new HostSpawnSpec
             {
                 FileName = "wsl.exe",
+                ArgumentList = ["-d", _config.WslDistro, "bash", "-lc", command.ToString()],
                 CreateNoWindow = true,
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
+                StandardOutput = StdioMode.Pipe,
+                StandardError = StdioMode.Pipe,
+                Containment = ContainmentMode.None,
+                OwnerLabel = "comfyui",
             };
-            startInfo.ArgumentList.Add("-d");
-            startInfo.ArgumentList.Add(_config.WslDistro);
-            startInfo.ArgumentList.Add("bash");
-            startInfo.ArgumentList.Add("-lc");
-            startInfo.ArgumentList.Add(command.ToString());
-            return startInfo;
         }
 
-        var pythonExe = ResolveNativePythonExecutable(_config);
+        var pythonExe = ResolveNativePythonExecutable(_config, _executionHost);
 
-        return new ProcessStartInfo
+        return new HostSpawnSpec
         {
             FileName = pythonExe,
-            Arguments = string.Join(' ', arguments.Select(QuoteWindowsArgument))
+            RawArguments = string.Join(' ', arguments.Select(QuoteWindowsArgument))
                 + (string.IsNullOrWhiteSpace(serverArgs) ? "" : $" {serverArgs.Trim()}"),
-            WorkingDirectory = _config.ServerPath,
+            WorkingDirectory = _config.ServerPath is { } workingDirectory ? _executionHost.Path(workingDirectory) : null,
             CreateNoWindow = true,
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            Containment = ContainmentMode.None,
+            OwnerLabel = "comfyui",
         };
     }
 
     internal static string ResolveNativePythonExecutable(ProviderConfig config)
+        => ResolveNativePythonExecutable(config, LocalExecutionHost.Shared);
+
+    internal static string ResolveNativePythonExecutable(ProviderConfig config, IExecutionHost host)
     {
         if (!string.IsNullOrWhiteSpace(config.VenvPath))
-            return Path.Combine(config.VenvPath, "Scripts", "python.exe");
+            return host.PathRules.Combine(config.VenvPath, "Scripts", "python.exe");
 
         if (!string.IsNullOrWhiteSpace(config.ServerPath))
         {
-            var portablePython = Path.GetFullPath(Path.Combine(
+            var portablePython = host.PathRules.GetFullPath(host.PathRules.Combine(
                 config.ServerPath, "..", "python_embeded", "python.exe"));
-            if (File.Exists(portablePython)) return portablePython;
+            if (host.Files.FileExists(host.Path(portablePython))) return portablePython;
         }
 
         return "python";
@@ -502,7 +515,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
                  })
         {
             var path = ProviderHelpers.GetExtra(_config, key, "").Trim();
-            if (path.Length > 0) Directory.CreateDirectory(path);
+            if (path.Length > 0) _executionHost.Files.CreateDirectory(_executionHost.Path(path));
         }
     }
 
@@ -658,9 +671,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         if (!isLocal || _config.WslDistro != null)
             return false;
 
-        return IPGlobalProperties.GetIPGlobalProperties()
-            .GetActiveTcpListeners()
-            .All(listener => listener.Port != _port);
+        return !_executionHost.Network.IsListening(_port);
     }
 
     private static bool TryReadQueueCount(JsonElement queue, string propertyName, out int count)

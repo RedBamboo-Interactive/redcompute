@@ -72,9 +72,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C6 ComfyUI", [
-            "RedCompute.Plugin.ComfyUI.ComfyUIProvider",
-        ]),
         ("C7 LocalWsl, TtsLocal", [
             "RedCompute.Plugin.LocalWsl.LocalWslProvider",
             "RedCompute.Plugin.TtsLocal.TtsLocalProvider",
