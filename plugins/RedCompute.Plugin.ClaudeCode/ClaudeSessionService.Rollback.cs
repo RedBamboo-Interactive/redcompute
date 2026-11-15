@@ -157,14 +157,14 @@ public partial class ClaudeSessionService
         StreamEvent?.Invoke(sessionId, new ClaudeStreamEvent { Type = "error", Content = text, IsPartial = false });
     }
 
-    private static void AddForkArgs(ProcessStartInfo startInfo, ClaudeForkTarget? target)
+    private static void AddForkArgs(List<string> arguments, ClaudeForkTarget? target)
     {
         if (target?.ForkAtUuid is null) return;
-        startInfo.ArgumentList.Add("--resume-session-at");
-        startInfo.ArgumentList.Add(target.ForkAtUuid);
+        arguments.Add("--resume-session-at");
+        arguments.Add(target.ForkAtUuid);
         if (target.DropsTurnUuid is null) return;
-        startInfo.ArgumentList.Add("--resume-drops-turn");
-        startInfo.ArgumentList.Add(target.DropsTurnUuid);
+        arguments.Add("--resume-drops-turn");
+        arguments.Add(target.DropsTurnUuid);
     }
 
     private ProcessStartInfo ForkProbeStartInfo(string claudePath, ClaudeSessionRecord record, ClaudeForkTarget target)
@@ -182,8 +182,10 @@ public partial class ClaudeSessionService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
-        PopulateSessionArgs(startInfo, PermissionModeFor(record.AccessLevel), record.ClaudeSessionId, record.Model, record.Effort, record.DeveloperInstructions);
-        AddForkArgs(startInfo, target);
+        var arguments = new List<string>();
+        PopulateSessionArgs(arguments, PermissionModeFor(record.AccessLevel), record.ClaudeSessionId, record.Model, record.Effort, record.DeveloperInstructions);
+        AddForkArgs(arguments, target);
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
         return startInfo;
     }
 

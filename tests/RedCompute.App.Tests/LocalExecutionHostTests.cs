@@ -196,6 +196,43 @@ public sealed class LocalExecutionHostTests
         Assert.Equal("none", LocalExecutionHost.DescribeContainment(ContainmentMode.None, "comfyui"));
     }
 
+    /// <summary>
+    /// Session readers and control-line writers (Claude's ReadStdout/ReadStderr/WriteControlLine) keep
+    /// reading and writing the very objects the process itself hands out, on every access.
+    /// </summary>
+    [Fact]
+    public void A_launched_process_hands_out_the_process_own_stream_objects()
+    {
+        var host = new LocalExecutionHost("node_test");
+        using var hosted = host.Processes.Start(new HostSpawnSpec
+        {
+            FileName = TestProcesses.StdinSink,
+            CreateNoWindow = true,
+            StandardInput = StdioMode.Pipe,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            Containment = ContainmentMode.None,
+            OwnerLabel = "test-sink",
+        })!;
+        var process = Assert.IsType<LocalHostProcess>(hosted).Process;
+        try
+        {
+            Assert.Same(process.StandardOutput, hosted.StandardOutput);
+            Assert.Same(process.StandardError, hosted.StandardError);
+            Assert.Same(process.StandardInput, hosted.StandardInput);
+            Assert.Same(hosted.StandardOutput, hosted.StandardOutput);
+            Assert.Same(hosted.StandardInput, hosted.StandardInput);
+            Assert.Equal(process.Id, hosted.Id);
+        }
+        finally
+        {
+            hosted.Kill(entireProcessTree: true);
+        }
+    }
+
     [Fact]
     public async Task A_launched_process_forwards_its_streams_lines_and_exit()
     {

@@ -41,8 +41,8 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
             (_, _) => Task.CompletedTask,
             _runner, () => "npm.cmd", () => _root, new EmptyInspector(), Patience);
         _service.LaunchGate = _manager;
-        _service.LaunchSessionProcess = _ => Track(StartPowerShell("[Console]::In.ReadToEnd()"));
-        _service.LaunchOneshotProcess = _ => StartOutputProcess(OneshotOutput);
+        _service.LaunchSessionProcess = HostSeams.From(_ => Track(StartPowerShell("[Console]::In.ReadToEnd()")));
+        _service.LaunchOneshotProcess = HostSeams.From(_ => StartOutputProcess(OneshotOutput));
     }
 
     [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
@@ -127,12 +127,12 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
     public async Task Cancelled_oneshot_kills_its_process_before_it_stops_keeping_installs_out()
     {
         Process? observer = null;
-        _service.LaunchOneshotProcess = _ =>
+        _service.LaunchOneshotProcess = HostSeams.From(_ =>
         {
             var process = Track(StartPowerShell("Start-Sleep -Seconds 120"));
             observer = Process.GetProcessById(process.Id);
             return process;
-        };
+        });
         using var cancel = new CancellationTokenSource();
         var oneshot = RunOneshotAsync(cancel.Token);
         await WaitUntilAsync(() => Volatile.Read(ref observer) is not null);
@@ -152,16 +152,16 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
     {
         _runner.HoldInstall();
         var launches = 0;
-        _service.LaunchOneshotProcess = _ =>
+        _service.LaunchOneshotProcess = HostSeams.From(_ =>
         {
             Interlocked.Increment(ref launches);
             return StartOutputProcess(OneshotOutput);
-        };
-        _service.LaunchAgentProcess = _ =>
+        });
+        _service.LaunchAgentProcess = HostSeams.From(_ =>
         {
             Interlocked.Increment(ref launches);
             return StartOutputProcess(OneshotOutput);
-        };
+        });
         var operation = _manager.StartInstall("latest");
         await _runner.InstallStarted.WaitAsync(Patience);
 
@@ -180,7 +180,7 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
     [WindowsFact("the fake CLI output runs under powershell.exe and installs go through an npm.cmd shim")]
     public async Task Agent_that_fails_to_start_releases_the_gate()
     {
-        _service.LaunchAgentProcess = _ => null;
+        _service.LaunchAgentProcess = HostSeams.From(_ => null);
 
         var result = await RunAgentAsync(CancellationToken.None, 30, null).WaitAsync(Patience);
 
@@ -194,12 +194,12 @@ public sealed class ClaudeCliLaunchGateTests : IDisposable
         CancellationToken ct, int timeoutSeconds = 120, string? streamKey = null)
     {
         Process? observer = null;
-        _service.LaunchAgentProcess = _ =>
+        _service.LaunchAgentProcess = HostSeams.From(_ =>
         {
             var process = Track(StartPowerShell("Start-Sleep -Seconds 120"));
             observer = Process.GetProcessById(process.Id);
             return process;
-        };
+        });
         var agent = RunAgentAsync(ct, timeoutSeconds, streamKey);
         await WaitUntilAsync(() => Volatile.Read(ref observer) is not null);
         return (agent, observer!);

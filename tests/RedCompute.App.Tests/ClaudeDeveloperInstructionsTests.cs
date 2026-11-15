@@ -313,7 +313,7 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
             new NullQualityModes(),
             () => null,
             (_, _) => { });
-        service.LaunchSessionProcess = Launch;
+        service.LaunchSessionProcess = HostSeams.From(Launch);
         return service;
     }
 

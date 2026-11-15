@@ -285,7 +285,7 @@ public sealed class ClaudeToolAvailabilityTests
             _service = new ClaudeSessionService(
                 new ClaudeConfig { ClaudePath = claudePath },
                 new MemoryJobTracker(), new EmptyStore(), new NullQualityModes(), () => null, (_, _) => { });
-            _service.LaunchOneshotProcess = Launch;
+            _service.LaunchOneshotProcess = HostSeams.From(Launch);
         }
 
         public async Task<ClaudeSessionService.OneshotResult> ExecuteAsync(IReadOnlyList<GenerateImage>? images = null)

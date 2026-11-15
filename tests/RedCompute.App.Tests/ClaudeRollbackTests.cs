@@ -419,7 +419,7 @@ public sealed class ClaudeRollbackTests : IDisposable
         File.WriteAllText(claudePath, "");
         var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, new MemoryJobTracker(),
             store, new NullQualityModes(), () => null, (_, _) => { }, action => action());
-        service.LaunchSessionProcess = Launch;
+        service.LaunchSessionProcess = HostSeams.From(Launch);
         var info = service.StartSession(_root, "haiku", "owner", null, null, "high", null, null, null, Provenance());
 
         Assert.True(await service.SendInput(info!.Id, [SessionInputPart.TextPart("go")], messageUid: "same-uid"));
@@ -515,7 +515,7 @@ public sealed class ClaudeRollbackTests : IDisposable
         if (!File.Exists(claudePath)) File.WriteAllText(claudePath, "");
         var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, new MemoryJobTracker(),
             store, new NullQualityModes(), () => null, (_, _) => { }, action => action());
-        service.LaunchSessionProcess = Launch;
+        service.LaunchSessionProcess = HostSeams.From(Launch);
         service.ProjectsRootOverride = Path.Combine(_root, "projects");
         service.ProbeFork = (startInfo, _) =>
         {

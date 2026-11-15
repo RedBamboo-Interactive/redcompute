@@ -146,7 +146,7 @@ public sealed class ClaudePendingQuestionTests : IDisposable
             new ClaudeBackgroundWorkTests.MemoryJobTracker(), store, new ClaudeBackgroundWorkTests.NullQualityModes(),
             () => null, (_, _) => { }, action => action());
         if (timeout is { } t) service.QuestionAnswerTimeout = t;
-        service.LaunchSessionProcess = _ =>
+        service.LaunchSessionProcess = HostSeams.From(_ =>
         {
             var process = Process.Start(new ProcessStartInfo
             {
@@ -159,7 +159,7 @@ public sealed class ClaudePendingQuestionTests : IDisposable
             })!;
             _processes.Add(process);
             return process;
-        };
+        });
         var live = new List<ClaudeStreamEvent>();
         service.StreamEvent += (_, e) => { lock (live) live.Add(e); };
         var info = service.StartSession(_root, "haiku", "owner", null, null, "high", null, null, null,

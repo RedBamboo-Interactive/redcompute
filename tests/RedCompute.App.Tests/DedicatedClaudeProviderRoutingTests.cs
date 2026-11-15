@@ -231,7 +231,7 @@ public sealed class DedicatedClaudeProviderRoutingTests : IDisposable
         var jobs = new MemoryJobTracker();
         var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = path }, jobs,
             store, new NullQualityModes(), () => null, (line, _) => { lock (launches) log?.Add(line); });
-        service.LaunchSessionProcess = start =>
+        service.LaunchSessionProcess = HostSeams.From(start =>
         {
             launches.Add(start.FileName);
             var process = Process.Start(new ProcessStartInfo
@@ -241,7 +241,7 @@ public sealed class DedicatedClaudeProviderRoutingTests : IDisposable
             })!;
             _processes.Add(process);
             return process;
-        };
+        });
         return (new ClaudeCodeProvider("ai-session", service, store, jobs, (_, _) => { }), store);
     }
 

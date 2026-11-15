@@ -225,7 +225,7 @@ public sealed class HostThreadingTests : IDisposable
         var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, new MemoryJobTracker(),
             new RecordingStore(), new NullQualityModes(), () => null, (_, _) => { }, action => action());
         var launched = 0;
-        service.LaunchSessionProcess = _ =>
+        service.LaunchSessionProcess = HostSeams.From(_ =>
         {
             var start = new ProcessStartInfo
             {
@@ -245,7 +245,7 @@ public sealed class HostThreadingTests : IDisposable
             var process = Process.Start(start)!;
             lock (_processes) _processes.Add(process);
             return process;
-        };
+        });
 
         var probe = new ThreadProbe(pump);
         var seen = new ConcurrentDictionary<string, List<string>>(StringComparer.Ordinal);

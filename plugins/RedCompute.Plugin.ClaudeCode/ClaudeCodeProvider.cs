@@ -6,6 +6,7 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
@@ -52,7 +53,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
-        Action<string, Guid?> log)
+        Action<string, Guid?> log, IExecutionHost? host = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -71,7 +72,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         var claudeConfig = BuildConfig(config);
         _claude = new ClaudeSessionService(
             claudeConfig, jobTracker, _store, qualityModes,
-            () => GetTitleQualityTier(config), log);
+            () => GetTitleQualityTier(config), log, host: host);
         _cliVersionManager = CreateCliVersionManager(claudeConfig);
         _claude.LaunchGate = _cliVersionManager;
         WireSessionEvents();

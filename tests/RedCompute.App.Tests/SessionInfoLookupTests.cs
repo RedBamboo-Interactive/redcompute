@@ -65,7 +65,7 @@ public sealed class SessionInfoLookupTests : IDisposable
         var (reads, counter) = Counting<IClaudeSessionStore>.Wrap(store);
         var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = FakeCli() }, new MemoryJobTracker(),
             reads, new NullQualityModes(), () => null, (_, _) => { });
-        service.LaunchSessionProcess = _ => Track(Process.Start(Sink())!);
+        service.LaunchSessionProcess = HostSeams.From(_ => Track(Process.Start(Sink())!));
         ISessionProvider provider = new ClaudeCodeProvider("ai-session", service, reads, new MemoryJobTracker(), (_, _) => { });
 
         SaveClaude(store, "empty", "Stopped", SessionStopReasons.UserStopped, messages: 0);

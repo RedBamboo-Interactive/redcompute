@@ -439,8 +439,8 @@ public sealed class SessionQuestionParityTests : IDisposable
             var jobs = Jobs;
             _service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, jobs, _store,
                 new ClaudeBackgroundWorkTests.NullQualityModes(), () => null, (_, _) => { }, action => action());
-            _service.LaunchSessionProcess = _ => owner.StartProcess(new ProcessStartInfo
-                { FileName = TestProcesses.StdinSink });
+            _service.LaunchSessionProcess = HostSeams.From(_ => owner.StartProcess(new ProcessStartInfo
+                { FileName = TestProcesses.StdinSink }));
             _provider = new ClaudeCodeProvider("ai-session", _service, _store, jobs, (_, _) => { });
             Observe();
             var info = _service.StartSession(owner._root, "haiku", "owner", null, null, "high", null, null, null,

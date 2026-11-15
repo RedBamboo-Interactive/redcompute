@@ -6,16 +6,27 @@ using System.Text.Json;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
 public partial class ClaudeSessionService
 {
+    /// <summary>Containment owner of the persistent interactive CLI (start and resume).</summary>
+    internal const string SessionOwner = "claude-code";
+    /// <summary>Containment owner of the tool-free one-shot completion.</summary>
+    internal const string OneshotOwner = "claude-code-oneshot";
+    /// <summary>Containment owner of the agent execution.</summary>
+    internal const string AgentOwner = "claude-code-agent";
+
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     // Sessions whose process was killed for an automatic relaunch and is not yet replaced.
     // They are absent from _sessions for that window, but they are restarting, not stopped.
     private readonly ConcurrentDictionary<string, Guid?> _restarting = new();
-    private readonly ConcurrentDictionary<string, Process> _runningProcesses = new();
+    private readonly ConcurrentDictionary<string, IHostProcess> _runningProcesses = new();
+    // The machine the CLI runs on: its processes and files. Node zero's local host by default.
+    private readonly IExecutionHost _host;
     private readonly ClaudeConfig _config;
     private readonly IJobTracker _jobTracker;
     private readonly IClaudeSessionStore _sessionStore;
@@ -47,22 +58,20 @@ public partial class ClaudeSessionService
 
     /// <summary>
     /// Launches the persistent interactive CLI process (start and resume). Tests replace it to
-    /// observe the exact argv without spawning a real Claude Code session.
+    /// observe the exact argv without spawning a real Claude Code session. The default is the
+    /// execution host; the spec carries its containment (<see cref="SessionOwner"/>).
     /// </summary>
-    internal Func<ProcessStartInfo, Process?> LaunchSessionProcess { get; set; } =
-        startInfo => SessionProcessContainment.Start(startInfo, "claude-code");
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchSessionProcess { get; set; }
 
     // Claude Code 2.1.300 rejects a bare `{}` ("mcpServers: expected record"). `--bare` is not used:
     // it also skips OAuth/keychain credentials, which breaks subscription-authenticated providers.
     // `--tools ""` alone removes built-ins; the init-event check below enforces it at runtime.
     internal const string EmptyMcpConfig = "{\"mcpServers\":{}}";
 
-    /// <summary>Test seam for the short-lived, tool-free completion process.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchOneshotProcess { get; set; } =
-        startInfo => SessionProcessContainment.Start(startInfo, "claude-code-oneshot");
-    /// <summary>Test seam for the agent execution process.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchAgentProcess { get; set; } =
-        startInfo => SessionProcessContainment.Start(startInfo, "claude-code-agent");
+    /// <summary>Test seam for the short-lived, tool-free completion process; the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchOneshotProcess { get; set; }
+    /// <summary>Test seam for the agent execution process; the default is the execution host.</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchAgentProcess { get; set; }
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
     public ClaudeSessionService(
@@ -72,8 +81,14 @@ public partial class ClaudeSessionService
         IProviderQualityModeResolver qualityModes,
         Func<string?> titleQualityTier,
         Action<string, Guid?> log,
-        Action<Action>? whenMirrorInstalled = null)
+        Action<Action>? whenMirrorInstalled = null,
+        IExecutionHost? host = null)
     {
+        // Before recovery below: it kills recorded processes and reads transcripts on this host.
+        _host = host ?? LocalExecutionHost.Shared;
+        LaunchSessionProcess = spec => _host.Processes.Start(spec);
+        LaunchOneshotProcess = spec => _host.Processes.Start(spec);
+        LaunchAgentProcess = spec => _host.Processes.Start(spec);
         _config = config;
         _jobTracker = jobTracker;
         _sessionStore = sessionStore;
@@ -207,7 +222,7 @@ public partial class ClaudeSessionService
     }
 
     private void TryKillByPid(int? pid)
-        => OwnedProcessKiller.TryKill(pid, "claude", m => _log($"[Claude] {m}", null));
+        => _host.Processes.TryKillRecorded(pid, "claude", m => _log($"[Claude] {m}", null));
 
     private void BackfillFromJsonl(ClaudeSessionRecord session)
     {
@@ -402,42 +417,28 @@ public partial class ClaudeSessionService
                     "Could not find 'claude' CLI. Install it or set ClaudePath in config.");
         }
 
-        var startInfo = new ProcessStartInfo
-        {
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-
+        HostSpawnSpec spec;
         if (useDocker)
         {
-            DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "claude", workingDir, env);
-            var args = new List<string>();
-            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel);
-            if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
-            foreach (var a in args) startInfo.ArgumentList.Add(a);
+            var args = DockerExecHelper.ExecArguments(container!, "claude", workingDir, env);
+            var cliArgs = new List<string>();
+            AddAgentArgs(cliArgs, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel);
+            if (useCliArg) { var idx = cliArgs.IndexOf("--print"); if (idx >= 0) cliArgs.Insert(idx + 1, prompt); }
+            args.AddRange(cliArgs);
+            spec = CliSpec(DockerExecHelper.FileName, args, workingDirectory: null, environment: null, AgentOwner);
         }
         else
         {
-            startInfo.FileName = ResolveClaudePath()!;
-            if (!string.IsNullOrWhiteSpace(workingDir))
-                startInfo.WorkingDirectory = workingDir;
-            if (env is not null)
-                foreach (var (k, v) in env)
-                    startInfo.EnvironmentVariables[k] = v;
+            var fileName = ResolveClaudePath()!;
             var args = new List<string>();
             AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel);
             if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
-            foreach (var a in args) startInfo.ArgumentList.Add(a);
+            spec = CliSpec(fileName, args,
+                string.IsNullOrWhiteSpace(workingDir) ? null : _host.Path(workingDir), env, AgentOwner);
         }
 
         var sw = Stopwatch.StartNew();
-        using var process = LaunchAgentProcess(startInfo);
+        using var process = LaunchAgentProcess(spec);
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start process");
         if (streamKey != null)
@@ -822,19 +823,6 @@ public partial class ClaudeSessionService
         var stdinPayload = hasImages ? OneshotImageInput(prompt, images!) : prompt;
 
         using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-claude-generate");
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = claudePath,
-            WorkingDirectory = workingDirectory.Path,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
 
         var options = new List<string> { "--output-format", "stream-json" };
         // Current CLIs refuse --print with stream-json unless --verbose is also present.
@@ -882,15 +870,15 @@ public partial class ClaudeSessionService
             return new OneshotResult(false, null, null, null, 0, 0, null,
                 "The system prompt is too long for the claude command line.");
         var useCliArg = UsePromptArgument(claudePath, prompt, options, hasImages);
-        startInfo.ArgumentList.Add("-p");
+        var arguments = new List<string> { "-p" };
         if (useCliArg)
-            startInfo.ArgumentList.Add(prompt);
-        foreach (var option in options)
-            startInfo.ArgumentList.Add(option);
+            arguments.Add(prompt);
+        arguments.AddRange(options);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        using var process = LaunchOneshotProcess(startInfo);
+        using var process = LaunchOneshotProcess(CliSpec(claudePath, arguments,
+            _host.Path(workingDirectory.Path), environment: null, OneshotOwner));
         if (process == null)
             return new OneshotResult(false, null, null, null, 0, 0, null, "Failed to start claude process");
         spawned();
@@ -1150,29 +1138,16 @@ public partial class ClaudeSessionService
             return null;
         }
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = claudePath,
-            WorkingDirectory = projectPath,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-        PopulateSessionArgs(startInfo, info.PermissionMode, model: model, effort: effort,
+        var arguments = new List<string>();
+        PopulateSessionArgs(arguments, info.PermissionMode, model: model, effort: effort,
             developerInstructions: developerInstructions);
-        if (SessionScratch.Environment(scratchDirectory, sessionId: id) is { } scratchEnvironment)
-            foreach (var (key, value) in scratchEnvironment)
-                startInfo.Environment[key] = value;
+        var spec = CliSpec(claudePath, arguments, _host.Path(projectPath),
+            SessionScratch.Environment(scratchDirectory, sessionId: id), SessionOwner);
 
-        Process process;
+        IHostProcess process;
         try
         {
-            process = LaunchSessionProcess(startInfo)
+            process = LaunchSessionProcess(spec)
                 ?? throw new InvalidOperationException("Process.Start returned no process");
         }
         catch (Exception ex)
@@ -1324,32 +1299,19 @@ public partial class ClaudeSessionService
             PermissionMode = PermissionModeFor(sessionRecord.AccessLevel),
         };
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = claudePath,
-            WorkingDirectory = sessionRecord.ProjectPath,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-        PopulateSessionArgs(startInfo, info.PermissionMode,
+        var arguments = new List<string>();
+        PopulateSessionArgs(arguments, info.PermissionMode,
             string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
             sessionRecord.Model, sessionRecord.Effort,
             sessionRecord.DeveloperInstructions);
-        AddForkArgs(startInfo, forkTarget);
-        if (SessionScratch.Environment(sessionRecord.ScratchDirectory, sessionId: sessionRecord.Id) is { } scratchEnvironment)
-            foreach (var (key, value) in scratchEnvironment)
-                startInfo.Environment[key] = value;
+        AddForkArgs(arguments, forkTarget);
+        var spec = CliSpec(claudePath, arguments, _host.Path(sessionRecord.ProjectPath),
+            SessionScratch.Environment(sessionRecord.ScratchDirectory, sessionId: sessionRecord.Id), SessionOwner);
 
-        Process process;
+        IHostProcess process;
         try
         {
-            process = LaunchSessionProcess(startInfo)
+            process = LaunchSessionProcess(spec)
                 ?? throw new InvalidOperationException("Process.Start returned no process");
         }
         catch (Exception ex)
@@ -2253,6 +2215,30 @@ public partial class ClaudeSessionService
             await StopSession(id);
     }
 
+    /// <summary>
+    /// A Claude CLI launch: every stream piped (stdin UTF-8 without a BOM, stdout and stderr UTF-8),
+    /// no window, contained as a session under <paramref name="owner"/>. Exactly the start info each
+    /// launch site built before the execution host.
+    /// </summary>
+    private static HostSpawnSpec CliSpec(string fileName, IReadOnlyList<string> arguments, HostPath? workingDirectory,
+        IReadOnlyDictionary<string, string>? environment, string owner) => new()
+    {
+        FileName = fileName,
+        ArgumentList = arguments,
+        WorkingDirectory = workingDirectory,
+        EnvironmentOverlay = environment,
+        StandardInput = StdioMode.Pipe,
+        StandardOutput = StdioMode.Pipe,
+        StandardError = StdioMode.Pipe,
+        StandardInputEncoding = new UTF8Encoding(false),
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8,
+        CreateNoWindow = true,
+        UseShellExecute = false,
+        Containment = ContainmentMode.Session,
+        OwnerLabel = owner,
+    };
+
     private string? ResolveClaudePath()
         => ResolveClaudePath(
             _config.ClaudePath,
@@ -2318,7 +2304,7 @@ public partial class ClaudeSessionService
         return null;
     }
 
-    private void PopulateSessionArgs(ProcessStartInfo startInfo, string permissionMode, string? resumeClaudeSessionId = null,
+    private void PopulateSessionArgs(List<string> arguments, string permissionMode, string? resumeClaudeSessionId = null,
         string? model = null, string? effort = null, string? developerInstructions = null)
     {
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
@@ -2343,33 +2329,33 @@ public partial class ClaudeSessionService
             "--permission-prompt-tool", "stdio",
             // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
             "--thinking-display", "summarized" })
-            startInfo.ArgumentList.Add(arg);
+            arguments.Add(arg);
 
         // Blank means unset: the provider config ships "Model": "", and a "--model ''" launch
         // fails every turn with "model: String should have at least 1 character".
         var m = LaunchModel(model, _config.Model);
         if (m != null)
         {
-            startInfo.ArgumentList.Add("--model");
-            startInfo.ArgumentList.Add(m);
+            arguments.Add("--model");
+            arguments.Add(m);
         }
         if (effort != null)
         {
-            startInfo.ArgumentList.Add("--effort");
-            startInfo.ArgumentList.Add(effort);
+            arguments.Add("--effort");
+            arguments.Add(effort);
         }
         if (developerInstructions != null)
         {
             // Appended to Claude Code's own system prompt, never replacing it (--system-prompt)
             // and never demoted to a user turn. One argv element: ArgumentList quotes it for
             // CreateProcess, so quotes, newlines and markup like <discord-no-reply/> survive.
-            startInfo.ArgumentList.Add("--append-system-prompt");
-            startInfo.ArgumentList.Add(developerInstructions);
+            arguments.Add("--append-system-prompt");
+            arguments.Add(developerInstructions);
         }
         if (resumeClaudeSessionId != null)
         {
-            startInfo.ArgumentList.Add("--resume");
-            startInfo.ArgumentList.Add(resumeClaudeSessionId);
+            arguments.Add("--resume");
+            arguments.Add(resumeClaudeSessionId);
         }
     }
 
@@ -4513,14 +4499,14 @@ public partial class ClaudeSessionService
         }
     }
 
-    private async Task WriteStdinAsync(Process process, string data, CancellationToken ct, Stopwatch sw)
+    private async Task WriteStdinAsync(IHostProcess process, string data, CancellationToken ct, Stopwatch sw)
     {
         await process.StandardInput.WriteAsync(data.AsMemory(), ct);
         process.StandardInput.Close();
         _log($"[Claude] TIMING stdin write took {sw.ElapsedMilliseconds}ms ({data.Length} chars)", null);
     }
 
-    private Task WriteStdinOnDedicatedThread(Process process, string data, CancellationToken ct, Stopwatch sw)
+    private Task WriteStdinOnDedicatedThread(IHostProcess process, string data, CancellationToken ct, Stopwatch sw)
     {
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
@@ -4589,7 +4575,7 @@ public partial class ClaudeSessionService
         ControlLineWritten?.Invoke(session.Info.Id, json);
     }
 
-    private static async Task<bool> WaitForExit(Process process, TimeSpan timeout)
+    private static async Task<bool> WaitForExit(IHostProcess process, TimeSpan timeout)
     {
         try
         {
@@ -4763,7 +4749,8 @@ public partial class ClaudeSessionService
     private class ManagedSession
     {
         public ClaudeSessionInfo Info { get; }
-        public Process Process { get; }
+        // The CLI process on its host. Its streams are the process's own reader and writer objects.
+        public IHostProcess Process { get; }
         public CancellationTokenSource Cts { get; }
         // Inbound control_requests awaiting a client answer, keyed by request_id. Removal is
         // the claim: whoever wins TryRemove owns writing the single control_response, so an
@@ -4822,7 +4809,7 @@ public partial class ClaudeSessionService
         private readonly SemaphoreSlim _writeLock = new(1, 1);
         public SemaphoreSlim WriteLock => _writeLock;
 
-        public ManagedSession(ClaudeSessionInfo info, Process process, CancellationTokenSource cts)
+        public ManagedSession(ClaudeSessionInfo info, IHostProcess process, CancellationTokenSource cts)
         {
             Info = info;
             Process = process;

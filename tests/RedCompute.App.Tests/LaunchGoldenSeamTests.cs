@@ -50,30 +50,42 @@ public sealed class LaunchGoldenSeamTests : IDisposable
 
     // ---- seam defaults: which containment each seam's production default applies ---------------------
 
+    /// <summary>
+    /// The containment each Claude seam's production default gives the spec its production launch
+    /// builds (the spec carries its containment since the execution host): each spec is taken from a
+    /// real start, one-shot and agent call, then handed to a fresh service's default seam.
+    /// </summary>
     [WindowsFact("containment is a Windows Job Object")]
     public async Task Seam_defaults_contain_as_recorded()
     {
+        var specs = await ClaudeProductionSpecs();
         var service = Claude(new ClaudeDeveloperInstructionsTests.MemoryStore(), capture: false);
         var seams = new JsonObject
         {
-            ["claude.LaunchSessionProcess"] = await ContainmentOf(service.LaunchSessionProcess),
-            ["claude.LaunchOneshotProcess"] = await ContainmentOf(service.LaunchOneshotProcess),
-            ["claude.LaunchAgentProcess"] = await ContainmentOf(service.LaunchAgentProcess),
+            ["claude.LaunchSessionProcess"] = await ContainmentOf(service.LaunchSessionProcess, specs.Session),
+            ["claude.LaunchOneshotProcess"] = await ContainmentOf(service.LaunchOneshotProcess, specs.Oneshot),
+            ["claude.LaunchAgentProcess"] = await ContainmentOf(service.LaunchAgentProcess, specs.Agent),
         };
         LaunchGoldens.Verify("A-seam-defaults", seams);
     }
 
-    private async Task<string> ContainmentOf(Func<ProcessStartInfo, Process?> seam)
+    /// <summary>The specs a session start, a one-shot and an agent call hand their seams, launching nothing.</summary>
+    private async Task<(HostSpawnSpec Session, HostSpawnSpec Oneshot, HostSpawnSpec Agent)> ClaudeProductionSpecs()
     {
-        var process = seam(new ProcessStartInfo(TestProcesses.StdinSink)
-        {
-            CreateNoWindow = true, UseShellExecute = false,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-        })!;
-        lock (_started) _started.Add(process);
-        var containment = await ProbeHarness.ObserveContainmentAsync(process.Id);
-        process.Kill(entireProcessTree: true);
-        return containment;
+        HostSpawnSpec? session = null, oneshot = null, agent = null;
+        var service = Claude(new ClaudeDeveloperInstructionsTests.MemoryStore(), capture: false);
+        service.LaunchSessionProcess = spec => { session = spec; return null; };
+        service.LaunchOneshotProcess = spec => { oneshot = spec; return null; };
+        service.LaunchAgentProcess = spec => { agent = spec; return null; };
+        using (SessionScratch.PushExecutionToken(Token))
+            await service.StartSessionAsync(_project, "claude-golden-model", "owner", null, null, "high", null, null,
+                null, Provenance(), scratchDirectory: _scratch);
+        using (var messages = JsonDocument.Parse("[{\"role\":\"user\",\"content\":\"hello\"}]"))
+            await service.ExecuteOneshotAsync("claude-golden-model", "be brief", messages.RootElement, 32,
+                CancellationToken.None, "low", 60);
+        await service.ExecuteAgentAsync("golden prompt", null, _project, "claude-golden-model", "high", 3,
+            null, null, null, 60, CancellationToken.None);
+        return (session!, oneshot!, agent!);
     }
 
     // ---- Claude Code ------------------------------------------------------------------------------
@@ -85,7 +97,7 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         using (SessionScratch.PushExecutionToken(Token))
             await service.StartSessionAsync(_project, "claude-golden-model", "owner", null, null, "high", null, null,
                 null, Provenance(), scratchDirectory: _scratch, developerInstructions: "Golden developer instructions.");
-        Verify("A-claude-session-start", "claude.LaunchSessionProcess", "session:claude-code");
+        VerifyHosted("A-claude-session-start", "claude.LaunchSessionProcess");
     }
 
     [Theory]
@@ -100,7 +112,7 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         using (SessionScratch.PushExecutionToken(Token))
             await service.StartSessionAsync(_project, "claude-golden-model", "owner", null, null, "high", null, null,
                 null, Provenance(), scratchDirectory: _scratch);
-        Verify($"A-claude-session-start-{level}", "claude.LaunchSessionProcess", "session:claude-code");
+        VerifyHosted($"A-claude-session-start-{level}", "claude.LaunchSessionProcess");
     }
 
     [Fact]
@@ -117,7 +129,7 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         var service = Claude(store);
         using (SessionScratch.PushExecutionToken(Token))
             await service.ResumeSessionAsync("golden-resume", Provenance());
-        Verify("A-claude-session-resume", "claude.LaunchSessionProcess", "session:claude-code");
+        VerifyHosted("A-claude-session-resume", "claude.LaunchSessionProcess");
     }
 
     [Fact]
@@ -127,7 +139,7 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         using var messages = JsonDocument.Parse("[{\"role\":\"user\",\"content\":\"hello\"}]");
         await service.ExecuteOneshotAsync("claude-golden-model", "be brief", messages.RootElement, 32,
             CancellationToken.None, "low", 60);
-        Verify("A-claude-oneshot", "claude.LaunchOneshotProcess", "session:claude-code-oneshot");
+        VerifyHosted("A-claude-oneshot", "claude.LaunchOneshotProcess");
     }
 
     [Theory]
@@ -141,7 +153,7 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         await service.ExecuteAgentAsync(prompt, container, _project, "claude-golden-model", "high", 3,
             ["Read", "Bash"], ["Read"], [_scratch], 60, CancellationToken.None,
             env: new Dictionary<string, string> { ["GOLDEN_AGENT_ENV"] = "1" });
-        Verify(golden, "claude.LaunchAgentProcess", "session:claude-code-agent");
+        VerifyHosted(golden, "claude.LaunchAgentProcess");
     }
 
     [Fact]
@@ -432,6 +444,19 @@ public sealed class LaunchGoldenSeamTests : IDisposable
 
     private LocalWslProvider LocalWsl() => new(LocalWslConfig(false), "tts", _ => { });
 
+    private async Task<string> ContainmentOf(Func<ProcessStartInfo, Process?> seam)
+    {
+        var process = seam(new ProcessStartInfo(TestProcesses.StdinSink)
+        {
+            CreateNoWindow = true, UseShellExecute = false,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        })!;
+        lock (_started) _started.Add(process);
+        var containment = await ProbeHarness.ObserveContainmentAsync(process.Id);
+        process.Kill(entireProcessTree: true);
+        return containment;
+    }
+
     /// <summary>
     /// The containment a spec seam's production default gives the provider's own spec: the spec's
     /// launch target is swapped for a stand-in that stays alive, everything else is the provider's.
@@ -513,6 +538,9 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     {
         (ProcessStartInfo Start, string Containment) launch;
         lock (_hosted) launch = Assert.Single(_hosted);
+        // A one-shot runs in a fresh isolated directory: its name is the only run-specific part.
+        if (seam == "claude.LaunchOneshotProcess" && !string.IsNullOrEmpty(launch.Start.WorkingDirectory))
+            _normalizer.Add(launch.Start.WorkingDirectory, "<isolated-cwd>");
         LaunchGoldens.Verify(golden, LaunchGoldens.FromStartInfo(launch.Start, seam, launch.Containment, _normalizer));
     }
 
@@ -525,25 +553,18 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     {
         ProcessStartInfo start;
         lock (_launches) start = Assert.Single(_launches);
-        // A one-shot runs in a fresh isolated directory: its name is the only run-specific part.
-        if (seam == "claude.LaunchOneshotProcess" && !string.IsNullOrEmpty(start.WorkingDirectory))
-            _normalizer.Add(start.WorkingDirectory, "<isolated-cwd>");
         LaunchGoldens.Verify(golden, LaunchGoldens.FromStartInfo(start, seam, containment, _normalizer));
     }
 
+    /// <summary>
+    /// A Claude service on a capturing host: its seams keep their production default, so every launch
+    /// is captured where the local host hands its start info to the OS, with the containment it applies.
+    /// </summary>
     private ClaudeSessionService Claude(IClaudeSessionStore store, bool capture = true)
-    {
-        var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = _claudePath },
+        => new(new ClaudeConfig { ClaudePath = _claudePath },
             new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), store,
-            new ClaudeDeveloperInstructionsTests.NullQualityModes(), () => null, (_, _) => { });
-        if (capture)
-        {
-            service.LaunchSessionProcess = start => { Capture(start); return null; };
-            service.LaunchOneshotProcess = start => { Capture(start); return null; };
-            service.LaunchAgentProcess = start => { Capture(start); return null; };
-        }
-        return service;
-    }
+            new ClaudeDeveloperInstructionsTests.NullQualityModes(), () => null, (_, _) => { },
+            host: capture ? CapturingHost() : null);
 
     private static JobProvenance Provenance() => JobProvenance.DirectRedCompute(
         "POST", "/ai-session/sessions", new JobBeneficiary("user", "owner"), "golden-request", null);

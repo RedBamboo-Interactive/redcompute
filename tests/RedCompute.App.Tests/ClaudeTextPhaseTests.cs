@@ -824,7 +824,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
     {
         var store = new RecordingStore();
         var service = CreateService(store);
-        service.LaunchSessionProcess = launch ?? (_ => Track(Process.Start(new ProcessStartInfo
+        service.LaunchSessionProcess = HostSeams.From(launch ?? (_ => Track(Process.Start(new ProcessStartInfo
         {
             FileName = TestProcesses.StdinSink,
             CreateNoWindow = true,
@@ -832,7 +832,7 @@ public sealed class ClaudeTextPhaseTests : IDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-        })!));
+        })!)));
         var live = new List<ClaudeStreamEvent>();
         service.StreamEvent += (_, e) => { lock (live) live.Add(e); };
         var info = service.StartSession(_root, "opus", "owner", null, null, "high", null, null, null,

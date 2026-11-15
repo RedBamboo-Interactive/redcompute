@@ -324,7 +324,7 @@ public sealed class SessionProcessIdentityTests : IDisposable
             var claude = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, jobs, store,
                 new Fakes.NullQualityModes(), () => null, (_, _) => { })
             {
-                LaunchSessionProcess = test.Launch,
+                LaunchSessionProcess = HostSeams.From(test.Launch),
             };
             var provider = new ClaudeCodeProvider("ai-session", claude, store, jobs, (_, _) => { });
             var registry = new CapabilityRegistry();

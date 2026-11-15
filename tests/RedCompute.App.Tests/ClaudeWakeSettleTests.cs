@@ -154,7 +154,7 @@ public sealed class ClaudeWakeSettleTests : IDisposable
             var store = new ClaudeBackgroundWorkTests.RecordingStore();
             h._service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, jobs, store,
                 new ClaudeBackgroundWorkTests.NullQualityModes(), () => null, (_, _) => { }, action => action());
-            h._service.LaunchSessionProcess = _ =>
+            h._service.LaunchSessionProcess = HostSeams.From(_ =>
             {
                 var process = Process.Start(new ProcessStartInfo
                 {
@@ -164,7 +164,7 @@ public sealed class ClaudeWakeSettleTests : IDisposable
                 })!;
                 lock (owner._processes) owner._processes.Add(process);
                 return process;
-            };
+            });
             h.Provider = new ClaudeCodeProvider("ai-session", h._service, store, jobs, (_, _) => { });
 
             var config = new RedComputeConfig();

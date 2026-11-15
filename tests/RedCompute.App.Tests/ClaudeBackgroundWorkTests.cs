@@ -632,7 +632,7 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         var service = CreateService(store);
         var capturePath = capture ? Path.Combine(_root, $"stdin-{Guid.NewGuid():N}.jsonl") : null;
         Process? current = null;
-        service.LaunchSessionProcess = _ =>
+        service.LaunchSessionProcess = HostSeams.From(_ =>
         {
             ProcessStartInfo start;
             if (capturePath is null)
@@ -651,7 +651,7 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
             current = Process.Start(start)!;
             _processes.Add(current);
             return current;
-        };
+        });
         var live = new List<ClaudeStreamEvent>();
         service.StreamEvent += (_, e) => { lock (live) live.Add(e); };
         var info = service.StartSession(_root, "haiku", "owner", null, null, "high", null, null, null, Provenance());

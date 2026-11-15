@@ -45,7 +45,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         _service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath },
             new ClaudeBackgroundWorkTests.MemoryJobTracker(), _store, new ClaudeBackgroundWorkTests.NullQualityModes(),
             () => null, (_, _) => { }, action => action());
-        _service.LaunchSessionProcess = startInfo =>
+        _service.LaunchSessionProcess = HostSeams.From(startInfo =>
         {
             lock (_launches) _launches.Add(startInfo);
             // A sink that never echoes: an echo would hand our own set_permission_mode back as an
@@ -59,7 +59,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
             var process = Process.Start(sink)!;
             lock (_processes) _processes.Add(process);
             return process;
-        };
+        });
         _service.ControlLineWritten = (id, json) =>
         {
             _written.Enqueue(json);

@@ -155,7 +155,7 @@ public sealed class ClaudeRefusalResultTests : IDisposable
         if (!File.Exists(claudePath)) File.WriteAllText(claudePath, "");
         var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, new MemoryJobTracker(),
             store, new NullQualityModes(), () => null, (_, _) => { }, action => action());
-        service.LaunchSessionProcess = _ =>
+        service.LaunchSessionProcess = HostSeams.From(_ =>
         {
             var process = Process.Start(new ProcessStartInfo
             {
@@ -168,7 +168,7 @@ public sealed class ClaudeRefusalResultTests : IDisposable
             })!;
             lock (_processes) _processes.Add(process);
             return process;
-        };
+        });
         var info = service.StartSession(_root, "haiku", "owner", null, null, "high", null, null, null,
             JobProvenance.DirectRedCompute("POST", "/ai-session/sessions", new JobBeneficiary("user", "owner"), "req", "corr"));
         Assert.True(await service.SendInput(info!.Id, [SessionInputPart.TextPart("go")], messageUid: "user-1"));
