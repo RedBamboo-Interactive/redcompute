@@ -11,43 +11,16 @@ namespace RedCompute.App.Services.Nodes;
 public sealed record NodePlatform(string Os, string OsDescription, string Architecture, string MachineName,
     string? ProcessorName)
 {
-    public static NodePlatform Detect() => new(
-        OperatingSystem.IsWindows() ? "windows"
-            : OperatingSystem.IsLinux() ? "linux"
-            : OperatingSystem.IsMacOS() ? "macos"
-            : "unknown",
-        RuntimeInformation.OSDescription.Trim(),
-        RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(),
-        Environment.MachineName,
-        ReadProcessorName());
+    /// <summary>This machine's facts, read through the shared local host.</summary>
+    public static NodePlatform Detect() => Detect(LocalExecutionHost.Shared);
 
-    /// <summary>The CPU's marketing name, best effort: null when the OS does not say.</summary>
-    private static string? ReadProcessorName()
+    /// <summary>The facts of the machine <paramref name="host"/> executes on.</summary>
+    public static NodePlatform Detect(IExecutionHost host)
     {
-        try
-        {
-            if (OperatingSystem.IsWindows())
-            {
-                using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
-                    @"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
-                return Clean(key?.GetValue("ProcessorNameString") as string);
-            }
-            if (OperatingSystem.IsLinux() && File.Exists("/proc/cpuinfo"))
-            {
-                foreach (var line in File.ReadLines("/proc/cpuinfo"))
-                    if (line.StartsWith("model name", StringComparison.Ordinal) && line.IndexOf(':') is var colon and > 0)
-                        return Clean(line[(colon + 1)..]);
-            }
-        }
-        catch
-        {
-            // A missing name is not worth failing the node over.
-        }
-        return null;
+        var platform = host.Platform.Info;
+        return new(platform.Os, platform.OsDescription, platform.Architecture, platform.MachineName,
+            host.Hardware.ProcessorName());
     }
-
-    private static string? Clean(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : string.Join(' ', value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
 }
 
 /// <summary>
@@ -77,7 +50,11 @@ public sealed class NodeRegistry : INodeRegistry
 
     /// <summary>Opens node.json in <paramref name="directory"/> (creating it on first boot) and detects the platform.</summary>
     public static NodeRegistry Open(string directory, string version, Action<string> log)
-        => new(NodeIdentityStore.LoadOrCreate(directory, log), NodePlatform.Detect(), version, DateTimeOffset.UtcNow);
+    {
+        var identity = NodeIdentityStore.LoadOrCreate(directory, log);
+        var host = new LocalExecutionHost(identity.Identity.Id);
+        return new(identity, NodePlatform.Detect(host), version, DateTimeOffset.UtcNow, localHost: host);
+    }
 
     /// <summary>The identity this run uses, and whether it is the persisted one.</summary>
     public NodeIdentityResult Identity { get; }

@@ -28,6 +28,8 @@ public sealed class ExecutionHostGuardTests
         // ---- final: the host implementation ----------------------------------------------------------
         ("the local execution host", [
             "RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost",
+            "RedCompute.PluginSdk.Hosting.Local.LocalHardware",
+            "RedCompute.PluginSdk.Hosting.Local.LocalHardwareSampler",
         ]),
         ("the local host's moved code; its static facades become internal to Hosting.Local (C19)", [
             "RedCompute.PluginSdk.ContainedProcessTree",
@@ -75,10 +77,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C14 hardware (and the node descriptor's processor name)", [
-            "RedCompute.App.Services.Hardware.HardwareMonitorService",
-            "RedCompute.App.Services.Nodes.NodePlatform",
-        ]),
         ("C15 long-lived registry", [
             "RedCompute.App.Services.LongLivedProcessRegistry",
         ]),

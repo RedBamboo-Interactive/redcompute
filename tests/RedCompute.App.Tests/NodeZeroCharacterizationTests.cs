@@ -8,6 +8,7 @@ using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -211,7 +212,8 @@ public sealed class NodeZeroCharacterizationTests : IDisposable
 
     private static int ParentOf(int pid)
     {
-        var method = typeof(HardwareMonitorService).GetMethod("GetParentProcessId", BindingFlags.Static | BindingFlags.NonPublic)!;
+        // The parent reader attribution walks, moved with the sampling into the local host.
+        var method = typeof(LocalHardware).GetMethod("GetParentProcessId", BindingFlags.Static | BindingFlags.NonPublic)!;
         return (int)method.Invoke(null, [pid])!;
     }
 

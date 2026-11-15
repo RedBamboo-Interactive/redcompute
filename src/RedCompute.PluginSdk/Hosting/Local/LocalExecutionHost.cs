@@ -13,10 +13,9 @@ namespace RedCompute.PluginSdk.Hosting.Local;
 /// <see cref="PlatformSupport"/>, System.IO), so a launch through it hands the OS the same
 /// <see cref="ProcessStartInfo"/> through the same entry point as the site did.
 /// <para>
-/// Two members wait for the code they forward to: <see cref="IHostHardware.Sample"/> (the hardware
-/// sampler moves here with the hardware move) and <see cref="IHostContainment.StartDetachedKept"/> (with
-/// the long-lived registry). Until then they throw <see cref="NotSupportedException"/>; nothing calls
-/// them yet.
+/// One member waits for the code it forwards to: <see cref="IHostContainment.StartDetachedKept"/> (with
+/// the long-lived registry). Until then it throws <see cref="NotSupportedException"/>; nothing calls it
+/// yet.
 /// </para>
 /// </summary>
 public sealed class LocalExecutionHost : IExecutionHost
@@ -335,12 +334,6 @@ public sealed class LocalExecutionHost : IExecutionHost
         public bool CanLaunchLocalBackends => PlatformSupport.CanLaunchLocalBackends;
         public string? GetEnvironmentVariable(string name) => Environment.GetEnvironmentVariable(name);
         public string GetFolderPath(Environment.SpecialFolder folder) => Environment.GetFolderPath(folder);
-    }
-
-    private sealed class LocalHardware : IHostHardware
-    {
-        public HardwareSnapshot Sample() => throw new NotSupportedException(
-            "Hardware sampling moves onto the host with the hardware monitor; until then RedCompute samples it itself");
     }
 
     /// <summary>

@@ -334,12 +334,39 @@ public interface IHostPlatform
 public interface IHostHardware
 {
     /// <summary>
-    /// One sample of CPU, RAM, GPUs and per-process VRAM. Capability attribution
-    /// (<see cref="GpuProcessInfo.CapabilitySlug"/>, <see cref="GpuInfo.CapabilityVram"/>) stays empty:
-    /// RedCompute attributes it.
+    /// Start sampling: the GPU library is initialised and the first CPU reading taken now, so the
+    /// first <see cref="IHostHardwareSampler.Sample"/> already reports CPU usage since this call.
+    /// </summary>
+    IHostHardwareSampler OpenSampler();
+
+    /// <summary>
+    /// The process table VRAM attribution walks: each process's parent where the OS will say, then
+    /// the processes to walk from.
+    /// </summary>
+    HostProcessParentage ProcessParentage();
+
+    /// <summary>The CPU's marketing name, best effort: null when the OS does not say.</summary>
+    string? ProcessorName();
+}
+
+/// <summary>An open hardware sampler. Disposing it releases the GPU library.</summary>
+public interface IHostHardwareSampler : IDisposable
+{
+    /// <summary>True when GPUs are sampled (the GPU library loaded and found at least one).</summary>
+    bool SamplesGpus { get; }
+
+    /// <summary>
+    /// One sample of CPU (usage since the previous sample), RAM, GPUs and per-process VRAM, stamped
+    /// with when it was taken. <see cref="HardwareSnapshot.NodeId"/> and capability attribution
+    /// (<see cref="GpuProcessInfo.CapabilitySlug"/>, <see cref="GpuInfo.CapabilityVram"/>) stay empty:
+    /// RedCompute fills them.
     /// </summary>
     HardwareSnapshot Sample();
 }
+
+/// <param name="ChildToParent">A process's parent PID, for each process whose parent the OS reported.</param>
+/// <param name="ProcessIds">The processes listed after the parents were read.</param>
+public sealed record HostProcessParentage(IReadOnlyDictionary<int, int> ChildToParent, IReadOnlyList<int> ProcessIds);
 
 // ---- host-side query -----------------------------------------------------------------------------
 

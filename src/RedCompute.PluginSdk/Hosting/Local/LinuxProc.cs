@@ -1,8 +1,8 @@
 using System.Globalization;
 
-namespace RedCompute.App.Services.Hardware;
+namespace RedCompute.PluginSdk.Hosting.Local;
 
-/// <summary>Parsers for the Linux /proc files the hardware monitor reads. Pure, so tests run anywhere.</summary>
+/// <summary>Parsers for the Linux /proc files the local hardware sampler reads. Pure, so tests run anywhere.</summary>
 internal static class LinuxProc
 {
     /// <summary>

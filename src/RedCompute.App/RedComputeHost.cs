@@ -140,7 +140,7 @@ public static class RedComputeHost
         ProviderDiscovery = new ProviderDiscovery(s => Log(s));
         ProviderDiscovery.ScanAssemblies();
         InitializeCapabilities();
-        HardwareMonitor.Start(Registry);
+        HardwareMonitor.Start(Registry, Nodes.LocalHost);
         await StartRelayServer();
         _ = DetachedWork.Start(ProbeRunningBackends);
     }

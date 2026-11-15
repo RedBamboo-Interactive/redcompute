@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace RedCompute.App.Services.Hardware;
+namespace RedCompute.PluginSdk.Hosting.Local;
 
 internal static class NvmlInterop
 {

@@ -16,6 +16,11 @@
       gain no package from it.
     -->
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="9.0.18" PrivateAssets="all" />
+    <!--
+      The local host's per-process VRAM on Windows ("GPU Process Memory" counters). Compile-only, like
+      SQLite above: RedCompute already carries this version, and the SDK's consumers gain no package.
+    -->
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.0" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

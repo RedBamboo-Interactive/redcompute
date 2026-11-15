@@ -1,4 +1,4 @@
-using RedCompute.App.Services.Hardware;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
