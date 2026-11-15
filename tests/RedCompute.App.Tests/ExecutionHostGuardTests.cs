@@ -47,6 +47,7 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.ConfigManager",
             "RedCompute.App.Services.DeploymentVerification",
             "RedCompute.App.Services.InputAttachmentStore",
+            "RedCompute.App.Services.JobDatabaseSnapshotService",
             "RedCompute.App.Services.Jobs.JobArtifactStore",
             "RedCompute.App.Services.Jobs.JobTrackingService",
             "RedCompute.App.Services.Nodes.NodeIdentityStore",
