@@ -65,6 +65,12 @@ public class OpenCodeDbContext : DbContext
                 try { cmd.ExecuteNonQuery(); }
                 catch { }
             }
+
+            // Nullable, no default, CHECK or index: SQLite rewrites only the schema text, never a row,
+            // whatever the table holds. Existing rows read NULL, which is the legacy node.
+            cmd.CommandText = "ALTER TABLE Sessions ADD COLUMN NodeId TEXT";
+            try { cmd.ExecuteNonQuery(); }
+            catch { }
         }
         finally
         {

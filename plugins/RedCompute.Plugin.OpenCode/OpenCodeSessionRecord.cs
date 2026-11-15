@@ -29,6 +29,13 @@ public class OpenCodeSessionRecord
     public string? UserName { get; set; }
     public string? UserAvatarUrl { get; set; }
     public int? ProcessId { get; set; }
+
+    /// <summary>
+    /// The node the session runs on (node zero's id), or null for a row written before node ids or
+    /// by a run whose node identity was not persisted: null reads as the legacy node. Written once at
+    /// insert by <see cref="OpenCodeSessionStore"/>; saving a session never changes it.
+    /// </summary>
+    public string? NodeId { get; set; }
     public DateTimeOffset? LastActivity { get; set; }
     public string? DeveloperInstructions { get; set; }
     /// <summary>

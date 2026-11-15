@@ -58,14 +58,15 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     public OpenCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, Action<string, Guid?> log,
-        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null)
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null,
+        INodeRegistry? nodes = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
         _jobTracker = jobTracker;
 
         using (var db = new OpenCodeDbContext()) { db.Initialize(); }
-        _store = new OpenCodeSessionStore();
+        _store = new OpenCodeSessionStore(nodes?.StampNodeId);
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,
             acceleratorAdmission: acceleratorAdmission, host: host);
