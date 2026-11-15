@@ -5,6 +5,7 @@ using RedCompute.Core.Sessions;
 using RedCompute.Plugin.ClaudeCode;
 using RedCompute.PluginSdk;
 using Xunit;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Tests;
 
@@ -24,7 +25,7 @@ public sealed class ClaudeToolAvailabilityTests
         File.WriteAllText(globalCli, "global fixture");
         File.WriteAllText(sdkCli, "sdk fixture");
 
-        var resolved = ClaudeSessionService.ResolveClaudePath(null, scratch.Path, null);
+        var resolved = ClaudeSessionService.ResolveClaudePath(LocalExecutionHost.Shared, null, scratch.Path, null);
 
         Assert.Equal(globalCli, resolved);
     }
@@ -40,7 +41,7 @@ public sealed class ClaudeToolAvailabilityTests
         File.WriteAllText(older, "fixture");
         File.WriteAllText(newer, "fixture");
 
-        var resolved = ClaudeSessionService.ResolveClaudePath(null, scratch.Path, null);
+        var resolved = ClaudeSessionService.ResolveClaudePath(LocalExecutionHost.Shared, null, scratch.Path, null);
 
         Assert.Equal(newer, resolved);
     }

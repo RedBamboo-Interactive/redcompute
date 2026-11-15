@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.ClaudeCode;
 
@@ -69,11 +70,12 @@ internal sealed class ClaudeChain
         Live = live;
     }
 
-    public static ClaudeChain Load(string transcriptPath)
+    /// <summary>Reads the transcript on the CLI's host, sharing it with a CLI that may still be writing it.</summary>
+    public static ClaudeChain Load(IExecutionHost host, string transcriptPath)
     {
         var entries = new Dictionary<string, ClaudeChainEntry>(StringComparer.Ordinal);
         ClaudeChainEntry? last = null;
-        using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var stream = host.Files.OpenRead(host.Path(transcriptPath), FileShare.ReadWrite | FileShare.Delete);
         using var reader = new StreamReader(stream, Encoding.UTF8);
         while (reader.ReadLine() is { } line)
         {

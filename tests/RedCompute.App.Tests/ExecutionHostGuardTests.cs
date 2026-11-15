@@ -58,6 +58,9 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.TranscriptSequenceStore",
             "RedCompute.Core.Sessions.PlannedRestartCheckpoint",
         ]),
+        ("server state: staged input attachments live with RedCompute, wherever the CLI runs", [
+            "RedCompute.PluginSdk.StagedAttachments",
+        ]),
         ("server state: the plugin session stores live with RedCompute", [
             "RedCompute.Plugin.ClaudeCode.ClaudeDbContext",
             "RedCompute.Plugin.Codex.CodexDbContext",
@@ -72,11 +75,8 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C9-C11 Claude Code", [
-            "RedCompute.Plugin.ClaudeCode.ClaudeChain",
-            "RedCompute.Plugin.ClaudeCode.ClaudeCodeProvider",
+        ("C11 Claude Code fork probe", [
             "RedCompute.Plugin.ClaudeCode.ClaudeSessionService",
-            "RedCompute.Plugin.ClaudeCode.ClaudeTranscriptPaths",
         ]),
         ("C12 Codex", [
             "RedCompute.Plugin.Codex.CodexAppServerConnection",

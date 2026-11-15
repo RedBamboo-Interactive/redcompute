@@ -73,7 +73,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _claude = new ClaudeSessionService(
             claudeConfig, jobTracker, _store, qualityModes,
             () => GetTitleQualityTier(config), log, host: host);
-        _cliVersionManager = CreateCliVersionManager(claudeConfig);
+        _cliVersionManager = CreateCliVersionManager();
         _claude.LaunchGate = _cliVersionManager;
         WireSessionEvents();
     }
@@ -523,14 +523,12 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     public IReadOnlyList<EndpointManifest> GetCustomEndpointManifests() => [];
 
-    private NpmCliVersionManager CreateCliVersionManager(ClaudeConfig config)
+    // The CLI the service launches, resolved on its host from the same config.
+    private NpmCliVersionManager CreateCliVersionManager()
         => new(
             "@anthropic-ai/claude-code",
             "Claude Code",
-            () => ClaudeSessionService.ResolveClaudePath(
-                config.ClaudePath,
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                Environment.GetEnvironmentVariable("PATH")),
+            () => _claude.ResolveClaudePath(),
             GetCliSessionState,
             ParkIdleCliSessionsAsync);
 

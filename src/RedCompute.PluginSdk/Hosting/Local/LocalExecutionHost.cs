@@ -251,6 +251,7 @@ public sealed class LocalExecutionHost : IExecutionHost
         public IEnumerable<string> ReadLines(HostPath path) => File.ReadLines(path.Value);
         public byte[] ReadAllBytes(HostPath path) => File.ReadAllBytes(path.Value);
         public Stream OpenRead(HostPath path) => File.OpenRead(path.Value);
+        public Stream OpenRead(HostPath path, FileShare share) => new FileStream(path.Value, FileMode.Open, FileAccess.Read, share);
 
         public void WriteAllText(HostPath path, string contents, Encoding? encoding = null)
         {

@@ -7,6 +7,7 @@ using RedCompute.PluginSdk;
 using Xunit;
 using ClaudeSessionStatus = RedCompute.Plugin.ClaudeCode.SessionStatus;
 using static RedCompute.App.Tests.ClaudeBackgroundWorkTests;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Tests;
 
@@ -83,7 +84,7 @@ public sealed class ClaudeRollbackTests : IDisposable
         chain.RefusedTurn("P2", "the refused prompt");
         var service = Seed(store, chain, ("u1", "P1"), ("u2", "P2"));
 
-        var loaded = ClaudeChain.Load(chain.Path);
+        var loaded = ClaudeChain.Load(LocalExecutionHost.Shared, chain.Path);
         Assert.Equal(["P1", "P2"], loaded.Live.Where(entry => entry.IsPrompt).Select(entry => entry.Uuid));
 
         var result = await service.RollbackAsync(Request("u2", kept: ["u1"], dropped: ["u2"]));
@@ -297,7 +298,7 @@ public sealed class ClaudeRollbackTests : IDisposable
     public void Older_turns_without_a_recorded_uuid_map_by_text_from_the_newest_and_refuse_on_any_disagreement()
     {
         var chain = TwoTurns();
-        var loaded = ClaudeChain.Load(chain.Path);
+        var loaded = ClaudeChain.Load(LocalExecutionHost.Shared, chain.Path);
 
         var (plan, refusal) = loaded.ResolveRollback(
             new SessionRollbackRequest("s", "r", "u2", [new("u1", "first")], [new("u2", "second")]),
@@ -323,7 +324,7 @@ public sealed class ClaudeRollbackTests : IDisposable
         chain.Prompt("P2", Framed("first", "second"));
         chain.Reply();
         chain.Prompt("P3", Framed("second", "not in the transcript"));
-        var loaded = ClaudeChain.Load(chain.Path);
+        var loaded = ClaudeChain.Load(LocalExecutionHost.Shared, chain.Path);
 
         var (plan, refusal) = loaded.ResolveRollback(
             new SessionRollbackRequest("s", "r", "u2", [new("u1", "first")], [new("u2", "second")]),
@@ -360,7 +361,7 @@ public sealed class ClaudeRollbackTests : IDisposable
         chain.RefusedTurn("P1", Framed("kept", "refused one"));
         chain.RefusedTurn("P2", Framed("refused one", "two"));
         chain.RefusedTurn("P3", Framed("two", "3"));
-        var loaded = ClaudeChain.Load(chain.Path);
+        var loaded = ClaudeChain.Load(LocalExecutionHost.Shared, chain.Path);
         Assert.Equal(["P0", "P1", "P2", "P3"], loaded.Live.Where(entry => entry.IsPrompt).Select(entry => entry.Uuid));
         var turns = new SessionRollbackUserTurn[] { new("u0", "kept"), new("u1", "refused one"), new("u2", "two"), new("u3", "3") };
         Assert.Equal(goodReply, loaded.Live.Single(entry => entry.Uuid == fork).ParentUuid);
@@ -387,7 +388,7 @@ public sealed class ClaudeRollbackTests : IDisposable
     public void A_prompt_the_person_still_sees_as_kept_can_never_fall_in_the_dropped_range()
     {
         var chain = TwoTurns();
-        var loaded = ClaudeChain.Load(chain.Path);
+        var loaded = ClaudeChain.Load(LocalExecutionHost.Shared, chain.Path);
 
         var (plan, refusal) = loaded.ResolveRollback(
             new SessionRollbackRequest("s", "r", "u1", [new("u2", "second")], [new("u1", "first")]),
@@ -404,11 +405,11 @@ public sealed class ClaudeRollbackTests : IDisposable
         chain.PromptOn(Fork, "P3", "after the fork");
         chain.Reply();
 
-        var loaded = ClaudeChain.Load(chain.Path);
+        var loaded = ClaudeChain.Load(LocalExecutionHost.Shared, chain.Path);
 
         Assert.Equal(["P1", "P3"], loaded.Live.Where(entry => entry.IsPrompt).Select(entry => entry.Uuid));
         Assert.True(loaded.HasConsumed(new ClaudeForkTarget("r", Fork, "P2", ["P2"])));
-        Assert.False(ClaudeChain.Load(TwoTurns().Path).HasConsumed(new ClaudeForkTarget("r", Fork, "P2", ["P2"])));
+        Assert.False(ClaudeChain.Load(LocalExecutionHost.Shared, TwoTurns().Path).HasConsumed(new ClaudeForkTarget("r", Fork, "P2", ["P2"])));
     }
 
     [Fact]

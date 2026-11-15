@@ -50,13 +50,13 @@ public partial class ClaudeSessionService
         if (string.IsNullOrEmpty(record.ClaudeSessionId))
             return Conclude(record, request, new ClaudeForkTarget(request.RollbackId, null, null, []));
 
-        var transcript = ClaudeTranscriptPaths.FindTranscript(record.ProjectPath, record.ClaudeSessionId, ProjectsRootOverride);
+        var transcript = ClaudeTranscriptPaths.FindTranscript(_host, record.ProjectPath, record.ClaudeSessionId, ProjectsRootOverride);
         if (transcript is null)
             return SessionRollbackResult.Refused(SessionRollbackRefusals.ProviderHistoryMissing,
                 "The provider's conversation file could not be found");
 
         ClaudeChain chain;
-        try { chain = await Task.Run(() => ClaudeChain.Load(transcript), ct); }
+        try { chain = await Task.Run(() => ClaudeChain.Load(_host, transcript), ct); }
         catch (IOException ex) { return SessionRollbackResult.Unavailable($"Could not read the provider's conversation: {ex.Message}"); }
 
         var promptUuids = _sessionStore.GetMessages(sessionId)
@@ -113,12 +113,12 @@ public partial class ClaudeSessionService
             return (null, null);
         }
 
-        var transcript = ClaudeTranscriptPaths.FindTranscript(record.ProjectPath, record.ClaudeSessionId, ProjectsRootOverride);
+        var transcript = ClaudeTranscriptPaths.FindTranscript(_host, record.ProjectPath, record.ClaudeSessionId, ProjectsRootOverride);
         if (transcript is not null)
         {
             try
             {
-                if (ClaudeChain.Load(transcript).HasConsumed(target))
+                if (ClaudeChain.Load(_host, transcript).HasConsumed(target))
                 {
                     _sessionStore.SetForkTarget(record.Id, null);
                     return (null, null);

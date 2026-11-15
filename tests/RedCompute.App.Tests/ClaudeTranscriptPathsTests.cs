@@ -1,5 +1,6 @@
 using RedCompute.Plugin.ClaudeCode;
 using Xunit;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Tests;
 
@@ -25,7 +26,7 @@ public sealed class ClaudeTranscriptPathsTests
             Directory.CreateDirectory(folder);
             var file = Path.Combine(folder, "abc.jsonl");
             File.WriteAllText(file, "{}");
-            Assert.Equal(file, ClaudeTranscriptPaths.FindTranscript("T:/Projects/Leaf Body", "abc", root));
+            Assert.Equal(file, ClaudeTranscriptPaths.FindTranscript(LocalExecutionHost.Shared, "T:/Projects/Leaf Body", "abc", root));
         }
         finally { Directory.Delete(root, true); }
     }
@@ -40,8 +41,8 @@ public sealed class ClaudeTranscriptPathsTests
             Directory.CreateDirectory(folder);
             var file = Path.Combine(folder, "abc.jsonl");
             File.WriteAllText(file, "{}");
-            Assert.Equal(file, ClaudeTranscriptPaths.FindTranscript("T:/very/long/path", "abc", root));
-            Assert.Null(ClaudeTranscriptPaths.FindTranscript("T:/very/long/path", "missing", root));
+            Assert.Equal(file, ClaudeTranscriptPaths.FindTranscript(LocalExecutionHost.Shared, "T:/very/long/path", "abc", root));
+            Assert.Null(ClaudeTranscriptPaths.FindTranscript(LocalExecutionHost.Shared, "T:/very/long/path", "missing", root));
         }
         finally { Directory.Delete(root, true); }
     }

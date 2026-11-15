@@ -255,6 +255,13 @@ public interface IHostFileSystem
     IEnumerable<string> ReadLines(HostPath path);
     byte[] ReadAllBytes(HostPath path);
     Stream OpenRead(HostPath path);
+
+    /// <summary>
+    /// Opens for reading while others keep the file open under <paramref name="share"/> (for example a
+    /// CLI still appending to its transcript: <c>FileShare.ReadWrite | FileShare.Delete</c>).
+    /// <see cref="OpenRead(HostPath)"/> is this with <see cref="FileShare.Read"/>.
+    /// </summary>
+    Stream OpenRead(HostPath path, FileShare share);
     void WriteAllText(HostPath path, string contents, Encoding? encoding = null);
     Task WriteAllTextAsync(HostPath path, string contents, Encoding? encoding = null, CancellationToken ct = default);
     void WriteAllBytes(HostPath path, byte[] bytes);

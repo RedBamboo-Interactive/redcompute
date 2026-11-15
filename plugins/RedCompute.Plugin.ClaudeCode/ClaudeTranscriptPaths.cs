@@ -1,7 +1,10 @@
+using RedCompute.PluginSdk.Hosting;
+
 namespace RedCompute.Plugin.ClaudeCode;
 
 /// <summary>
-/// Locates the Claude CLI's own transcript for a session under <c>~/.claude/projects</c>.
+/// Locates the Claude CLI's own transcript for a session under <c>~/.claude/projects</c> on the host
+/// the CLI runs on.
 /// </summary>
 internal static class ClaudeTranscriptPaths
 {
@@ -23,25 +26,26 @@ internal static class ClaudeTranscriptPaths
         return new string(chars);
     }
 
-    internal static string DefaultProjectsRoot() => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects");
+    internal static string DefaultProjectsRoot(IExecutionHost host) => host.PathRules.Combine(
+        host.Platform.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects");
 
     /// <summary>
     /// Returns the transcript path, or null when none exists. Uses the computed slug folder first and falls
     /// back to scanning <c>projects/*/&lt;id&gt;.jsonl</c> (long, truncated-and-hashed slugs; CLI naming changes).
     /// </summary>
-    internal static string? FindTranscript(string projectPath, string claudeSessionId, string? projectsRoot = null)
+    internal static string? FindTranscript(IExecutionHost host, string projectPath, string claudeSessionId,
+        string? projectsRoot = null)
     {
-        projectsRoot ??= DefaultProjectsRoot();
-        var direct = Path.Combine(projectsRoot, ProjectSlug(projectPath), $"{claudeSessionId}.jsonl");
-        if (File.Exists(direct)) return direct;
-        if (!Directory.Exists(projectsRoot)) return null;
+        projectsRoot ??= DefaultProjectsRoot(host);
+        var direct = host.PathRules.Combine(projectsRoot, ProjectSlug(projectPath), $"{claudeSessionId}.jsonl");
+        if (host.Files.FileExists(host.Path(direct))) return direct;
+        if (!host.Files.DirectoryExists(host.Path(projectsRoot))) return null;
         try
         {
-            foreach (var folder in Directory.EnumerateDirectories(projectsRoot))
+            foreach (var folder in host.Files.EnumerateDirectories(host.Path(projectsRoot), "*", SearchOption.TopDirectoryOnly))
             {
-                var candidate = Path.Combine(folder, $"{claudeSessionId}.jsonl");
-                if (File.Exists(candidate)) return candidate;
+                var candidate = host.PathRules.Combine(folder.Value, $"{claudeSessionId}.jsonl");
+                if (host.Files.FileExists(host.Path(candidate))) return candidate;
             }
         }
         catch (IOException) { }

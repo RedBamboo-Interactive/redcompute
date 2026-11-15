@@ -232,7 +232,7 @@ public partial class ClaudeSessionService
             if (string.IsNullOrEmpty(claudeSessionId) || string.IsNullOrEmpty(session.ProjectPath))
                 return;
 
-            var jsonlPath = ClaudeTranscriptPaths.FindTranscript(session.ProjectPath, claudeSessionId);
+            var jsonlPath = ClaudeTranscriptPaths.FindTranscript(_host, session.ProjectPath, claudeSessionId);
             if (jsonlPath is null) return;
 
             var lastTimestamp = _sessionStore.GetLastMessageTimestamp(session.Id);
@@ -240,7 +240,7 @@ public partial class ClaudeSessionService
             var newMessages = new List<ClaudeMessageRecord>();
             // API message ids that went on to call a tool: their text was commentary.
             var toolUseMessageIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var line in File.ReadLines(jsonlPath))
+            foreach (var line in _host.Files.ReadLines(_host.Path(jsonlPath)))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -1089,7 +1089,7 @@ public partial class ClaudeSessionService
             return null;
         }
 
-        if (!Directory.Exists(projectPath))
+        if (!_host.Files.DirectoryExists(_host.Path(projectPath)))
         {
             LastStartError = $"Project path not found: {projectPath}";
             LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
@@ -1230,7 +1230,7 @@ public partial class ClaudeSessionService
             return null;
         }
 
-        if (!Directory.Exists(sessionRecord.ProjectPath))
+        if (!_host.Files.DirectoryExists(_host.Path(sessionRecord.ProjectPath)))
         {
             LastStartError = $"Project path not found: {sessionRecord.ProjectPath}";
             LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
@@ -1647,7 +1647,7 @@ public partial class ClaudeSessionService
             else if (part.LegacyImage is { } legacy)
                 blocks.Add(new { type = "image", source = new { type = "base64", media_type = legacy.MediaType, data = legacy.Base64 } });
             else if (part.Attachment is { Kind: "image" } image)
-                blocks.Add(new { type = "image", source = new { type = "base64", media_type = image.MediaType, data = Convert.ToBase64String(File.ReadAllBytes(image.StoredPath)) } });
+                blocks.Add(new { type = "image", source = new { type = "base64", media_type = image.MediaType, data = Convert.ToBase64String(StagedAttachments.ReadAllBytes(image)) } });
             else if (part.Attachment is { } file)
                 blocks.Add(new { type = "text", text = SessionInputFormatting.FileReference(file) });
         }
@@ -2239,49 +2239,54 @@ public partial class ClaudeSessionService
         OwnerLabel = owner,
     };
 
-    private string? ResolveClaudePath()
+    /// <summary>The CLI this service launches, on its host: the configured path, else the managed install.</summary>
+    internal string? ResolveClaudePath()
         => ResolveClaudePath(
+            _host,
             _config.ClaudePath,
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            Environment.GetEnvironmentVariable("PATH"));
+            _host.Platform.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            _host.Platform.GetEnvironmentVariable("PATH"));
 
     internal static string? ResolveClaudePath(
+        IExecutionHost host,
         string? configuredPath,
         string applicationData,
         string? pathEnvironment)
     {
+        bool FileExists(string path) => host.Files.FileExists(host.Path(path));
+
         if (configuredPath != null)
-            return File.Exists(configuredPath) ? configuredPath : null;
+            return FileExists(configuredPath) ? configuredPath : null;
 
         // Prefer the native binary from the globally installed Claude Code package. This is the
         // package RedCompute exposes for version management, so the version we report, install,
         // and launch must all refer to the same bytes.
-        var globalCliExe = Path.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
+        var globalCliExe = host.PathRules.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
             "claude-code", "bin", "claude.exe");
-        if (File.Exists(globalCliExe))
+        if (FileExists(globalCliExe))
             return globalCliExe;
 
         // The Agent SDK also bundles a native CLI that supports stream-json IPC. Keep it as a
         // compatibility fallback for machines without a global Claude Code package.
-        var sdkExe = Path.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
+        var sdkExe = host.PathRules.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
             "claude-agent-sdk", "node_modules", "@anthropic-ai",
             "claude-agent-sdk-win32-x64", "claude.exe");
-        if (File.Exists(sdkExe))
+        if (FileExists(sdkExe))
             return sdkExe;
 
         // Claude Desktop bundles versioned native CLIs outside PATH.
-        var desktopRoot = Path.Combine(applicationData, "Claude", "claude-code");
-        if (Directory.Exists(desktopRoot))
+        var desktopRoot = host.PathRules.Combine(applicationData, "Claude", "claude-code");
+        if (host.Files.DirectoryExists(host.Path(desktopRoot)))
         {
-            var desktopExe = Directory.GetDirectories(desktopRoot)
+            var desktopExe = host.Files.EnumerateDirectories(host.Path(desktopRoot), "*", SearchOption.TopDirectoryOnly)
                 .Select(directory => new
                 {
-                    Path = Path.Combine(directory, "claude.exe"),
-                    Version = Version.TryParse(Path.GetFileName(directory), out var version)
+                    Path = host.PathRules.Combine(directory.Value, "claude.exe"),
+                    Version = Version.TryParse(Path.GetFileName(directory.Value), out var version)
                         ? version
                         : new Version(0, 0),
                 })
-                .Where(candidate => File.Exists(candidate.Path))
+                .Where(candidate => FileExists(candidate.Path))
                 .OrderByDescending(candidate => candidate.Version)
                 .Select(candidate => candidate.Path)
                 .FirstOrDefault();
@@ -2296,8 +2301,8 @@ public partial class ClaudeSessionService
             if (string.IsNullOrWhiteSpace(dir)) continue;
             foreach (var ext in new[] { ".exe", ".cmd", "" })
             {
-                var candidate = Path.Combine(dir.Trim().Trim('"'), $"claude{ext}");
-                if (File.Exists(candidate))
+                var candidate = host.PathRules.Combine(dir.Trim().Trim('"'), $"claude{ext}");
+                if (FileExists(candidate))
                     return candidate;
             }
         }
@@ -4476,11 +4481,11 @@ public partial class ClaudeSessionService
             if (string.IsNullOrEmpty(claudeSessionId) || string.IsNullOrEmpty(session.Info.ProjectPath))
                 return;
 
-            var jsonlPath = ClaudeTranscriptPaths.FindTranscript(session.Info.ProjectPath, claudeSessionId);
+            var jsonlPath = ClaudeTranscriptPaths.FindTranscript(_host, session.Info.ProjectPath, claudeSessionId);
             if (jsonlPath is null) return;
 
             string? aiTitle = null;
-            foreach (var line in File.ReadLines(jsonlPath))
+            foreach (var line in _host.Files.ReadLines(_host.Path(jsonlPath)))
             {
                 if (line.Contains("\"ai-title\""))
                 {

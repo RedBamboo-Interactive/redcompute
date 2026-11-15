@@ -311,6 +311,36 @@ public sealed class LocalExecutionHostTests
         }
     }
 
+    /// <summary>
+    /// A transcript the CLI is still appending to (and may replace) opens for reading only with the
+    /// writer's share: the plain OpenRead shares Read alone and is refused, as File.OpenRead is.
+    /// </summary>
+    [WindowsFact("sharing violations are Windows file semantics")]
+    public void A_shared_read_opens_a_file_another_handle_is_writing()
+    {
+        var host = new LocalExecutionHost("node_test");
+        var directory = host.Files.CreateTempDirectory("redcompute-host-share");
+        try
+        {
+            var path = Path.Combine(directory.Value, "transcript.jsonl");
+            using var writer = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            writer.Write("{\"line\":1}\n"u8);
+            writer.Flush();
+
+            Assert.Throws<IOException>(() => host.Files.OpenRead(host.Path(path)).Dispose());
+            using var shared = host.Files.OpenRead(host.Path(path), FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(shared, Encoding.UTF8);
+            Assert.Equal("{\"line\":1}", reader.ReadLine());
+            var stream = Assert.IsType<FileStream>(shared);
+            Assert.True(stream.CanRead);
+            Assert.False(stream.CanWrite);
+        }
+        finally
+        {
+            host.Files.DeleteDirectory(directory, recursive: true);
+        }
+    }
+
     [Fact]
     public void Files_forward_to_the_local_file_system()
     {
