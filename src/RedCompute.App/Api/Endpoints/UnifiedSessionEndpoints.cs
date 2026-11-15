@@ -14,6 +14,8 @@ using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.App.Api.Endpoints;
 
@@ -59,6 +61,8 @@ public static class UnifiedSessionEndpoints
     private static SessionTitleStore? _titles;
     private static Action<UnifiedSessionInfo>? _titleChanged;
     private static INodeRegistry? _nodes;
+    /// <summary>The node sessions start on: node zero's host (the shared local host without a registry).</summary>
+    private static IExecutionHost _host = LocalExecutionHost.Shared;
 
     /// <summary>A session's node as the API reports it: never null, a session older than node ids is the legacy node.</summary>
     internal static UnifiedSessionInfo WithNode(UnifiedSessionInfo session, INodeRegistry? nodes)
@@ -97,6 +101,7 @@ public static class UnifiedSessionEndpoints
         _titles = titles;
         _titleChanged = titleChanged;
         _nodes = nodes;
+        _host = nodes?.HostFor(null) ?? LocalExecutionHost.Shared;
 
         bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
             => ComputeResourceAccess.CanReadSession(
@@ -373,7 +378,7 @@ public static class UnifiedSessionEndpoints
                     || body.TryGetProperty("scratchDir", out _))
                     return Error(422, "validation_failed",
                         "conversation-only sessions allocate their own isolated workspace; projectPath, repositoryId, and scratchDir must be omitted");
-                projectPath = CreateConversationWorkspace();
+                projectPath = CreateConversationWorkspace(_host);
             }
             else if (string.IsNullOrWhiteSpace(projectPath))
                 return Error(422, "validation_failed", "projectPath is required");
@@ -404,7 +409,7 @@ public static class UnifiedSessionEndpoints
                 && scratchValue.ValueKind != JsonValueKind.Null)
             {
                 if (scratchValue.ValueKind != JsonValueKind.String
-                    || !SessionScratch.TryResolveDirectory(scratchValue.GetString(), out scratchDirectory))
+                    || !SessionScratch.TryResolveDirectory(_host, scratchValue.GetString(), out scratchDirectory))
                     return Error(422, "validation_failed", "scratchDir must be an existing absolute directory");
             }
 
@@ -2841,7 +2846,7 @@ public static class UnifiedSessionEndpoints
             if (attachment.Kind != "image") return (null, null, "attachment is not an image");
             if (attachment.Size > GenerateImageValidator.MaxImageBytes)
                 return (null, null, $"image exceeds {GenerateImageValidator.MaxImageBytes} bytes");
-            return (await File.ReadAllBytesAsync(attachment.StoredPath, ct), attachment.MediaType, null);
+            return (await StagedAttachments.ReadAllBytesAsync(attachment.StoredPath, ct), attachment.MediaType, null);
         }
 
         if (!entry.TryGetProperty("mediaType", out var mediaTypeValue) || mediaTypeValue.ValueKind != JsonValueKind.String)
@@ -3606,15 +3611,16 @@ public static class UnifiedSessionEndpoints
         },
     };
 
-    internal static string CreateConversationWorkspace()
+    /// <summary>A fresh, empty workspace for a conversation-only session, on the host it runs on.</summary>
+    internal static string CreateConversationWorkspace(IExecutionHost host)
     {
         var root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            host.Platform.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RedCompute",
             "conversation-sessions");
-        Directory.CreateDirectory(root);
+        host.Files.CreateDirectory(host.Path(root));
         var directory = Path.Combine(root, Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(directory);
+        host.Files.CreateDirectory(host.Path(directory));
         return directory;
     }
 

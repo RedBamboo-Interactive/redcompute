@@ -366,7 +366,8 @@ public class RelayServer
             Checkpoints = transcriptPipeline.Checkpoints,
             Sequences = transcriptPipeline.Sequences,
         };
-        var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt);
+        var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt,
+            _nodes?.LocalHost ?? LocalExecutionHost.Shared);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         _callbacks.AttachDurableStore(_inputAttachments.DatabasePath, inputQueueStore,

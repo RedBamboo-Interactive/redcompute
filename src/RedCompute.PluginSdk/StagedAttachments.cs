@@ -10,4 +10,8 @@ namespace RedCompute.PluginSdk;
 public static class StagedAttachments
 {
     public static byte[] ReadAllBytes(InputAttachment attachment) => File.ReadAllBytes(attachment.StoredPath);
+
+    /// <summary>The bytes of the staged file at <paramref name="storedPath"/>.</summary>
+    public static Task<byte[]> ReadAllBytesAsync(string storedPath, CancellationToken ct = default)
+        => File.ReadAllBytesAsync(storedPath, ct);
 }

@@ -1,31 +1,33 @@
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
+
 namespace RedCompute.PluginSdk;
 
 /// <summary>
-/// A unique, empty process working directory whose lifetime is bounded to one operation.
+/// A unique, empty process working directory whose lifetime is bounded to one operation, on the
+/// host whose process uses it (<see cref="IHostFileSystem.CreateTempDirectory"/>).
 /// </summary>
 public sealed class IsolatedWorkingDirectory : IDisposable
 {
+    private readonly IExecutionHost _host;
+
     public string Path { get; }
 
-    private IsolatedWorkingDirectory(string prefix)
+    private IsolatedWorkingDirectory(IExecutionHost host, string prefix)
     {
-        Path = NewPath(prefix);
-        Directory.CreateDirectory(Path);
+        _host = host;
+        Path = host.Files.CreateTempDirectory(prefix).Value;
     }
 
-    /// <summary>A fresh, not yet created directory name under the temp path for <paramref name="prefix"/>.</summary>
-    internal static string NewPath(string prefix)
-    {
-        var safePrefix = string.Concat(prefix.Where(ch => char.IsAsciiLetterOrDigit(ch) || ch == '-'));
-        if (string.IsNullOrEmpty(safePrefix)) safePrefix = "redcompute";
-        return System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"{safePrefix}-{Guid.NewGuid():N}");
-    }
+    /// <summary>A directory on this machine (<see cref="LocalExecutionHost.Shared"/>).</summary>
+    public static IsolatedWorkingDirectory Create(string prefix) => new(LocalExecutionHost.Shared, prefix);
 
-    public static IsolatedWorkingDirectory Create(string prefix) => new(prefix);
+    public static IsolatedWorkingDirectory Create(IExecutionHost host, string prefix) => new(host, prefix);
 
     public void Dispose()
     {
-        if (Directory.Exists(Path))
-            Directory.Delete(Path, recursive: true);
+        var path = _host.Path(Path);
+        if (_host.Files.DirectoryExists(path))
+            _host.Files.DeleteDirectory(path, recursive: true);
     }
 }

@@ -1,17 +1,25 @@
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
+
 namespace RedCompute.PluginSdk;
 
 public static class SessionScratch
 {
     private static readonly AsyncLocal<Func<string?, string?>?> CurrentExecutionToken = new();
 
+    /// <summary><see cref="TryResolveDirectory(IExecutionHost, string?, out string?)"/> on this machine.</summary>
     public static bool TryResolveDirectory(string? value, out string? directory)
+        => TryResolveDirectory(LocalExecutionHost.Shared, value, out directory);
+
+    /// <summary>An existing absolute directory on <paramref name="host"/>, as its full path.</summary>
+    public static bool TryResolveDirectory(IExecutionHost host, string? value, out string? directory)
     {
         directory = null;
         if (string.IsNullOrWhiteSpace(value) || !Path.IsPathFullyQualified(value)) return false;
         try
         {
             var full = Path.GetFullPath(value);
-            if (!Directory.Exists(full)) return false;
+            if (!host.Files.DirectoryExists(host.Path(full))) return false;
             directory = full;
             return true;
         }

@@ -825,7 +825,7 @@ public partial class ClaudeSessionService
         var hasImages = images is { Count: > 0 };
         var stdinPayload = hasImages ? OneshotImageInput(prompt, images!) : prompt;
 
-        using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-claude-generate");
+        using var workingDirectory = IsolatedWorkingDirectory.Create(_host, "redcompute-claude-generate");
 
         var options = new List<string> { "--output-format", "stream-json" };
         // Current CLIs refuse --print with stream-json unless --verbose is also present.

@@ -1,10 +1,11 @@
 using System.Net;
 using System.Net.Http;
-using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Auth;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services;
 
@@ -31,13 +32,19 @@ public sealed record RepositoryValidationResult(
 /// the one git reports for <c>local_path</c>. Both sides are read from git, so drive aliases (git prints the
 /// physical form for both) and case differences compare equal. A worktree whose folder is gone (prunable) is rejected,
 /// as is any non-exact path when the repository's <c>branch_work</c> is <c>main-only</c>.
+/// <para>
+/// The checkout is on the node the session will run on: its folders and git are read through that
+/// node's execution host.
+/// </para>
 /// </summary>
 public sealed class RepositoryReferenceValidator
 {
     private readonly HttpClient _http;
+    private readonly IExecutionHost _host;
 
-    public RepositoryReferenceValidator(string redLeafBaseUrl, JwtService jwtService)
+    public RepositoryReferenceValidator(string redLeafBaseUrl, JwtService jwtService, IExecutionHost? host = null)
     {
+        _host = host ?? LocalExecutionHost.Shared;
         _http = new HttpClient(new BadgeBearerHandler(
             () => jwtService.GenerateAccessToken("system", "system@redsuite", "System", ["admin"])))
         {
@@ -46,7 +53,11 @@ public sealed class RepositoryReferenceValidator
         };
     }
 
-    internal RepositoryReferenceValidator(HttpClient http) => _http = http;
+    internal RepositoryReferenceValidator(HttpClient http, IExecutionHost? host = null)
+    {
+        _http = http;
+        _host = host ?? LocalExecutionHost.Shared;
+    }
 
     public async Task<RepositoryValidationResult> ValidateAsync(
         string repositoryId,
@@ -91,7 +102,7 @@ public sealed class RepositoryReferenceValidator
                     repositoryPath, projectPath, Str(data.RootElement, "branch_work"), ct);
                 if (rejection is not null) return rejection;
             }
-            else if (!Directory.Exists(Path.GetFullPath(projectPath)))
+            else if (!_host.Files.DirectoryExists(_host.Path(Path.GetFullPath(projectPath))))
                 return Invalid("Referenced Repository checkout is unavailable");
 
             return new(new RepositoryReference(
@@ -114,10 +125,10 @@ public sealed class RepositoryReferenceValidator
         string fullProject;
         try { fullProject = Path.GetFullPath(projectPath); }
         catch { return Invalid($"{NotMatching} and is not one of its git worktrees"); }
-        if (!Directory.Exists(fullProject))
+        if (!_host.Files.DirectoryExists(_host.Path(fullProject)))
             return Invalid(
                 "Worktree folder is missing (prunable): projectPath does not exist and is not the referenced Repository checkout");
-        if (!Directory.Exists(Path.GetFullPath(repositoryPath)))
+        if (!_host.Files.DirectoryExists(_host.Path(Path.GetFullPath(repositoryPath))))
             return Invalid("Referenced Repository checkout is unavailable");
 
         try
@@ -153,26 +164,30 @@ public sealed class RepositoryReferenceValidator
 
     private static readonly TimeSpan GitTimeout = TimeSpan.FromSeconds(10);
 
-    /// <summary>Runs git without a shell; returns stdout lines, or null on a non-zero exit.</summary>
-    private static async Task<List<string>?> GitAsync(string workingDirectory, string[] args, CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-        };
-        psi.ArgumentList.Add("-C");
-        psi.ArgumentList.Add(workingDirectory);
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
-        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
 
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("git did not start");
+    /// <summary>Runs git without a shell, uncontained; returns stdout lines, or null on a non-zero exit.</summary>
+    private async Task<List<string>?> GitAsync(string workingDirectory, string[] args, CancellationToken ct)
+    {
+        var spec = new HostSpawnSpec
+        {
+            FileName = "git",
+            ArgumentList = ["-C", workingDirectory, .. args],
+            WorkingDirectory = _host.Path(workingDirectory),
+            EnvironmentOverlay = new Dictionary<string, string>
+            {
+                ["GIT_OPTIONAL_LOCKS"] = "0",
+                ["GIT_TERMINAL_PROMPT"] = "0",
+            },
+            StandardInput = StdioMode.Pipe,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            CreateNoWindow = true,
+            Containment = ContainmentMode.None,
+            OwnerLabel = "git",
+        };
+
+        using var process = _host.Processes.Start(spec) ?? throw new InvalidOperationException("git did not start");
         process.StandardInput.Close();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(GitTimeout);

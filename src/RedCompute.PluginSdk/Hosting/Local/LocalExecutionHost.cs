@@ -326,9 +326,17 @@ public sealed class LocalExecutionHost : IExecutionHost
 
         public HostPath CreateTempDirectory(string prefix)
         {
-            var path = IsolatedWorkingDirectory.NewPath(prefix);
+            var path = NewTempDirectoryPath(prefix);
             Directory.CreateDirectory(path);
             return host.Path(path);
+        }
+
+        /// <summary>A fresh, not yet created directory name under the temp path for <paramref name="prefix"/>.</summary>
+        private static string NewTempDirectoryPath(string prefix)
+        {
+            var safePrefix = string.Concat(prefix.Where(ch => char.IsAsciiLetterOrDigit(ch) || ch == '-'));
+            if (string.IsNullOrEmpty(safePrefix)) safePrefix = "redcompute";
+            return System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"{safePrefix}-{Guid.NewGuid():N}");
         }
 
         public HostPath TempPath => host.Path(System.IO.Path.GetTempPath());

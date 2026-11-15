@@ -155,7 +155,7 @@ public class CodexSessionService
         ResponseSchema? responseSchema = null, IReadOnlyList<GenerateImage>? images = null)
         => WithSchemaFallbackAsync(responseSchema, async strictSchema =>
         {
-            using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
+            using var workingDirectory = IsolatedWorkingDirectory.Create(_host, "redcompute-codex-generate");
             using var schema = OutputSchemaFile.Create(_host, strictSchema);
             using var imageFiles = ImageFiles.Create(_host, images);
             var args = new List<string>();
@@ -195,7 +195,7 @@ public class CodexSessionService
         string prompt, string? model, int timeout, CancellationToken ct, string? effort,
         string? strictSchema, Action<ToolFreeEvidence>? evidence, IReadOnlyList<GenerateImage>? images)
     {
-        using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
+        using var workingDirectory = IsolatedWorkingDirectory.Create(_host, "redcompute-codex-generate");
         using var schema = OutputSchemaFile.Create(_host, strictSchema);
         using var lease = await ToolFreeRelay.OpenAsync(ct, images);
         // The relay listens on RedCompute's loopback; the CLI reaches it through its host's forward
@@ -382,7 +382,7 @@ public class CodexSessionService
 
         private ImageFiles(IExecutionHost host, IReadOnlyList<GenerateImage> images)
         {
-            _directory = IsolatedWorkingDirectory.Create("redcompute-codex-images");
+            _directory = IsolatedWorkingDirectory.Create(host, "redcompute-codex-images");
             try
             {
                 var args = new List<string>();
@@ -429,7 +429,7 @@ public class CodexSessionService
 
         private OutputSchemaFile(IExecutionHost host, string json)
         {
-            _directory = IsolatedWorkingDirectory.Create("redcompute-codex-schema");
+            _directory = IsolatedWorkingDirectory.Create(host, "redcompute-codex-schema");
             var path = host.PathRules.Combine(_directory.Path, "output-schema.json");
             host.Files.WriteAllText(host.Path(path), json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
             Args = ["--output-schema", path];

@@ -77,12 +77,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C16 repository validator, conversation workspace, scratch, isolated directories", [
-            "RedCompute.App.Api.Endpoints.UnifiedSessionEndpoints",
-            "RedCompute.App.Services.RepositoryReferenceValidator",
-            "RedCompute.PluginSdk.IsolatedWorkingDirectory",
-            "RedCompute.PluginSdk.SessionScratch",
-        ]),
         ("C17 Docker", [
             "RedCompute.App.Services.DockerContainerService",
             "RedCompute.App.Services.DockerDesktopService",

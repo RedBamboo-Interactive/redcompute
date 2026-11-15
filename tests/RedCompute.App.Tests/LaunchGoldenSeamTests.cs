@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
@@ -514,6 +515,78 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         var create = typeof(ProcessCliCommandRunner).GetMethod("CreateStartInfo", BindingFlags.Static | BindingFlags.NonPublic)!;
         _launches.Add((ProcessStartInfo)create.Invoke(null, [new CliCommand(Path.Combine(_root, "npm", file), args)])!);
         Verify(golden, "cli.ProcessCliCommandRunner", "none");
+    }
+
+    // ---- Repository validation: git proves worktree membership ---------------------------------------
+
+    /// <summary>
+    /// The two git reads that prove a worktree belongs to a repository: the repository's common git
+    /// dir, then the candidate's git dir, common dir and prefix. The first answers with a common dir
+    /// so the second runs; the second gets no process, which the validator reports as unavailable.
+    /// </summary>
+    [WindowsFact("the stand-in for git's answer is cmd.exe")]
+    public async Task Repository_worktree_git()
+    {
+        var repository = Path.Combine(_root, "repository");
+        var worktree = Path.Combine(_root, "repository.worktrees", "feature");
+        Directory.CreateDirectory(repository);
+        Directory.CreateDirectory(worktree);
+        var answered = false;
+        var host = new LocalExecutionHost("golden-node")
+        {
+            StartProcess = (start, mode, owner) =>
+            {
+                lock (_hosted) _hosted.Add((start, LocalExecutionHost.DescribeContainment(mode, owner)));
+                if (answered) return null;
+                answered = true;
+                return Exits($"{repository}/.git");
+            },
+        };
+        var validator = new RepositoryReferenceValidator(new HttpClient(new RepositoryEntity(repository))
+        {
+            BaseAddress = new Uri("http://redleaf/"),
+        }, host);
+        var result = await validator.ValidateAsync(Guid.NewGuid().ToString("D"), worktree);
+        Assert.Equal(503, result.StatusCode);
+
+        List<(ProcessStartInfo Start, string Containment)> launches;
+        lock (_hosted) launches = [.. _hosted];
+        Assert.Equal(2, launches.Count);
+        LaunchGoldens.Verify("A-git-repository-common-dir",
+            LaunchGoldens.FromStartInfo(launches[0].Start, "app.RepositoryReferenceValidator", launches[0].Containment, _normalizer));
+        LaunchGoldens.Verify("A-git-worktree-candidate",
+            LaunchGoldens.FromStartInfo(launches[1].Start, "app.RepositoryReferenceValidator", launches[1].Containment, _normalizer));
+    }
+
+    /// <summary>A Repository entity whose checkout is <paramref name="localPath"/>.</summary>
+    private sealed class RepositoryEntity(string localPath) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    typeSlug = "repository",
+                    name = "golden",
+                    data = JsonSerializer.Serialize(new { status = "active", local_path = localPath }),
+                }), System.Text.Encoding.UTF8, "application/json"),
+            });
+    }
+
+    /// <summary>A real process with piped stdio that prints <paramref name="line"/> and exits 0.</summary>
+    private Process Exits(string line)
+    {
+        var start = new ProcessStartInfo("cmd.exe")
+        {
+            CreateNoWindow = true, UseShellExecute = false,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("/d");
+        start.ArgumentList.Add("/c");
+        start.ArgumentList.Add($"echo {line}");
+        var process = Process.Start(start)!;
+        lock (_started) _started.Add(process);
+        return process;
     }
 
     // ---- helpers -------------------------------------------------------------------------------

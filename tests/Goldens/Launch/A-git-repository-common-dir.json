@@ -1,0 +1,30 @@
+{
+  "argumentList": [
+    "-C",
+    "<root>\\repository",
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir"
+  ],
+  "containment": "none",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": null,
+    "stdin": null,
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentChanges": {
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_TERMINAL_PROMPT": "0"
+  },
+  "environmentTouched": true,
+  "fileName": "git",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "app.RepositoryReferenceValidator",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\repository"
+}
