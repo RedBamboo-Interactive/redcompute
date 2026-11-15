@@ -92,7 +92,7 @@ public sealed class ComputeStorageTests
         foreach (var (name, actual, relative) in Locations(storage))
         {
             Assert.True(Literal(root, relative, Path.DirectorySeparatorChar) == actual, $"{name}: {actual}");
-            Assert.DoesNotContain(LocalAppData, actual, StringComparison.OrdinalIgnoreCase);
+            Assert.False(actual.StartsWith(Path.Combine(LocalAppData, "RedCompute"), StringComparison.OrdinalIgnoreCase), $"{name} stayed at the default root: {actual}");
         }
         Assert.Equal(Resolve(null).SuiteRoot, storage.SuiteRoot);
         Assert.False(Directory.Exists(root)); // Resolving never creates anything.
