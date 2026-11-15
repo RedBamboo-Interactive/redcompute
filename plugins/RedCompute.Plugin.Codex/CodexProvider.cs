@@ -83,7 +83,13 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _log = log;
         _jobTracker = jobTracker;
 
-        using (var db = new CodexDbContext()) { db.Initialize(); }
+        using (var db = new CodexDbContext())
+        {
+            db.Initialize();
+            // Once: a later instance (a dedicated provider, a reload) finds the column and logs nothing.
+            if (db.NodeIdColumnAddedIn is { } added)
+                log($"[Codex] Added Sessions.NodeId to codex.db in {added.TotalMilliseconds:0.#} ms", null);
+        }
         _store = new CodexSessionStore(nodes?.StampNodeId);
         var codexConfig = BuildConfig(config);
         _defaultSandbox = codexConfig.SandboxMode;

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using Microsoft.EntityFrameworkCore;
 
@@ -19,6 +20,13 @@ public class ClaudeDbContext : DbContext
         Directory.CreateDirectory(dir);
         DbPath = Path.Combine(dir, "claude.db");
     }
+
+    /// <summary>
+    /// How long adding <c>Sessions.NodeId</c> took, when this context's <see cref="Initialize"/> added it;
+    /// null when the column already existed. The provider logs it once at boot, so the cost of the ALTER
+    /// on a large live database is recorded (as RedCompute's own <c>Jobs.NodeId</c>).
+    /// </summary>
+    public TimeSpan? NodeIdColumnAddedIn { get; private set; }
 
     public void Initialize()
     {
@@ -133,7 +141,9 @@ public class ClaudeDbContext : DbContext
         {
             using var alter = conn.CreateCommand();
             alter.CommandText = "ALTER TABLE Sessions ADD COLUMN NodeId TEXT";
+            var timer = Stopwatch.StartNew();
             alter.ExecuteNonQuery();
+            NodeIdColumnAddedIn = timer.Elapsed;
         }
 
         if (!columns.Contains("Unattended"))

@@ -65,7 +65,13 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         _log = log;
         _jobTracker = jobTracker;
 
-        using (var db = new OpenCodeDbContext()) { db.Initialize(); }
+        using (var db = new OpenCodeDbContext())
+        {
+            db.Initialize();
+            // Once: a later instance (a dedicated provider, a reload) finds the column and logs nothing.
+            if (db.NodeIdColumnAddedIn is { } added)
+                log($"[OpenCode] Added Sessions.NodeId to opencode.db in {added.TotalMilliseconds:0.#} ms", null);
+        }
         _store = new OpenCodeSessionStore(nodes?.StampNodeId);
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,

@@ -59,7 +59,13 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         _log = log;
         _jobTracker = jobTracker;
 
-        using (var db = new ClaudeDbContext()) { db.Initialize(); }
+        using (var db = new ClaudeDbContext())
+        {
+            db.Initialize();
+            // Once: a later instance (a dedicated provider, a reload) finds the column and logs nothing.
+            if (db.NodeIdColumnAddedIn is { } added)
+                log($"[Claude] Added Sessions.NodeId to claude.db in {added.TotalMilliseconds:0.#} ms", null);
+        }
         var runtimeOwner = RuntimeOwnerOf(config);
         if (runtimeOwner is not null)
         {

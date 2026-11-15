@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using Microsoft.EntityFrameworkCore;
 
@@ -19,6 +20,13 @@ public class OpenCodeDbContext : DbContext
         Directory.CreateDirectory(dir);
         DbPath = Path.Combine(dir, "opencode.db");
     }
+
+    /// <summary>
+    /// How long adding <c>Sessions.NodeId</c> took, when this context's <see cref="Initialize"/> added it;
+    /// null when the column already existed. The provider logs it once at boot, so the cost of the ALTER
+    /// on a large live database is recorded (as RedCompute's own <c>Jobs.NodeId</c>).
+    /// </summary>
+    public TimeSpan? NodeIdColumnAddedIn { get; private set; }
 
     public void Initialize()
     {
@@ -69,8 +77,13 @@ public class OpenCodeDbContext : DbContext
             // Nullable, no default, CHECK or index: SQLite rewrites only the schema text, never a row,
             // whatever the table holds. Existing rows read NULL, which is the legacy node.
             cmd.CommandText = "ALTER TABLE Sessions ADD COLUMN NodeId TEXT";
-            try { cmd.ExecuteNonQuery(); }
-            catch { }
+            var timer = Stopwatch.StartNew();
+            try
+            {
+                cmd.ExecuteNonQuery();
+                NodeIdColumnAddedIn = timer.Elapsed;
+            }
+            catch { /* column already exists */ }
         }
         finally
         {

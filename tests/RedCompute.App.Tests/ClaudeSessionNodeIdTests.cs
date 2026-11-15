@@ -70,17 +70,48 @@ public sealed class ClaudeSessionNodeIdTests : IDisposable
         var pagesBefore = Scalar("PRAGMA page_count");
 
         var clock = Stopwatch.StartNew();
-        using (var db = new ClaudeDbContext()) db.Initialize();
+        TimeSpan? added;
+        using (var db = new ClaudeDbContext())
+        {
+            db.Initialize();
+            added = db.NodeIdColumnAddedIn;
+        }
         clock.Stop();
-        _output.WriteLine($"{rows} rows, {bytes / (1024 * 1024)} MB: Initialize (with Sessions.NodeId added) took {clock.ElapsedMilliseconds} ms");
+        _output.WriteLine($"{rows} rows, {bytes / (1024 * 1024)} MB: Initialize (with Sessions.NodeId added) took {clock.ElapsedMilliseconds} ms, the ALTER {added?.TotalMilliseconds:0.#} ms");
+        Assert.NotNull(added);
 
         Assert.Contains("NodeId", Columns());
         Assert.Equal(pagesBefore, Scalar("PRAGMA page_count"));
         Assert.Equal((long)rows, Scalar("SELECT COUNT(*) FROM Sessions WHERE NodeId IS NULL"));
 
-        // Idempotent: the next boot finds the column and changes nothing.
-        using (var db = new ClaudeDbContext()) db.Initialize();
+        // Idempotent: the next boot finds the column, changes nothing and reports no add.
+        using (var db = new ClaudeDbContext())
+        {
+            db.Initialize();
+            Assert.Null(db.NodeIdColumnAddedIn);
+        }
         Assert.Equal(pagesBefore, Scalar("PRAGMA page_count"));
+    }
+
+    /// <summary>
+    /// Carried from M3 (decision 4): the provider that adds the column logs how long the ALTER took,
+    /// once; a later instance (a dedicated provider, a reload) finds the column and logs nothing.
+    /// </summary>
+    [Fact]
+    public void The_provider_logs_the_column_add_once()
+    {
+        using (var db = new ClaudeDbContext()) db.Initialize();
+        Execute("ALTER TABLE Sessions DROP COLUMN NodeId");
+        var logs = new List<string>();
+
+        for (var boot = 0; boot < 2; boot++)
+            _ = new ClaudeCodeProvider(new ProviderConfig { Type = "ClaudeCode" }, "ai-session",
+                new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), new ClaudeDeveloperInstructionsTests.NullQualityModes(),
+                (message, _) => logs.Add(message), LocalExecutionHost.Shared, null);
+
+        var add = Assert.Single(logs, line => line.Contains("Sessions.NodeId"));
+        Assert.Matches(@"^\[Claude\] Added Sessions\.NodeId to claude\.db in \d+(\.\d)? ms$", add);
+        Assert.Contains("NodeId", Columns());
     }
 
     [Fact]
