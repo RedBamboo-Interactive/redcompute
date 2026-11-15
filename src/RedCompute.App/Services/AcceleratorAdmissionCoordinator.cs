@@ -7,6 +7,11 @@ namespace RedCompute.App.Services;
 /// Serializes incompatible accelerator work and performs just-in-time release of
 /// idle, explicitly registered residents when the requested residency class changes.
 /// A completed lease leaves its residency warm for the next same-class job.
+/// <para>
+/// Gates are keyed by node-qualified ids (<c>&lt;node&gt;/cuda:0</c>): an accelerator belongs to one
+/// machine. A configured id without a node is this node's, so ComfyUI's and OpenCode's
+/// <c>cuda:0</c> still meet on one gate. Logs and admission errors keep the configured id.
+/// </para>
 /// </summary>
 public sealed class AcceleratorAdmissionCoordinator : IAcceleratorAdmissionCoordinator
 {
@@ -21,11 +26,17 @@ public sealed class AcceleratorAdmissionCoordinator : IAcceleratorAdmissionCoord
     private readonly ConcurrentDictionary<string, AcceleratorState> _accelerators =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Action<string> _log;
+    private readonly string _nodeId;
 
-    public AcceleratorAdmissionCoordinator(Action<string>? log = null)
+    public AcceleratorAdmissionCoordinator(Action<string>? log = null, string? nodeId = null)
     {
         _log = log ?? (_ => { });
+        _nodeId = string.IsNullOrWhiteSpace(nodeId) ? INodeRegistry.LocalAlias : nodeId;
     }
+
+    /// <summary>The gate key of an accelerator id: an id that names no node is on this node.</summary>
+    internal string Qualify(string acceleratorId)
+        => acceleratorId.Contains('/') ? acceleratorId : $"{_nodeId}/{acceleratorId}";
 
     public IDisposable RegisterPreemptibleResident(AcceleratorResidentRegistration registration)
     {
@@ -99,7 +110,7 @@ public sealed class AcceleratorAdmissionCoordinator : IAcceleratorAdmissionCoord
     }
 
     private AcceleratorState StateFor(string acceleratorId)
-        => _accelerators.GetOrAdd(acceleratorId, _ => new AcceleratorState());
+        => _accelerators.GetOrAdd(Qualify(acceleratorId), _ => new AcceleratorState());
 
     private sealed class Lease(SemaphoreSlim gate) : IAsyncDisposable
     {

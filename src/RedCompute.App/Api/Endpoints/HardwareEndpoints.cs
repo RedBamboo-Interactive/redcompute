@@ -18,6 +18,7 @@ public static class HardwareEndpoints
             return Results.Ok(new
             {
                 available = true,
+                nodeId = snapshot.NodeId,
                 snapshot.Timestamp,
                 cpu = new
                 {

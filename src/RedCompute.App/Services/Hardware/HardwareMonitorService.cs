@@ -20,6 +20,9 @@ public class HardwareMonitorService : IDisposable
 
     public event Action<HardwareSnapshot>? SnapshotUpdated;
 
+    /// <summary>The node this monitor samples; set at boot before <see cref="Start"/>.</summary>
+    public string NodeId { get; set; } = "";
+
     public void Start(CapabilityRegistry? registry = null)
     {
         // Windows loads nvml.dll by its DllImport name. Elsewhere the NVIDIA driver ships
@@ -69,6 +72,7 @@ public class HardwareMonitorService : IDisposable
         {
             var snapshot = new HardwareSnapshot
             {
+                NodeId = NodeId,
                 Timestamp = DateTimeOffset.UtcNow,
                 Cpu = CollectCpu(),
                 Ram = CollectRam(),

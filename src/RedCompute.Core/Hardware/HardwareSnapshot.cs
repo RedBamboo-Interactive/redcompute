@@ -2,6 +2,8 @@ namespace RedCompute.Core.Hardware;
 
 public class HardwareSnapshot
 {
+    /// <summary>The node whose hardware this is. Set by RedCompute when it takes the sample; never persisted.</summary>
+    public string NodeId { get; set; } = "";
     public DateTimeOffset Timestamp { get; set; }
     public CpuInfo Cpu { get; set; } = new();
     public RamInfo Ram { get; set; } = new();

@@ -41,6 +41,12 @@ public interface INodeRegistry
     string Resolve(string? storedNodeId) => storedNodeId ?? LegacyNodeId;
 
     /// <summary>
+    /// Where a configured provider runs. Phase 1: every provider runs on node zero; a cloud-only
+    /// provider runs on the server, which is node zero too.
+    /// </summary>
+    ProviderStatusKey StatusKey(string providerName) => new(providerName, LocalNodeId);
+
+    /// <summary>
     /// The execution host of a node: null, the legacy id, the local id and <see cref="LocalAlias"/>
     /// are the local host. An unknown id throws <see cref="KeyNotFoundException"/>.
     /// </summary>

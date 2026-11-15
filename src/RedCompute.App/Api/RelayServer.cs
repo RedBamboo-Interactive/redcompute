@@ -26,6 +26,7 @@ using RedCompute.App.Services.Jobs;
 using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.SessionTitles;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Nodes;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
@@ -529,7 +530,7 @@ public class RelayServer
             Fields: ["provider", "sessionId", "confidential", "timestamp"]));
         broadcaster.RegisterEvent(new WsEventSchema("hardware.snapshot",
             "Fired every 2 seconds with live system hardware metrics",
-            Fields: ["timestamp", "cpu", "ram", "gpus"]));
+            Fields: ["nodeId", "timestamp", "cpu", "ram", "gpus"]));
 
         _jobTracker.JobCreated += job => BroadcastJob(broadcaster, "job.created", job);
         _jobTracker.JobUpdated += job => BroadcastJob(broadcaster, "job.updated", job);
@@ -623,14 +624,15 @@ public class RelayServer
                 {
                     var defaultStatus = (await _registry.GetStatus(slug)).ToString();
 
-                    var provStatuses = new List<object>();
+                    // Each provider's status is keyed by (provider, node); one node in Phase 1.
+                    var provStatuses = new List<(ProviderStatusKey Key, string Status)>();
                     foreach (var (name, prov) in entry.Providers)
                     {
                         var ps = (await prov.GetStatusAsync()).ToString();
-                        provStatuses.Add(new { name, status = ps });
+                        provStatuses.Add((StatusKey(name), ps));
                     }
 
-                    var key = $"{slug}:{defaultStatus}:{entry.IsSleeping}:{entry.IsManuallyDisabled}:{string.Join(",", provStatuses.Select(p => p.ToString()))}";
+                    var key = $"{slug}:{defaultStatus}:{entry.IsSleeping}:{entry.IsManuallyDisabled}:{string.Join(",", provStatuses.Select(p => $"{p.Key}={p.Status}"))}";
                     if (lastStatuses.TryGetValue(slug, out var prev) && prev == key)
                         continue;
 
@@ -647,13 +649,21 @@ public class RelayServer
                             : entry.ActiveProvider?.Name,
                         defaultProvider = entry.DefaultProviderName,
                         executionMode = entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
-                        providers = provStatuses
+                        providers = provStatuses.Select(p => new
+                        {
+                            name = p.Key.Provider,
+                            status = p.Status,
+                            nodeId = _nodes is null ? null : p.Key.NodeId,
+                        }).ToList(),
                     });
                 }
                 catch { }
             }
         }
     }
+
+    private ProviderStatusKey StatusKey(string providerName)
+        => _nodes is null ? new ProviderStatusKey(providerName, "") : ((INodeRegistry)_nodes).StatusKey(providerName);
 
     private static string SessionConfidentialityKey(string provider, string sessionId)
         => $"{provider}:{sessionId}";

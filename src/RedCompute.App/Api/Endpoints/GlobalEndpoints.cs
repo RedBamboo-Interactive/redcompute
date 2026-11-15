@@ -69,6 +69,7 @@ public static class GlobalEndpoints
                         item.name,
                         status = item.status.ToString(),
                         statusDetail = item.provider.StatusDetail,
+                        nodeId = nodes?.StatusKey(item.name).NodeId,
                     }),
                     executionMode = entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
                     sleeping = entry.IsSleeping,
@@ -85,6 +86,7 @@ public static class GlobalEndpoints
             {
                 service = "RedCompute",
                 uptime = (DateTimeOffset.UtcNow - _startTime).TotalSeconds,
+                localNodeId = nodes?.LocalNodeId,
                 capabilities
             });
         });

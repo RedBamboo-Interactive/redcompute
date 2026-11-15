@@ -384,7 +384,7 @@ public sealed class JobApiContractTests : IAsyncLifetime
         new JobBeneficiary("user", "user-1", "User One"),
         [], new JobTrace(), JobProvenanceAssurance.Verified, DateTimeOffset.UtcNow);
 
-    private class FakeProvider : IPluginProvider
+    internal class FakeProvider : IPluginProvider
     {
         public string Name => "fake";
         public string CapabilitySlug => "image-gen";

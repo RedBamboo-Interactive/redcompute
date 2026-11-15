@@ -53,8 +53,8 @@ public static class RedComputeHost
     public static NodeRegistry Nodes { get; private set; } = null!;
     public static ProviderConfigService ProviderConfig { get; private set; } = null!;
     public static QualityModeService QualityModes { get; private set; } = null!;
-    public static AcceleratorAdmissionCoordinator AcceleratorAdmission { get; } =
-        new(message => Log(message));
+    /// <summary>Created with the node registry: its gates are keyed by node-qualified accelerator ids.</summary>
+    public static AcceleratorAdmissionCoordinator AcceleratorAdmission { get; private set; } = null!;
 
     /// <summary>
     /// Raises the thread-pool floor and takes the single-instance mutex. Returns false when
@@ -134,6 +134,8 @@ public static class RedComputeHost
         Nodes = NodeRegistry.Open(NodeIdentityStore.DefaultDirectory, RedComputeServiceDescriptor.AppVersion, s => Log(s));
         Log($"[App] Node zero: {Nodes.LocalNodeId} ({Nodes.Local.MachineName})");
         JobTracker.StampNodeId = Nodes.StampNodeId;
+        HardwareMonitor.NodeId = Nodes.LocalNodeId;
+        AcceleratorAdmission = new AcceleratorAdmissionCoordinator(message => Log(message), Nodes.LocalNodeId);
 
         ProviderDiscovery = new ProviderDiscovery(s => Log(s));
         ProviderDiscovery.ScanAssemblies();
