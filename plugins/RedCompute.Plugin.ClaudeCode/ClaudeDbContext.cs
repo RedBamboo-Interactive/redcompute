@@ -127,6 +127,15 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
+        // Nullable, no default, CHECK or index: SQLite rewrites only the schema text, never a row,
+        // whatever the table holds. Existing rows read NULL, which is the legacy node.
+        if (!columns.Contains("NodeId"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN NodeId TEXT";
+            alter.ExecuteNonQuery();
+        }
+
         if (!columns.Contains("Unattended"))
         {
             using var alter = conn.CreateCommand();

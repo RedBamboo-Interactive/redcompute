@@ -8,6 +8,7 @@ namespace RedCompute.Plugin.ClaudeCode;
 public class ClaudeSessionStore : IClaudeSessionStore
 {
     private readonly string? _owner;
+    private readonly string? _nodeId;
 
     /// <summary>The store the shared Claude instance uses: rows with no runtime owner.</summary>
     public ClaudeSessionStore() : this(null) { }
@@ -18,8 +19,15 @@ public class ClaudeSessionStore : IClaudeSessionStore
     /// provider instances never claim, recover, list or resume each other's sessions. Message reads go
     /// by a session id the caller already owns.
     /// </summary>
-    public ClaudeSessionStore(string? runtimeOwner)
-        => _owner = string.IsNullOrWhiteSpace(runtimeOwner) ? null : runtimeOwner.Trim();
+    /// <param name="nodeId">
+    /// The node id new rows are stamped with (<c>INodeRegistry.StampNodeId</c>): null when the node
+    /// identity is not persisted, so those rows stay NULL and read as the legacy node.
+    /// </param>
+    public ClaudeSessionStore(string? runtimeOwner, string? nodeId = null)
+    {
+        _owner = string.IsNullOrWhiteSpace(runtimeOwner) ? null : runtimeOwner.Trim();
+        _nodeId = string.IsNullOrWhiteSpace(nodeId) ? null : nodeId;
+    }
 
     public string? RuntimeOwner => _owner;
 
@@ -67,7 +75,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         return cmd.ExecuteNonQuery();
     }
 
-    private static AiSessionSnapshot ToSnapshot(ClaudeSessionRecord r) => new()
+    internal static AiSessionSnapshot ToSnapshot(ClaudeSessionRecord r) => new()
     {
         Provider = "claude-code",
         ProviderEntity = r.ProviderEntity,
@@ -75,6 +83,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         Title = r.Title,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        NodeId = r.NodeId,
         RepositoryId = r.RepositoryId,
         Status = r.Status,
         StopReason = r.StopReason,
@@ -228,10 +237,13 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.AccessLevelSource = record.AccessLevelSource;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;
+            // The node is the row's, set at insert: the published snapshot carries it as stored.
+            record.NodeId = existing.NodeId;
         }
         else
         {
             record.RuntimeOwner = _owner;
+            record.NodeId = _nodeId;
             db.Sessions.Add(record);
         }
         db.SaveChanges();

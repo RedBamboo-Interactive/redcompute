@@ -33,6 +33,12 @@ public class ClaudeSessionRecord
     /// </summary>
     public string? RuntimeOwner { get; set; }
     /// <summary>
+    /// The node the session runs on (node zero's id), or null for a row written before node ids or
+    /// by a run whose node identity was not persisted: null reads as the legacy node. Written once at
+    /// insert by <see cref="ClaudeSessionStore"/>; saving a session never changes it.
+    /// </summary>
+    public string? NodeId { get; set; }
+    /// <summary>
     /// Provider-native developer instructions supplied when the session was created. Reapplied
     /// as <c>--append-system-prompt</c> on every CLI launch for this session (start and resume).
     /// </summary>

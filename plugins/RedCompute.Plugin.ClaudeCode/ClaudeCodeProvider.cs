@@ -53,7 +53,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
-        Action<string, Guid?> log, IExecutionHost? host = null)
+        Action<string, Guid?> log, IExecutionHost? host = null, INodeRegistry? nodes = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -68,7 +68,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             if (adopted > 0)
                 log($"[Claude] Dedicated provider '{runtimeOwner}' adopted {adopted} earlier session(s) of its entity", null);
         }
-        _store = new ClaudeSessionStore(runtimeOwner);
+        _store = new ClaudeSessionStore(runtimeOwner, nodes?.StampNodeId);
         var claudeConfig = BuildConfig(config);
         _claude = new ClaudeSessionService(
             claudeConfig, jobTracker, _store, qualityModes,
