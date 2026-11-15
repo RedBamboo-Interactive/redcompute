@@ -6,7 +6,7 @@ using System.Runtime.Versioning;
 using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 
-namespace RedCompute.PluginSdk;
+namespace RedCompute.PluginSdk.Hosting.Local;
 
 /// <summary>
 /// Makes a session's whole process tree die with the session. A PPID walk (<see
@@ -32,8 +32,13 @@ namespace RedCompute.PluginSdk;
 /// through RedCompute's long-lived process registry, outside every session job; <see
 /// cref="IsProtected"/> lets that registry also shield an adopted escapee.
 /// </para>
+/// <para>
+/// Internal to node zero's execution host: everything else reaches it through
+/// <see cref="IHostProcesses"/> (<see cref="ContainmentMode.Session"/> launches, identity kills) and
+/// <see cref="IHostContainment"/>.
+/// </para>
 /// </summary>
-public static class SessionProcessContainment
+internal static class SessionProcessContainment
 {
     private static readonly ConcurrentDictionary<nuint, ContainedProcessTree> Trees = new();
     private static readonly object PortGate = new();
@@ -572,7 +577,7 @@ public static class SessionProcessContainment
 /// One session root's job and everything proven to descend from it: job members and the
 /// descendants that started outside the job. Reaped when the root exits.
 /// </summary>
-public sealed class ContainedProcessTree : Hosting.IContainedTree
+internal sealed class ContainedProcessTree : IContainedTree
 {
     private static readonly long HotTicks = TimeSpan.FromSeconds(5).Ticks;
     private readonly object _gate = new();
@@ -673,9 +678,9 @@ public sealed class ContainedProcessTree : Hosting.IContainedTree
     /// <summary>Raised once, after the root exited and the tree was reaped.</summary>
     public event Action<ContainedProcessTree>? Reaped;
 
-    private Action<Hosting.IContainedTree>? _reapedAsHostTree;
+    private Action<IContainedTree>? _reapedAsHostTree;
 
-    event Action<Hosting.IContainedTree>? Hosting.IContainedTree.Reaped
+    event Action<IContainedTree>? IContainedTree.Reaped
     {
         add => _reapedAsHostTree += value;
         remove => _reapedAsHostTree -= value;

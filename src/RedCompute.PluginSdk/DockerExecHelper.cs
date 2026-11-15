@@ -1,19 +1,10 @@
-using System.Diagnostics;
-
 namespace RedCompute.PluginSdk;
 
+/// <summary>The docker exec argv a containerised CLI launch hands its execution host.</summary>
 public static class DockerExecHelper
 {
     /// <summary>The program a docker exec launch runs.</summary>
     public const string FileName = "docker";
-
-    public static void ConfigureForDockerExec(ProcessStartInfo startInfo, string container,
-        string cliBinary, string? workingDir, Dictionary<string, string>? env)
-    {
-        startInfo.FileName = FileName;
-        foreach (var argument in ExecArguments(container, cliBinary, workingDir, env))
-            startInfo.ArgumentList.Add(argument);
-    }
 
     /// <summary>
     /// The argv of <c>docker exec -i [-w dir] [-e K=V]... container cli</c>; the CLI's own arguments

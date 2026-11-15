@@ -15,9 +15,10 @@ namespace RedCompute.App.Tests;
 /// except through <c>IExecutionHost</c>. It reads the IL of every built RedCompute assembly, so it
 /// sees lambdas, async state machines, <c>using static</c> and aliases, and runs on Linux too.
 /// <para>
-/// The allowlist is a ratchet. It names every type that does this today; each move commit deletes
-/// its own entries, and an entry whose type no longer does it fails too, so the list only shrinks
-/// and every shrink shows in the diff that earned it.
+/// The allowlist is in its final form (design section 7): the host implementation, RedCompute's own
+/// server state, the plugin session stores, the two server-only process sites and server bootstrap.
+/// It was a ratchet while the moves landed (each move commit deleted its own entries); an entry
+/// whose type no longer needs it still fails, so nothing stale can stay listed.
 /// </para>
 /// </summary>
 public sealed class ExecutionHostGuardTests
@@ -25,18 +26,16 @@ public sealed class ExecutionHostGuardTests
     /// <summary>Allowed types, grouped by why (or by the move that removes them).</summary>
     internal static readonly (string Why, string[] Types)[] Allowlist =
     [
-        // ---- final: the host implementation ----------------------------------------------------------
-        ("the local execution host", [
+        // ---- the host implementation: node zero's execution host and the code moved into it ----------
+        ("the local execution host (RedCompute.PluginSdk.Hosting.Local, internal but for LocalExecutionHost)", [
+            "RedCompute.PluginSdk.Hosting.Local.ContainedProcessTree",
             "RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost",
             "RedCompute.PluginSdk.Hosting.Local.LocalHardware",
             "RedCompute.PluginSdk.Hosting.Local.LocalHardwareSampler",
+            "RedCompute.PluginSdk.Hosting.Local.OwnedProcessKiller",
+            "RedCompute.PluginSdk.Hosting.Local.SessionProcessContainment",
         ]),
-        ("the local host's moved code; its static facades become internal to Hosting.Local (C19)", [
-            "RedCompute.PluginSdk.ContainedProcessTree",
-            "RedCompute.PluginSdk.OwnedProcessKiller",
-            "RedCompute.PluginSdk.SessionProcessContainment",
-        ]),
-        // ---- final: RedCompute's own state under %LOCALAPPDATA%/RedCompute, on the server ------------
+        // ---- RedCompute's own state under %LOCALAPPDATA%/RedCompute, on the server ---------------------
         ("server state", [
             "RedCompute.App.Api.Endpoints.GenericCapabilityEndpoints",
             "RedCompute.App.Api.Endpoints.JobApiResponse",
@@ -71,12 +70,11 @@ public sealed class ExecutionHostGuardTests
         ("server bootstrap", [
             "RedCompute.App.Api.RelayServer",
         ]),
-        // ---- final: server-only processes ------------------------------------------------------------
+        // ---- server-only processes ----------------------------------------------------------------------
         ("server-only processes (elevation, desktop handoff)", [
             "RedCompute.App.Services.DefenderExclusionService",
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
-        // ---- moves still to come: each move commit deletes its own group -----------------------------
     ];
 
     [Fact]
@@ -175,7 +173,7 @@ public sealed class ExecutionHostGuardTests
         var core = new[]
         {
             typeof(RedCompute.Core.Jobs.JobRecord).Assembly.Location,
-            typeof(RedCompute.PluginSdk.OwnedProcessKiller).Assembly.Location,
+            typeof(RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost).Assembly.Location,
             typeof(RedCompute.App.RedComputeHost).Assembly.Location, // RedCompute.dll
         };
         return core

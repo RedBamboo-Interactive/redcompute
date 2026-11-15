@@ -1,14 +1,15 @@
 using System.Diagnostics;
 
-namespace RedCompute.PluginSdk;
+namespace RedCompute.PluginSdk.Hosting.Local;
 
 /// <summary>
 /// Kills a process recorded by an earlier RedCompute run. Recorded PIDs outlive their process,
 /// and Windows recycles PIDs quickly, so by the time a stale row is recovered the PID may belong
 /// to something unrelated (a Postgres backend, once). Only kill when the process still looks
-/// like the CLI the provider launches.
+/// like the CLI the provider launches. Internal to node zero's execution host
+/// (<see cref="IHostProcesses.TryKillRecorded"/>).
 /// </summary>
-public static class OwnedProcessKiller
+internal static class OwnedProcessKiller
 {
     // npm .cmd shims run the CLI under cmd.exe/node.exe; Docker-exec sessions run under docker.exe.
     private static readonly string[] LauncherNames = ["node", "cmd", "docker"];

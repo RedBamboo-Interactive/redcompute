@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;

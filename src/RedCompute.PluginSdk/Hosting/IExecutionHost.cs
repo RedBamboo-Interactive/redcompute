@@ -56,7 +56,7 @@ public enum ContainmentMode
     /// <summary>Uncontained, as today's backend launches (ComfyUI, LocalWsl, Kev, git, docker, npm, the Claude fork probe).</summary>
     None,
 
-    /// <summary><see cref="SessionProcessContainment.Start"/>: kill-on-close job, parentage escapee tracking, ledger.</summary>
+    /// <summary>A session tree (locally <c>SessionProcessContainment.Start</c>): kill-on-close job, parentage escapee tracking, ledger.</summary>
     Session,
 
     /// <summary>A job without kill-on-close, ledgered (long-lived). Reached through <see cref="IHostContainment.Keep"/>.</summary>
@@ -178,7 +178,7 @@ public interface IHostProcesses
 
     /// <summary>
     /// Kill a PID recorded by an earlier run, only while it still looks like the CLI
-    /// (<see cref="OwnedProcessKiller.TryKill"/>): the CLI's own name, or node, cmd or docker.
+    /// (locally <c>OwnedProcessKiller.TryKill</c>): the CLI's own name, or node, cmd or docker.
     /// </summary>
     bool TryKillRecorded(int? pid, string cliName, Action<string>? log = null);
 
@@ -198,7 +198,7 @@ public interface IHostProcesses
 
 // ---- containment ---------------------------------------------------------------------------------
 
-/// <summary>A contained process tree (<see cref="ContainedProcessTree"/> locally).</summary>
+/// <summary>A contained process tree (locally <c>ContainedProcessTree</c>).</summary>
 public interface IContainedTree
 {
     string Owner { get; }
