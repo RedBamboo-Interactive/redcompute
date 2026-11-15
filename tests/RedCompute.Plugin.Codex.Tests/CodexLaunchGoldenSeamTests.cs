@@ -34,6 +34,8 @@ public sealed class CodexLaunchGoldenSeamTests : IDisposable
 
     public CodexLaunchGoldenSeamTests()
     {
+        // The launch argv depends on the user's own config.toml; the goldens are of a user with none.
+        CodexWindowsSandboxConfig.ConfigTextOverride = (_, _) => null;
         _project = Path.Combine(_root, "project");
         _scratch = Path.Combine(_root, "scratch");
         Directory.CreateDirectory(_project);
@@ -239,6 +241,7 @@ public sealed class CodexLaunchGoldenSeamTests : IDisposable
 
     public void Dispose()
     {
+        CodexWindowsSandboxConfig.ConfigTextOverride = null;
         lock (_started)
             foreach (var process in _started)
             {

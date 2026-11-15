@@ -80,7 +80,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         var spec = new HostSpawnSpec
         {
             FileName = exe,
-            ArgumentList = ["app-server"],
+            ArgumentList = [.. CodexWindowsSandboxConfig.AppServerArguments(host, env)],
             WorkingDirectory = !string.IsNullOrWhiteSpace(workingDirectory)
                 && host.Files.DirectoryExists(host.Path(workingDirectory))
                     ? host.Path(workingDirectory)

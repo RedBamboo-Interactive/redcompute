@@ -936,11 +936,24 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         var full = info.AccessLevel == Core.Sessions.SessionAccessLevels.Full;
         if (full && _config.SandboxMode == "danger-full-access")
             return new { type = "dangerFullAccess" };
+        var networkAccess = full || info.AccessLevel == Core.Sessions.SessionAccessLevels.Auto;
+        // Codex's Windows sandbox cannot enforce the tmp roots workspaceWrite adds by default ("split
+        // writable root sets"), so without these two every command is refused and asks. The project
+        // stays the only writable root.
+        if (OperatingSystem.IsWindows())
+            return new
+            {
+                type = "workspaceWrite",
+                writableRoots = new[] { info.ProjectPath },
+                networkAccess,
+                excludeTmpdirEnvVar = true,
+                excludeSlashTmp = true,
+            };
         return new
         {
             type = "workspaceWrite",
             writableRoots = new[] { info.ProjectPath },
-            networkAccess = full || info.AccessLevel == Core.Sessions.SessionAccessLevels.Auto,
+            networkAccess,
         };
     }
 

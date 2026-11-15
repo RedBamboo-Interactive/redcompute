@@ -1,5 +1,7 @@
 {
   "argumentList": [
+    "-c",
+    "windows.sandbox=\"unelevated\"",
     "app-server"
   ],
   "containment": "session:codex",

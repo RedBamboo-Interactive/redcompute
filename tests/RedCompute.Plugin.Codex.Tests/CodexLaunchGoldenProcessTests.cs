@@ -34,6 +34,8 @@ public sealed class CodexLaunchGoldenProcessTests : IDisposable
 
     public CodexLaunchGoldenProcessTests()
     {
+        // The launch argv depends on the user's own config.toml; the goldens are of a user with none.
+        CodexWindowsSandboxConfig.ConfigTextOverride = (_, _) => null;
         _project = Path.Combine(_probe.Root, "project");
         _scratch = Path.Combine(_probe.Root, "scratch");
         Directory.CreateDirectory(_project);
@@ -104,7 +106,11 @@ public sealed class CodexLaunchGoldenProcessTests : IDisposable
     private static JobProvenance Provenance() => JobProvenance.DirectRedCompute(
         "POST", "/ai-session/sessions", new JobBeneficiary("user", "owner"), "golden-request", null);
 
-    public void Dispose() => _probe.Dispose();
+    public void Dispose()
+    {
+        CodexWindowsSandboxConfig.ConfigTextOverride = null;
+        _probe.Dispose();
+    }
 
     internal sealed class NoQualityModes : IProviderQualityModeResolver
     {

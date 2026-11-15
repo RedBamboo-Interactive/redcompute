@@ -1,10 +1,12 @@
 [
   {
     "args": [
+      "-c",
+      "windows.sandbox=\"unelevated\"",
       "app-server"
     ],
     "cli": "codex",
-    "commandLine": "\"<root>\\cli\\codex.exe\" app-server",
+    "commandLine": "\"<root>\\cli\\codex.exe\" -c \"windows.sandbox=\\\"unelevated\\\"\" app-server",
     "containment": "session:codex",
     "cwd": "<root>\\project",
     "environmentChanges": {
