@@ -31,6 +31,9 @@
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.SttLocal\RedCompute.Plugin.SttLocal.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.DiarizationLocal\RedCompute.Plugin.DiarizationLocal.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenAILive\RedCompute.Plugin.OpenAILive.csproj" />
+    <!-- Not used by a test directly: the execution-host guard scans every plugin's IL. -->
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.TtsLocal\RedCompute.Plugin.TtsLocal.csproj" />
+    <ProjectReference Include="..\..\plugins\RedCompute.Plugin.TtsElevenLabs\RedCompute.Plugin.TtsElevenLabs.csproj" />
     <!-- Stand-in CLI for the launch goldens; its apphost is copied beside the tests. -->
     <ProjectReference Include="..\RedCompute.TestProbe\RedCompute.TestProbe.csproj" />
   </ItemGroup>

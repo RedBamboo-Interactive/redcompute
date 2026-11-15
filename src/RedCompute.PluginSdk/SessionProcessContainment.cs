@@ -572,7 +572,7 @@ public static class SessionProcessContainment
 /// One session root's job and everything proven to descend from it: job members and the
 /// descendants that started outside the job. Reaped when the root exits.
 /// </summary>
-public sealed class ContainedProcessTree
+public sealed class ContainedProcessTree : Hosting.IContainedTree
 {
     private static readonly long HotTicks = TimeSpan.FromSeconds(5).Ticks;
     private readonly object _gate = new();
@@ -672,6 +672,14 @@ public sealed class ContainedProcessTree
 
     /// <summary>Raised once, after the root exited and the tree was reaped.</summary>
     public event Action<ContainedProcessTree>? Reaped;
+
+    private Action<Hosting.IContainedTree>? _reapedAsHostTree;
+
+    event Action<Hosting.IContainedTree>? Hosting.IContainedTree.Reaped
+    {
+        add => _reapedAsHostTree += value;
+        remove => _reapedAsHostTree -= value;
+    }
 
     /// <summary>Live descendants outside the job, tracked by parentage (pid, creation UTC ticks).</summary>
     public IReadOnlyList<(int Pid, long CreatedUtcTicks)> Escapees
@@ -845,6 +853,7 @@ public sealed class ContainedProcessTree
             SessionProcessContainment.Log?.Invoke(
                 $"[Containment] {Owner} root {RootPid} ended: reaped {members} job member(s) and {killed} of {escapees.Length} escaped process(es)");
         Reaped?.Invoke(this);
+        _reapedAsHostTree?.Invoke(this);
     }
 
     /// <summary>Release everything once the job is empty, or when containment never took.</summary>

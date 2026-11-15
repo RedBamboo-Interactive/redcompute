@@ -12,4 +12,10 @@
     <ProjectReference Include="..\RedCompute.Core\RedCompute.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The launch goldens capture where the local execution host hands a start info to the OS. -->
+    <InternalsVisibleTo Include="RedCompute.App.Tests" />
+    <InternalsVisibleTo Include="RedCompute.Plugin.Codex.Tests" />
+  </ItemGroup>
+
 </Project>

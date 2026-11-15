@@ -1,4 +1,5 @@
 using RedCompute.Core.Nodes;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.PluginSdk;
 
@@ -31,4 +32,10 @@ public interface INodeRegistry
 
     /// <summary>A stored node id as a real id: NULL (a row older than node ids) is the legacy node.</summary>
     string Resolve(string? storedNodeId) => storedNodeId ?? LegacyNodeId;
+
+    /// <summary>
+    /// The execution host of a node: null, the legacy id, the local id and <see cref="LocalAlias"/>
+    /// are the local host. An unknown id throws <see cref="KeyNotFoundException"/>.
+    /// </summary>
+    IExecutionHost HostFor(string? nodeId);
 }

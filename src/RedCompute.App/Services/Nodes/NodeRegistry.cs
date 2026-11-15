@@ -2,6 +2,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using RedCompute.Core.Nodes;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services.Nodes;
 
@@ -60,14 +62,18 @@ public sealed class NodeRegistry : INodeRegistry
     private readonly Func<DateTimeOffset> _clock;
 
     public NodeRegistry(NodeIdentityResult identity, NodePlatform platform, string version,
-        DateTimeOffset startedAt, Func<DateTimeOffset>? clock = null)
+        DateTimeOffset startedAt, Func<DateTimeOffset>? clock = null, IExecutionHost? localHost = null)
     {
         Identity = identity;
         _platform = platform;
         _version = version;
         _startedAt = startedAt;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        LocalHost = localHost ?? new LocalExecutionHost(identity.Identity.Id);
     }
+
+    /// <summary>Node zero's execution host: the code that ran every launch before nodes existed.</summary>
+    public IExecutionHost LocalHost { get; }
 
     /// <summary>Opens node.json in <paramref name="directory"/> (creating it on first boot) and detects the platform.</summary>
     public static NodeRegistry Open(string directory, string version, Action<string> log)
@@ -100,4 +106,11 @@ public sealed class NodeRegistry : INodeRegistry
            || string.Equals(nodeId, LocalNodeId, StringComparison.Ordinal)
             ? Local
             : null;
+
+    public IExecutionHost HostFor(string? nodeId)
+        => nodeId is null
+           || string.Equals(nodeId, LegacyNodeId, StringComparison.Ordinal)
+           || Find(nodeId) is not null
+            ? LocalHost
+            : throw new KeyNotFoundException($"No node '{nodeId}' is known");
 }

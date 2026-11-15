@@ -12,6 +12,7 @@ using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.App;
 
@@ -178,6 +179,8 @@ public static class RedComputeHost
             (IProviderQualityModeResolver)QualityModes,
             (IAcceleratorAdmissionCoordinator)AcceleratorAdmission,
             (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),
+            (IExecutionHost)Nodes.LocalHost,
+            (INodeRegistry)Nodes,
         };
 
         foreach (var (slug, capConfig) in config.Capabilities)
@@ -258,6 +261,8 @@ public static class RedComputeHost
                 (IProviderQualityModeResolver)QualityModes,
                 (IAcceleratorAdmissionCoordinator)AcceleratorAdmission,
                 (Action<string, Guid?>)((message, jobId) => Log(message, jobId)),
+                (IExecutionHost)Nodes.LocalHost,
+                (INodeRegistry)Nodes,
             };
             foreach (var (capabilitySlug, providerName) in changed)
             {

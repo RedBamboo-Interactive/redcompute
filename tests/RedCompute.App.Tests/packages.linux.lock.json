@@ -526,6 +526,19 @@
           "RedCompute.PluginSdk": "[1.0.0, )"
         }
       },
+      "redcompute.plugin.ttselevenlabs": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.PluginSdk": "[1.0.0, )"
+        }
+      },
+      "redcompute.plugin.ttslocal": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.Plugin.LocalWsl": "[1.0.0, )",
+          "RedCompute.PluginSdk": "[1.0.0, )"
+        }
+      },
       "redcompute.pluginsdk": {
         "type": "Project",
         "dependencies": {
