@@ -12,11 +12,6 @@ namespace RedCompute.PluginSdk.Hosting.Local;
 /// before the host existed (<see cref="SessionProcessContainment"/>, <see cref="OwnedProcessKiller"/>,
 /// <see cref="PlatformSupport"/>, System.IO), so a launch through it hands the OS the same
 /// <see cref="ProcessStartInfo"/> through the same entry point as the site did.
-/// <para>
-/// One member waits for the code it forwards to: <see cref="IHostContainment.StartDetachedKept"/> (with
-/// the long-lived registry). Until then it throws <see cref="NotSupportedException"/>; nothing calls it
-/// yet.
-/// </para>
 /// </summary>
 public sealed class LocalExecutionHost : IExecutionHost
 {
@@ -219,15 +214,55 @@ public sealed class LocalExecutionHost : IExecutionHost
             using (root) return SessionProcessContainment.Keep(root, owner, ledgerPath);
         }
 
+        public IContainedTree? Keep(int rootPid, long createdUtcTicks, string owner, string ledgerPath)
+        {
+            Process root;
+            try { root = Process.GetProcessById(rootPid); }
+            catch (ArgumentException) { return null; }
+            using (root)
+            {
+                // The handle that proves the identity is the one the job is given.
+                if (SessionProcessContainment.CreationUtcTicks(root) != createdUtcTicks) return null;
+                return SessionProcessContainment.Keep(root, owner, ledgerPath);
+            }
+        }
+
         public IContainedTree? Resume(string owner, string ledgerPath)
             => SessionProcessContainment.Resume(owner, ledgerPath);
 
         public IContainedTree? Resume(string owner, string ledgerPath, IEnumerable<(int Pid, long CreatedUtcTicks)> identities)
             => SessionProcessContainment.Resume(owner, ledgerPath, identities);
 
-        public (int Pid, long CreatedUtcTicks, IContainedTree? Tree) StartDetachedKept(DetachedSpawnSpec spec)
-            => throw new NotSupportedException(
-                "Desktop-parented launches move onto the host with the long-lived registry; until then RedCompute starts them itself");
+        /// <summary>
+        /// Create the command outside RedCompute's jobs, suspended; put it in its own kept job; only
+        /// then let it run, so nothing it starts is ever outside the kept tree.
+        /// </summary>
+        public DetachedLaunch StartDetachedKept(DetachedSpawnSpec spec)
+        {
+            if (!OperatingSystem.IsWindows())
+                throw new PlatformNotSupportedException("desktop-parented launches are supported on Windows only");
+            var started = DetachedProcessLauncher.StartSuspended(spec.CommandLine, spec.WorkingDirectory.Value, spec.Environment);
+
+            using (started)
+            {
+                ContainedProcessTree? tree = null;
+                try
+                {
+                    using var process = Process.GetProcessById(started.Pid);
+                    var created = SessionProcessContainment.CreationUtcTicks(process);
+                    tree = SessionProcessContainment.Keep(process, spec.Owner, spec.LedgerPath);
+                    if (tree is null) throw new InvalidOperationException("could not contain the launched process");
+                    started.Resume();
+                    return new DetachedLaunch(started.Pid, created, tree, started.Via);
+                }
+                catch
+                {
+                    started.Abort();
+                    tree?.Reap();
+                    throw;
+                }
+            }
+        }
     }
 
     private sealed class LocalFileSystem(LocalExecutionHost host) : IHostFileSystem

@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using RedCompute.App.Services;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;

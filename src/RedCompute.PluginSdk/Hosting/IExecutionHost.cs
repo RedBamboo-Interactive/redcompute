@@ -213,6 +213,13 @@ public interface IContainedTree
 public sealed record DetachedSpawnSpec(string CommandLine, HostPath WorkingDirectory,
     IReadOnlyDictionary<string, string>? Environment, string Owner, string LedgerPath);
 
+/// <summary>
+/// A started desktop-parented launch, already kept and running.
+/// <paramref name="Via"/> says how it left RedCompute's jobs: "desktop" (parented to the desktop
+/// shell) or "breakaway".
+/// </summary>
+public sealed record DetachedLaunch(int Pid, long CreatedUtcTicks, IContainedTree Tree, string Via);
+
 public interface IHostContainment
 {
     Action<string>? Log { get; set; }
@@ -228,11 +235,22 @@ public interface IHostContainment
     bool IsSessionMember(int pid);
     IContainedTree? FindByRoot(int rootPid);
     IContainedTree? Keep(int rootPid, string owner, string ledgerPath);
+
+    /// <summary>
+    /// <see cref="Keep(int, string, string)"/>, only while the PID still has this creation time: the
+    /// process a caller identified, never one that reused its PID since. Null otherwise.
+    /// </summary>
+    IContainedTree? Keep(int rootPid, long createdUtcTicks, string owner, string ledgerPath);
+
     IContainedTree? Resume(string owner, string ledgerPath);
     IContainedTree? Resume(string owner, string ledgerPath, IEnumerable<(int Pid, long CreatedUtcTicks)> identities);
 
-    /// <summary>Start suspended under the desktop shell, keep, then resume: the 4f3ce47 sequence as one primitive.</summary>
-    (int Pid, long CreatedUtcTicks, IContainedTree? Tree) StartDetachedKept(DetachedSpawnSpec spec);
+    /// <summary>
+    /// Start suspended under the desktop shell, keep, then resume: the 4f3ce47 sequence as one
+    /// primitive, so nothing the process starts is ever outside its kept tree. Throws, with the reason
+    /// as its message, when it cannot start or be kept; a process that was created is killed first.
+    /// </summary>
+    DetachedLaunch StartDetachedKept(DetachedSpawnSpec spec);
 }
 
 // ---- files ---------------------------------------------------------------------------------------

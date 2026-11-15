@@ -4,7 +4,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-namespace RedCompute.App.Services;
+namespace RedCompute.PluginSdk.Hosting.Local;
 
 /// <summary>
 /// Starts a process that no job RedCompute belongs to can take down. RedLeaf holds RedCompute in a

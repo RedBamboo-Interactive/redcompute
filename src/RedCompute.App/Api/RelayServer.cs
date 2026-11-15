@@ -29,6 +29,7 @@ using RedCompute.Core.Configuration;
 using RedCompute.Core.Nodes;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Api;
 
@@ -431,10 +432,13 @@ public class RelayServer
         MaintenanceEndpoints.Map(registry, maintenance);
         // Every session tree dies with its session; the long-lived registry is the one way out.
         // Wire its guard before the boot sweep reaps what an earlier run's sessions left behind.
-        var longLived = new LongLivedProcessRegistry(LongLivedProcessRegistry.DefaultDirectory, message => _log(message, null));
-        SessionProcessContainment.Log = message => _log(message, null);
-        SessionProcessContainment.IsProtected = longLived.IsProtected;
-        SessionProcessContainment.SweepLedgers();
+        // All of it on node zero's host, in this order: load (which resumes kept trees), log, guard, sweep.
+        var localHost = _nodes?.LocalHost ?? LocalExecutionHost.Shared;
+        var longLived = new LongLivedProcessRegistry(LongLivedProcessRegistry.DefaultDirectory(localHost),
+            message => _log(message, null), host: localHost);
+        localHost.Containment.Log = message => _log(message, null);
+        localHost.Containment.IsProtected = longLived.IsProtected;
+        localHost.Containment.SweepLedgers();
         LongLivedProcessEndpoints.Map(registry, longLived);
         VoiceSessionEndpoints.Map(registry, _registry, _voiceSessions);
         _ = DetachedWork.Start(() => RunAttachmentCleanupAsync(ct));
