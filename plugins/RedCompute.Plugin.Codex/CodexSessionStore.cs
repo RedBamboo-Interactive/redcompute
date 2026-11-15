@@ -5,7 +5,18 @@ namespace RedCompute.Plugin.Codex;
 
 public class CodexSessionStore : ICodexSessionStore
 {
-    private static AiSessionSnapshot ToSnapshot(CodexSessionRecord r) => new()
+    private readonly string? _nodeId;
+
+    public CodexSessionStore() : this(null) { }
+
+    /// <param name="nodeId">
+    /// The node id new rows are stamped with (<c>INodeRegistry.StampNodeId</c>): null when the node
+    /// identity is not persisted, so those rows stay NULL and read as the legacy node.
+    /// </param>
+    public CodexSessionStore(string? nodeId)
+        => _nodeId = string.IsNullOrWhiteSpace(nodeId) ? null : nodeId;
+
+    internal static AiSessionSnapshot ToSnapshot(CodexSessionRecord r) => new()
     {
         Provider = "codex",
         ProviderEntity = r.ProviderEntity,
@@ -13,6 +24,7 @@ public class CodexSessionStore : ICodexSessionStore
         Title = r.Title,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        NodeId = r.NodeId,
         RepositoryId = r.RepositoryId,
         Status = r.Status,
         StopReason = r.StopReason,
@@ -151,9 +163,12 @@ public class CodexSessionStore : ICodexSessionStore
             existing.UserAvatarUrl = record.UserAvatarUrl;
             existing.StopReason = record.StopReason;
             existing.StoppedAt = record.StoppedAt;
+            // The node is the row's, set at insert: the published snapshot carries it as stored.
+            record.NodeId = existing.NodeId;
         }
         else
         {
+            record.NodeId = _nodeId;
             db.Sessions.Add(record);
         }
         db.SaveChanges();

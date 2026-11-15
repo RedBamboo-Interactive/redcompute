@@ -77,14 +77,14 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public CodexProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
-        Action<string, Guid?> log, IExecutionHost? host = null)
+        Action<string, Guid?> log, IExecutionHost? host = null, INodeRegistry? nodes = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
         _jobTracker = jobTracker;
 
         using (var db = new CodexDbContext()) { db.Initialize(); }
-        _store = new CodexSessionStore();
+        _store = new CodexSessionStore(nodes?.StampNodeId);
         var codexConfig = BuildConfig(config);
         _defaultSandbox = codexConfig.SandboxMode;
         _codex = new CodexSessionService(codexConfig, jobTracker, _store, log, host);

@@ -32,6 +32,13 @@ public class CodexSessionRecord
     /// <summary>PID of the owning app-server, so orphans can be reaped after an ungraceful exit.</summary>
     public int? ProcessId { get; set; }
 
+    /// <summary>
+    /// The node the session runs on (node zero's id), or null for a row written before node ids or
+    /// by a run whose node identity was not persisted: null reads as the legacy node. Written once at
+    /// insert by <see cref="CodexSessionStore"/>; saving a session never changes it.
+    /// </summary>
+    public string? NodeId { get; set; }
+
     public DateTimeOffset? LastActivity { get; set; }
     public string? Effort { get; set; }
     public string? QualityTier { get; set; }

@@ -60,6 +60,12 @@ public class CodexDbContext : DbContext
                 catch { }
             }
 
+            // Nullable, no default, CHECK or index: SQLite rewrites only the schema text, never a row,
+            // whatever the table holds. Existing rows read NULL, which is the legacy node.
+            cmd.CommandText = "ALTER TABLE Sessions ADD COLUMN NodeId TEXT";
+            try { cmd.ExecuteNonQuery(); }
+            catch { }
+
             foreach (var col in new[] { "ProviderTurnId TEXT", "RolledBack INTEGER NOT NULL DEFAULT 0", "MessageUid TEXT", "AttachmentsJson TEXT", "Phase TEXT", "ParentToolUseId TEXT" })
             {
                 cmd.CommandText = $"ALTER TABLE Messages ADD COLUMN {col}";
