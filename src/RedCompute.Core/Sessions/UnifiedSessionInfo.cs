@@ -49,6 +49,9 @@ public class UnifiedSessionInfo
     public IReadOnlyList<string> SupportedAccessLevels { get; set; } = [];
     // No person watches this session: permission asks are denied at once and never park.
     public bool Unattended { get; set; }
+    // Everything the model writes reaches its reader as one message (Discord), so the provider does not
+    // ask it for progress lines. Persisted with the session and applied on every launch. Not a permission.
+    public bool DeliveredAsOneMessage { get; set; }
     // The level the session returns to when it leaves plan without naming one.
     public string? AccessLevelBeforePlan { get; set; }
     // SessionAccessLevelSources: "policy" when the level came from the Agent's or global default

@@ -234,6 +234,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.MaxAccessLevel = record.MaxAccessLevel;
             existing.AccessLevelBeforePlan = record.AccessLevelBeforePlan;
             existing.Unattended = record.Unattended;
+            existing.DeliveredAsOneMessage = record.DeliveredAsOneMessage;
             existing.AccessLevelSource = record.AccessLevelSource;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;

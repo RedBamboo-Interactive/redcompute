@@ -452,6 +452,13 @@ public static class UnifiedSessionEndpoints
                         $"{name} must be one of {string.Join(", ", SessionAccessLevels.All)}");
                 assign(normalizedLevel);
             }
+            var deliveredAsOneMessage = false;
+            if (body.TryGetProperty("deliveredAsOneMessage", out var deliveredValue) && deliveredValue.ValueKind != JsonValueKind.Null)
+            {
+                if (deliveredValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    return Error(422, "validation_failed", "deliveredAsOneMessage must be a boolean when supplied");
+                deliveredAsOneMessage = deliveredValue.GetBoolean();
+            }
             var unattended = false;
             if (body.TryGetProperty("unattended", out var unattendedValue) && unattendedValue.ValueKind != JsonValueKind.Null)
             {
@@ -508,6 +515,7 @@ public static class UnifiedSessionEndpoints
             {
                 using (SessionExecutionProfile.Push(executionProfile))
                 using (SessionAccessScope.Push(accessStart.State))
+                using (SessionDeliveryScope.Push(deliveredAsOneMessage))
                 {
                     if (conversationOnly)
                     {
@@ -563,6 +571,7 @@ public static class UnifiedSessionEndpoints
                 + "parent, and policy changes keep it except a revoked Full. An unknown or unreadable parent falls back to the policy.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
             .WithParam("maxAccessLevel", "string", description: "Hard cap for the session's lifetime: nothing raises it above this level. "
                 + "422 access_level_cap_unsupported when the provider supports no level at or below it.", enumValues: [.. SessionAccessLevels.All], location: ParamLocation.Body)
+            .WithParam("deliveredAsOneMessage", "boolean", description: "Everything the model writes in a turn reaches its reader as one message (Discord, one-shot automation replies), so the provider must not ask it for progress lines: Claude Code launches with its silent-turn reminder off. Default false (progress lines on). Persisted with the session and applied on every launch. Not a permission: it is independent of unattended. Providers without such a setting ignore it. An existing session is changed with PUT /ai-session/sessions/{id}/delivery.", defaultValue: false, location: ParamLocation.Body)
             .WithParam("unattended", "boolean", description: "No person watches this session (automations, Discord): permission asks are denied at once "
                 + "with a visible notice and never park. The model is told why (the session's level, nobody to approve) and that the installation "
                 + "owner can change it in RedLeaf Settings > Agent permissions or raise the session in its Info panel. An existing session can be "
@@ -1033,6 +1042,32 @@ public static class UnifiedSessionEndpoints
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path)
             .WithParam("confidential", "boolean", required: true, location: ParamLocation.Body);
+
+        endpoints.MapPut("/ai-session/sessions/{id}/delivery",
+            "Set whether the session's output is delivered to its reader as one message (no progress lines). Persisted with the session and applied from its next launch.",
+            async (HttpContext ctx, string id) =>
+        {
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            if (info == null)
+                return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
+            if (!CanReadSession(ctx, info))
+                return ComputeResourceAccess.SessionDenied(info);
+
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+            if (body.ValueKind != JsonValueKind.Object
+                || !body.TryGetProperty("deliveredAsOneMessage", out var deliveredValue)
+                || deliveredValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return Error(422, "validation_failed", "deliveredAsOneMessage must be a boolean");
+
+            var delivered = deliveredValue.GetBoolean();
+            if (!provider!.SetDeliveredAsOneMessage(id, delivered))
+                return NotSupported(provider.ProviderId, "delivered-as-one-message sessions");
+            return Results.Json(new { sessionId = id, deliveredAsOneMessage = delivered });
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("deliveredAsOneMessage", "boolean", required: true, description: "True when the model's output reaches its reader as one message", location: ParamLocation.Body);
 
         endpoints.MapPut("/ai-session/sessions/{id}/keep-resident",
             "Exempt a session from idle parking, or return it to the default policy. Owning Agent and beneficiary user only.",

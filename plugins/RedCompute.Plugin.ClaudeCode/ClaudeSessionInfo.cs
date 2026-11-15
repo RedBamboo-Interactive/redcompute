@@ -14,6 +14,8 @@ public class ClaudeSessionInfo
     /// </summary>
     public string? NodeId { get; set; }
     public string? ScratchDirectory { get; set; }
+    /// <summary>Delivered as one message to its reader; every launch suppresses the CLI silent-turn reminder.</summary>
+    public bool DeliveredAsOneMessage { get; set; }
     public Guid? RepositoryId { get; set; }
     public SessionStatus Status { get; set; }
     public string? StopReason { get; set; }

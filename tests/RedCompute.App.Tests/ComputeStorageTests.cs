@@ -39,6 +39,7 @@ public sealed class ComputeStorageTests
         (".defender-exclusions", storage.DefenderExclusionsMarker, ".defender-exclusions"),
         ("telemetry.db", storage.TelemetryDatabase, "telemetry.db"),
         ("Logs", storage.Logs, "Logs"),
+        ("cloudflared-process.json", storage.TunnelState, "cloudflared-process.json"),
         ("claude plugin", storage.PluginDirectory("claude-code"), "plugins/claude-code"),
         ("codex plugin", storage.PluginDirectory("codex"), "plugins/codex"),
         ("opencode plugin", storage.PluginDirectory("opencode"), "plugins/opencode"),
@@ -96,6 +97,20 @@ public sealed class ComputeStorageTests
         }
         Assert.Equal(Resolve(null).SuiteRoot, storage.SuiteRoot);
         Assert.False(Directory.Exists(root)); // Resolving never creates anything.
+    }
+
+    [Fact]
+    public async Task The_file_logger_and_the_tunnel_state_file_use_the_resolved_locations()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "redcompute-data-root-" + Guid.NewGuid().ToString("N"));
+        foreach (var storage in new[] { Resolve(null), Resolve(root) })
+            Assert.Equal(storage.TunnelState, RedBamboo.AppHost.Tunnel.CloudflareTunnelService.WithStateFile(storage.TunnelState).StateFilePath);
+
+        var relocated = Resolve(root);
+        Assert.Equal(Path.Combine(root, "cloudflared-process.json"), relocated.TunnelState);
+        await using (var logger = RedBamboo.AppHost.Logging.FileLogger.ForDirectory(relocated.Logs))
+            Assert.Equal(Path.Combine(root, "Logs"), logger.LogDirectory);
+        Directory.Delete(root, true); // The logger creates its folder.
     }
 
     [Fact]

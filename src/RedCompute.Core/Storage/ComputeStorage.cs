@@ -132,11 +132,11 @@ public sealed class ComputeStorage
     /// <summary><c>telemetry.db</c>: request telemetry (RedBamboo.AppHost).</summary>
     public string TelemetryDatabase => Path.Combine(DataRoot, "telemetry.db");
 
-    /// <summary>
-    /// <c>Logs\</c>, where RedBamboo.AppHost's FileLogger writes. Not yet honoured: the logger takes only
-    /// an app name today. TODO(phase-1A): pass this once FileLogger accepts a directory.
-    /// </summary>
+    /// <summary><c>Logs\</c>: the daily log files of the host (RedBamboo.AppHost's FileLogger).</summary>
     public string Logs => Path.Combine(DataRoot, "Logs");
+
+    /// <summary><c>cloudflared-process.json</c>: the record of the cloudflared process a tunnel service started.</summary>
+    public string TunnelState => Path.Combine(DataRoot, "cloudflared-process.json");
 
     /// <summary><c>plugins\&lt;pluginId&gt;\</c>: a plugin's own data (for example <c>claude-code</c>, <c>codex</c>, <c>opencode</c>).</summary>
     public string PluginDirectory(string pluginId)

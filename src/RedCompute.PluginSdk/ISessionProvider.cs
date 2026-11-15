@@ -55,6 +55,15 @@ public interface ISessionProvider
     /// </summary>
     bool RestoreSession(string sessionId) => false;
 
+    /// <summary>
+    /// Marks a session as delivered to its reader as one message (or clears it), so the provider
+    /// stops asking the model for progress lines on every later launch. The choice is persisted with
+    /// the session; a process that is already running keeps what it started with until its next
+    /// launch. Returns false when the provider has no such setting or does not know the session; the
+    /// default keeps providers without one compatible.
+    /// </summary>
+    bool SetDeliveredAsOneMessage(string sessionId, bool deliveredAsOneMessage) => false;
+
     // Messaging (SendMessage). messageUid is the provider-neutral message
     // identity minted by the caller (endpoint layer) — providers persist it
     // on the user message record verbatim.

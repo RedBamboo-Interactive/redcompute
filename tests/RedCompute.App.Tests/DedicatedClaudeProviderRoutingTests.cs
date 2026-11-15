@@ -109,8 +109,8 @@ public sealed class DedicatedClaudeProviderRoutingTests : IDisposable
     {
         var path = ClaudeDbContext.DbPath;
         Execute("ALTER TABLE Sessions DROP COLUMN RuntimeOwner");
-        Execute("INSERT INTO Sessions (Id, ProjectName, ProjectPath, Status, StartedAt, MessageCount, Dismissed, Unattended) "
-            + "VALUES ('old', 'P', '.', 'Stopped', '2026-11-01T00:00:00.0000000+00:00', 0, 0, 0)");
+        Execute("INSERT INTO Sessions (Id, ProjectName, ProjectPath, Status, StartedAt, MessageCount, Dismissed, Unattended, DeliveredAsOneMessage) "
+            + "VALUES ('old', 'P', '.', 'Stopped', '2026-11-01T00:00:00.0000000+00:00', 0, 0, 0, 0)");
         using (var db = new ClaudeDbContext()) db.Initialize();
         using (var db = new ClaudeDbContext()) db.Initialize(); // Idempotent.
 

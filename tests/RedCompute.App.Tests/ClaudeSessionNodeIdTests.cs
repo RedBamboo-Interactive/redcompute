@@ -54,8 +54,8 @@ public sealed class ClaudeSessionNodeIdTests : IDisposable
             insert.Transaction = tx;
             insert.CommandText = """
                 INSERT INTO Sessions (Id, ProjectName, ProjectPath, Status, StartedAt, MessageCount, Dismissed,
-                    Unattended, DeveloperInstructions)
-                VALUES ($id, 'P', 'T:/p', 'Stopped', '2026-11-01T00:00:00.0000000+00:00', 3, 0, 0, $instructions)
+                    Unattended, DeliveredAsOneMessage, DeveloperInstructions)
+                VALUES ($id, 'P', 'T:/p', 'Stopped', '2026-11-01T00:00:00.0000000+00:00', 3, 0, 0, 0, $instructions)
                 """;
             var id = insert.Parameters.Add("$id", SqliteType.Text);
             insert.Parameters.AddWithValue("$instructions", instructions);

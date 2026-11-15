@@ -225,6 +225,9 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public void DismissSession(string sessionId) => _claude.DismissSession(sessionId);
     public bool RestoreSession(string sessionId) => _claude.RestoreSession(sessionId);
 
+    public bool SetDeliveredAsOneMessage(string sessionId, bool deliveredAsOneMessage)
+        => _claude.SetDeliveredAsOneMessage(sessionId, deliveredAsOneMessage);
+
     // --- ISessionProvider: Messaging ---
 
     public Task<bool> SendInputAsync(string sessionId, IReadOnlyList<SessionInputPart> input, string? attachmentsJson = null, string? messageUid = null)
@@ -438,6 +441,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         AccessLevel = s.Access.AccessLevel,
         MaxAccessLevel = s.Access.MaxAccessLevel,
         Unattended = s.Access.Unattended,
+        DeliveredAsOneMessage = s.DeliveredAsOneMessage,
         AccessLevelBeforePlan = s.Access.AccessLevelBeforePlan,
         AccessLevelSource = s.Access.Source,
         SupportedAccessLevels = ClaudeSessionService.SupportedAccessLevels,

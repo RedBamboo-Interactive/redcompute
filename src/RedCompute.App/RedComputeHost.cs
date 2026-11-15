@@ -11,6 +11,7 @@ using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.Core.Sessions;
+using RedCompute.Core.Storage;
 using RedCompute.PluginSdk;
 using RedCompute.PluginSdk.Hosting;
 
@@ -41,9 +42,7 @@ public static class RedComputeHost
         BufferCapacity = 4096,
         Persistence = LogPersistence,
     });
-    // TODO(phase-1A): FileLogger takes only an app name and writes %LOCALAPPDATA%\RedCompute\Logs.
-    // Pass ComputeStorage.Current.Logs once RedBamboo.AppHost accepts a log directory.
-    public static FileLogger FileLogger { get; } = new("RedCompute");
+    public static FileLogger FileLogger { get; } = FileLogger.ForDirectory(ComputeStorage.Current.Logs);
     public static LoggingService Logger { get; private set; } = null!;
     public static ConfigManager ConfigManager { get; } = new();
     public static CapabilityRegistry Registry { get; } = new();

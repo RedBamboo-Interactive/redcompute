@@ -487,10 +487,9 @@ public class RelayServer
         // Tunnel and autostart endpoints are skipped: the Leaf kernel owns the one tunnel
         // and the one autostart entry. The dormant tunnel service only satisfies the
         // discovery endpoint's signature.
-        // TODO(phase-1A): its default state file is %LOCALAPPDATA%\RedCompute\cloudflared-process.json
-        // (computed, never written while the tunnel stays dormant); the path constructor is internal to AppHost.
+        // Its state file still goes through ComputeStorage (never written while the tunnel stays dormant).
         var descriptor = new RedComputeServiceDescriptor(_config, _registry, RedComputeHost.LogService, registry);
-        _app.MapAppHostEndpoints(descriptor, new CloudflareTunnelService(logger: null), "RedCompute",
+        _app.MapAppHostEndpoints(descriptor, CloudflareTunnelService.WithStateFile(ComputeStorage.Current.TunnelState), "RedCompute",
             () => new RedBamboo.AppHost.Tunnel.TunnelConfig { Enabled = false },
             RedComputeHost.LogService, mapRemoteAccess: false, mapAutoStart: false);
         _app.MapFallback(context => ((IApplicationBuilder)_app).WriteNoRouteAsync(context, context.Request.Path.Value ?? "/"));

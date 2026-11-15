@@ -212,7 +212,9 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
         Assert.Empty(_launches);
     }
 
-    private async Task<(int Status, string Response, bool? JobKeepResident)> InvokeCreateAsync(object requestBody)
+    private async Task<(int Status, string Response, bool? JobKeepResident)> InvokeCreateAsync(
+        object requestBody, string method = "POST", string route = "/ai-session/sessions", Action<MemoryStore>? seed = null,
+        string? sessionId = null, Action<MemoryStore>? afterwards = null)
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
         var dbPath = Path.Combine(f.Root, "jobs.db");
@@ -221,6 +223,7 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
         var jobs = new JobTrackingService(Db);
         f.Jobs = jobs;
         var store = new MemoryStore();
+        seed?.Invoke(store);
         var provider = new ClaudeCodeProvider("ai-session", CreateService(store, jobTracker: jobs), store,
             jobs, (_, _) => { });
         var registry = new CapabilityRegistry();
@@ -235,8 +238,8 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
         UnifiedSessionEndpoints.Map(new EndpointRegistry(app), registry, jobs, (_, _) => { }, f.Config,
             attachmentStore: f.Attachments, inputQueue: f.Service());
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
-            .Single(e => e.RoutePattern.RawText == "/ai-session/sessions"
-                && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("POST"));
+            .Single(e => e.RoutePattern.RawText == route
+                && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains(method));
 
         var ctx = new DefaultHttpContext
         {
@@ -244,7 +247,8 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
             User = jwt.ValidateToken(jwt.GenerateAccessToken("owner", "owner@test", "Owner", ["operator"]))!,
         };
         ctx.SetEndpoint(endpoint);
-        ctx.Request.Method = "POST";
+        ctx.Request.Method = method;
+        if (sessionId is not null) ctx.Request.RouteValues["id"] = sessionId;
         ctx.Request.ContentType = "application/json";
         var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(requestBody));
         ctx.Request.Body = new MemoryStream(body);
@@ -259,7 +263,8 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
             ctx.Response.Body.Position = 0;
             var response = await new StreamReader(ctx.Response.Body).ReadToEndAsync();
             bool? jobKeepResident = null;
-            if (ctx.Response.StatusCode == 200)
+            afterwards?.Invoke(store);
+            if (ctx.Response.StatusCode == 200 && method == "POST")
             {
                 using var document = JsonDocument.Parse(response);
                 jobKeepResident = jobs.GetJob(document.RootElement.GetProperty("jobId").GetGuid())?.KeepResident;
@@ -270,6 +275,74 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
         {
             KillAll();
         }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(null)]
+    public async Task Create_endpoint_turns_deliveredAsOneMessage_into_the_CLI_environment_only_when_true(bool? delivered)
+    {
+        var inherited = Environment.GetEnvironmentVariable("CLAUDE_CODE_SILENT_TURN_REMINDER");
+        var (status, response, _) = await InvokeCreateAsync(new
+        {
+            projectPath = _root, provider = "claude-code", deliveredAsOneMessage = delivered,
+        });
+
+        Assert.True(status == 200, $"{status}: {response}");
+        var environment = Assert.Single(_launches).Environment;
+        Assert.Equal(delivered == true ? "0" : inherited,
+            environment.TryGetValue("CLAUDE_CODE_SILENT_TURN_REMINDER", out var value) ? value : null);
+        using var document = JsonDocument.Parse(response);
+        Assert.Equal(delivered == true, document.RootElement.GetProperty("deliveredAsOneMessage").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Create_endpoint_rejects_a_non_boolean_deliveredAsOneMessage_before_starting()
+    {
+        var (status, response, _) = await InvokeCreateAsync(new
+        {
+            projectPath = _root, provider = "claude-code", deliveredAsOneMessage = "yes",
+        });
+
+        Assert.Equal(422, status);
+        Assert.Contains("deliveredAsOneMessage", response);
+        Assert.Empty(_launches);
+    }
+
+    [Fact]
+    public async Task Delivery_endpoint_marks_an_existing_session_without_launching_it()
+    {
+        var seeded = new ClaudeSessionRecord
+        {
+            Id = "existing-1", ProjectName = "p", ProjectPath = _root, Status = "Stopped",
+            StartedAt = DateTimeOffset.UtcNow, ClaudeSessionId = "claude-existing", JobId = Guid.NewGuid(),
+        };
+        bool? persisted = null;
+        var (status, response, _) = await InvokeCreateAsync(new { deliveredAsOneMessage = true },
+            method: "PUT", route: "/ai-session/sessions/{id}/delivery", seed: store => store.SaveSession(seeded),
+            sessionId: "existing-1", afterwards: store => persisted = store.FindSession("existing-1")!.DeliveredAsOneMessage);
+
+        Assert.True(status == 200, $"{status}: {response}");
+        Assert.True(persisted);
+        Assert.Empty(_launches);
+    }
+
+    [Fact]
+    public async Task Delivery_endpoint_rejects_a_missing_or_non_boolean_value_and_an_unknown_session()
+    {
+        var seeded = new ClaudeSessionRecord
+        {
+            Id = "existing-2", ProjectName = "p", ProjectPath = _root, Status = "Stopped",
+            StartedAt = DateTimeOffset.UtcNow, ClaudeSessionId = "claude-existing", JobId = Guid.NewGuid(),
+        };
+        var (invalid, _, _) = await InvokeCreateAsync(new { deliveredAsOneMessage = "yes" },
+            method: "PUT", route: "/ai-session/sessions/{id}/delivery", seed: store => store.SaveSession(seeded), sessionId: "existing-2");
+        var (unknown, _, _) = await InvokeCreateAsync(new { deliveredAsOneMessage = true },
+            method: "PUT", route: "/ai-session/sessions/{id}/delivery", sessionId: "nope");
+
+        Assert.Equal(422, invalid);
+        Assert.Equal(404, unknown);
     }
 
     private static void AssertRelaunch(List<string> args, string instructions)

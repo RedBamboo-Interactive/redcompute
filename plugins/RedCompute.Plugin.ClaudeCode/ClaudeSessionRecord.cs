@@ -69,6 +69,8 @@ public class ClaudeSessionRecord
     public string? MaxAccessLevel { get; set; }
     public string? AccessLevelBeforePlan { get; set; }
     public bool Unattended { get; set; }
+    /// <summary>Output is delivered as one message: the CLI launches without the silent-turn reminder.</summary>
+    public bool DeliveredAsOneMessage { get; set; }
     /// <summary>
     /// <c>policy</c> or <c>explicit</c> (<see cref="Core.Sessions.SessionAccessLevelSources"/>). Null on
     /// rows written before sources existed, which count as policy.

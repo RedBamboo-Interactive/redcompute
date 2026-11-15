@@ -1074,17 +1074,19 @@ public partial class ClaudeSessionService
     {
         // Read here: the launch gate may run the start outside this call's async flow.
         var access = SessionAccessScope.Current;
+        var deliveredAsOneMessage = SessionDeliveryScope.DeliveredAsOneMessage;
         return LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
             projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratchDirectory, confidential,
-            developerInstructions, access)), ct);
+            developerInstructions, access, deliveredAsOneMessage)), ct);
     }
 
     private ClaudeSessionInfo? StartSessionCore(string projectPath, string? model, string? userId,
         string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory, bool confidential,
-        string? developerInstructions, Core.Sessions.SessionAccessState? access)
+        string? developerInstructions, Core.Sessions.SessionAccessState? access,
+        bool deliveredAsOneMessage = false)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -1122,6 +1124,7 @@ public partial class ClaudeSessionService
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
             DeveloperInstructions = developerInstructions,
+            DeliveredAsOneMessage = deliveredAsOneMessage,
             // No resolved state means RedCompute did not start this through its access rules: ask.
             Access = access is { AccessLevel: not null } ? access : new Core.Sessions.SessionAccessState(Core.Sessions.SessionAccessLevels.Ask),
         };
@@ -1145,7 +1148,7 @@ public partial class ClaudeSessionService
         PopulateSessionArgs(arguments, info.PermissionMode, model: model, effort: effort,
             developerInstructions: developerInstructions);
         var spec = CliSpec(claudePath, arguments, _host.Path(projectPath),
-            SessionScratch.Environment(scratchDirectory, sessionId: id), SessionOwner);
+            LaunchEnvironment(scratchDirectory, id, deliveredAsOneMessage), SessionOwner);
 
         IHostProcess process;
         try
@@ -1293,6 +1296,7 @@ public partial class ClaudeSessionService
             QualityTier = sessionRecord.QualityTier,
             ProviderEntity = sessionRecord.ProviderEntity,
             DeveloperInstructions = sessionRecord.DeveloperInstructions,
+            DeliveredAsOneMessage = sessionRecord.DeliveredAsOneMessage,
             Source = sessionRecord.Source,
             UserId = sessionRecord.UserId,
             UserName = sessionRecord.UserName,
@@ -1310,7 +1314,7 @@ public partial class ClaudeSessionService
             sessionRecord.DeveloperInstructions);
         AddForkArgs(arguments, forkTarget);
         var spec = CliSpec(claudePath, arguments, _host.Path(sessionRecord.ProjectPath),
-            SessionScratch.Environment(sessionRecord.ScratchDirectory, sessionId: sessionRecord.Id), SessionOwner);
+            LaunchEnvironment(sessionRecord.ScratchDirectory, sessionRecord.Id, sessionRecord.DeliveredAsOneMessage), SessionOwner);
 
         IHostProcess process;
         try
@@ -2160,6 +2164,7 @@ public partial class ClaudeSessionService
         QualityTier = r.QualityTier,
         ProviderEntity = r.ProviderEntity,
         DeveloperInstructions = r.DeveloperInstructions,
+        DeliveredAsOneMessage = r.DeliveredAsOneMessage,
         JobId = r.JobId,
         Source = r.Source,
         Access = AccessOf(r),
@@ -2218,6 +2223,50 @@ public partial class ClaudeSessionService
         var ids = _sessions.Keys.ToList();
         foreach (var id in ids)
             await StopSession(id);
+    }
+
+    /// <summary>The CLI's environment variable that turns its "say what you are doing" reminder on or off.</summary>
+    internal const string SilentTurnReminderVariable = "CLAUDE_CODE_SILENT_TURN_REMINDER";
+
+    /// <summary>
+    /// The overlay of a persistent session's CLI: the scratch and token environment, plus the silent-turn
+    /// reminder switched off ("0": the CLI's boolean parser reads 0, false, no and off as false) for a
+    /// session whose output reaches its reader as one message. Left unset otherwise, so the CLI keeps its default.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string>? LaunchEnvironment(
+        string? scratchDirectory, string sessionId, bool deliveredAsOneMessage)
+    {
+        var scratch = SessionScratch.Environment(scratchDirectory, sessionId: sessionId);
+        if (!deliveredAsOneMessage) return scratch;
+        var environment = scratch is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(scratch, StringComparer.OrdinalIgnoreCase);
+        environment[SilentTurnReminderVariable] = "0";
+        return environment;
+    }
+
+    /// <summary>
+    /// Sets whether a session is delivered as one message. It is read at every launch, so a session whose
+    /// CLI is running keeps the environment it started with until its next launch (resume, restart,
+    /// idle park). Returns whether the session is known.
+    /// </summary>
+    public bool SetDeliveredAsOneMessage(string sessionId, bool deliveredAsOneMessage)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+        {
+            if (session.Info.DeliveredAsOneMessage == deliveredAsOneMessage) return true;
+            session.Info.DeliveredAsOneMessage = deliveredAsOneMessage;
+            PersistSessionRecord(session.Info);
+            SessionUpdated?.Invoke(session.Info);
+            return true;
+        }
+
+        var record = _sessionStore.FindSession(sessionId);
+        if (record is null) return false;
+        if (record.DeliveredAsOneMessage == deliveredAsOneMessage) return true;
+        record.DeliveredAsOneMessage = deliveredAsOneMessage;
+        _sessionStore.SaveSession(record);
+        return true;
     }
 
     /// <summary>
@@ -4430,12 +4479,23 @@ public partial class ClaudeSessionService
         }
     }
 
+    /// <summary>
+    /// The exit code for logs and end reasons, or <c>unknown</c> when the process can no longer report it
+    /// (disposed, or not yet reaped when Exited fires). This runs inside the Exited event: an exception here
+    /// is unhandled on a thread-pool thread and ends RedCompute, after the session was already removed.
+    /// </summary>
+    internal static string DescribeExitCode(Func<int> read)
+    {
+        try { return read().ToString(System.Globalization.CultureInfo.InvariantCulture); }
+        catch (InvalidOperationException) { return "unknown"; }
+    }
+
     private void OnProcessExited(string sessionId)
     {
         if (!_sessions.TryRemove(sessionId, out var session))
             return;
 
-        var exitCode = session.Process.ExitCode;
+        var exitCode = DescribeExitCode(() => session.Process.ExitCode);
         DiscardPendingQuestions(session, "session_ended");
         DiscardPendingSteers(session);
         session.Cts.Cancel();
@@ -4649,6 +4709,7 @@ public partial class ClaudeSessionService
                 MaxAccessLevel = info.Access.MaxAccessLevel,
                 AccessLevelBeforePlan = info.Access.AccessLevelBeforePlan,
                 Unattended = info.Access.Unattended,
+                DeliveredAsOneMessage = info.DeliveredAsOneMessage,
                 AccessLevelSource = info.Access.AccessLevelSource,
             };
             _sessionStore.SaveSession(record);
