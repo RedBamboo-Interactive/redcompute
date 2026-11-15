@@ -10,6 +10,12 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\RedCompute.Core\RedCompute.Core.csproj" />
+    <!--
+      The local host's QuerySqliteReadOnly. Compile-only: RedCompute and the plugins that read SQLite
+      already carry this version (Microsoft.EntityFrameworkCore.Sqlite 9.0.18), and the SDK's consumers
+      gain no package from it.
+    -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="9.0.18" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

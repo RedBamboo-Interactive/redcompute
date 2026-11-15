@@ -192,7 +192,7 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
             {
                 Id = "session-1", Status = "Active", ProjectName = "fixture", ProjectPath = owner._root,
                 AccessLevel = level, Unattended = unattended,
-            }, process, new CancellationTokenSource()) { AcpSessionId = "native-session", CurrentAssistantUid = "turn-1" };
+            }, HostSeams.Wrap(process)!, new CancellationTokenSource()) { AcpSessionId = "native-session", CurrentAssistantUid = "turn-1" };
             var sessions = typeof(OpenCodeSessionService).GetField("_sessions", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(Service)!;
             sessions.GetType().GetMethod("TryAdd")!.Invoke(sessions, ["session-1", _session]);
         }

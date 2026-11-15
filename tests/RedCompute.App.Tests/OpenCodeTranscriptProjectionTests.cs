@@ -1,8 +1,8 @@
-using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RedCompute.App.Api.Endpoints;
 using RedCompute.Plugin.OpenCode;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -16,10 +16,10 @@ public sealed class OpenCodeTranscriptProjectionTests
         Assert.Equal(Path.Combine(dataHome, "opencode", "opencode.db"),
             OpenCodeNativeSessionReader.ResolveDbPath(dataHome));
 
-        var startInfo = new ProcessStartInfo();
-        startInfo.Environment["XDG_DATA_HOME"] = Path.Combine(Path.GetTempPath(), "caller-data");
-        OpenCodeSessionService.ApplyConfiguredDataHome(startInfo, dataHome);
-        Assert.Equal(Path.GetFullPath(dataHome), startInfo.Environment["XDG_DATA_HOME"]);
+        var environment = OpenCodeSessionService.NewEnvironment(LocalExecutionHost.Shared);
+        environment["XDG_DATA_HOME"] = Path.Combine(Path.GetTempPath(), "caller-data");
+        OpenCodeSessionService.ApplyConfiguredDataHome(LocalExecutionHost.Shared, environment, dataHome);
+        Assert.Equal(Path.GetFullPath(dataHome), environment["XDG_DATA_HOME"]);
     }
 
     [Fact]
@@ -39,7 +39,8 @@ public sealed class OpenCodeTranscriptProjectionTests
     {
         Assert.Throws<ArgumentException>(() => OpenCodeNativeSessionReader.ResolveDbPath("relative-data"));
         Assert.Throws<ArgumentException>(() =>
-            OpenCodeSessionService.ApplyConfiguredDataHome(new ProcessStartInfo(), "relative-data"));
+            OpenCodeSessionService.ApplyConfiguredDataHome(LocalExecutionHost.Shared,
+                OpenCodeSessionService.NewEnvironment(LocalExecutionHost.Shared), "relative-data"));
     }
 
     [Fact]

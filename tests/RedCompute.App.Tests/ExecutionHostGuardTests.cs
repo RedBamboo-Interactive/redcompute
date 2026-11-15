@@ -75,10 +75,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C13 OpenCode", [
-            "RedCompute.Plugin.OpenCode.OpenCodeNativeSessionReader",
-            "RedCompute.Plugin.OpenCode.OpenCodeSessionService",
-        ]),
         ("C14 hardware (and the node descriptor's processor name)", [
             "RedCompute.App.Services.Hardware.HardwareMonitorService",
             "RedCompute.App.Services.Nodes.NodePlatform",

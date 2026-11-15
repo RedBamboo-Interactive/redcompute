@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using RedCompute.Core.Hardware;
 
 namespace RedCompute.PluginSdk.Hosting.Local;
@@ -12,10 +13,10 @@ namespace RedCompute.PluginSdk.Hosting.Local;
 /// <see cref="PlatformSupport"/>, System.IO), so a launch through it hands the OS the same
 /// <see cref="ProcessStartInfo"/> through the same entry point as the site did.
 /// <para>
-/// Three members wait for the code they forward to: <see cref="IHostHardware.Sample"/> (the hardware
-/// sampler moves here with the hardware move), <see cref="IHostQueries.QuerySqliteReadOnly"/> (with
-/// OpenCode) and <see cref="IHostContainment.StartDetachedKept"/> (with the long-lived registry). Until
-/// then they throw <see cref="NotSupportedException"/>; nothing calls them yet.
+/// Two members wait for the code they forward to: <see cref="IHostHardware.Sample"/> (the hardware
+/// sampler moves here with the hardware move) and <see cref="IHostContainment.StartDetachedKept"/> (with
+/// the long-lived registry). Until then they throw <see cref="NotSupportedException"/>; nothing calls
+/// them yet.
 /// </para>
 /// </summary>
 public sealed class LocalExecutionHost : IExecutionHost
@@ -256,6 +257,8 @@ public sealed class LocalExecutionHost : IExecutionHost
         public string? ResolveLinkTarget(HostPath path, bool returnFinalTarget)
             => new FileInfo(path.Value).ResolveLinkTarget(returnFinalTarget)?.FullName;
 
+        public FileAttributes GetAttributes(HostPath path) => File.GetAttributes(path.Value);
+
         public void WriteAllText(HostPath path, string contents, Encoding? encoding = null)
         {
             if (encoding is null) File.WriteAllText(path.Value, contents);
@@ -340,11 +343,44 @@ public sealed class LocalExecutionHost : IExecutionHost
             "Hardware sampling moves onto the host with the hardware monitor; until then RedCompute samples it itself");
     }
 
+    /// <summary>
+    /// The SQLite read OpenCode's native reader and title lookup made themselves: the same connection
+    /// string (built the same way), the same busy timeout, parameters bound with <c>AddWithValue</c>.
+    /// Microsoft.Data.Sqlite is RedCompute's own copy (the SDK compiles against it privately).
+    /// </summary>
     private sealed class LocalQueries : IHostQueries
     {
         public IReadOnlyList<IReadOnlyDictionary<string, object?>> QuerySqliteReadOnly(HostPath database, string sql,
-            IReadOnlyDictionary<string, object?>? parameters = null)
-            => throw new NotSupportedException(
-                "Host-side SQLite queries move onto the host with OpenCode's native session reader");
+            IReadOnlyDictionary<string, object?>? parameters = null, SqliteReadOptions? options = null)
+        {
+            options ??= SqliteReadOptions.Default;
+            using var connection = new SqliteConnection(options.Pooling
+                ? $"Data Source={database.Value};Mode=ReadOnly"
+                : $"Data Source={database.Value};Mode=ReadOnly;Pooling=False");
+            connection.Open();
+            if (options.BusyTimeoutMilliseconds is { } busyTimeout)
+            {
+                using var timeout = connection.CreateCommand();
+                timeout.CommandText = $"PRAGMA busy_timeout={busyTimeout}";
+                timeout.ExecuteNonQuery();
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            if (parameters is not null)
+                foreach (var (name, value) in parameters)
+                    command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+            var rows = new List<IReadOnlyDictionary<string, object?>>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var row = new Dictionary<string, object?>(reader.FieldCount, StringComparer.Ordinal);
+                for (var i = 0; i < reader.FieldCount; i++)
+                    row[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                rows.Add(row);
+            }
+            return rows;
+        }
     }
 }

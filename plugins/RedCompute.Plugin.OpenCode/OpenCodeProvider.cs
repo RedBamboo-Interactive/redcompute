@@ -6,6 +6,7 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.OpenCode;
 
@@ -57,7 +58,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
     public OpenCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, Action<string, Guid?> log,
-        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -67,7 +68,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         _store = new OpenCodeSessionStore();
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,
-            acceleratorAdmission: acceleratorAdmission);
+            acceleratorAdmission: acceleratorAdmission, host: host);
         WireEvents();
     }
 

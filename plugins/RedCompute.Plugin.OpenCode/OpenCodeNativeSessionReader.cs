@@ -1,5 +1,8 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
-using Microsoft.Data.Sqlite;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.OpenCode;
 
@@ -30,27 +33,35 @@ internal interface IOpenCodeNativeSessionReader
     IReadOnlyList<OpenCodeNativePart> GetCompletedAssistantParts(string sessionId);
 }
 
+/// <summary>
+/// OpenCode's own session database (opencode.db), read where OpenCode writes it: on the host, through
+/// <see cref="IHostQueries.QuerySqliteReadOnly"/>, with the connection this reader always opened
+/// (read-only, unpooled, a 2 s busy timeout) and the same statements and parameters.
+/// </summary>
 internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
 {
     private readonly string _dbPath;
+    private readonly IExecutionHost _host;
 
-    public OpenCodeNativeSessionReader(string? dbPath = null)
+    /// <summary>The connection the reader always opened: <c>Mode=ReadOnly;Pooling=False</c>, then <c>PRAGMA busy_timeout=2000</c>.</summary>
+    internal static readonly SqliteReadOptions ReadOptions = new() { Pooling = false, BusyTimeoutMilliseconds = 2000 };
+
+    public OpenCodeNativeSessionReader(string? dbPath = null, IExecutionHost? host = null)
     {
-        _dbPath = dbPath ?? ResolveDbPath();
+        _host = host ?? LocalExecutionHost.Shared;
+        _dbPath = dbPath ?? ResolveDbPath(_host);
     }
 
     internal string DbPath => _dbPath;
 
     public OpenCodeNativeMessageVisibility GetMessageVisibility(string sessionId, string messageId)
     {
-        if (!File.Exists(_dbPath)) return OpenCodeNativeMessageVisibility.Missing;
+        if (!_host.Files.FileExists(_host.Path(_dbPath))) return OpenCodeNativeMessageVisibility.Missing;
 
-        using var connection = Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT data FROM message WHERE session_id=$session AND id=$message LIMIT 1";
-        command.Parameters.AddWithValue("$session", sessionId);
-        command.Parameters.AddWithValue("$message", messageId);
-        var json = command.ExecuteScalar() as string;
+        // ExecuteScalar: the first column of the first row, NULL and no row alike reading as no data.
+        var rows = Query("SELECT data FROM message WHERE session_id=$session AND id=$message LIMIT 1",
+            new Dictionary<string, object?> { ["$session"] = sessionId, ["$message"] = messageId });
+        var json = rows.Count > 0 ? rows[0]["data"] as string : null;
         if (json == null) return OpenCodeNativeMessageVisibility.Missing;
 
         using var document = JsonDocument.Parse(json);
@@ -61,49 +72,67 @@ internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
 
     public IReadOnlyList<OpenCodeNativePart> GetCompletedAssistantParts(string sessionId)
     {
-        if (!File.Exists(_dbPath))
+        if (!_host.Files.FileExists(_host.Path(_dbPath)))
             throw new FileNotFoundException("OpenCode native session database was not found", _dbPath);
 
-        using var connection = Open();
+        var session = new Dictionary<string, object?> { ["$session"] = sessionId };
         var messages = new Dictionary<string, bool>(StringComparer.Ordinal);
-        using (var command = connection.CreateCommand())
+        foreach (var row in Query("SELECT id, time_created, data FROM message WHERE session_id=$session ORDER BY time_created, id", session))
         {
-            command.CommandText = "SELECT id, time_created, data FROM message WHERE session_id=$session ORDER BY time_created, id";
-            command.Parameters.AddWithValue("$session", sessionId);
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
-            {
-                using var document = JsonDocument.Parse(reader.GetString(2));
-                var data = document.RootElement;
-                if (String(data, "role") != "assistant" || IsCompaction(data) || !IsCompleted(data))
-                    continue;
+            using var document = JsonDocument.Parse(GetString(row, "data", 2));
+            var data = document.RootElement;
+            if (String(data, "role") != "assistant" || IsCompaction(data) || !IsCompleted(data))
+                continue;
 
-                messages.Add(reader.GetString(0), String(data, "finish") != "tool-calls");
-            }
+            messages.Add(GetString(row, "id", 0), String(data, "finish") != "tool-calls");
         }
 
         if (messages.Count == 0) return [];
 
         var parts = new List<OpenCodeNativePart>();
-        using (var command = connection.CreateCommand())
+        foreach (var row in Query("SELECT id, message_id, time_created, data FROM part WHERE session_id=$session ORDER BY time_created, id", session))
         {
-            command.CommandText = "SELECT id, message_id, time_created, data FROM part WHERE session_id=$session ORDER BY time_created, id";
-            command.Parameters.AddWithValue("$session", sessionId);
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
-            {
-                var providerPartId = reader.GetString(0);
-                var messageId = reader.GetString(1);
-                if (!messages.TryGetValue(messageId, out var terminal)) continue;
-                using var document = JsonDocument.Parse(reader.GetString(3));
-                if (ParsePart(providerPartId, messageId, document.RootElement,
-                        DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)), out var part))
-                    parts.Add(part! with { IsTerminalMessage = terminal });
-            }
+            var providerPartId = GetString(row, "id", 0);
+            var messageId = GetString(row, "message_id", 1);
+            if (!messages.TryGetValue(messageId, out var terminal)) continue;
+            using var document = JsonDocument.Parse(GetString(row, "data", 3));
+            if (ParsePart(providerPartId, messageId, document.RootElement,
+                    DateTimeOffset.FromUnixTimeMilliseconds(GetInt64(row, "time_created", 2)), out var part))
+                parts.Add(part! with { IsTerminalMessage = terminal });
         }
 
         return parts;
     }
+
+    private IReadOnlyList<IReadOnlyDictionary<string, object?>> Query(string sql, IReadOnlyDictionary<string, object?> parameters)
+        => _host.Queries.QuerySqliteReadOnly(_host.Path(_dbPath), sql, parameters, ReadOptions);
+
+    /// <summary>
+    /// <c>SqliteDataReader.GetString</c> over a returned row: SQLite's text of the stored value, and on
+    /// NULL the provider's own exception and message.
+    /// </summary>
+    internal static string GetString(IReadOnlyDictionary<string, object?> row, string column, int ordinal)
+        => row[column] switch
+        {
+            null => throw CalledOnNull(ordinal),
+            string text => text,
+            byte[] blob => Encoding.UTF8.GetString(blob),
+            IFormattable number => number.ToString(null, CultureInfo.InvariantCulture),
+            var value => value.ToString()!,
+        };
+
+    /// <summary><c>SqliteDataReader.GetInt64</c> over a returned row; NULL throws as the provider does.</summary>
+    internal static long GetInt64(IReadOnlyDictionary<string, object?> row, string column, int ordinal)
+        => row[column] switch
+        {
+            null => throw CalledOnNull(ordinal),
+            long integer => integer,
+            double real => (long)real,
+            var value => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+        };
+
+    private static InvalidOperationException CalledOnNull(int ordinal) => new(
+        $"The data is NULL at ordinal {ordinal}. This method can't be called on NULL values. Check using IsDBNull before calling.");
 
     internal static bool ParsePart(
         string providerPartId,
@@ -157,32 +186,26 @@ internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
         && time.TryGetProperty("completed", out var completed)
         && completed.ValueKind == JsonValueKind.Number;
 
-    private SqliteConnection Open()
-    {
-        var connection = new SqliteConnection($"Data Source={_dbPath};Mode=ReadOnly;Pooling=False");
-        connection.Open();
-        using var timeout = connection.CreateCommand();
-        timeout.CommandText = "PRAGMA busy_timeout=2000";
-        timeout.ExecuteNonQuery();
-        return connection;
-    }
-
     internal static string ResolveDbPath(string? configuredDataHome = null)
+        => ResolveDbPath(LocalExecutionHost.Shared, configuredDataHome);
+
+    /// <summary>opencode.db on <paramref name="host"/>: under the configured data home, the host's XDG_DATA_HOME, or ~/.local/share.</summary>
+    internal static string ResolveDbPath(IExecutionHost host, string? configuredDataHome = null)
     {
-        var dataHome = NormalizeConfiguredDataHome(configuredDataHome)
-            ?? Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        var dataHome = NormalizeConfiguredDataHome(host, configuredDataHome)
+            ?? host.Platform.GetEnvironmentVariable("XDG_DATA_HOME");
         if (!string.IsNullOrWhiteSpace(dataHome))
-            return Path.Combine(dataHome, "opencode", "opencode.db");
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            return host.PathRules.Combine(dataHome, "opencode", "opencode.db");
+        return host.PathRules.Combine(host.Platform.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".local", "share", "opencode", "opencode.db");
     }
 
-    internal static string? NormalizeConfiguredDataHome(string? configuredDataHome)
+    internal static string? NormalizeConfiguredDataHome(IExecutionHost host, string? configuredDataHome)
     {
         if (string.IsNullOrWhiteSpace(configuredDataHome)) return null;
-        if (!Path.IsPathFullyQualified(configuredDataHome))
+        if (!host.PathRules.IsPathFullyQualified(configuredDataHome))
             throw new ArgumentException("OpenCodeDataHome must be an absolute path", nameof(configuredDataHome));
-        return Path.GetFullPath(configuredDataHome);
+        return host.PathRules.GetFullPath(configuredDataHome);
     }
 
     private static string? String(JsonElement value, string name) =>

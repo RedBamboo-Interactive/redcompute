@@ -7,25 +7,36 @@ using System.Text.Json.Nodes;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeSessionService
 {
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
-    private readonly ConcurrentDictionary<string, Process> _runningProcesses = new();
+    private readonly ConcurrentDictionary<string, IHostProcess> _runningProcesses = new();
     private readonly OpenCodeConfig _config;
     private readonly IJobTracker _jobTracker;
     private readonly IOpenCodeSessionStore _store;
     private readonly IOpenCodeNativeSessionReader _nativeSessionReader;
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly Action<string, Guid?> _log;
+    private readonly IExecutionHost _host;
 
-    /// <summary>Launch seams for the ACP session process and the non-interactive exec process.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchAcpProcess { get; set; } =
-        startInfo => SessionProcessContainment.Start(startInfo, "opencode");
-    internal Func<ProcessStartInfo, Process?> LaunchExecProcess { get; set; } =
-        startInfo => SessionProcessContainment.Start(startInfo, "opencode-exec");
+    /// <summary>Containment owner of the ACP session process tree.</summary>
+    internal const string AcpOwner = "opencode";
+
+    /// <summary>Containment owner of the non-interactive exec process tree.</summary>
+    internal const string ExecOwner = "opencode-exec";
+
+    /// <summary>
+    /// Launch seams for the ACP session process and the non-interactive exec process, typed on the
+    /// execution host's spec. Both default to the host's launch: locally
+    /// <c>SessionProcessContainment.Start</c> under <see cref="AcpOwner"/> / <see cref="ExecOwner"/>, as before.
+    /// </summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchAcpProcess { get; set; }
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchExecProcess { get; set; }
 
     public event Action<OpenCodeSessionInfo>? SessionCreated;
     public event Action<OpenCodeSessionInfo>? SessionUpdated;
@@ -48,7 +59,7 @@ public class OpenCodeSessionService
     internal class ManagedSession
     {
         public OpenCodeSessionInfo Info { get; }
-        public Process Process { get; }
+        public IHostProcess Process { get; }
         public CancellationTokenSource Cts { get; }
         public List<OpenCodeStreamEvent> MessageHistory { get; } = new();
         // Provider-neutral uid shared by all events of the current assistant
@@ -72,7 +83,7 @@ public class OpenCodeSessionService
         private int _nextRequestId;
         private readonly SemaphoreSlim _writeLock = new(1, 1);
 
-        public ManagedSession(OpenCodeSessionInfo info, Process process, CancellationTokenSource cts)
+        public ManagedSession(OpenCodeSessionInfo info, IHostProcess process, CancellationTokenSource cts)
         {
             Info = info;
             Process = process;
@@ -84,17 +95,28 @@ public class OpenCodeSessionService
     }
 
     public OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
-        Action<string, Guid?> log, IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
+        Action<string, Guid?> log, IAcceleratorAdmissionCoordinator? acceleratorAdmission = null,
+        IExecutionHost? host = null)
         : this(config, jobTracker, store, log,
-            new OpenCodeNativeSessionReader(OpenCodeNativeSessionReader.ResolveDbPath(config.OpenCodeDataHome)),
-            acceleratorAdmission)
+            new OpenCodeNativeSessionReader(
+                OpenCodeNativeSessionReader.ResolveDbPath(host ?? LocalExecutionHost.Shared, config.OpenCodeDataHome),
+                host ?? LocalExecutionHost.Shared),
+            acceleratorAdmission, host)
     {
     }
 
+    /// <param name="host">
+    /// The machine OpenCode runs on: its CLI, project directories, instruction files, file requests
+    /// and opencode.db. Null is node zero's local host.
+    /// </param>
     internal OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
         Action<string, Guid?> log, IOpenCodeNativeSessionReader nativeSessionReader,
-        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null)
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null)
     {
+        // The host first: recovery below already kills recorded PIDs on it.
+        _host = host ?? LocalExecutionHost.Shared;
+        LaunchAcpProcess = spec => _host.Processes.Start(spec);
+        LaunchExecProcess = spec => _host.Processes.Start(spec);
         _config = config;
         _jobTracker = jobTracker;
         _store = store;
@@ -144,7 +166,7 @@ public class OpenCodeSessionService
             LastStartError = $"Max sessions reached ({_config.MaxSessions})";
             return null;
         }
-        if (!Directory.Exists(projectPath))
+        if (!ProjectPathExists(projectPath))
         {
             LastStartError = $"Project path not found: {projectPath}";
             LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
@@ -236,7 +258,7 @@ public class OpenCodeSessionService
             LastStartError = "Session has no OpenCode session ID to resume";
             return null;
         }
-        if (!Directory.Exists(record.ProjectPath))
+        if (!ProjectPathExists(record.ProjectPath))
         {
             LastStartError = $"Project path not found: {record.ProjectPath}";
             LastStartErrorCode = SessionStopReasons.ProjectPathMissing;
@@ -339,32 +361,37 @@ public class OpenCodeSessionService
         string? model = null, string? effort = null, int? thinkingBudget = null,
         string? scratchDirectory = null, string? developerInstructions = null)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = opencodePath,
-            WorkingDirectory = projectPath,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        startInfo.ArgumentList.Add("acp");
+        // The variables set over the inherited environment, in the order they were always set.
+        var environment = NewEnvironment(_host);
         if (SessionScratch.Environment(scratchDirectory, sessionId: info.Id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
-                startInfo.Environment[key] = value;
-        ApplyDeveloperInstructions(startInfo, info.Id, WithAccessNote(info, developerInstructions));
-        startInfo.Environment[PermissionEnvironment] = SessionPermissionOverride;
-        ApplyConfiguredDataHome(startInfo, _config.OpenCodeDataHome);
+                environment[key] = value;
+        ApplyDeveloperInstructions(_host, environment, info.Id, WithAccessNote(info, developerInstructions));
+        environment[PermissionEnvironment] = SessionPermissionOverride;
+        ApplyConfiguredDataHome(_host, environment, _config.OpenCodeDataHome);
+        var spec = new HostSpawnSpec
+        {
+            FileName = opencodePath,
+            ArgumentList = ["acp"],
+            WorkingDirectory = _host.Path(projectPath),
+            EnvironmentOverlay = environment,
+            StandardInput = StdioMode.Pipe,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            Containment = ContainmentMode.Session,
+            OwnerLabel = AcpOwner,
+        };
 
         var resolvedModel = model ?? _config.Model;
 
-        Process process;
+        IHostProcess process;
         try
         {
-            process = LaunchAcpProcess(startInfo)!;
+            process = LaunchAcpProcess(spec)!;
         }
         catch (Exception ex)
         {
@@ -600,7 +627,7 @@ public class OpenCodeSessionService
             else if (part.LegacyImage is { } legacy)
                 promptBlocks.Add(new { type = "image", data = legacy.Base64, mimeType = legacy.MediaType });
             else if (part.Attachment is { Kind: "image" } image)
-                promptBlocks.Add(new { type = "image", data = Convert.ToBase64String(File.ReadAllBytes(image.StoredPath)), mimeType = image.MediaType });
+                promptBlocks.Add(new { type = "image", data = Convert.ToBase64String(StagedAttachments.ReadAllBytes(image)), mimeType = image.MediaType });
             else if (part.Attachment is { } file)
                 // OpenCode 1.17.15's installed ACP surface does not expose a verified
                 // resource/file prompt block, so use the portable generated path reference.
@@ -673,15 +700,13 @@ public class OpenCodeSessionService
 
         try
         {
-            var dbPath = OpenCodeNativeSessionReader.ResolveDbPath(_config.OpenCodeDataHome);
-            if (!File.Exists(dbPath)) return;
+            var dbPath = OpenCodeNativeSessionReader.ResolveDbPath(_host, _config.OpenCodeDataHome);
+            if (!_host.Files.FileExists(_host.Path(dbPath))) return;
 
-            using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
-            conn.Open();
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT title FROM session WHERE id = @id";
-            cmd.Parameters.AddWithValue("@id", acpSessionId);
-            var title = cmd.ExecuteScalar() as string;
+            // Pooled, read-only, no busy timeout: the connection this lookup always opened.
+            var rows = _host.Queries.QuerySqliteReadOnly(_host.Path(dbPath), "SELECT title FROM session WHERE id = @id",
+                new Dictionary<string, object?> { ["@id"] = acpSessionId }, SqliteReadOptions.Default);
+            var title = rows.Count > 0 ? rows[0]["title"] as string : null;
             if (!string.IsNullOrEmpty(title) && !title.StartsWith("New session - "))
             {
                 session.Info.Title = title;
@@ -1295,8 +1320,8 @@ public class OpenCodeSessionService
         var path = root.GetProperty("params").GetProperty("path").GetString()!;
         try
         {
-            EnsureProjectPathAllowed(session.Info.ProjectPath, path);
-            var content = await File.ReadAllTextAsync(path);
+            EnsureProjectPathAllowed(_host, session.Info.ProjectPath, path);
+            var content = await _host.Files.ReadAllTextAsync(_host.Path(path));
             await RespondToRequest(session, root, new { content });
         }
         catch (Exception ex)
@@ -1312,8 +1337,8 @@ public class OpenCodeSessionService
         var content = @params.GetProperty("content").GetString()!;
         try
         {
-            EnsureProjectPathAllowed(session.Info.ProjectPath, path);
-            await File.WriteAllTextAsync(path, content);
+            EnsureProjectPathAllowed(_host, session.Info.ProjectPath, path);
+            await _host.Files.WriteAllTextAsync(_host.Path(path), content);
             await RespondToRequest(session, root, new { });
         }
         catch (Exception ex)
@@ -1323,6 +1348,13 @@ public class OpenCodeSessionService
     }
 
     internal static void EnsureProjectPathAllowed(string projectRoot, string requestedPath)
+        => EnsureProjectPathAllowed(LocalExecutionHost.Shared, projectRoot, requestedPath);
+
+    /// <summary>
+    /// The path checks are this process's string rules (the host's on node zero); whether a segment
+    /// exists and whether it is a link is asked of the host, where the files are.
+    /// </summary>
+    internal static void EnsureProjectPathAllowed(IExecutionHost host, string projectRoot, string requestedPath)
     {
         if (!Path.IsPathFullyQualified(requestedPath))
             throw new UnauthorizedAccessException("OpenCode filesystem requests must use an absolute path");
@@ -1335,21 +1367,21 @@ public class OpenCodeSessionService
             throw new UnauthorizedAccessException("OpenCode filesystem request is outside the project workspace");
 
         var current = root;
-        if (IsReparsePoint(current))
+        if (IsReparsePoint(host, current))
             throw new UnauthorizedAccessException("OpenCode project roots may not be filesystem links");
 
         foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
         {
             if (string.IsNullOrEmpty(segment) || segment == ".") continue;
             current = Path.Combine(current, segment);
-            if (!File.Exists(current) && !Directory.Exists(current)) break;
-            if (IsReparsePoint(current))
+            if (!host.Files.FileExists(host.Path(current)) && !host.Files.DirectoryExists(host.Path(current))) break;
+            if (IsReparsePoint(host, current))
                 throw new UnauthorizedAccessException("OpenCode filesystem requests may not traverse filesystem links");
         }
     }
 
-    private static bool IsReparsePoint(string path) =>
-        (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+    private static bool IsReparsePoint(IExecutionHost host, string path) =>
+        (host.Files.GetAttributes(host.Path(path)) & FileAttributes.ReparsePoint) != 0;
 
     private void SeedKnownNativeParts(ManagedSession session, string providerSessionId)
     {
@@ -1823,7 +1855,9 @@ public class OpenCodeSessionService
     }
 
     private void TryKillByPid(int? pid)
-        => OwnedProcessKiller.TryKill(pid, "opencode", m => _log($"[OpenCode] {m}", null));
+        => _host.Processes.TryKillRecorded(pid, "opencode", m => _log($"[OpenCode] {m}", null));
+
+    private bool ProjectPathExists(string path) => _host.Files.DirectoryExists(_host.Path(path));
 
     // ===== Stateless Execution (unchanged) =====
 
@@ -1853,37 +1887,51 @@ public class OpenCodeSessionService
 
         await using var acceleratorLease = await AcquireForModelAsync(model ?? _config.Model, ct);
 
-        var startInfo = new ProcessStartInfo
-        {
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = Encoding.UTF8,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-
+        string fileName;
+        List<string> arguments;
+        HostPath? directory = null;
+        Dictionary<string, string>? environment = null;
         if (useDocker)
         {
-            DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "opencode", workingDir, env);
+            // docker exec carries the directory and variables as its own arguments.
+            fileName = DockerExecHelper.FileName;
+            arguments = DockerExecHelper.ExecArguments(container!, "opencode", workingDir, env);
         }
         else
         {
-            startInfo.FileName = ResolveOpenCodePath()!;
+            fileName = ResolveOpenCodePath()!;
+            arguments = [];
             if (!string.IsNullOrWhiteSpace(workingDir))
-                startInfo.WorkingDirectory = workingDir;
+                directory = _host.Path(workingDir);
+            environment = NewEnvironment(_host);
             if (env is not null)
                 foreach (var (k, v) in env)
-                    startInfo.EnvironmentVariables[k] = v;
-            ApplyConfiguredDataHome(startInfo, _config.OpenCodeDataHome);
+                    environment[k] = v;
+            ApplyConfiguredDataHome(_host, environment, _config.OpenCodeDataHome);
         }
 
-        BuildExecArgs(startInfo, model);
+        BuildExecArgs(arguments, model);
 
         var sw = Stopwatch.StartNew();
-        using var process = LaunchExecProcess(startInfo);
+        // Every stream piped, all three UTF-8 (stdin included, as it always was), no window,
+        // contained as a session under ExecOwner.
+        using var process = LaunchExecProcess(new HostSpawnSpec
+        {
+            FileName = fileName,
+            ArgumentList = arguments,
+            WorkingDirectory = directory,
+            EnvironmentOverlay = environment,
+            StandardInput = StdioMode.Pipe,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            StandardInputEncoding = Encoding.UTF8,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            Containment = ContainmentMode.Session,
+            OwnerLabel = ExecOwner,
+        });
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start opencode process");
         if (streamKey != null)
@@ -1967,10 +2015,18 @@ public class OpenCodeSessionService
     internal static bool IsLocalAcceleratorModel(string? model)
         => model?.StartsWith("ollama/", StringComparison.OrdinalIgnoreCase) == true;
 
-    internal static void ApplyConfiguredDataHome(ProcessStartInfo startInfo, string? configuredDataHome)
+    /// <summary>
+    /// An empty set of variables to lay over the inherited environment, keyed as the host keys its
+    /// environment (as <c>ProcessStartInfo.Environment</c> does: case-insensitive on Windows).
+    /// </summary>
+    internal static Dictionary<string, string> NewEnvironment(IExecutionHost host)
+        => new(host.Platform.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    internal static void ApplyConfiguredDataHome(IExecutionHost host, IDictionary<string, string> environment,
+        string? configuredDataHome)
     {
-        if (OpenCodeNativeSessionReader.NormalizeConfiguredDataHome(configuredDataHome) is { } dataHome)
-            startInfo.Environment["XDG_DATA_HOME"] = dataHome;
+        if (OpenCodeNativeSessionReader.NormalizeConfiguredDataHome(host, configuredDataHome) is { } dataHome)
+            environment["XDG_DATA_HOME"] = dataHome;
     }
 
     private async ValueTask<IAsyncDisposable?> AcquireForModelAsync(string? model, CancellationToken ct)
@@ -1981,21 +2037,21 @@ public class OpenCodeSessionService
             new AcceleratorWorkload(_config.AcceleratorId, "ollama", $"OpenCode {model}"), ct);
     }
 
-    internal void BuildExecArgs(ProcessStartInfo startInfo, string? model)
+    internal void BuildExecArgs(List<string> arguments, string? model)
     {
-        startInfo.ArgumentList.Add("run");
-        startInfo.ArgumentList.Add("--format");
-        startInfo.ArgumentList.Add("json");
+        arguments.Add("run");
+        arguments.Add("--format");
+        arguments.Add("json");
         // OpenCode's non-interactive permission switch is --auto. The old Claude-style
         // flag was silently ignored, which allowed detached executions (and especially
         // their subagents) to block forever on an approval prompt nobody could answer.
-        startInfo.ArgumentList.Add("--auto");
+        arguments.Add("--auto");
 
         var resolvedModel = model ?? _config.Model;
         if (!string.IsNullOrEmpty(resolvedModel))
         {
-            startInfo.ArgumentList.Add("-m");
-            startInfo.ArgumentList.Add(resolvedModel);
+            arguments.Add("-m");
+            arguments.Add(resolvedModel);
         }
 
     }
@@ -2407,23 +2463,31 @@ public class OpenCodeSessionService
     internal const string OneshotPermissionOverride =
         """{"bash":"deny","webfetch":"deny","websearch":"deny","external_directory":"deny"}""";
 
-    internal static void ApplyDeveloperInstructions(
-        ProcessStartInfo startInfo, string sessionId, string? developerInstructions)
+    /// <summary>
+    /// Writes the instructions where OpenCode reads them, on the host
+    /// (<c>%LOCALAPPDATA%/RedCompute/plugins/opencode/instructions/&lt;session&gt;.md</c>), and names the
+    /// file first in <c>OPENCODE_CONFIG_CONTENT</c>, merged over the value the launch would otherwise
+    /// carry: one already set in <paramref name="environment"/>, else the one inherited from the host.
+    /// </summary>
+    internal static void ApplyDeveloperInstructions(IExecutionHost host, IDictionary<string, string> environment,
+        string sessionId, string? developerInstructions)
     {
         if (string.IsNullOrWhiteSpace(developerInstructions)) return;
 
-        var directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        var directory = host.PathRules.Combine(
+            host.Platform.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RedCompute", "plugins", "opencode", "instructions");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, $"{sessionId}.md");
-        File.WriteAllText(path, developerInstructions, new UTF8Encoding(false));
+        host.Files.CreateDirectory(host.Path(directory));
+        var path = host.PathRules.Combine(directory, $"{sessionId}.md");
+        host.Files.WriteAllText(host.Path(path), developerInstructions, new UTF8Encoding(false));
 
         JsonObject config;
         try
         {
-            config = startInfo.Environment.TryGetValue("OPENCODE_CONFIG_CONTENT", out var existing)
-                     && !string.IsNullOrWhiteSpace(existing)
+            var existing = environment.TryGetValue("OPENCODE_CONFIG_CONTENT", out var set)
+                ? set
+                : host.Platform.GetEnvironmentVariable("OPENCODE_CONFIG_CONTENT");
+            config = !string.IsNullOrWhiteSpace(existing)
                 ? JsonNode.Parse(existing) as JsonObject ?? new JsonObject()
                 : new JsonObject();
         }
@@ -2435,34 +2499,38 @@ public class OpenCodeSessionService
         var instructions = config["instructions"] as JsonArray ?? new JsonArray();
         instructions.Insert(0, path);
         config["instructions"] = instructions;
-        startInfo.Environment["OPENCODE_CONFIG_CONTENT"] = config.ToJsonString();
+        environment["OPENCODE_CONFIG_CONTENT"] = config.ToJsonString();
     }
 
+    /// <summary>
+    /// The CLI on the host: the configured path, npm's global package, PATH, then npm's shim. The PATH
+    /// separator is this process's (the host's on node zero).
+    /// </summary>
     public string? ResolveOpenCodePath()
     {
         if (_config.OpenCodePath != null)
-            return File.Exists(_config.OpenCodePath) ? _config.OpenCodePath : null;
+            return FileExists(_config.OpenCodePath) ? _config.OpenCodePath : null;
 
         // Try npm global node_modules directly first — avoids .cmd wrapper
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var npmBinDirect = Path.Combine(appData, "npm", "node_modules", "opencode-ai", "bin", "opencode.exe");
-        if (File.Exists(npmBinDirect))
+        var appData = _host.Platform.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var npmBinDirect = _host.PathRules.Combine(appData, "npm", "node_modules", "opencode-ai", "bin", "opencode.exe");
+        if (FileExists(npmBinDirect))
             return npmBinDirect;
 
-        var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
+        var pathDirs = _host.Platform.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
         foreach (var dir in pathDirs)
         {
             // Prefer .exe over .cmd; skip .cmd wrappers in npm dirs when possible
             foreach (var ext in new[] { ".exe", ".cmd", "" })
             {
-                var candidate = Path.Combine(dir, $"opencode{ext}");
-                if (!File.Exists(candidate)) continue;
+                var candidate = _host.PathRules.Combine(dir, $"opencode{ext}");
+                if (!FileExists(candidate)) continue;
 
                 // If we found a .cmd in an npm directory, try to resolve through to the real exe
                 if (ext == ".cmd" && dir.Replace('\\', '/').Contains("/npm", StringComparison.OrdinalIgnoreCase))
                 {
-                    var resolvedExe = Path.Combine(dir, "node_modules", "opencode-ai", "bin", "opencode.exe");
-                    if (File.Exists(resolvedExe))
+                    var resolvedExe = _host.PathRules.Combine(dir, "node_modules", "opencode-ai", "bin", "opencode.exe");
+                    if (FileExists(resolvedExe))
                         return resolvedExe;
                 }
 
@@ -2470,10 +2538,12 @@ public class OpenCodeSessionService
             }
         }
 
-        var npmFallback = Path.Combine(appData, "npm", "opencode.cmd");
-        if (File.Exists(npmFallback))
+        var npmFallback = _host.PathRules.Combine(appData, "npm", "opencode.cmd");
+        if (FileExists(npmFallback))
             return npmFallback;
 
         return null;
     }
+
+    private bool FileExists(string path) => _host.Files.FileExists(_host.Path(path));
 }

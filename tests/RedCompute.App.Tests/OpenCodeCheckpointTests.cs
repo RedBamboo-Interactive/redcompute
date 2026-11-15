@@ -270,7 +270,7 @@ public sealed class OpenCodeCheckpointTests
     }
 
     private static OpenCodeSessionService.ManagedSession Session(Process process, CancellationTokenSource cts) =>
-        new(new OpenCodeSessionInfo { Id = "session-1", Status = "Active", ProjectName = "fixture", ProjectPath = Path.GetTempPath() }, process, cts)
+        new(new OpenCodeSessionInfo { Id = "session-1", Status = "Active", ProjectName = "fixture", ProjectPath = Path.GetTempPath() }, HostSeams.Wrap(process)!, cts)
         { AcpSessionId = "native-session", CurrentAssistantUid = "turn-1" };
     private static void Update(OpenCodeSessionService service, OpenCodeSessionService.ManagedSession session, string json)
     { using var doc = JsonDocument.Parse("{\"update\":" + json + "}"); service.HandleSessionUpdate(session, doc.RootElement); }

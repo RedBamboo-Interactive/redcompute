@@ -353,13 +353,12 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         return process;
     }
 
-    // ---- OpenCode, through the seams added in node zero (G0b) -----------------------------------------
+    // ---- OpenCode, captured where the local host hands its start info to the OS ----------------------
 
     [Fact]
     public async Task OpenCode_acp_session()
     {
         var service = OpenCode();
-        service.LaunchAcpProcess = start => { Capture(start); return null; };
         try
         {
             using (SessionScratch.PushExecutionToken(Token))
@@ -368,16 +367,17 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         }
         catch (NullReferenceException)
         {
-            // The ACP launch dereferences the process it was handed; a capturing seam hands none.
+            // The ACP launch dereferences the process it was handed; a capturing host hands none.
         }
-        ProcessStartInfo start;
-        lock (_launches) start = Assert.Single(_launches);
+        (ProcessStartInfo Start, string Containment) launch;
+        lock (_hosted) launch = Assert.Single(_hosted);
+        var start = launch.Start;
         // The access note of the default level is written for the new session and named in
         // OPENCODE_CONFIG_CONTENT (as in B-opencode-acp): record that file, then delete exactly it.
         var config = JsonNode.Parse(start.Environment["OPENCODE_CONFIG_CONTENT"]!)!;
         var instructions = config["instructions"]!.AsArray().Single()!.GetValue<string>();
         _normalizer.Add(Path.GetFileNameWithoutExtension(instructions), "<session-id>");
-        var golden = LaunchGoldens.FromStartInfo(start, "opencode.LaunchAcpProcess", "session:opencode", _normalizer);
+        var golden = LaunchGoldens.FromStartInfo(start, "opencode.LaunchAcpProcess", launch.Containment, _normalizer);
         golden["instructionFile"] = _normalizer.Apply(File.ReadAllText(instructions));
         File.Delete(instructions);
         LaunchGoldens.Verify("A-opencode-acp", golden);
@@ -387,10 +387,9 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     public async Task OpenCode_exec()
     {
         var service = OpenCode();
-        service.LaunchExecProcess = start => { Capture(start); return null; };
         await service.ExecuteAsync("golden prompt", null, _project, "golden/model", 60, CancellationToken.None,
             env: new Dictionary<string, string> { ["GOLDEN_EXEC_ENV"] = "1" });
-        Verify("A-opencode-exec", "opencode.LaunchExecProcess", "session:opencode-exec");
+        VerifyHosted("A-opencode-exec", "opencode.LaunchExecProcess");
     }
 
     /// <summary>At Full there is no access note, so no instruction file and no OPENCODE_CONFIG_CONTENT.</summary>
@@ -398,7 +397,6 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     public async Task OpenCode_acp_session_at_full()
     {
         var service = OpenCode();
-        service.LaunchAcpProcess = start => { Capture(start); return null; };
         try
         {
             using (SessionAccessScope.Push(new SessionAccessState(SessionAccessLevels.Full)))
@@ -408,9 +406,9 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         }
         catch (NullReferenceException)
         {
-            // The ACP launch dereferences the process it was handed; a capturing seam hands none.
+            // The ACP launch dereferences the process it was handed; a capturing host hands none.
         }
-        Verify("A-opencode-acp-full", "opencode.LaunchAcpProcess", "session:opencode");
+        VerifyHosted("A-opencode-acp-full", "opencode.LaunchAcpProcess");
     }
 
     [Fact]
@@ -418,41 +416,54 @@ public sealed class LaunchGoldenSeamTests : IDisposable
     {
         // Docker exec refuses a configured OpenCodeDataHome, so this service has none.
         var service = OpenCode(dataHome: false);
-        service.LaunchExecProcess = start => { Capture(start); return null; };
         await service.ExecuteAsync("golden prompt", "golden-container", _project, "golden/model", 60,
             CancellationToken.None, env: new Dictionary<string, string> { ["GOLDEN_EXEC_ENV"] = "1" });
-        Verify("A-opencode-exec-docker", "opencode.LaunchExecProcess", "session:opencode-exec");
+        VerifyHosted("A-opencode-exec-docker", "opencode.LaunchExecProcess");
     }
 
     [WindowsFact("containment is a Windows Job Object")]
     public async Task Node_zero_seam_defaults_contain_as_recorded()
     {
+        var (acp, exec) = await OpenCodeProductionSpecs();
         var seams = new JsonObject
         {
-            ["opencode.LaunchAcpProcess"] = await ContainmentOf(OpenCode().LaunchAcpProcess),
-            ["opencode.LaunchExecProcess"] = await ContainmentOf(OpenCode().LaunchExecProcess),
+            ["opencode.LaunchAcpProcess"] = await ContainmentOf(OpenCode(capture: false).LaunchAcpProcess, acp),
+            ["opencode.LaunchExecProcess"] = await ContainmentOf(OpenCode(capture: false).LaunchExecProcess, exec),
             ["comfyui.LaunchServerProcess"] = await ContainmentOf(Comfy().LaunchServerProcess, Comfy().BuildSpawnSpec()),
             ["localwsl.LaunchServerProcess"] = await ContainmentOf(LocalWsl().LaunchServerProcess, LocalWsl().BuildSpawnSpec()),
         };
         LaunchGoldens.Verify("A-seam-defaults-node-zero", seams);
     }
 
+    /// <summary>
+    /// The specs a session start and an exec hand their seams, launching nothing. The start writes the
+    /// default level's access note for its session; exactly that file is deleted.
+    /// </summary>
+    private async Task<(HostSpawnSpec Acp, HostSpawnSpec Exec)> OpenCodeProductionSpecs()
+    {
+        HostSpawnSpec? acp = null, exec = null;
+        var service = OpenCode(capture: false);
+        service.LaunchAcpProcess = spec => { acp = spec; return null; };
+        service.LaunchExecProcess = spec => { exec = spec; return null; };
+        try
+        {
+            using (SessionScratch.PushExecutionToken(Token))
+                await service.StartSession(_project, null, "owner", null, null, null, null, null, null, null,
+                    null, null, Provenance(), _scratch);
+        }
+        catch (NullReferenceException)
+        {
+            // The ACP launch dereferences the process it was handed; the capturing seam hands none.
+        }
+        await service.ExecuteAsync("golden prompt", null, _project, "golden/model", 60, CancellationToken.None);
+        var config = JsonNode.Parse(acp!.EnvironmentOverlay!["OPENCODE_CONFIG_CONTENT"])!;
+        File.Delete(config["instructions"]!.AsArray().Single()!.GetValue<string>());
+        return (acp, exec!);
+    }
+
     private ComfyUIProvider Comfy() => new(ComfyConfig(false), "image-gen", _ => { });
 
     private LocalWslProvider LocalWsl() => new(LocalWslConfig(false), "tts", _ => { });
-
-    private async Task<string> ContainmentOf(Func<ProcessStartInfo, Process?> seam)
-    {
-        var process = seam(new ProcessStartInfo(TestProcesses.StdinSink)
-        {
-            CreateNoWindow = true, UseShellExecute = false,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-        })!;
-        lock (_started) _started.Add(process);
-        var containment = await ProbeHarness.ObserveContainmentAsync(process.Id);
-        process.Kill(entireProcessTree: true);
-        return containment;
-    }
 
     /// <summary>
     /// The containment a spec seam's production default gives the provider's own spec: the spec's
@@ -477,7 +488,12 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         return containment;
     }
 
-    private OpenCodeSessionService OpenCode(bool dataHome = true)
+    /// <summary>
+    /// An OpenCode service, by default on a capturing host: its seams keep their production default, so
+    /// every launch is captured where the local host hands its start info to the OS, with the
+    /// containment it applies.
+    /// </summary>
+    private OpenCodeSessionService OpenCode(bool dataHome = true, bool capture = true)
     {
         var path = Path.Combine(_root, "cli", "opencode.exe");
         File.WriteAllText(path, "seam only, never executed");
@@ -485,7 +501,7 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         if (home != null) Directory.CreateDirectory(home);
         return new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path, OpenCodeDataHome = home },
             new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), new LaunchGoldenProcessTests.GoldenOpenCodeStore(),
-            (_, _) => { });
+            (_, _) => { }, host: capture ? CapturingHost() : null);
     }
 
     // ---- CLI version manager: the npm runner's start info ---------------------------------------------

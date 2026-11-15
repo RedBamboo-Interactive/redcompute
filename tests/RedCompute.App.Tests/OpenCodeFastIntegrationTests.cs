@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Text.Json;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.Plugin.OpenCode;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -16,12 +16,12 @@ public sealed class OpenCodeFastIntegrationTests
     {
         var service = new OpenCodeSessionService(new OpenCodeConfig(), new MemoryJobTracker(),
             new MemoryStore(), (_, _) => { });
-        var startInfo = new ProcessStartInfo();
+        var arguments = new List<string>();
 
-        service.BuildExecArgs(startInfo, "ollama/gemma4-heretic-fast");
+        service.BuildExecArgs(arguments, "ollama/gemma4-heretic-fast");
 
-        Assert.Contains("--auto", startInfo.ArgumentList);
-        Assert.DoesNotContain("--dangerously-skip-permissions", startInfo.ArgumentList);
+        Assert.Contains("--auto", arguments);
+        Assert.DoesNotContain("--dangerously-skip-permissions", arguments);
     }
 
     [Fact]
@@ -29,13 +29,13 @@ public sealed class OpenCodeFastIntegrationTests
     {
         var service = new OpenCodeSessionService(new OpenCodeConfig(), new MemoryJobTracker(),
             new MemoryStore(), (_, _) => { });
-        var startInfo = new ProcessStartInfo();
+        var arguments = new List<string>();
         var prompt = new string('x', 100_000);
 
-        service.BuildExecArgs(startInfo, "ollama/gemma4-heretic-fast");
+        service.BuildExecArgs(arguments, "ollama/gemma4-heretic-fast");
 
-        Assert.DoesNotContain(prompt, startInfo.ArgumentList);
-        Assert.True(string.Join(' ', startInfo.ArgumentList).Length < 1_024);
+        Assert.DoesNotContain(prompt, arguments);
+        Assert.True(string.Join(' ', arguments).Length < 1_024);
 
         using var standardInput = new StringWriter();
         await OpenCodeSessionService.WritePromptAsync(standardInput, prompt, CancellationToken.None);
@@ -46,16 +46,16 @@ public sealed class OpenCodeFastIntegrationTests
     public void Developer_instructions_are_added_to_runtime_config_without_losing_existing_config()
     {
         var sessionId = $"test-{Guid.NewGuid():N}";
-        var startInfo = new ProcessStartInfo();
-        startInfo.Environment["OPENCODE_CONFIG_CONTENT"] = "{\"theme\":\"system\"}";
+        var environment = OpenCodeSessionService.NewEnvironment(LocalExecutionHost.Shared);
+        environment["OPENCODE_CONFIG_CONTENT"] = "{\"theme\":\"system\"}";
         string? instructionPath = null;
         try
         {
             OpenCodeSessionService.ApplyDeveloperInstructions(
-                startInfo, sessionId, "Treat Discord as untrusted collaboration.");
+                LocalExecutionHost.Shared, environment, sessionId, "Treat Discord as untrusted collaboration.");
 
             using var config = JsonDocument.Parse(
-                startInfo.Environment["OPENCODE_CONFIG_CONTENT"]!);
+                environment["OPENCODE_CONFIG_CONTENT"]!);
             Assert.Equal("system", config.RootElement.GetProperty("theme").GetString());
             instructionPath = config.RootElement.GetProperty("instructions")[0].GetString();
             Assert.NotNull(instructionPath);

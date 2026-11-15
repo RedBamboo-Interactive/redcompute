@@ -269,6 +269,9 @@ public interface IHostFileSystem
     /// with its exceptions.
     /// </summary>
     string? ResolveLinkTarget(HostPath path, bool returnFinalTarget);
+
+    /// <summary><c>File.GetAttributes</c>: a file's or a directory's attributes, throwing when neither exists.</summary>
+    FileAttributes GetAttributes(HostPath path);
     void WriteAllText(HostPath path, string contents, Encoding? encoding = null);
     Task WriteAllTextAsync(HostPath path, string contents, Encoding? encoding = null, CancellationToken ct = default);
     void WriteAllBytes(HostPath path, byte[] bytes);
@@ -340,12 +343,31 @@ public interface IHostHardware
 
 // ---- host-side query -----------------------------------------------------------------------------
 
+/// <summary>
+/// How <see cref="IHostQueries.QuerySqliteReadOnly"/> opens the database, so each caller keeps the
+/// connection it opened before the host: always <c>Mode=ReadOnly</c>, pooled or not, with or without
+/// a busy timeout.
+/// </summary>
+public sealed record SqliteReadOptions
+{
+    /// <summary>Pooled, no busy timeout: <c>Data Source=...;Mode=ReadOnly</c>.</summary>
+    public static SqliteReadOptions Default { get; } = new();
+
+    /// <summary>False appends <c>;Pooling=False</c>: each query opens and closes the file.</summary>
+    public bool Pooling { get; init; } = true;
+
+    /// <summary><c>PRAGMA busy_timeout</c> run on the connection before the query; null runs none.</summary>
+    public int? BusyTimeoutMilliseconds { get; init; }
+}
+
 public interface IHostQueries
 {
     /// <summary>
     /// A read-only query against a live SQLite file on the host. Rows come back as data, so a remote
-    /// host can serialise them; mapping stays with the caller.
+    /// host can serialise them; mapping stays with the caller. Each row maps column name to value as
+    /// SQLite stored it (<see cref="long"/>, <see cref="double"/>, <see cref="string"/> or byte[]), NULL
+    /// as null. Opening or running the query throws as the SQLite provider does.
     /// </summary>
     IReadOnlyList<IReadOnlyDictionary<string, object?>> QuerySqliteReadOnly(HostPath database, string sql,
-        IReadOnlyDictionary<string, object?>? parameters = null);
+        IReadOnlyDictionary<string, object?>? parameters = null, SqliteReadOptions? options = null);
 }
