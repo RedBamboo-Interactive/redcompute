@@ -1,19 +1,24 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services;
 
+/// <summary>Containers RedCompute runs for sessions, through the docker CLI on its execution host.</summary>
 public class DockerContainerService
 {
     private readonly ConcurrentDictionary<string, string> _managedContainers = new();
     private readonly Action<string, Guid?> _log;
+    private readonly IExecutionHost _host;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    public DockerContainerService(Action<string, Guid?> log)
+    /// <param name="host">Where docker runs; the shared local host when none is given.</param>
+    public DockerContainerService(Action<string, Guid?> log, IExecutionHost? host = null)
     {
         _log = log;
+        _host = host ?? LocalExecutionHost.Shared;
     }
 
     public async Task<string> EnsureContainerAsync(string imageName)
@@ -118,22 +123,24 @@ public class DockerContainerService
         return $"rc-{name}";
     }
 
-    private static async Task<(bool Success, string Output)> RunDockerAsync(params string[] args)
+    /// <summary>The docker CLI, uncontained, stdout and stderr read as UTF-8.</summary>
+    private async Task<(bool Success, string Output)> RunDockerAsync(params string[] args)
     {
-        var startInfo = new ProcessStartInfo
+        var spec = new HostSpawnSpec
         {
             FileName = "docker",
+            ArgumentList = args,
             CreateNoWindow = true,
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
+            Containment = ContainmentMode.None,
+            OwnerLabel = "docker",
         };
-        foreach (var a in args)
-            startInfo.ArgumentList.Add(a);
 
-        using var process = Process.Start(startInfo);
+        using var process = _host.Processes.Start(spec);
         if (process == null)
             return (false, "Failed to start docker process");
 

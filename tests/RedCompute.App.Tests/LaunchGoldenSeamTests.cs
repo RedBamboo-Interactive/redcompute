@@ -558,6 +558,61 @@ public sealed class LaunchGoldenSeamTests : IDisposable
             LaunchGoldens.FromStartInfo(launches[1].Start, "app.RepositoryReferenceValidator", launches[1].Containment, _normalizer));
     }
 
+    // ---- Docker: managed containers and Docker Desktop -----------------------------------------------
+
+    /// <summary>
+    /// A container for an image nobody runs yet: is it running, is a stale one there, then run it.
+    /// No docker answers, so it is never running, there is nothing stale, and the run fails.
+    /// </summary>
+    [Fact]
+    public async Task Docker_ensure_container()
+    {
+        var docker = new DockerContainerService((_, _) => { }, CapturingHost());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => docker.EnsureContainerAsync("ghcr.io/golden/tools:1.2"));
+        VerifyAllHosted("A-docker-ensure-container", "app.DockerContainerService");
+    }
+
+    /// <summary>A managed container is stopped, then removed.</summary>
+    [Fact]
+    public async Task Docker_stop_container()
+    {
+        var docker = new DockerContainerService((_, _) => { }, CapturingHost());
+        await docker.StopAsync("rc-tools-1.2");
+        VerifyAllHosted("A-docker-stop-container", "app.DockerContainerService");
+    }
+
+    /// <summary>
+    /// Docker Desktop on demand: the daemon does not answer, so Desktop is started, and the next
+    /// probe (one poll later) finds it ready.
+    /// </summary>
+    [WindowsFact("Docker Desktop is a Windows host concern")]
+    public async Task Docker_desktop_start()
+    {
+        if (!File.Exists(@"C:\Program Files\Docker\Docker\Docker Desktop.exe")) return; // starts only when installed
+        var probes = 0;
+        var host = new LocalExecutionHost("golden-node")
+        {
+            StartProcess = (start, mode, owner) =>
+            {
+                lock (_hosted) _hosted.Add((start, LocalExecutionHost.DescribeContainment(mode, owner)));
+                if (start.FileName != "docker") return null; // Desktop itself: never launched by the test
+                return probes++ == 0 ? null : Exits("ready");
+            },
+        };
+        await DockerDesktopService.EnsureRunningAsync(_ => { }, host);
+        VerifyAllHosted("A-docker-desktop-start", "app.DockerDesktopService");
+    }
+
+    /// <summary>Every launch the host handed the OS, in order, as one golden.</summary>
+    private void VerifyAllHosted(string golden, string seam)
+    {
+        List<(ProcessStartInfo Start, string Containment)> launches;
+        lock (_hosted) launches = [.. _hosted];
+        Assert.NotEmpty(launches);
+        LaunchGoldens.Verify(golden, new JsonArray(launches
+            .Select(launch => (JsonNode)LaunchGoldens.FromStartInfo(launch.Start, seam, launch.Containment, _normalizer)).ToArray()));
+    }
+
     /// <summary>A Repository entity whose checkout is <paramref name="localPath"/>.</summary>
     private sealed class RepositoryEntity(string localPath) : HttpMessageHandler
     {

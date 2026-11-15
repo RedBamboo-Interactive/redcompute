@@ -77,10 +77,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C17 Docker", [
-            "RedCompute.App.Services.DockerContainerService",
-            "RedCompute.App.Services.DockerDesktopService",
-        ]),
         ("C18 CLI version manager", [
             "RedCompute.PluginSdk.NpmCliVersionManager",
             "RedCompute.PluginSdk.ProcessCliCommandRunner",

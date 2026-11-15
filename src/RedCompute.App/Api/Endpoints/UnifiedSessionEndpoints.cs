@@ -2245,7 +2245,7 @@ public static class UnifiedSessionEndpoints
             var namesContainer = providerParams.TryGetValue("container", out var reqContainer) && reqContainer is string { Length: > 0 };
             var namesImage = providerParams.TryGetValue("dockerImage", out var reqImage) && reqImage is string { Length: > 0 };
             if (namesContainer || namesImage)
-                await DockerDesktopService.EnsureRunningAsync(s => log(s, null));
+                await DockerDesktopService.EnsureRunningAsync(s => log(s, null), _host);
 
             if (!providerParams.ContainsKey("container") || providerParams["container"] is not string)
             {

@@ -73,7 +73,7 @@ public class RelayServer
         _logger = logger;
         _configManager = configManager;
         _hardwareMonitor = hardwareMonitor;
-        _docker = new DockerContainerService(log);
+        _docker = new DockerContainerService(log, nodes?.LocalHost ?? LocalExecutionHost.Shared);
         _providerConfig = providerConfig;
         _inputAttachments = new InputAttachmentStore(config);
         _qualityModes = qualityModes;
