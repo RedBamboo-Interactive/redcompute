@@ -408,6 +408,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
+        NodeId = s.NodeId,
         RepositoryId = s.RepositoryId,
         Status = (Core.Sessions.SessionStatus)(int)s.Status,
         StopReason = s.StopReason,

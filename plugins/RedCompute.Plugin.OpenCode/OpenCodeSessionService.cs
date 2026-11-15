@@ -284,6 +284,7 @@ public class OpenCodeSessionService
             Id = record.Id,
             ProjectName = record.ProjectName,
             ProjectPath = record.ProjectPath,
+            NodeId = record.NodeId,
             ScratchDirectory = record.ScratchDirectory,
             RepositoryId = record.RepositoryId,
             Status = "Starting",
@@ -1816,7 +1817,7 @@ public class OpenCodeSessionService
 
     private void PersistSessionRecord(OpenCodeSessionInfo info)
     {
-        _store.SaveSession(new OpenCodeSessionRecord
+        var record = new OpenCodeSessionRecord
         {
             Id = info.Id,
             ProjectName = info.ProjectName,
@@ -1851,7 +1852,10 @@ public class OpenCodeSessionService
             AccessLevelBeforePlan = info.AccessLevelBeforePlan,
             Unattended = info.Unattended,
             AccessLevelSource = info.AccessLevelSource,
-        });
+        };
+        _store.SaveSession(record);
+        // The store stamped the row's node at insert and keeps it after: the info reports that.
+        info.NodeId = record.NodeId;
     }
 
     private void TryKillByPid(int? pid)
@@ -2405,6 +2409,7 @@ public class OpenCodeSessionService
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        NodeId = r.NodeId,
         ScratchDirectory = r.ScratchDirectory,
         Status = r.Status,
         StopReason = r.StopReason,

@@ -7,6 +7,12 @@ public class ClaudeSessionInfo
     public required string Id { get; init; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }
+    /// <summary>
+    /// The node the session runs on, as its row records it: stamped when the row is inserted, read
+    /// from the row when the session is loaded, and copied back after every save. Null reads as the
+    /// legacy node (the API resolves it).
+    /// </summary>
+    public string? NodeId { get; set; }
     public string? ScratchDirectory { get; set; }
     public Guid? RepositoryId { get; set; }
     public SessionStatus Status { get; set; }

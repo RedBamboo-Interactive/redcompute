@@ -321,6 +321,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
+        NodeId = s.NodeId,
         RepositoryId = s.RepositoryId,
         Status = Enum.TryParse<SessionStatus>(s.Status, out var st)
             ? st : SessionStatus.Stopped,

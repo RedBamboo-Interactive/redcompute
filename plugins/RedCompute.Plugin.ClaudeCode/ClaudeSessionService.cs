@@ -1273,6 +1273,7 @@ public partial class ClaudeSessionService
             Id = sessionRecord.Id,
             ProjectName = sessionRecord.ProjectName,
             ProjectPath = sessionRecord.ProjectPath,
+            NodeId = sessionRecord.NodeId,
             ScratchDirectory = sessionRecord.ScratchDirectory,
             RepositoryId = sessionRecord.RepositoryId,
             Status = SessionStatus.Starting,
@@ -2138,6 +2139,7 @@ public partial class ClaudeSessionService
         Id = r.Id,
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
+        NodeId = r.NodeId,
         ScratchDirectory = r.ScratchDirectory,
         Status = Enum.TryParse<SessionStatus>(r.Status, out var s) ? s : SessionStatus.Stopped,
         StopReason = r.StopReason,
@@ -4605,7 +4607,7 @@ public partial class ClaudeSessionService
     {
         try
         {
-            _sessionStore.SaveSession(new ClaudeSessionRecord
+            var record = new ClaudeSessionRecord
             {
                 Id = info.Id,
                 ProjectName = info.ProjectName,
@@ -4646,7 +4648,10 @@ public partial class ClaudeSessionService
                 AccessLevelBeforePlan = info.Access.AccessLevelBeforePlan,
                 Unattended = info.Access.Unattended,
                 AccessLevelSource = info.Access.AccessLevelSource,
-            });
+            };
+            _sessionStore.SaveSession(record);
+            // The store stamped the row's node at insert and keeps it after: the info reports that.
+            info.NodeId = record.NodeId;
         }
         catch (Exception ex)
         {

@@ -561,6 +561,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
+        NodeId = s.NodeId,
         RepositoryId = s.RepositoryId,
         Status = UnifiedStatus(s.Status) ?? Core.Sessions.SessionStatus.Stopped,
         StartedAt = s.StartedAt,
