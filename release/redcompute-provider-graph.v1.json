@@ -23,7 +23,7 @@
           "requirement": "optionalCapability",
           "versionConstraint": "unresolved",
           "interface": "docker exec for caller-selected container execution",
-          "sourceMarkers": ["DockerExecHelper.ConfigureForDockerExec"]
+          "sourceMarkers": ["DockerExecHelper.ExecArguments"]
         }
       ]
     },
