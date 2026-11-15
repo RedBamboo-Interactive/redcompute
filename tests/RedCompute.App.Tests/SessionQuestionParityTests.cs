@@ -503,7 +503,7 @@ public sealed class SessionQuestionParityTests : IDisposable
             start.ArgumentList.Add(Responder);
             var process = owner.StartProcess(start);
             var connection = (CodexAppServerConnection)Activator.CreateInstance(typeof(CodexAppServerConnection),
-                BindingFlags.NonPublic | BindingFlags.Instance, null, [process, (Action<string, Guid?>)((_, _) => { })], null)!;
+                BindingFlags.NonPublic | BindingFlags.Instance, null, [HostSeams.Wrap(process), (Action<string, Guid?>)((_, _) => { })], null)!;
             var read = typeof(CodexAppServerConnection).GetMethod("ReadStdoutAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
             _ = Task.Run(() => (Task)read.Invoke(connection, null)!);
             _sessionType.GetProperty("Connection")!.SetValue(_session, connection);

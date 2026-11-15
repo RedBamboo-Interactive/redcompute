@@ -4,6 +4,8 @@ using System.Text.Json;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -120,12 +122,18 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
     private readonly Action<string, Guid?> _log;
 
+    // The machine the app-servers run on: their processes and project directories. Node zero's local host by default.
+    private readonly IExecutionHost _host;
+
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
     // The session cap and the "already live" resume check are check-then-act across the app-server
     // handshake. The launch gate no longer spans that handshake, so this keeps them serialized.
     private readonly SemaphoreSlim _sessionLaunchLock = new(1, 1);
-    internal Func<ProcessStartInfo, Process?> LaunchAppServerProcess { get; set; } =
-        startInfo => SessionProcessContainment.Start(startInfo, "codex");
+    /// <summary>
+    /// Launches a session's app-server. Tests replace it; the default is the execution host, and the
+    /// spec carries its containment (<see cref="CodexAppServerConnection.Owner"/>).
+    /// </summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchAppServerProcess { get; set; }
 
     public event Action<CodexSessionInfo>? SessionCreated;
     public event Action<CodexSessionInfo>? SessionUpdated;
@@ -137,8 +145,11 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         CodexSessionService exec, IJobTracker jobTracker,
         CodexAccountUsageService accountUsage,
         IProviderQualityModeResolver qualityModes, Func<string?> titleQualityTier,
-        Action<string, Guid?> log)
+        Action<string, Guid?> log, IExecutionHost? host = null)
     {
+        // Before recovery below: it kills recorded processes on this host.
+        _host = host ?? LocalExecutionHost.Shared;
+        LaunchAppServerProcess = spec => _host.Processes.Start(spec);
         _config = config;
         _store = store;
         _catalog = catalog;
@@ -216,7 +227,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     }
 
     private void TryKillByPid(int pid)
-        => OwnedProcessKiller.TryKill(pid, "codex", m => _log($"[Codex] {m}", null));
+        => _host.Processes.TryKillRecorded(pid, "codex", m => _log($"[Codex] {m}", null));
 
     // ===== Lifecycle =========================================================================
 
@@ -235,7 +246,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
     // The app-server silently inherits RedCompute's cwd when the directory is gone, so refuse up front.
     private bool ProjectPathExists(string? path)
-        => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path);
+        => !string.IsNullOrWhiteSpace(path) && _host.Files.DirectoryExists(_host.Path(path));
 
     public Task<CodexSessionInfo?> StartSessionAsync(
         string projectPath, string? model, string? userId, string? userName,
@@ -494,7 +505,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             _config.CodexPath, projectPath, _log,
             SessionScratch.Environment(scratchDirectory, suiteAccess, sessionId),
             launchProcess: LaunchAppServerProcess,
-            spawned: spawned);
+            spawned: spawned,
+            host: _host);
         conn.Notification += (method, p) => OnNotification(sessionId, method, p);
         conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);
         conn.Exited += code => OnExited(sessionId, code);

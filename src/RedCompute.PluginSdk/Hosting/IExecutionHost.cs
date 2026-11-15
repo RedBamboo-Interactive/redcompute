@@ -262,6 +262,13 @@ public interface IHostFileSystem
     /// <see cref="OpenRead(HostPath)"/> is this with <see cref="FileShare.Read"/>.
     /// </summary>
     Stream OpenRead(HostPath path, FileShare share);
+
+    /// <summary>
+    /// The full path a link at <paramref name="path"/> points to (its final target when
+    /// <paramref name="returnFinalTarget"/>), or null when it is not a link: <c>FileInfo.ResolveLinkTarget</c>,
+    /// with its exceptions.
+    /// </summary>
+    string? ResolveLinkTarget(HostPath path, bool returnFinalTarget);
     void WriteAllText(HostPath path, string contents, Encoding? encoding = null);
     Task WriteAllTextAsync(HostPath path, string contents, Encoding? encoding = null, CancellationToken ct = default);
     void WriteAllBytes(HostPath path, byte[] bytes);

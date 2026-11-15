@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -19,7 +21,11 @@ namespace RedCompute.Plugin.Codex;
 /// </summary>
 public sealed class CodexAppServerConnection : IAsyncDisposable
 {
-    private readonly Process _process;
+    /// <summary>Containment owner of every app-server process: sessions, the model list and rate limits.</summary>
+    internal const string Owner = "codex";
+
+    // The app-server on its host. Its streams are the process's own reader and writer objects.
+    private readonly IHostProcess _process;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
@@ -42,7 +48,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
     public int ProcessId { get; }
     public JsonElement InitializeResult { get; private set; }
 
-    private CodexAppServerConnection(Process process, Action<string, Guid?> log)
+    private CodexAppServerConnection(IHostProcess process, Action<string, Guid?> log)
     {
         _process = process;
         _log = log;
@@ -53,6 +59,8 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
     /// Spawns <c>codex app-server</c> and completes the initialize/initialized handshake.
     /// Throws if the CLI cannot be found or the handshake does not complete.
     /// <paramref name="spawned"/> runs as soon as the process exists, before the handshake.
+    /// The CLI runs on <paramref name="host"/> (node zero's local host by default), contained as a
+    /// session under <see cref="Owner"/> unless <paramref name="launchProcess"/> replaces the launch.
     /// </summary>
     public static async Task<CodexAppServerConnection> StartAsync(
         string? configuredCliPath,
@@ -60,35 +68,38 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         Action<string, Guid?> log,
         IReadOnlyDictionary<string, string>? env = null,
         CancellationToken ct = default,
-        Func<ProcessStartInfo, Process?>? launchProcess = null,
-        Action? spawned = null)
+        Func<HostSpawnSpec, IHostProcess?>? launchProcess = null,
+        Action? spawned = null,
+        IExecutionHost? host = null)
     {
-        var exe = CodexCliLocator.Resolve(configuredCliPath)
+        host ??= LocalExecutionHost.Shared;
+        var exe = CodexCliLocator.Resolve(host, configuredCliPath)
             ?? throw new InvalidOperationException(
                 "Could not find the Codex CLI. Install the official standalone package or set CodexPath in provider config.");
 
-        var startInfo = new ProcessStartInfo
+        var spec = new HostSpawnSpec
         {
             FileName = exe,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            ArgumentList = ["app-server"],
+            WorkingDirectory = !string.IsNullOrWhiteSpace(workingDirectory)
+                && host.Files.DirectoryExists(host.Path(workingDirectory))
+                    ? host.Path(workingDirectory)
+                    : null,
+            EnvironmentOverlay = env,
+            StandardInput = StdioMode.Pipe,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
             StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            Containment = ContainmentMode.Session,
+            OwnerLabel = Owner,
         };
-        startInfo.ArgumentList.Add("app-server");
 
-        if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
-            startInfo.WorkingDirectory = workingDirectory;
-
-        if (env is not null)
-            foreach (var (k, v) in env)
-                startInfo.EnvironmentVariables[k] = v;
-
-        var process = (launchProcess ?? (info => SessionProcessContainment.Start(info, "codex")))(startInfo)
+        var launch = launchProcess ?? host.Processes.Start;
+        var process = launch(spec)
             ?? throw new InvalidOperationException("Failed to start 'codex app-server'.");
         spawned?.Invoke();
 

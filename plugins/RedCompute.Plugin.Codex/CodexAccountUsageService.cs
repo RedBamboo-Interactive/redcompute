@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -14,6 +15,7 @@ internal sealed class CodexAccountUsageService
 
     private readonly CodexConfig _config;
     private readonly Action<string, Guid?> _log;
+    private readonly IExecutionHost? _host;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly object _cacheLock = new();
     private ProviderUsageSnapshot? _cached;
@@ -22,10 +24,11 @@ internal sealed class CodexAccountUsageService
 
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
-    public CodexAccountUsageService(CodexConfig config, Action<string, Guid?> log)
+    public CodexAccountUsageService(CodexConfig config, Action<string, Guid?> log, IExecutionHost? host = null)
     {
         _config = config;
         _log = log;
+        _host = host;
     }
 
     public async Task<ProviderUsageSnapshot?> GetAsync(bool forceRefresh, CancellationToken ct)
@@ -40,7 +43,7 @@ internal sealed class CodexAccountUsageService
             var snapshot = await LaunchGate.RunWhenInstallIdleAsync(async spawned =>
             {
                 await using var connection = await CodexAppServerConnection.StartAsync(
-                    _config.CodexPath, workingDirectory: null, _log, ct: ct, spawned: spawned);
+                    _config.CodexPath, workingDirectory: null, _log, ct: ct, spawned: spawned, host: _host);
                 var result = await connection.SendRequestAsync(
                     "account/rateLimits/read", timeoutSeconds: 30, ct: ct);
                 return ParseSnapshot(result);

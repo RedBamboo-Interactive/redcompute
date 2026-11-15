@@ -372,6 +372,11 @@ public sealed class LocalExecutionHostTests
             host.Files.CreateDirectory(sub);
             Assert.Equal([sub], host.Files.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly));
             Assert.Equal([file], host.Files.EnumerateFiles(root, "*.txt", SearchOption.TopDirectoryOnly));
+
+            // Link targets as FileInfo resolves them: a plain file is no link.
+            Assert.Null(host.Files.ResolveLinkTarget(file, returnFinalTarget: true));
+            Assert.Equal(new FileInfo(file.Value).ResolveLinkTarget(true)?.FullName,
+                host.Files.ResolveLinkTarget(file, returnFinalTarget: true));
         }
         finally
         {

@@ -75,13 +75,6 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.MaintenanceDeploymentCoordinator",
         ]),
         // ---- moves still to come: each move commit deletes its own group -----------------------------
-        ("C12 Codex", [
-            "RedCompute.Plugin.Codex.CodexAppServerConnection",
-            "RedCompute.Plugin.Codex.CodexCliEnvironment",
-            "RedCompute.Plugin.Codex.CodexCliLocator",
-            "RedCompute.Plugin.Codex.CodexInteractiveService",
-            "RedCompute.Plugin.Codex.CodexSessionService",
-        ]),
         ("C13 OpenCode", [
             "RedCompute.Plugin.OpenCode.OpenCodeNativeSessionReader",
             "RedCompute.Plugin.OpenCode.OpenCodeSessionService",

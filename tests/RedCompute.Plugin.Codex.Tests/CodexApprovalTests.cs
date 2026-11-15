@@ -243,7 +243,7 @@ public sealed class CodexApprovalTests : IDisposable
             var process = Process.Start(start)!;
             owner._processes.Add(process);
             var connection = (CodexAppServerConnection)Activator.CreateInstance(typeof(CodexAppServerConnection),
-                BindingFlags.NonPublic | BindingFlags.Instance, null, [process, (Action<string, Guid?>)((_, _) => { })], null)!;
+                BindingFlags.NonPublic | BindingFlags.Instance, null, [HostSeams.Wrap(process), (Action<string, Guid?>)((_, _) => { })], null)!;
             sessionType.GetProperty("Connection")!.SetValue(session, connection);
             sessionType.GetProperty("ActiveTurnId")!.SetValue(session, "turn-1");
             var sessions = typeof(CodexInteractiveService).GetField("_sessions", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(Service)!;

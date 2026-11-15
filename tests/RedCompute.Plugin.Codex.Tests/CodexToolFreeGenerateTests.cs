@@ -563,11 +563,11 @@ public sealed class CodexToolFreeGenerateTests : IAsyncLifetime
         };
         var captured = new List<ProcessStartInfo>();
         launches = captured;
-        service.LaunchExecProcess = startInfo =>
+        service.LaunchExecProcess = HostSeams.From(startInfo =>
         {
             captured.Add(startInfo);
             return launch(startInfo);
-        };
+        });
         return service;
     }
 

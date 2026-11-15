@@ -1,6 +1,7 @@
 using System.Text.Json;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -44,7 +45,7 @@ public sealed record CodexModel(
 /// every model the account could actually run. The real catalog is account-scoped and resolved
 /// server-side, which is exactly why it must not be duplicated here.
 /// </summary>
-public sealed class CodexModelCatalog(CodexConfig config, Action<string, Guid?> log)
+public sealed class CodexModelCatalog(CodexConfig config, Action<string, Guid?> log, IExecutionHost? host = null)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
 
@@ -148,7 +149,7 @@ public sealed class CodexModelCatalog(CodexConfig config, Action<string, Guid?> 
         => LaunchGate.RunWhenInstallIdleAsync(async spawned =>
         {
             await using var conn = await CodexAppServerConnection.StartAsync(
-                config.CodexPath, workingDirectory: null, log, env: null, ct, spawned: spawned);
+                config.CodexPath, workingDirectory: null, log, env: null, ct, spawned: spawned, host: host);
 
             var result = await conn.SendRequestAsync("model/list", new { }, timeoutSeconds: 30, ct);
             return Parse(result);

@@ -221,7 +221,7 @@ public sealed class CodexRollbackTests : IDisposable
                 new CodexSessionService(config, jobs, store, (_, _) => { }), jobs,
                 new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
                 () => null, (_, _) => { });
-            service.LaunchAppServerProcess = _ => owner.StartServer(logPath, historyMode, revert);
+            service.LaunchAppServerProcess = HostSeams.From(_ => owner.StartServer(logPath, historyMode, revert));
             var session = await service.StartSessionAsync(
                 owner._root, null, "owner", null, null, null, null, null, null, Provenance());
             Assert.NotNull(session);

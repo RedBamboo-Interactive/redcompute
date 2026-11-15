@@ -24,7 +24,7 @@ public sealed class CodexGenerateIsolationTests : IDisposable
             DispatchProxy.Create<IJobTracker, NullJobTracker>(), new EmptyStore(), (_, _) => { });
         ProcessStartInfo? captured = null;
         var wasEmpty = false;
-        service.LaunchExecProcess = requested =>
+        service.LaunchExecProcess = HostSeams.From(requested =>
         {
             captured = requested;
             wasEmpty = Directory.Exists(requested.WorkingDirectory)
@@ -33,7 +33,7 @@ public sealed class CodexGenerateIsolationTests : IDisposable
                 "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n" +
                 "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n" +
                 "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n");
-        };
+        });
 
         var result = await service.ExecuteGenerateAsync(
             "hello", "gpt-test", 10, CancellationToken.None, "low");

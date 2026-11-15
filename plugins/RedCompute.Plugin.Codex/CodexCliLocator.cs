@@ -1,6 +1,8 @@
-using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Runtime.InteropServices;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -20,6 +22,9 @@ namespace RedCompute.Plugin.Codex;
 /// desktop-started RedLeaf inherits, so the prefix itself is probed: NPM_CONFIG_PREFIX, else
 /// <c>npm prefix -g</c>, asked once per process and only when neither the fixed locations nor
 /// PATH hold the CLI. Windows never asks npm; its lookup is what it always was.
+///
+/// Everything is read on the host the CLI runs on: its environment, folders, files and links, and
+/// <c>npm prefix -g</c> runs there.
 /// </summary>
 public static class CodexCliLocator
 {
@@ -27,12 +32,16 @@ public static class CodexCliLocator
     /// Returns the best available path to a runnable Codex CLI, or null if none is found.
     /// An explicit configured path always wins and is never second-guessed.
     /// </summary>
-    public static string? Resolve(string? configuredPath) => Resolve(configuredPath, CodexCliEnvironment.Current());
+    public static string? Resolve(string? configuredPath) => Resolve(LocalExecutionHost.Shared, configuredPath);
+
+    /// <summary>The CLI on <paramref name="host"/>; see <see cref="Resolve(string?)"/>.</summary>
+    public static string? Resolve(IExecutionHost host, string? configuredPath)
+        => Resolve(configuredPath, CodexCliEnvironment.Current(host));
 
     internal static string? Resolve(string? configuredPath, CodexCliEnvironment env)
     {
         if (!string.IsNullOrWhiteSpace(configuredPath))
-            return File.Exists(configuredPath) ? configuredPath : null;
+            return env.FileExists(configuredPath) ? configuredPath : null;
 
         var standalone = OfficialStandalonePath(env);
         if (standalone is not null) return standalone;
@@ -56,10 +65,10 @@ public static class CodexCliLocator
         // Unix, nowhere on PATH: the npm prefix itself. NPM_CONFIG_PREFIX, else npm prefix -g.
         var prefix = env.ConfiguredNpmPrefix ?? env.AskNpmPrefix();
         if (prefix is null) return null;
-        var prefixNative = NativeUnder(PrefixPackageRoot(prefix), env);
+        var prefixNative = NativeUnder(PrefixPackageRoot(env, prefix), env);
         if (prefixNative != null) return prefixNative;
-        var prefixShim = Path.Combine(prefix, "bin", "codex");
-        if (!File.Exists(prefixShim)) return null;
+        var prefixShim = env.Combine(prefix, "bin", "codex");
+        if (!env.FileExists(prefixShim)) return null;
         return NativeThroughShim(prefixShim, env) ?? prefixShim;
     }
 
@@ -102,38 +111,38 @@ public static class CodexCliLocator
         var localAppData = env.LocalAppData;
         if (string.IsNullOrWhiteSpace(localAppData)) return null;
 
-        var candidate = Path.Combine(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
-        return File.Exists(candidate) ? candidate : null;
+        var candidate = env.Combine(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
+        return env.FileExists(candidate) ? candidate : null;
     }
 
     /// <summary>Locates vendor/&lt;triple&gt;/bin/codex[.exe] beneath an @openai/codex package root.</summary>
     private static string? NativeUnder(string packageRoot, CodexCliEnvironment env)
     {
         var triple = VendorTriple(env);
-        if (triple == null || !Directory.Exists(packageRoot)) return null;
+        if (triple == null || !env.DirectoryExists(packageRoot)) return null;
 
-        var candidate = Path.Combine(
+        var candidate = env.Combine(
             packageRoot, "node_modules", "@openai", PlatformPackage(env),
             "vendor", triple, "bin", ExeName(env));
 
-        return File.Exists(candidate) ? candidate : null;
+        return env.FileExists(candidate) ? candidate : null;
     }
 
-    private static string PrefixPackageRoot(string prefix)
-        => Path.Combine(prefix, "lib", "node_modules", "@openai", "codex");
+    private static string PrefixPackageRoot(CodexCliEnvironment env, string prefix)
+        => env.Combine(prefix, "lib", "node_modules", "@openai", "codex");
 
     private static IEnumerable<string> NpmGlobalRoots(CodexCliEnvironment env)
     {
         if (!env.IsWindows && env.ConfiguredNpmPrefix is { } configured)
-            yield return PrefixPackageRoot(configured);
+            yield return PrefixPackageRoot(env, configured);
 
         if (!string.IsNullOrEmpty(env.AppData))
-            yield return Path.Combine(env.AppData, "npm", "node_modules", "@openai", "codex");
+            yield return env.Combine(env.AppData, "npm", "node_modules", "@openai", "codex");
 
         if (!string.IsNullOrEmpty(env.Home))
         {
-            yield return Path.Combine(env.Home, ".npm-global", "lib", "node_modules", "@openai", "codex");
-            yield return Path.Combine(env.Home, ".bun", "install", "global", "node_modules", "@openai", "codex");
+            yield return env.Combine(env.Home, ".npm-global", "lib", "node_modules", "@openai", "codex");
+            yield return env.Combine(env.Home, ".bun", "install", "global", "node_modules", "@openai", "codex");
         }
 
         foreach (var root in env.SystemPackageRoots)
@@ -150,21 +159,21 @@ public static class CodexCliLocator
         var directory = Path.GetDirectoryName(shim)!;
         if (env.IsWindows)
         {
-            yield return Path.Combine(directory, "node_modules", "@openai", "codex");
+            yield return env.Combine(directory, "node_modules", "@openai", "codex");
             yield break;
         }
 
-        yield return Path.GetFullPath(Path.Combine(directory, "..", "lib", "node_modules", "@openai", "codex"));
-        if (LinkedPackageRoot(shim) is { } linked)
+        yield return env.Host.PathRules.GetFullPath(env.Combine(directory, "..", "lib", "node_modules", "@openai", "codex"));
+        if (LinkedPackageRoot(shim, env) is { } linked)
             yield return linked;
     }
 
     /// <summary>The @openai/codex directory above a link's final target, or null.</summary>
-    private static string? LinkedPackageRoot(string shim)
+    private static string? LinkedPackageRoot(string shim, CodexCliEnvironment env)
     {
         try
         {
-            var target = new FileInfo(shim).ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+            var target = env.Host.Files.ResolveLinkTarget(env.Host.Path(shim), returnFinalTarget: true);
             for (var directory = target is null ? null : Path.GetDirectoryName(target);
                  directory is not null;
                  directory = Path.GetDirectoryName(directory))
@@ -193,9 +202,9 @@ public static class CodexCliLocator
             foreach (var ext in exts)
             {
                 string candidate;
-                try { candidate = Path.Combine(dir, $"codex{ext}"); }
+                try { candidate = env.Combine(dir, $"codex{ext}"); }
                 catch { continue; }
-                if (File.Exists(candidate)) yield return candidate;
+                if (env.FileExists(candidate)) yield return candidate;
             }
         }
     }
@@ -204,6 +213,9 @@ public static class CodexCliLocator
 /// <summary>What <see cref="CodexCliLocator"/> reads from the machine; tests supply their own.</summary>
 internal sealed record CodexCliEnvironment
 {
+    /// <summary>The host whose files, folders and links are probed (node zero's local host by default).</summary>
+    public IExecutionHost Host { get; init; } = LocalExecutionHost.Shared;
+
     public required bool IsWindows { get; init; }
     public bool IsLinux { get; init; }
     public bool IsMacOS { get; init; }
@@ -220,34 +232,55 @@ internal sealed record CodexCliEnvironment
     /// <summary><c>npm prefix -g</c>; asked only off Windows, when nothing else was found.</summary>
     public Func<string?> AskNpmPrefix { get; init; } = () => null;
 
-    public static CodexCliEnvironment Current() => new()
+    internal bool FileExists(string path) => Host.Files.FileExists(Host.Path(path));
+    internal bool DirectoryExists(string path) => Host.Files.DirectoryExists(Host.Path(path));
+    internal string Combine(params string[] parts) => Host.PathRules.Combine(parts);
+
+    /// <summary>
+    /// The host's environment, folders and platform. The OS family comes from the host;
+    /// macOS and the process architecture have no host member yet and are this process's own,
+    /// which is the host's on node zero.
+    /// </summary>
+    public static CodexCliEnvironment Current(IExecutionHost host) => new()
     {
-        IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
-        IsLinux = RuntimeInformation.IsOSPlatform(OSPlatform.Linux),
+        Host = host,
+        IsWindows = host.Platform.IsWindows,
+        IsLinux = host.Platform.IsLinux,
         IsMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX),
         Architecture = RuntimeInformation.ProcessArchitecture,
-        PathVariable = Environment.GetEnvironmentVariable("PATH"),
-        Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        AppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        LocalAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        ConfiguredNpmPrefix = OperatingSystem.IsWindows() ? null : NonEmpty(
-            Environment.GetEnvironmentVariable("NPM_CONFIG_PREFIX")
-            ?? Environment.GetEnvironmentVariable("npm_config_prefix")),
-        AskNpmPrefix = () => SystemNpmPrefix.Value,
+        PathVariable = host.Platform.GetEnvironmentVariable("PATH"),
+        Home = host.Platform.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        AppData = host.Platform.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        LocalAppData = host.Platform.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        ConfiguredNpmPrefix = host.Platform.IsWindows ? null : NonEmpty(
+            host.Platform.GetEnvironmentVariable("NPM_CONFIG_PREFIX")
+            ?? host.Platform.GetEnvironmentVariable("npm_config_prefix")),
+        AskNpmPrefix = () => SystemNpmPrefixes.GetOrAdd(host.NodeId,
+            _ => new Lazy<string?>(() => AskNpm(host, "npm"), LazyThreadSafetyMode.ExecutionAndPublication)).Value,
     };
 
-    private static readonly Lazy<string?> SystemNpmPrefix = new(() => AskNpm("npm"), LazyThreadSafetyMode.ExecutionAndPublication);
+    // npm is asked once per process for each host (losing GetOrAdd races never evaluate their Lazy).
+    private static readonly ConcurrentDictionary<string, Lazy<string?>> SystemNpmPrefixes = new(StringComparer.Ordinal);
 
-    /// <summary>Runs <c>npm prefix -g</c> (5 s at most); null when npm is missing or fails.</summary>
-    internal static string? AskNpm(string npmExecutable)
+    /// <summary>Containment owner label of <c>npm prefix -g</c>, which runs uncontained as it always has.</summary>
+    internal const string NpmPrefixOwner = "codex-npm-prefix";
+
+    /// <summary>Runs <c>npm prefix -g</c> on the host (5 s at most); null when npm is missing or fails.</summary>
+    internal static string? AskNpm(IExecutionHost host, string npmExecutable)
     {
         try
         {
-            using var npm = Process.Start(new ProcessStartInfo(npmExecutable, ["prefix", "-g"])
+            // The start info this always used: npm and its two arguments, stdout and stderr piped,
+            // no shell, uncontained.
+            using var npm = host.Processes.Start(new HostSpawnSpec
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
+                FileName = npmExecutable,
+                ArgumentList = ["prefix", "-g"],
+                StandardOutput = StdioMode.Pipe,
+                StandardError = StdioMode.Pipe,
                 UseShellExecute = false,
+                Containment = ContainmentMode.None,
+                OwnerLabel = NpmPrefixOwner,
             });
             if (npm is null) return null;
             var output = npm.StandardOutput.ReadToEndAsync();

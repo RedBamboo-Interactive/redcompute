@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using RedCompute.Plugin.Codex;
+using RedCompute.PluginSdk.Hosting.Local;
 using RedCompute.Tests;
 using Xunit;
 
@@ -173,10 +174,10 @@ public sealed class CodexCliLocatorTests : IDisposable
     public void Asking_npm_reads_its_global_prefix_and_ignores_failures()
     {
         var prefix = Path.Combine(_root, "npm-global");
-        Assert.Equal(prefix, CodexCliEnvironment.AskNpm(Script("npm-ok", $"echo '{prefix}'")));
-        Assert.Null(CodexCliEnvironment.AskNpm(Script("npm-fails", $"echo '{prefix}'; exit 1")));
-        Assert.Null(CodexCliEnvironment.AskNpm(Script("npm-relative", "echo 'not/rooted'")));
-        Assert.Null(CodexCliEnvironment.AskNpm(Path.Combine(_root, "no-such-npm")));
+        Assert.Equal(prefix, CodexCliEnvironment.AskNpm(LocalExecutionHost.Shared, Script("npm-ok", $"echo '{prefix}'")));
+        Assert.Null(CodexCliEnvironment.AskNpm(LocalExecutionHost.Shared, Script("npm-fails", $"echo '{prefix}'; exit 1")));
+        Assert.Null(CodexCliEnvironment.AskNpm(LocalExecutionHost.Shared, Script("npm-relative", "echo 'not/rooted'")));
+        Assert.Null(CodexCliEnvironment.AskNpm(LocalExecutionHost.Shared, Path.Combine(_root, "no-such-npm")));
     }
 
     [NonWindowsFact("NPM_CONFIG_PREFIX is read only off Windows")]

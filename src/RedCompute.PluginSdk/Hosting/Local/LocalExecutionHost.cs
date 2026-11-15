@@ -253,6 +253,9 @@ public sealed class LocalExecutionHost : IExecutionHost
         public Stream OpenRead(HostPath path) => File.OpenRead(path.Value);
         public Stream OpenRead(HostPath path, FileShare share) => new FileStream(path.Value, FileMode.Open, FileAccess.Read, share);
 
+        public string? ResolveLinkTarget(HostPath path, bool returnFinalTarget)
+            => new FileInfo(path.Value).ResolveLinkTarget(returnFinalTarget)?.FullName;
+
         public void WriteAllText(HostPath path, string contents, Encoding? encoding = null)
         {
             if (encoding is null) File.WriteAllText(path.Value, contents);

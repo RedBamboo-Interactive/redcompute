@@ -35,7 +35,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             new CodexSessionService(config, jobs, store, (_, _) => { }), jobs,
             new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
             () => null, (_, _) => { });
-        interactive.LaunchAppServerProcess = _ => StartSteeringFakeAppServer("item");
+        interactive.LaunchAppServerProcess = HostSeams.From(_ => StartSteeringFakeAppServer("item"));
         var updates = new List<CodexSessionInfo>();
         var ended = new List<string>();
         interactive.SessionUpdated += updates.Add;
@@ -105,11 +105,11 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         interactive.LaunchGate = manager;
 
         var spawnCount = 0;
-        interactive.LaunchAppServerProcess = _ =>
+        interactive.LaunchAppServerProcess = HostSeams.From(_ =>
         {
             Interlocked.Increment(ref spawnCount);
             return StartFakeAppServer();
-        };
+        });
 
         var operation = manager.StartInstall("latest");
         await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -141,14 +141,14 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         var (exec, manager) = CreateExec();
         var launches = 0;
         Process? observer = null;
-        exec.LaunchExecProcess = _ =>
+        exec.LaunchExecProcess = HostSeams.From(_ =>
         {
             if (Interlocked.Increment(ref launches) > 1)
                 return CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
             var process = StartLongRunningProcess();
             observer = Process.GetProcessById(process.Id);
             return process;
-        };
+        });
 
         using var cancel = new CancellationTokenSource();
         var running = exec.ExecuteExecAsync("first", null, _root, null, null, 120, cancel.Token);
@@ -178,11 +178,11 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         var releaseInstall = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var (exec, manager) = CreateExec(new BlockingInstallRunner(installStarted, releaseInstall));
         var launches = 0;
-        exec.LaunchExecProcess = _ =>
+        exec.LaunchExecProcess = HostSeams.From(_ =>
         {
             Interlocked.Increment(ref launches);
             return CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
-        };
+        });
         var operation = manager.StartInstall("latest");
         await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -202,7 +202,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         var (exec, _) = CreateExec();
         var gate = new CountingGate();
         exec.LaunchGate = gate;
-        exec.LaunchExecProcess = _ => StartFailingProcess("being used by another process");
+        exec.LaunchExecProcess = HostSeams.From(_ => StartFailingProcess("being used by another process"));
 
         var result = await exec.ExecuteExecAsync("locked", null, _root, null, null, 30, CancellationToken.None)
             .WaitAsync(Patience);
@@ -216,15 +216,15 @@ public sealed class CodexCliLaunchGateTests : IDisposable
     public async Task Slow_session_handshake_does_not_block_exec_and_keeps_installs_out()
     {
         var (exec, manager) = CreateExec();
-        exec.LaunchExecProcess = _ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+        exec.LaunchExecProcess = HostSeams.From(_ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput));
         await using var interactive = CreateInteractive(exec, manager, out var codexPath);
         var releaseFile = Path.Combine(_root, "release-handshake");
         var spawned = 0;
-        interactive.LaunchAppServerProcess = _ =>
+        interactive.LaunchAppServerProcess = HostSeams.From(_ =>
         {
             Interlocked.Increment(ref spawned);
             return StartAppServerWaitingFor(releaseFile);
-        };
+        });
 
         var start = interactive.StartSessionAsync(
             _root, null, "owner", null, null, null, null, null, null, Provenance());
@@ -258,11 +258,11 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             });
         var releaseFile = Path.Combine(_root, "release-resume");
         var spawned = 0;
-        interactive.LaunchAppServerProcess = _ =>
+        interactive.LaunchAppServerProcess = HostSeams.From(_ =>
         {
             Interlocked.Increment(ref spawned);
             return StartAppServerWaitingFor(releaseFile);
-        };
+        });
 
         var first = interactive.ResumeSessionAsync("parked-session", Provenance());
         var second = interactive.ResumeSessionAsync("parked-session", Provenance());
@@ -279,7 +279,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
     public async Task Slow_model_catalog_fetch_does_not_block_exec_and_keeps_installs_out()
     {
         var (exec, manager) = CreateExec();
-        exec.LaunchExecProcess = _ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+        exec.LaunchExecProcess = HostSeams.From(_ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput));
         var releaseFile = Path.Combine(_root, "release-catalog");
         var spawnedFile = Path.Combine(_root, "spawned-catalog");
         var catalog = new CodexModelCatalog(
@@ -306,7 +306,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
     public async Task Slow_account_usage_read_does_not_block_exec_and_keeps_installs_out()
     {
         var (exec, manager) = CreateExec();
-        exec.LaunchExecProcess = _ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput);
+        exec.LaunchExecProcess = HostSeams.From(_ => CodexGenerateIsolationTests.StartOutputProcess(ExecOutput));
         var releaseFile = Path.Combine(_root, "release-usage");
         var spawnedFile = Path.Combine(_root, "spawned-usage");
         var usage = new CodexAccountUsageService(
@@ -340,12 +340,12 @@ public sealed class CodexCliLaunchGateTests : IDisposable
 
         var connect = CodexAppServerConnection.StartAsync(
             codexPath, workingDirectory: null, (_, _) => { }, ct: cancel.Token,
-            launchProcess: _ =>
+            launchProcess: HostSeams.From(_ =>
             {
                 var process = StartAppServerWaitingFor(Path.Combine(_root, "never-released"));
                 observer = Process.GetProcessById(process.Id);
                 return process;
-            });
+            }));
         await WaitUntilAsync(() => Volatile.Read(ref observer) is not null);
         using (observer)
         {
@@ -531,11 +531,11 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
             () => null, (_, _) => { });
         var launchedTokens = new List<string?>();
-        interactive.LaunchAppServerProcess = startInfo =>
+        interactive.LaunchAppServerProcess = HostSeams.From(startInfo =>
         {
             launchedTokens.Add(startInfo.Environment.TryGetValue("REDLEAF_EXECUTION_TOKEN", out var token) ? token : null);
             return StartSteeringFakeAppServer("item");
-        };
+        });
 
         CodexSessionInfo? session;
         using (SessionScratch.PushExecutionTokenIssuer(sessionId => $"token-for-{sessionId}"))
@@ -639,7 +639,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             config, store, new CodexModelCatalog(config, (_, _) => { }), exec, jobs,
             new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
             () => null, (_, _) => { });
-        interactive.LaunchAppServerProcess = _ => StartSteeringFakeAppServer(behavior);
+        interactive.LaunchAppServerProcess = HostSeams.From(_ => StartSteeringFakeAppServer(behavior));
         var session = await interactive.StartSessionAsync(
             _root, null, "owner", null, null, null, null, null, null, Provenance());
         Assert.NotNull(session);

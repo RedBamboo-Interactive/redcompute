@@ -9,6 +9,7 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.Plugin.Codex;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.Plugin.Codex.Tests;
@@ -219,14 +220,14 @@ public sealed class CodexToolFreeVisionTests : IAsyncLifetime
         var before = ImageDirectories();
         var original = CodexSessionService.ImageFiles.WriteFile;
         var writes = 0;
-        CodexSessionService.ImageFiles.WriteFile = (path, bytes) =>
+        CodexSessionService.ImageFiles.WriteFile = (host, path, bytes) =>
         {
             if (++writes == 2) throw new IOException("disk full");
-            original(path, bytes);
+            original(host, path, bytes);
         };
         try
         {
-            Assert.Throws<IOException>(() => CodexSessionService.ImageFiles.Create([Orchid(), Orchid()]));
+            Assert.Throws<IOException>(() => CodexSessionService.ImageFiles.Create(LocalExecutionHost.Shared, [Orchid(), Orchid()]));
         }
         finally
         {
@@ -252,11 +253,11 @@ public sealed class CodexToolFreeVisionTests : IAsyncLifetime
         };
         var captured = new List<ProcessStartInfo>();
         launches = captured;
-        service.LaunchExecProcess = startInfo =>
+        service.LaunchExecProcess = HostSeams.From(startInfo =>
         {
             captured.Add(startInfo);
             return launch(startInfo);
-        };
+        });
         return service;
     }
 

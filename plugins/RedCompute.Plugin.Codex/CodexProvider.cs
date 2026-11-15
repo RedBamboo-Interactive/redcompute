@@ -6,6 +6,7 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.Codex;
 
@@ -76,7 +77,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public CodexProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
-        Action<string, Guid?> log)
+        Action<string, Guid?> log, IExecutionHost? host = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -86,18 +87,19 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _store = new CodexSessionStore();
         var codexConfig = BuildConfig(config);
         _defaultSandbox = codexConfig.SandboxMode;
-        _codex = new CodexSessionService(codexConfig, jobTracker, _store, log);
-        _models = new CodexModelCatalog(codexConfig, log);
-        _accountUsage = new CodexAccountUsageService(codexConfig, log);
+        _codex = new CodexSessionService(codexConfig, jobTracker, _store, log, host);
+        _models = new CodexModelCatalog(codexConfig, log, host);
+        _accountUsage = new CodexAccountUsageService(codexConfig, log, host);
         _cliVersionManager = new NpmCliVersionManager(
             "@openai/codex",
             "Codex",
-            () => CodexCliLocator.Resolve(codexConfig.CodexPath),
+            // The CLI exec and the app-servers launch, resolved on their host from the same config.
+            () => _codex.ResolveCodexPath(),
             GetCliSessionState,
             ParkIdleCliSessionsAsync);
         _interactive = new CodexInteractiveService(
             codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
-            () => GetTitleQualityTier(config), log);
+            () => GetTitleQualityTier(config), log, host);
         _codex.LaunchGate = _cliVersionManager;
         _interactive.LaunchGate = _cliVersionManager;
         _models.LaunchGate = _cliVersionManager;

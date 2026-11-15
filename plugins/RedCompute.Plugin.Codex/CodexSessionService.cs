@@ -5,12 +5,19 @@ using System.Text;
 using System.Text.Json;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.Codex;
 
 public class CodexSessionService
 {
-    private readonly ConcurrentDictionary<string, Process> _runningProcesses = new();
+    /// <summary>Containment owner of a non-interactive <c>codex exec</c>.</summary>
+    internal const string ExecOwner = "codex-exec";
+
+    private readonly ConcurrentDictionary<string, IHostProcess> _runningProcesses = new();
+    // The machine exec runs on: its processes and temp files. Node zero's local host by default.
+    private readonly IExecutionHost _host;
     private readonly CodexConfig _config;
     private readonly IJobTracker _jobTracker;
     private readonly ICodexSessionStore _store;
@@ -23,13 +30,15 @@ public class CodexSessionService
 
     public void EmitStreamEvent(string key, CodexStreamEvent evt) => StreamEvent?.Invoke(key, evt);
 
-    /// <summary>Test seam for non-interactive exec invocations.</summary>
-    internal Func<ProcessStartInfo, Process?> LaunchExecProcess { get; set; } =
-        startInfo => SessionProcessContainment.Start(startInfo, "codex-exec");
+    /// <summary>Test seam for non-interactive exec invocations; the default is the execution host (<see cref="ExecOwner"/>).</summary>
+    internal Func<HostSpawnSpec, IHostProcess?> LaunchExecProcess { get; set; }
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
 
-    public CodexSessionService(CodexConfig config, IJobTracker jobTracker, ICodexSessionStore store, Action<string, Guid?> log)
+    public CodexSessionService(CodexConfig config, IJobTracker jobTracker, ICodexSessionStore store, Action<string, Guid?> log,
+        IExecutionHost? host = null)
     {
+        _host = host ?? LocalExecutionHost.Shared;
+        LaunchExecProcess = spec => _host.Processes.Start(spec);
         _config = config;
         _jobTracker = jobTracker;
         _store = store;
@@ -147,8 +156,8 @@ public class CodexSessionService
         => WithSchemaFallbackAsync(responseSchema, async strictSchema =>
         {
             using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
-            using var schema = OutputSchemaFile.Create(strictSchema);
-            using var imageFiles = ImageFiles.Create(images);
+            using var schema = OutputSchemaFile.Create(_host, strictSchema);
+            using var imageFiles = ImageFiles.Create(_host, images);
             var args = new List<string>();
             if (schema != null) args.AddRange(schema.Args);
             if (imageFiles != null) args.AddRange(imageFiles.Args);
@@ -187,10 +196,13 @@ public class CodexSessionService
         string? strictSchema, Action<ToolFreeEvidence>? evidence, IReadOnlyList<GenerateImage>? images)
     {
         using var workingDirectory = IsolatedWorkingDirectory.Create("redcompute-codex-generate");
-        using var schema = OutputSchemaFile.Create(strictSchema);
+        using var schema = OutputSchemaFile.Create(_host, strictSchema);
         using var lease = await ToolFreeRelay.OpenAsync(ct, images);
+        // The relay listens on RedCompute's loopback; the CLI reaches it through its host's forward
+        // (locally the very same URL).
+        await using var relay = await _host.Network.ReverseForwardAsync(lease.BaseUrl, ct);
 
-        var args = ToolFreeExecArgs(lease.BaseUrl, timeout);
+        var args = ToolFreeExecArgs(relay.ServerSideUri, timeout);
         if (schema != null) args.AddRange(schema.Args);
 
         var result = await ExecuteExecAsync(prompt, null, workingDirectory.Path, model, "read-only",
@@ -368,7 +380,7 @@ public class CodexSessionService
     {
         private readonly IsolatedWorkingDirectory _directory;
 
-        private ImageFiles(IReadOnlyList<GenerateImage> images)
+        private ImageFiles(IExecutionHost host, IReadOnlyList<GenerateImage> images)
         {
             _directory = IsolatedWorkingDirectory.Create("redcompute-codex-images");
             try
@@ -382,8 +394,8 @@ public class CodexSessionService
                         "image/webp" => ".webp",
                         _ => ".png",
                     };
-                    var path = Path.Combine(_directory.Path, $"image-{i + 1}{extension}");
-                    WriteFile(path, images[i].Bytes);
+                    var path = host.PathRules.Combine(_directory.Path, $"image-{i + 1}{extension}");
+                    WriteFile(host, path, images[i].Bytes);
                     // One "--image=" per file: the flag takes several values, so a bare "-i" could
                     // swallow whatever argument follows it.
                     args.Add($"--image={path}");
@@ -400,11 +412,12 @@ public class CodexSessionService
 
         public IReadOnlyList<string> Args { get; }
 
-        /// <summary>Test seam for the per-image write.</summary>
-        internal static Action<string, byte[]> WriteFile { get; set; } = File.WriteAllBytes;
+        /// <summary>Test seam for the per-image write, on the host the CLI reads it from.</summary>
+        internal static Action<IExecutionHost, string, byte[]> WriteFile { get; set; } =
+            (host, path, bytes) => host.Files.WriteAllBytes(host.Path(path), bytes);
 
-        public static ImageFiles? Create(IReadOnlyList<GenerateImage>? images)
-            => images is { Count: > 0 } ? new ImageFiles(images) : null;
+        public static ImageFiles? Create(IExecutionHost host, IReadOnlyList<GenerateImage>? images)
+            => images is { Count: > 0 } ? new ImageFiles(host, images) : null;
 
         public void Dispose() => _directory.Dispose();
     }
@@ -414,18 +427,18 @@ public class CodexSessionService
     {
         private readonly IsolatedWorkingDirectory _directory;
 
-        private OutputSchemaFile(string json)
+        private OutputSchemaFile(IExecutionHost host, string json)
         {
             _directory = IsolatedWorkingDirectory.Create("redcompute-codex-schema");
-            var path = Path.Combine(_directory.Path, "output-schema.json");
-            File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            var path = host.PathRules.Combine(_directory.Path, "output-schema.json");
+            host.Files.WriteAllText(host.Path(path), json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
             Args = ["--output-schema", path];
         }
 
         public IReadOnlyList<string> Args { get; }
 
-        public static OutputSchemaFile? Create(string? json)
-            => string.IsNullOrWhiteSpace(json) ? null : new OutputSchemaFile(json);
+        public static OutputSchemaFile? Create(IExecutionHost host, string? json)
+            => string.IsNullOrWhiteSpace(json) ? null : new OutputSchemaFile(host, json);
 
         public void Dispose() => _directory.Dispose();
     }
@@ -457,39 +470,31 @@ public class CodexSessionService
                     "Could not find the Codex CLI. Install the official standalone package or set CodexPath in config.");
         }
 
-        var startInfo = new ProcessStartInfo
-        {
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-
+        string fileName;
+        List<string> arguments;
+        HostPath? directory = null;
+        Dictionary<string, string>? environment = null;
         if (useDocker)
         {
-            DockerExecHelper.ConfigureForDockerExec(startInfo, container!, "codex", workingDir, env);
+            // docker exec carries the directory and variables as its own arguments.
+            fileName = DockerExecHelper.FileName;
+            arguments = DockerExecHelper.ExecArguments(container!, "codex", workingDir, env);
         }
         else
         {
-            startInfo.FileName = ResolveCodexPath()!;
+            fileName = ResolveCodexPath()!;
+            arguments = [];
             if (!string.IsNullOrWhiteSpace(workingDir))
-                startInfo.WorkingDirectory = workingDir;
-            if (env is not null)
-                foreach (var (k, v) in env)
-                    startInfo.EnvironmentVariables[k] = v;
+                directory = _host.Path(workingDir);
+            environment = env;
         }
 
-        BuildExecArgs(startInfo, model, sandbox, networkAccess, effort);
+        BuildExecArgs(arguments, model, sandbox, networkAccess, effort);
         if (extraArgs != null)
-            foreach (var arg in extraArgs)
-                startInfo.ArgumentList.Add(arg);
+            arguments.AddRange(extraArgs);
 
         var sw = Stopwatch.StartNew();
-        using var process = LaunchExecProcess(startInfo);
+        using var process = LaunchExecProcess(ExecSpec(fileName, arguments, directory, environment));
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start codex process");
         if (streamKey != null)
@@ -573,43 +578,67 @@ public class CodexSessionService
         }
     }
 
-    private void BuildExecArgs(ProcessStartInfo startInfo, string? model, string? sandbox,
+    /// <summary>
+    /// An exec launch: every stream piped (stdin UTF-8 without a BOM, stdout and stderr UTF-8), no
+    /// window, contained as a session under <see cref="ExecOwner"/>. Exactly the start info exec built
+    /// before the execution host.
+    /// </summary>
+    private static HostSpawnSpec ExecSpec(string fileName, IReadOnlyList<string> arguments, HostPath? workingDirectory,
+        IReadOnlyDictionary<string, string>? environment) => new()
+    {
+        FileName = fileName,
+        ArgumentList = arguments,
+        WorkingDirectory = workingDirectory,
+        EnvironmentOverlay = environment,
+        StandardInput = StdioMode.Pipe,
+        StandardOutput = StdioMode.Pipe,
+        StandardError = StdioMode.Pipe,
+        StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8,
+        CreateNoWindow = true,
+        UseShellExecute = false,
+        Containment = ContainmentMode.Session,
+        OwnerLabel = ExecOwner,
+    };
+
+    private void BuildExecArgs(List<string> arguments, string? model, string? sandbox,
         bool networkAccess, string? effort)
     {
-        startInfo.ArgumentList.Add("exec");
-        startInfo.ArgumentList.Add("-");
-        startInfo.ArgumentList.Add("--json");
+        arguments.Add("exec");
+        arguments.Add("-");
+        arguments.Add("--json");
 
         // Without this, exec refuses to run anywhere that is not a trusted git repo — "Not inside a
         // trusted directory" — which kills every call with no working directory and every call
         // against a plain folder. The sandbox flag below is what actually bounds what it can touch.
-        startInfo.ArgumentList.Add("--skip-git-repo-check");
+        arguments.Add("--skip-git-repo-check");
 
         var resolvedSandbox = sandbox ?? _config.SandboxMode;
-        startInfo.ArgumentList.Add("--sandbox");
-        startInfo.ArgumentList.Add(resolvedSandbox);
+        arguments.Add("--sandbox");
+        arguments.Add(resolvedSandbox);
 
         // Unattended Nova jobs need the same localhost and outbound command access Claude Code
         // had. This stable legacy setting composes with --sandbox workspace-write; permission
         // profiles do not, and Codex 0.146 cannot express dotted IP keys through inline -c.
         if (resolvedSandbox == "workspace-write" && networkAccess)
-            AddConfig(startInfo, "sandbox_workspace_write.network_access=true");
+            AddConfig(arguments, "sandbox_workspace_write.network_access=true");
 
         if (IsSafeEffort(effort))
-            AddConfig(startInfo, $"model_reasoning_effort=\"{effort}\"");
+            AddConfig(arguments, $"model_reasoning_effort=\"{effort}\"");
 
         var resolvedModel = model ?? _config.Model;
         if (!string.IsNullOrEmpty(resolvedModel))
         {
-            startInfo.ArgumentList.Add("--model");
-            startInfo.ArgumentList.Add(resolvedModel);
+            arguments.Add("--model");
+            arguments.Add(resolvedModel);
         }
     }
 
-    private static void AddConfig(ProcessStartInfo startInfo, string value)
+    private static void AddConfig(List<string> arguments, string value)
     {
-        startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add(value);
+        arguments.Add("-c");
+        arguments.Add(value);
     }
 
     private static bool IsSafeEffort(string? effort)
@@ -901,5 +930,5 @@ public class CodexSessionService
         StoppedAt = r.StoppedAt,
     };
 
-    public string? ResolveCodexPath() => CodexCliLocator.Resolve(_config.CodexPath);
+    public string? ResolveCodexPath() => CodexCliLocator.Resolve(_host, _config.CodexPath);
 }
