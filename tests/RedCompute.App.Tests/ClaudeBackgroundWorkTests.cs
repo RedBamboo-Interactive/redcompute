@@ -544,6 +544,23 @@ public sealed class ClaudeBackgroundWorkTests : IDisposable
         Assert.Null(h.Info.LastTurnError);
     }
 
+    // 2026-11-15: the result the CLI ended cd6e22042916's and 069f571f36a9's turns with. It read as an
+    // ordinary failure (StopReason null) because none of the usage-limit wordings matched it.
+    [Fact]
+    public async Task A_Fable_usage_limit_fails_the_turn_with_its_words_and_marks_the_session_usage_limited()
+    {
+        var h = Start();
+        Assert.True(await h.Service.SendInput(h.Id, [SessionInputPart.TextPart("work")], messageUid: "user-1"));
+        h.Feed("""{"type":"result","subtype":"success","is_error":true,"result":"You've hit your Fable limit · resets Nov 20, 9pm (Europe/Zurich). Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.","total_cost_usd":0.0}""");
+
+        Assert.Equal(SessionTurnOutcomes.Failed, h.Info.LastTurnOutcome);
+        Assert.Equal(TransientTurnRetryTests.FableLimit, h.Info.LastTurnError);
+        Assert.Equal("usage_limit", h.Info.StopReason);
+        Assert.Equal(RedCompute.Plugin.ClaudeCode.SessionStatus.Idle, h.Info.Status);
+        Assert.False(SessionTurnErrors.IsTransient(h.Info.LastTurnError));
+        Assert.Equal("usage_limit", SessionTurnErrors.Kind(h.Info.LastTurnError));
+    }
+
     // --- harness ---
 
     private sealed record Entry(string? Proc, JsonElement? Line, JsonElement? Sent, string? Note);

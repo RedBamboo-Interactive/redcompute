@@ -4368,7 +4368,9 @@ public partial class ClaudeSessionService
         return lower.Contains("usage limit") || lower.Contains("spending limit")
             || lower.Contains("spend limit") || lower.Contains("rate limit")
             || lower.Contains("quota exceeded") || lower.Contains("budget")
-            || (lower.Contains("limit") && lower.Contains("exceed"));
+            || (lower.Contains("limit") && lower.Contains("exceed"))
+            // "You've hit your Fable limit · resets ..." (2026-11-15) and the other account wordings.
+            || Core.Sessions.SessionTurnErrors.IsUsageLimit(error);
     }
 
     private void UpdateContextFromStreamEvent(JsonElement root, ManagedSession session)

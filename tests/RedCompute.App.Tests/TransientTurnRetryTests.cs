@@ -35,6 +35,43 @@ public sealed class TransientTurnRetryTests
     public void Only_connectivity_and_provider_availability_errors_are_transient(string? error, bool transient)
         => Assert.Equal(transient, SessionTurnErrors.IsTransient(error));
 
+    // 2026-11-15: the exact Claude Code message a Fable allowance ended two sessions on overnight. It
+    // matched none of the older usage-limit wordings, so it read as an ordinary failure.
+    internal const string FableLimit = "You've hit your Fable limit · resets Nov 20, 9pm (Europe/Zurich). Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.";
+
+    [Theory]
+    [InlineData(FableLimit, "usage_limit")]
+    [InlineData("You've hit your limit · resets 3pm (Europe/Zurich)", "usage_limit")]
+    [InlineData("5-hour limit reached ∙ resets 3pm", "usage_limit")]
+    [InlineData("Claude AI usage limit reached|1731600000", "usage_limit")]
+    [InlineData("Credit balance is too low", "usage_limit")]
+    [InlineData("You exceeded your current quota, please check your plan and billing details.", "usage_limit")]
+    [InlineData("API Error: 401 authentication_error: OAuth token has expired", "authentication")]
+    [InlineData("Invalid API key · Please run /login", "authentication")]
+    [InlineData(Enotfound, "transient")]
+    [InlineData("API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}", "transient")]
+    [InlineData("API Error: Opus 5.5's safeguards flagged this message", "other")]
+    [InlineData("API Error: 429 rate limit exceeded for requests per minute", "other")] // per minute, not the account
+    [InlineData("You have exceeded the rate limit for this model", "other")]
+    [InlineData("API Error: 400 invalid_request_error: prompt is too long", "other")]
+    [InlineData("Read failed on line 401 of output.log", "other")]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void A_failed_turns_error_has_one_kind(string? error, string? kind)
+        => Assert.Equal(kind, SessionTurnErrors.Kind(error));
+
+    [Fact]
+    public void A_usage_limit_is_never_transient_and_the_last_turn_says_which_kind_it_failed_on()
+    {
+        Assert.False(SessionTurnErrors.IsTransient(FableLimit));
+        var turn = new SessionTurnSummary("t1", SessionTurnOutcomes.Failed, DateTimeOffset.UtcNow, null, null, FableLimit);
+        Assert.False(turn.Transient);
+        Assert.Equal("usage_limit", turn.ErrorKind);
+        Assert.Null((turn with { Outcome = SessionTurnOutcomes.Completed }).ErrorKind);
+        var json = System.Text.Json.JsonSerializer.Serialize(turn, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        Assert.Contains("\"errorKind\":\"usage_limit\"", json);
+    }
+
     [Fact]
     public async Task A_turn_failed_by_the_network_is_retried_silently_and_its_supervisor_hears_the_retried_completion()
     {
@@ -171,6 +208,30 @@ public sealed class TransientTurnRetryTests
         now = now.AddHours(1);
         Assert.Equal(0, await retries.RunOnceAsync());
         Assert.Equal(0, f.Runtime.Deliveries);
+    }
+
+    // The worker cd6e22042916 died on this at 03:04Z and its supervisor was told it "completed".
+    [Fact]
+    public async Task A_usage_limit_is_reported_failed_at_once_with_its_words_and_kind_and_never_retried()
+    {
+        using var f = new SessionRecoveryTests.Fixture("completed");
+        var now = DateTimeOffset.UtcNow;
+        var (callbacks, posts) = await DeliveredPrompt(f, () => now);
+        var retries = Retries(f, callbacks, () => now);
+
+        await FailTurn(f, callbacks, FableLimit);
+        var failure = Assert.Single(Completions(posts));
+        Assert.Equal("failed", failure.GetProperty("turnOutcome").GetString());
+        Assert.Equal(FableLimit, failure.GetProperty("turnError").GetString());
+        Assert.Equal("usage_limit", failure.GetProperty("turnErrorKind").GetString());
+
+        foreach (var step in TransientTurnRetries.Delays)
+        {
+            now = now + step;
+            Assert.Equal(0, await retries.RunOnceAsync());
+        }
+        Assert.Equal(0, f.Runtime.Deliveries);
+        Assert.Single(Completions(posts));
     }
 
     [Fact]

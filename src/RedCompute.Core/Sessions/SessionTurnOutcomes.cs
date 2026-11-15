@@ -44,4 +44,8 @@ public sealed record SessionTurnSummary(
     /// <summary>The turn failed on a transient network or provider error: retrying it later may succeed.
     /// RedCompute owns this classification, so clients never keep their own copy of it.</summary>
     public bool Transient => Outcome == SessionTurnOutcomes.Failed && SessionTurnErrors.IsTransient(Error);
+
+    /// <summary>What the failed turn's error is (SessionTurnErrors.Kind): usage_limit, authentication,
+    /// transient or other; null when the turn did not fail or has no error.</summary>
+    public string? ErrorKind => Outcome == SessionTurnOutcomes.Failed ? SessionTurnErrors.Kind(Error) : null;
 }

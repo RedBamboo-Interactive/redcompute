@@ -564,6 +564,7 @@ internal sealed class SessionPromptCallbacks
             turnOutcome = turn?.EndedAt is null ? null : turn.Outcome,
             interruptedBy = InterruptedBy(turn),
             turnError = TurnError(turn),
+            turnErrorKind = SessionTurnErrors.Kind(TurnError(turn)),
         };
 
     private static string? TurnError(SessionTurnRecord? turn)
@@ -602,7 +603,11 @@ internal sealed class SessionPromptCallbacks
             node["turnId"] = turn.TurnId;
             node["turnOutcome"] = turn.Outcome;
             node["interruptedBy"] = JsonSerializer.SerializeToNode(InterruptedBy(turn));
-            if (TurnError(turn) is { } error) node["turnError"] = error;
+            if (TurnError(turn) is { } error)
+            {
+                node["turnError"] = error;
+                node["turnErrorKind"] = SessionTurnErrors.Kind(error);
+            }
         }
         node["backgroundTasksRunning"] = endedReason is null && session?.Status == SessionStatus.Idle
             ? SessionWorkStates.RunningBackgroundTasks(session.BackgroundTasks) : 0;
