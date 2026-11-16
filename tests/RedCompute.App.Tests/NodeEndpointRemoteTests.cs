@@ -53,7 +53,7 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
     [Fact]
     public async Task Nodes_lists_node_zero_first_then_remote_nodes_with_placement()
     {
-        var (status, json) = await SendAsync("GET", "/nodes");
+        var (status, json) = await SendAsync("GET", "/nodes", user: User(Owner));
 
         Assert.Equal(200, status);
         var nodes = json.RootElement.GetProperty("nodes").EnumerateArray().ToList();
@@ -88,7 +88,7 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
         _nodes.LinkUp(RemoteId(1), new NodeLinkState("s1", Now, Now, 18.25, -4, 1, ["describe.v1", "diag.echo"], "0.1.0", true, "cng"));
         _nodes.ApplyReport(RemoteId(1), [new NodeCliReport("claude", true, "2.1.0", true, "subscription", "C:\\Users\\lab\\claude.exe")], Hardware());
 
-        var (status, json) = await SendAsync("GET", "/nodes/{id}", RemoteId(1));
+        var (status, json) = await SendAsync("GET", "/nodes/{id}", RemoteId(1), user: User(Owner));
 
         Assert.Equal(200, status);
         var node = json.RootElement;
@@ -103,6 +103,51 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
         Assert.True(node.GetProperty("hardware").GetProperty("available").GetBoolean());
         Assert.Equal(8, node.GetProperty("hardware").GetProperty("cpu").GetProperty("coreCount").GetInt32());
     }
+
+    [Fact]
+    public async Task Remote_nodes_are_visible_only_to_their_owner_and_admins_as_in_the_kernel()
+    {
+        // Review finding: GET /nodes showed every user's remote nodes to any caller, LocalDefault and Agents included.
+        _nodes.ApplyKernelNodes([Kernel(RemoteId(1), "Lab VM"), Kernel(RemoteId(2), "Spare", confirmed: false, status: "needs-update"),
+            Kernel(RemoteId(3), "Other's box", owner: "user-other")]);
+        // Node zero first, then by name: Lab VM, Other's box, Spare.
+        var all = new[] { LocalId, RemoteId(1), RemoteId(3), RemoteId(2) };
+        var owners = new[] { LocalId, RemoteId(1), RemoteId(2) };
+        var zeroOnly = new[] { LocalId };
+        var cases = new (string Who, ClaimsPrincipal? User, string[] Sees)[]
+        {
+            ("the owner", User(Owner), owners),
+            ("another user who is an admin", User("user-admin", "admin"), all),
+            ("another user", User("user-stranger"), zeroOnly),
+            ("the anonymous local identity (roles admin)", LocalDefault(), zeroOnly),
+            ("no identity", null, zeroOnly),
+            ("an Agent working for the owner", Validate(IngressToken(_jwt, "agent-1", owner: Owner, app: "nova", actorKind: "agent", roles: ["user"])), owners),
+            ("an Agent working for someone else", Validate(IngressToken(_jwt, "agent-2", owner: "user-stranger", app: "nova", actorKind: "agent", roles: ["user"])), zeroOnly),
+            ("a local-user execution badge", Validate(IngressToken(_jwt, "agent-3", owner: "local-user", app: "nova", actorKind: "agent", roles: ["admin"])), zeroOnly),
+            ("another service", Validate(_jwt.GenerateServiceAccessToken("nova", roles: ["service", "admin"])), zeroOnly),
+            ("the kernel", RedLeafService(_jwt), all),
+        };
+
+        foreach (var (who, user, sees) in cases)
+        {
+            var (status, json) = await SendAsync("GET", "/nodes", user: user);
+            Assert.Equal(200, status);
+            var seen = json.RootElement.GetProperty("nodes").EnumerateArray().Select(node => node.GetProperty("id").GetString()!).ToList();
+            Assert.True(sees.SequenceEqual(seen), $"{who} sees [{string.Join(", ", seen)}], not [{string.Join(", ", sees)}]");
+            foreach (var id in all.Skip(1))
+            {
+                var (one, _) = await SendAsync("GET", "/nodes/{id}", id, user: user);
+                Assert.True((sees.Contains(id) ? 200 : 404) == one, $"{who}: GET /nodes/{id} was {one}");
+            }
+            var (local, _) = await SendAsync("GET", "/nodes/{id}", "local", user: user);
+            Assert.Equal(200, local);
+        }
+    }
+
+    private ClaimsPrincipal User(string subject, string role = "user")
+        => Validate(_jwt.GenerateAccessToken(subject, subject + "@example.test", subject, [role]));
+
+    private ClaimsPrincipal Validate(string token) => _jwt.ValidateToken(token) ?? throw new InvalidOperationException("token");
 
     [Fact]
     public async Task Only_the_kernel_reports_a_revocation()

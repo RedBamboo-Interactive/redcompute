@@ -1,9 +1,11 @@
 using System.IO;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
@@ -105,7 +107,8 @@ public sealed record NodeRevokedView(string NodeId, string Status, string? Reaso
 /// The node API: <c>GET /nodes</c> and <c>GET /nodes/{id}</c> (<c>local</c> is node zero's alias), node zero
 /// and every paired remote node; the kernel's <c>POST /nodes/{id}/revoked</c> and <c>POST /nodes/changed</c>;
 /// the admin diagnostics <c>POST /nodes/{id}/diag/echo</c>. In Phase 3 every capability and provider runs on
-/// node zero, and no remote node is eligible for work.
+/// node zero, and no remote node is eligible for work. A remote node is visible only as the kernel's
+/// <c>/api/nodes</c> shows it (<see cref="CanSee"/>).
 /// </summary>
 public static class NodeEndpoints
 {
@@ -120,22 +123,22 @@ public static class NodeEndpoints
         Func<HardwareSnapshot?> hardware, NodeHub? hub = null, KernelNodeSync? sync = null)
     {
         endpoints.MapGet("/nodes",
-            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform, hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is not in this release (reason remote_execution_not_available, offline, revoked, not_confirmed or needs_update). Capabilities and providers run on node zero only. legacyNodeId is the node records older than node ids belong to.",
-            async Task<Ok<NodeListView>> () =>
+            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform, hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is not in this release (reason remote_execution_not_available, offline, revoked, not_confirmed or needs_update). Capabilities and providers run on node zero only. legacyNodeId is the node records older than node ids belong to. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
+            async Task<Ok<NodeListView>> (HttpContext context) =>
             {
                 var views = new List<NodeView>();
-                foreach (var node in nodes.Nodes)
+                foreach (var node in nodes.Nodes.Where(node => CanSee(context.User, node)))
                     views.Add(await BuildAsync(nodes, node, registry, node.Kind == NodeKind.Local ? hardware() : node.Report?.Hardware));
                 return TypedResults.Ok(new NodeListView(views, nodes.LegacyNodeId));
             })
             .WithResponse(SchemaOf<NodeListView>());
 
         endpoints.MapGet("/nodes/{id}",
-            "One computer by id, the same shape as an item of GET /nodes; 'local' is accepted for this machine. 404 problem details for an unknown id.",
-            async Task<Results<Ok<NodeView>, ProblemHttpResult>> (string id) =>
+            "One computer by id, the same shape as an item of GET /nodes; 'local' is accepted for this machine. 404 problem details for an unknown id, or a remote node the caller may not see (the same rule as GET /nodes).",
+            async Task<Results<Ok<NodeView>, ProblemHttpResult>> (string id, HttpContext context) =>
             {
                 var node = nodes.Find(id);
-                if (node is null)
+                if (node is null || !CanSee(context.User, node))
                     return TypedResults.Problem(
                         title: "Unknown node",
                         detail: $"No node has the id '{id}'. Known: {nodes.LocalNodeId} (alias '{INodeRegistry.LocalAlias}').",
@@ -176,7 +179,7 @@ public static class NodeEndpoints
             async (string id, HttpContext context) =>
             {
                 if (!ComputeResourceAccess.IsPersonPresent(context)
-                    || !RedBamboo.AppHost.Auth.ExecutionIdentityClaims.ReadRoles(context.User).Contains("admin", StringComparer.OrdinalIgnoreCase))
+                    || !ExecutionIdentityClaims.ReadRoles(context.User).Contains("admin", StringComparer.OrdinalIgnoreCase))
                     return Error(StatusCodes.Status403Forbidden, "admin_person_required", "Only an admin, in person, runs node diagnostics.");
                 var node = nodes.Find(id);
                 if (node is null) return Error(StatusCodes.Status404NotFound, "node_not_found", $"No node has the id '{id}'.");
@@ -210,6 +213,36 @@ public static class NodeEndpoints
             })
             .WithParam("bytes", "integer", location: ParamLocation.Body, description: "How many bytes to echo (default 1048576, at most 1073741824)")
             .WithResponse(SchemaOf<NodeEchoResult>());
+    }
+
+    /// <summary>
+    /// Who sees a remote node: the kernel's read rule for <c>/api/nodes</c> (its <c>NodeAccess.CanRead</c>).
+    /// Node zero is everyone's. A remote node is visible to its owner and to admins, decided from a signed
+    /// subject: the anonymous local identity (<c>LocalDefault</c>, <c>local-user</c>), <c>system</c> and
+    /// services have none, whatever roles they carry. An Agent's execution token carries the subject of the
+    /// person it works for, so it sees what they see. The kernel itself (<c>service:redleaf</c>), the
+    /// source of these entities, sees them all, as RedCompute does in the kernel.
+    /// </summary>
+    internal static bool CanSee(ClaimsPrincipal user, NodeDescriptor node)
+    {
+        if (node.Kind == NodeKind.Local) return true;
+        if (SettingsEndpoints.IsRedLeafService(user)) return true;
+        if (Subject(user) is not { } subject) return false;
+        return (node.OwnerUserId is { } owner && string.Equals(owner, subject, StringComparison.OrdinalIgnoreCase))
+               || ExecutionIdentityClaims.ReadRoles(user).Contains("admin", StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The signed subject a node read is decided for, or null (anonymous, LocalDefault, local-user, system, a service).</summary>
+    private static string? Subject(ClaimsPrincipal user)
+    {
+        if (user.Identity?.IsAuthenticated != true
+            || string.Equals(user.Identity.AuthenticationType, ConfidentialResourcePolicy.LocalDefaultAuthenticationType, StringComparison.Ordinal))
+            return null;
+        var subject = user.FindFirst("sub")?.Value;
+        if (string.IsNullOrWhiteSpace(subject) || subject is "local-user" or "system"
+            || subject.StartsWith("service:", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return subject;
     }
 
     /// <summary>

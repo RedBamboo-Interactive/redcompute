@@ -40,7 +40,8 @@ internal static class NodeTestKit
 
     /// <summary>The identity the kernel mints for one node-link hop (design 5.2).</summary>
     public static string IngressToken(JwtService jwt, string nodeId, string owner = Owner, string app = NodeHub.IngressAppId,
-        string actorKind = NodeHub.NodeActorKind, TimeSpan? lifetime = null, string? executionId = null)
+        string actorKind = NodeHub.NodeActorKind, TimeSpan? lifetime = null, string? executionId = null,
+        IReadOnlyList<string>? roles = null)
     {
         var identity = new ExecutionIdentity(
             ExecutionIdentity.CurrentSchemaVersion,
@@ -49,7 +50,7 @@ internal static class NodeTestKit
             new ExecutionActorIdentity(actorKind, nodeId, "Lab VM", nodeId),
             new ExecutionBeneficiaryIdentity("user", owner, "Owner"),
             [new ExecutionContextReference("node-link", Guid.NewGuid().ToString("N"))]);
-        return jwt.GenerateExecutionToken(identity, new ExecutionPrincipal(owner, "owner@example.test", "Owner", ["admin"]),
+        return jwt.GenerateExecutionToken(identity, new ExecutionPrincipal(owner, "owner@example.test", "Owner", roles ?? ["admin"]),
             DateTimeOffset.UtcNow + (lifetime ?? TimeSpan.FromSeconds(60)));
     }
 
