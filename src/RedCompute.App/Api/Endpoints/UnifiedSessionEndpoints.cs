@@ -3688,7 +3688,7 @@ public static class UnifiedSessionEndpoints
     {
         var root = host.PathRules.Combine(host.Platform.ComputeDataRoot, "conversation-sessions");
         host.Files.CreateDirectory(host.Path(root));
-        var directory = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        var directory = host.PathRules.Combine(root, Guid.NewGuid().ToString("N"));
         host.Files.CreateDirectory(host.Path(directory));
         return directory;
     }

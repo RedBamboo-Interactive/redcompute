@@ -11,14 +11,17 @@ public static class SessionScratch
     public static bool TryResolveDirectory(string? value, out string? directory)
         => TryResolveDirectory(LocalExecutionHost.Shared, value, out directory);
 
-    /// <summary>An existing absolute directory on <paramref name="host"/>, as its full path.</summary>
+    /// <summary>
+    /// An existing absolute directory on <paramref name="host"/>, as its full path. Qualification and
+    /// the full form follow the host's own path rules, not this server's: the folder is on that node.
+    /// </summary>
     public static bool TryResolveDirectory(IExecutionHost host, string? value, out string? directory)
     {
         directory = null;
-        if (string.IsNullOrWhiteSpace(value) || !Path.IsPathFullyQualified(value)) return false;
+        if (string.IsNullOrWhiteSpace(value) || !host.PathRules.IsPathFullyQualified(value)) return false;
         try
         {
-            var full = Path.GetFullPath(value);
+            var full = host.PathRules.GetFullPath(value);
             if (!host.Files.DirectoryExists(host.Path(full))) return false;
             directory = full;
             return true;

@@ -162,53 +162,9 @@ public sealed class RepositoryReferenceValidator
         }
     }
 
-    private static readonly TimeSpan GitTimeout = TimeSpan.FromSeconds(10);
-
-
     /// <summary>Runs git without a shell, uncontained; returns stdout lines, or null on a non-zero exit.</summary>
-    private async Task<List<string>?> GitAsync(string workingDirectory, string[] args, CancellationToken ct)
-    {
-        var spec = new HostSpawnSpec
-        {
-            FileName = "git",
-            ArgumentList = ["-C", workingDirectory, .. args],
-            WorkingDirectory = _host.Path(workingDirectory),
-            EnvironmentOverlay = new Dictionary<string, string>
-            {
-                ["GIT_OPTIONAL_LOCKS"] = "0",
-                ["GIT_TERMINAL_PROMPT"] = "0",
-            },
-            StandardInput = StdioMode.Pipe,
-            StandardOutput = StdioMode.Pipe,
-            StandardError = StdioMode.Pipe,
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-            CreateNoWindow = true,
-            Containment = ContainmentMode.None,
-            OwnerLabel = "git",
-        };
-
-        using var process = _host.Processes.Start(spec) ?? throw new InvalidOperationException("git did not start");
-        process.StandardInput.Close();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(GitTimeout);
-        var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-        try
-        {
-            var stdout = await process.StandardOutput.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token);
-            await stderr;
-            if (process.ExitCode != 0) return null;
-            // Output ends with a newline; drop only that final empty element (an empty --show-prefix line before it is a value).
-            var lines = stdout.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
-            if (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
-            return lines;
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            try { process.Kill(entireProcessTree: true); } catch { }
-            throw new TimeoutException("git timed out");
-        }
-    }
+    private Task<List<string>?> GitAsync(string workingDirectory, string[] args, CancellationToken ct)
+        => HostGit.RunAsync(_host, workingDirectory, args, ct);
 
     private static RepositoryValidationResult Invalid(string message) =>
         new(null, StatusCodes.Status422UnprocessableEntity, message);
