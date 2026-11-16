@@ -7,6 +7,7 @@ using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
+using RedCompute.App.Services.Placement;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
@@ -55,6 +56,16 @@ public static class GenericCapabilityEndpoints
                 var (body, bodyError) = await ReadJsonBody(ctx);
                 if (bodyError is not null)
                     return Error(400, "invalid_json", bodyError);
+                // nodeId only, validated and checked against the registry. Taken out of the body so
+                // the provider, its schema validation and the job input see exactly what they did.
+                if (body.Remove(PlacementRequest.Member, out var placementValue) && placementValue is JsonElement placementElement)
+                {
+                    if (!PlacementParser.TryParseValue(placementElement, PlacementRoute.Generate, conversationOnly: false,
+                            out var placement, out var placementError))
+                        return placementError!.ToResult();
+                    if (placement is not null && PlacementParser.ResolveNode(placement, nodes, out _) is { } nodeError)
+                        return nodeError.ToResult();
+                }
 
                 var requestedProvider = ProviderResolver.GetRequestedProvider(ctx, body);
                 var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, slug);
@@ -289,7 +300,8 @@ public static class GenericCapabilityEndpoints
                 .WithParam("X-Idempotency-Key", "string", description: "Dedupe key — repeated requests with the same key reuse the original job", location: ParamLocation.Header)
                 .WithParam("X-Job-Name", "string", description: "Human-readable job name (body 'name' takes precedence)", location: ParamLocation.Header)
                 .WithParam("X-Job-Rationale", "string", description: "Why the job was queued (body 'rationale' takes precedence)", location: ParamLocation.Header)
-                .WithParam("X-Provider", "string", description: "Provider to use for this request (body 'provider' takes precedence)", location: ParamLocation.Header);
+                .WithParam("X-Provider", "string", description: "Provider to use for this request (body 'provider' takes precedence)", location: ParamLocation.Header)
+                .WithParam("placement", "object", description: "Where the job runs: {nodeId}, a /nodes id or 'local' (null or absent: this node). Only nodeId is accepted on this route; any other member is 422 placement_member_not_supported, an unknown node 404 node_not_found. It is not passed to the provider and not part of the job input.", location: ParamLocation.Body);
 
 
             if (capability.ActiveProvider is IPluginProvider structured &&

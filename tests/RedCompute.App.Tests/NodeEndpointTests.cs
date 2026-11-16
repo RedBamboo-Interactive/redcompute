@@ -48,6 +48,32 @@ public sealed class NodeEndpointTests : IAsyncLifetime
         AssertNodeZero(node);
     }
 
+    [Fact]
+    public async Task Nodes_names_the_node_records_older_than_node_ids_belong_to()
+    {
+        var (_, json) = await GetAsync("/nodes");
+
+        Assert.Equal("node_01JCZ0000000000000000GOLD", json.RootElement.GetProperty("legacyNodeId").GetString());
+    }
+
+    [Fact]
+    public async Task A_recreated_identity_keeps_reporting_its_legacy_node()
+    {
+        _nodes = new NodeRegistry(new NodeIdentityResult(
+                new NodeIdentity("node_01JCZ0000000000000000NEW0", Seen, "node_01JCZ0000000000000000GOLD"), true, false, null),
+            NodeRegistryTests.Platform(), "0.2.0", Seen.AddHours(-1), () => Seen);
+        await _app.DisposeAsync();
+        _app = WebApplication.CreateSlimBuilder().Build();
+        _endpoints = new EndpointRegistry(_app);
+        NodeEndpoints.Map(_endpoints, _nodes, Registry(), () => _snapshot);
+
+        var (_, json) = await GetAsync("/nodes");
+
+        Assert.Equal("node_01JCZ0000000000000000GOLD", json.RootElement.GetProperty("legacyNodeId").GetString());
+        Assert.Equal("node_01JCZ0000000000000000NEW0",
+            Assert.Single(json.RootElement.GetProperty("nodes").EnumerateArray()).GetProperty("id").GetString());
+    }
+
     [Theory]
     [InlineData("local")]
     [InlineData("LOCAL")]

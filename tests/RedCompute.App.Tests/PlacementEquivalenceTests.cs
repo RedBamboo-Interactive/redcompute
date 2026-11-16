@@ -16,6 +16,7 @@ using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
+using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
@@ -144,23 +145,60 @@ public sealed class PlacementEquivalenceTests : IDisposable
     private static PlacementCase Execute(string body, string? idempotencyKey = null, string? jobName = null)
         => new("/ai-session/execute", body.Trim(), idempotencyKey, jobName);
 
+    internal const string AgentId = "7e1e0000-0000-4000-8000-0000000000a1";
+
+    /// <summary>
+    /// The <c>placement</c> each caller adds in stage A (design 8.1), beside its unchanged legacy fields.
+    /// The two cap-ai-inference paths have none: their placement comes with the D2 behaviour change
+    /// (the Agent's real workspace instead of the old per-Agent folder), so no body sent today matches it.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string> StageAPlacements = new Dictionary<string, string>
+    {
+        ["nova-discussion-mounted-workspace"] = """{"nodeId":null,"workspace":{"agentId":"7e1e0000-0000-4000-8000-0000000000a1"},"scratch":{"owner":"nova","executionKey":"target"}}""",
+        ["nova-discussion-disposable-workspace"] = """{"nodeId":null,"workspace":{"agentId":"7e1e0000-0000-4000-8000-0000000000a1"},"scratch":{"owner":"nova","executionKey":"target"}}""",
+        ["nova-heartbeat-resident-unattended"] = """{"nodeId":null,"workspace":{"agentId":"7e1e0000-0000-4000-8000-0000000000a1"},"scratch":{"owner":"nova","executionKey":"target"}}""",
+        ["nova-delegate-repository"] = """{"nodeId":null,"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001"}}""",
+        ["nova-delegate-branch-worktree"] = """{"nodeId":null,"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001","branch":"laurent/x"}}""",
+        ["nova-delegate-agent-workspace"] = """{"nodeId":null,"workspace":{"agentId":"7e1e0000-0000-4000-8000-0000000000a1"}}""",
+        ["nova-delegate-repository-codex"] = """{"nodeId":null,"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001"}}""",
+        ["code-session-checkout"] = """{"nodeId":null,"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001"}}""",
+        ["code-session-worktree"] = """{"nodeId":null,"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001","branch":"laurent/x"}}""",
+        ["nova-automation-session"] = """{"nodeId":null,"workspace":{"agentId":"7e1e0000-0000-4000-8000-0000000000a1"},"scratch":{"owner":"nova","executionKey":"attempt-1"},"scratchAs":"add-dir"}""",
+        ["code-executor-tackle"] = """{"nodeId":null,"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001"}}""",
+        ["redleaf-setup-probe"] = """{"nodeId":"local","scratch":{"owner":"owner","executionKey":"setup-probe"},"scratchAs":"cwd"}""",
+        ["sentinel-review"] = """{"nodeId":"local","scratch":{"owner":"sentinel","executionKey":"review-1"},"scratchAs":"cwd"}""",
+        ["roleplay-turn"] = """{"nodeId":"local","scratch":{"owner":"roleplay","executionKey":"turn-1"},"scratchAs":"cwd"}""",
+    };
+
+    public static TheoryData<string> StageACases() => new(StageAPlacements.Keys);
+
+    /// <summary>The fixture's legacy body with a placement added as its last member.</summary>
+    internal static string WithPlacement(PlacementCase fixture, string placement)
+        => fixture.Body[..fixture.Body.LastIndexOf('}')] + ",\"placement\":" + placement + "}";
+
     // ── Layer 2a: what reaches the provider ─────────────────────────────────────────────────────
 
     [WindowsTheory("Placement goldens are recorded on Windows (path bytes, separators included)")]
     [MemberData(nameof(Cases))]
     public async Task Legacy_request_reaches_the_provider_as_recorded(string name)
-    {
-        var fixture = Fixtures[name];
-        var recorder = new RecordingProvider();
-        var result = await InvokeAsync(fixture, jobs => recorder.Jobs = jobs,
-            new Dictionary<string, IBackendProvider>
-            {
-                ["claude-code"] = recorder.As("claude-code"),
-                ["codex"] = recorder.As("codex"),
-                ["opencode"] = recorder.As("opencode"),
-            });
+        => PlacementGoldens.Verify(name, await CaptureAsync(Fixtures[name], Fixtures[name].Body));
 
-        Assert.True(result.Status is 200 or 202, $"{name}: {result.Status} {result.Response}");
+    /// <summary>
+    /// Stage A: the same legacy fields with the caller's placement beside them reach the provider exactly
+    /// as the legacy fields alone do (the same golden), and the job input does not change.
+    /// </summary>
+    [WindowsTheory("Placement goldens are recorded on Windows (path bytes, separators included)")]
+    [MemberData(nameof(StageACases))]
+    public async Task Legacy_request_with_its_placement_reaches_the_provider_unchanged(string name)
+        => PlacementGoldens.Verify(name, await CaptureAsync(Fixtures[name], WithPlacement(Fixtures[name], StageAPlacements[name])));
+
+    /// <summary>What the provider was handed for <paramref name="body"/>, recorded under the fixture's legacy request.</summary>
+    private async Task<JsonNode> CaptureAsync(PlacementCase fixture, string body, INodeRegistry? nodes = null)
+    {
+        var recorder = new RecordingProvider();
+        var result = await InvokeAsync(fixture, jobs => recorder.Jobs = jobs, recorder.Providers(), body: body, nodes: nodes);
+
+        Assert.True(result.Status is 200 or 202, $"{result.Status} {result.Response}");
         var capture = new JsonObject
         {
             ["request"] = JsonNode.Parse(fixture.Body),
@@ -169,7 +207,82 @@ public sealed class PlacementEquivalenceTests : IDisposable
             ["provider"] = Assert.Single(recorder.Calls).DeepClone(),
             ["jobInput"] = result.JobInput is null ? null : JsonNode.Parse(result.JobInput),
         };
-        PlacementGoldens.Verify(name, Normalizer().Apply(capture)!);
+        return Normalizer().Apply(capture)!;
+    }
+
+    // ── refused placements never reach the provider ────────────────────────────────────────────
+
+    private const string NodeZero = "node_01JCZ0000000000000000PLAC";
+
+    private static NodeRegistry Nodes() => new(
+        new NodeIdentityResult(new NodeIdentity(NodeZero, DateTimeOffset.UtcNow.AddDays(-1), NodeZero), true, false, null),
+        NodeRegistryTests.Platform(), "0.2.0", DateTimeOffset.UtcNow, () => DateTimeOffset.UtcNow);
+
+    [Theory]
+    [InlineData("nova-discussion-mounted-workspace", """{"nodeId":"node_01JCZ000000000000000OTHER"}""", 404, "node_not_found")]
+    [InlineData("nova-automation-session", """{"nodeId":"node_01JCZ000000000000000OTHER"}""", 404, "node_not_found")]
+    [InlineData("nova-discussion-mounted-workspace", """{"workspace":{"agentId":"nova"}}""", 422, "validation_failed")]
+    [InlineData("nova-discussion-mounted-workspace", """{"scratch":{"owner":"nova","executionKey":"k"},"scratchAs":"add-dir"}""", 422, "validation_failed")]
+    [InlineData("nova-automation-session", """{"workspace":{"agentId":"7e1e0000-0000-4000-8000-0000000000a1"},"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001"}}""", 422, "validation_failed")]
+    [InlineData("code-executor-tackle", """{"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001","subPath":"../other"}}""", 422, "validation_failed")]
+    [InlineData("code-executor-tackle", """ "local" """, 422, "validation_failed")]
+    public async Task A_refused_placement_never_reaches_the_provider(string name, string placement, int status, string code)
+    {
+        var fixture = Fixtures[name];
+        var recorder = new RecordingProvider();
+        var result = await InvokeAsync(fixture, jobs => recorder.Jobs = jobs, recorder.Providers(),
+            body: WithPlacement(fixture, placement.Trim()), nodes: Nodes());
+
+        Assert.Equal(status, result.Status);
+        using var response = JsonDocument.Parse(result.Response);
+        Assert.Equal(code, response.RootElement.GetProperty("error").GetString());
+        if (code == "node_not_found")
+            Assert.Equal("node_01JCZ000000000000000OTHER", response.RootElement.GetProperty("nodeId").GetString());
+        else
+            Assert.StartsWith("placement", Assert.Single(response.RootElement.GetProperty("fields").EnumerateObject()).Name);
+        Assert.DoesNotContain(_root, result.Response, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(recorder.Calls);
+        Assert.Null(result.JobInput);
+    }
+
+    [WindowsTheory("Placement goldens are recorded on Windows (path bytes, separators included)")]
+    [InlineData("local")]
+    [InlineData(NodeZero)]
+    public async Task A_known_node_with_a_registry_changes_nothing(string nodeId)
+        => PlacementGoldens.Verify("nova-delegate-repository", await CaptureAsync(Fixtures["nova-delegate-repository"],
+            WithPlacement(Fixtures["nova-delegate-repository"], $$$"""{"nodeId":"{{{nodeId}}}","repository":{"repositoryId":"{{{RepositoryId}}}"}}"""),
+            Nodes()));
+
+    [Fact]
+    public async Task A_conversation_only_session_refuses_placement_references_before_allocating_its_workspace()
+    {
+        var recorder = new RecordingProvider();
+        var result = await InvokeAsync(new PlacementCase("/ai-session/sessions", "{}"), jobs => recorder.Jobs = jobs,
+            recorder.Providers(), body: $$$$"""
+                {"provider":"codex","executionProfile":"conversation-only","placement":{"nodeId":"local","workspace":{"agentId":"{{{{AgentId}}}}"}}}
+                """);
+
+        Assert.Equal(422, result.Status);
+        Assert.Contains("placement.workspace", result.Response);
+        Assert.Empty(recorder.Calls);
+    }
+
+    [Fact]
+    public async Task Discovery_documents_placement_on_both_routes()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        await using var app = WebApplication.CreateSlimBuilder().Build();
+        var endpoints = new EndpointRegistry(app);
+        UnifiedSessionEndpoints.Map(endpoints, new CapabilityRegistry(), new ClaudeDeveloperInstructionsTests.MemoryJobTracker(),
+            (_, _) => { }, f.Config, attachmentStore: f.Attachments, inputQueue: f.Service());
+
+        var sessions = endpoints.GetEndpoints().Single(e => e.Method == "POST" && e.Path == "/ai-session/sessions");
+        var parameter = Assert.Single(sessions.Parameters!, p => p.Name == "placement");
+        Assert.Equal("object", parameter.Type);
+        Assert.Contains("node_not_found", parameter.Description);
+        var execute = endpoints.GetEndpoints().Single(e => e.Method == "POST" && e.Path == "/ai-session/execute");
+        var schema = JsonSerializer.SerializeToElement(execute.RequestBody);
+        Assert.Equal("object", schema.GetProperty("properties").GetProperty("placement").GetProperty("type").GetString());
     }
 
     // ── Layer 2b: the launch itself, real Claude Code provider on a capturing host ─────────────
@@ -225,7 +338,7 @@ public sealed class PlacementEquivalenceTests : IDisposable
 
     private async Task<(int Status, string Response, string? JobInput)> InvokeAsync(PlacementCase fixture,
         Action<IJobTracker> jobsReady, Dictionary<string, IBackendProvider>? providers,
-        Func<IJobTracker, ClaudeCodeProvider>? claude = null)
+        Func<IJobTracker, ClaudeCodeProvider>? claude = null, string? body = null, INodeRegistry? nodes = null)
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
         var dbPath = Path.Combine(f.Root, "jobs.db");
@@ -250,7 +363,7 @@ public sealed class PlacementEquivalenceTests : IDisposable
             BaseAddress = new Uri("http://redleaf/"),
         });
         UnifiedSessionEndpoints.Map(new EndpointRegistry(app), registry, jobs, (_, _) => { }, f.Config,
-            attachmentStore: f.Attachments, inputQueue: f.Service(), repositoryValidator: repositories);
+            attachmentStore: f.Attachments, inputQueue: f.Service(), repositoryValidator: repositories, nodes: nodes);
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
             .Single(e => e.RoutePattern.RawText == fixture.Route
                 && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("POST"));
@@ -265,9 +378,9 @@ public sealed class PlacementEquivalenceTests : IDisposable
         ctx.Request.ContentType = "application/json";
         if (fixture.IdempotencyKey is not null) ctx.Request.Headers["X-Idempotency-Key"] = fixture.IdempotencyKey;
         if (fixture.JobName is not null) ctx.Request.Headers["X-Job-Name"] = fixture.JobName;
-        var body = Encoding.UTF8.GetBytes(Fill(fixture.Body));
-        ctx.Request.Body = new MemoryStream(body);
-        ctx.Request.ContentLength = body.Length;
+        var bytes = Encoding.UTF8.GetBytes(Fill(body ?? fixture.Body));
+        ctx.Request.Body = new MemoryStream(bytes);
+        ctx.Request.ContentLength = bytes.Length;
         ctx.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>(
             new ClaudeDeveloperInstructionsTests.BodyFeature());
         ctx.Response.Body = new MemoryStream();
@@ -352,6 +465,14 @@ public sealed class PlacementEquivalenceTests : IDisposable
         }
 
         private RecordingProvider Shared => _shared ?? this;
+
+        /// <summary>This recorder under every session provider id the fixtures name.</summary>
+        public Dictionary<string, IBackendProvider> Providers() => new()
+        {
+            ["claude-code"] = As("claude-code"),
+            ["codex"] = As("codex"),
+            ["opencode"] = As("opencode"),
+        };
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
             => SessionProviderProxy.Route(method, args, InvokeProvider);

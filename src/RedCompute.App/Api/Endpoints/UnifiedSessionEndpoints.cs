@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Placement;
 using RedCompute.App.Services.SessionArtifacts;
 using RedCompute.App.Services.SessionTitles;
 using RedCompute.Core.Configuration;
@@ -369,6 +370,9 @@ public static class UnifiedSessionEndpoints
             if (conversationOnly && !provider.ProviderId.Equals("codex", StringComparison.OrdinalIgnoreCase))
                 return Error(422, "execution_profile_not_supported",
                     $"Provider '{provider.ProviderId}' does not support the conversation-only execution profile");
+            // Validated and its node checked; the legacy fields below still decide the launch.
+            if (ReadPlacement(body, PlacementRoute.Session, conversationOnly, out _) is { } placementError)
+                return placementError;
 
             var projectPath = body.TryGetProperty("projectPath", out var pp) ? pp.GetString() : null;
             if (conversationOnly)
@@ -557,6 +561,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
             .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body)
             .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body)
+            .WithParam("placement", "object", description: PlacementDescription, location: ParamLocation.Body)
             .WithParam("developerInstructions", "string", description: "Provider-native developer instructions applied to the persistent session. Unsupported providers reject the request.", location: ParamLocation.Body)
             .WithParam("executionProfile", "string", description: "Persisted provider execution restrictions. conversation-only is currently supported by Codex.", enumValues: [SessionExecutionProfile.Default, SessionExecutionProfile.ConversationOnly], defaultValue: SessionExecutionProfile.Default, location: ParamLocation.Body)
             .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body)
@@ -2241,6 +2246,10 @@ public static class UnifiedSessionEndpoints
             var prompt = body.TryGetProperty("prompt", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
             if (string.IsNullOrWhiteSpace(prompt))
                 return Error(422, "validation_failed", "prompt is required");
+            // Validated and its node checked; the legacy fields below still decide the launch. The
+            // job input below stays exactly what it was, so idempotency keys keep matching.
+            if (ReadPlacement(body, PlacementRoute.Execute, conversationOnly: false, out _) is { } placementError)
+                return placementError;
 
             var workingDir = body.TryGetProperty("workingDir", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : null;
             var model = q.Model;
@@ -2452,6 +2461,7 @@ public static class UnifiedSessionEndpoints
                     sandbox = new { type = "string", description = "Sandbox mode (provider-specific, e.g. read-only, workspace-write, danger-full-access)" },
                     networkAccess = new { type = "boolean", description = "Enable command network access for workspace-write executions" },
                     suiteAccess = new { type = "boolean", description = "Pass a derived REDLEAF_EXECUTION_TOKEN to the provider process", @default = true },
+                    placement = new { type = "object", description = PlacementDescription },
                     accessLevel = new
                     {
                         type = "string", @enum = SessionAccessLevels.All.ToArray(),
@@ -3244,6 +3254,33 @@ public static class UnifiedSessionEndpoints
 
     private static IResult Error(int status, string error, string message)
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
+
+    /// <summary>
+    /// The body's <c>placement</c>, validated, with its node resolved against the registry; the error
+    /// to return when it is refused. Absent or null is no placement.
+    /// </summary>
+    internal static IResult? ReadPlacement(JsonElement body, PlacementRoute route, bool conversationOnly,
+        out PlacementRequest? placement)
+    {
+        if (!PlacementParser.TryParse(body, route, conversationOnly, out placement, out var error))
+            return error!.ToResult();
+        if (placement is not null && PlacementParser.ResolveNode(placement, _nodes, out _) is { } nodeError)
+        {
+            placement = null;
+            return nodeError.ToResult();
+        }
+        return null;
+    }
+
+    /// <summary>Discovery text for <c>placement</c> on the session and execute routes.</summary>
+    internal const string PlacementDescription =
+        "Where the work runs, by reference (ids, never paths): {nodeId, workspace: {agentId}, repository: {repositoryId, checkoutId?, branch?, subPath?}, "
+        + "scratch: {owner, executionKey}, scratchAs: env|add-dir|cwd}. nodeId is a /nodes id or 'local'; null or absent routes to this node. "
+        + "At most one of workspace or repository; scratchAs needs scratch, add-dir is execute-only, cwd excludes workspace and repository; "
+        + "conversation-only sessions take nodeId only. Unknown members and malformed values are 422 validation_failed naming the member "
+        + "in fields; an unknown node is 404 node_not_found with nodeId. Accepted and validated today; the legacy path fields "
+        + "(projectPath, repositoryId, scratchDir, workingDir, env, addDirs) still decide where the work runs, so send both until "
+        + "GET /ping lists the placement.v1 feature.";
 
     /// <summary>
     /// The execute result document. <c>isolation</c> is what the provider reports it applied to this

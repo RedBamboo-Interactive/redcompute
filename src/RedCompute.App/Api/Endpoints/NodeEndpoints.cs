@@ -14,7 +14,11 @@ using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
 
-public sealed record NodeListView(IReadOnlyList<NodeView> Nodes);
+/// <param name="LegacyNodeId">
+/// The node a record stored before node ids existed belongs to: every response already reports such a
+/// record under this id. Equal to node zero's id unless its identity was recreated.
+/// </param>
+public sealed record NodeListView(IReadOnlyList<NodeView> Nodes, string LegacyNodeId);
 
 /// <summary>A computer RedCompute runs work on, with what it has and what runs on it right now.</summary>
 public sealed record NodeView(
@@ -74,11 +78,11 @@ public static class NodeEndpoints
         Func<HardwareSnapshot?> hardware)
     {
         endpoints.MapGet("/nodes",
-            "The computers RedCompute runs work on, each with its platform, hardware summary, and the capabilities and providers on it with their current status. Phase 1: exactly one, this machine (isLocal).",
+            "The computers RedCompute runs work on, each with its platform, hardware summary, and the capabilities and providers on it with their current status. Phase 1: exactly one, this machine (isLocal). legacyNodeId is the node records older than node ids belong to.",
             async Task<Ok<NodeListView>> () =>
             {
                 var view = await BuildAsync(nodes, nodes.Local, registry, hardware());
-                return TypedResults.Ok(new NodeListView([view]));
+                return TypedResults.Ok(new NodeListView([view], nodes.LegacyNodeId));
             })
             .WithResponse(SchemaOf<NodeListView>());
 
