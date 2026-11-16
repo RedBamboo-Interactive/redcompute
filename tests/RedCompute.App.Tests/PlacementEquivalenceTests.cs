@@ -285,6 +285,64 @@ public sealed class PlacementEquivalenceTests : IDisposable
         Assert.Equal("object", schema.GetProperty("properties").GetProperty("placement").GetProperty("type").GetString());
     }
 
+    // ── the session keeps its references (R3) ─────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_started_session_reports_and_stores_its_placement_references_only(bool withPlacement)
+    {
+        var fixture = Fixtures["nova-delegate-repository"];
+        var store = new ClaudeDeveloperInstructionsTests.MemoryStore();
+        var launched = new List<Process>();
+        var claudePath = Path.Combine(_root, "cli", "claude.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(claudePath)!);
+        File.WriteAllText(claudePath, "launch capture only, never executed");
+        try
+        {
+            var result = await InvokeAsync(fixture, _ => { }, providers: null, claude: jobs =>
+            {
+                var service = new ClaudeSessionService(new ClaudeConfig { ClaudePath = claudePath }, jobs, store,
+                    new ClaudeDeveloperInstructionsTests.NullQualityModes(), () => null, (_, _) => { });
+                service.LaunchSessionProcess = HostSeams.From(_ =>
+                {
+                    var process = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = TestProcesses.StdinSink, CreateNoWindow = true, UseShellExecute = false,
+                        RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                    })!;
+                    lock (launched) launched.Add(process);
+                    return process;
+                });
+                return new ClaudeCodeProvider("ai-session", service, store, jobs, (_, _) => { });
+            }, body: withPlacement ? WithPlacement(fixture, StageAPlacements["nova-delegate-repository"]) : null);
+
+            Assert.True(result.Status == 200, $"{result.Status}: {result.Response}");
+            using var response = JsonDocument.Parse(result.Response);
+            var session = store.FindSession(response.RootElement.GetProperty("id").GetString()!)!;
+            if (!withPlacement)
+            {
+                Assert.Equal(JsonValueKind.Null, response.RootElement.GetProperty("placement").ValueKind);
+                Assert.Null(session.Placement);
+                return;
+            }
+            const string expected = """{"nodeId":null,"repository":{"repositoryId":"7e1e0000-0000-4000-8000-000000000001"}}""";
+            Assert.Equal(expected, response.RootElement.GetProperty("placement").GetRawText());
+            Assert.Equal(expected, session.Placement);
+            // The legacy fields still decided where it runs.
+            Assert.Equal(Path.Combine(_root, "songes"), session.ProjectPath);
+        }
+        finally
+        {
+            lock (launched)
+                foreach (var process in launched)
+                {
+                    try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                    process.Dispose();
+                }
+        }
+    }
+
     // ── Layer 2b: the launch itself, real Claude Code provider on a capturing host ─────────────
 
     [WindowsTheory("Placement goldens are recorded on Windows (path bytes, separators included)")]

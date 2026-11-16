@@ -71,6 +71,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
             // Once: a later instance (a dedicated provider, a reload) finds the column and logs nothing.
             if (db.NodeIdColumnAddedIn is { } added)
                 log($"[OpenCode] Added Sessions.NodeId to opencode.db in {added.TotalMilliseconds:0.#} ms", null);
+            if (db.PlacementColumnAddedIn is { } placementAdded)
+                log($"[OpenCode] Added Sessions.Placement to opencode.db in {placementAdded.TotalMilliseconds:0.#} ms", null);
         }
         _store = new OpenCodeSessionStore(nodes?.StampNodeId);
         var openCodeConfig = BuildConfig(config);
@@ -328,6 +330,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         NodeId = s.NodeId,
+        Placement = SessionPlacementScope.Parse(s.Placement),
         RepositoryId = s.RepositoryId,
         Status = Enum.TryParse<SessionStatus>(s.Status, out var st)
             ? st : SessionStatus.Stopped,

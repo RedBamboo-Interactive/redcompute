@@ -255,11 +255,12 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         string? scratchDirectory = null, bool confidential = false,
         string? developerInstructions = null,
         string executionProfile = SessionExecutionProfile.Default,
-        Core.Sessions.SessionAccessState? access = null)
+        Core.Sessions.SessionAccessState? access = null,
+        string? placement = null)
         => RunSessionLaunchAsync(spawned => StartSessionCoreAsync(
             projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratchDirectory, confidential,
-            developerInstructions, executionProfile, spawned, access));
+            developerInstructions, executionProfile, spawned, access, placement));
 
     private async Task<CodexSessionInfo?> RunSessionLaunchAsync(
         Func<Action, Task<CodexSessionInfo?>> launch)
@@ -283,7 +284,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         string? developerInstructions,
         string executionProfile,
         Action spawned,
-        Core.Sessions.SessionAccessState? access)
+        Core.Sessions.SessionAccessState? access,
+        string? placement = null)
     {
         SetStartFailure(null, null);
         if (_sessions.Count >= _config.MaxSessions)
@@ -306,6 +308,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             Id = id,
             ProjectName = Path.GetFileName(projectPath.TrimEnd('/', '\\')) ?? projectPath,
             ProjectPath = projectPath,
+            Placement = placement,
             ScratchDirectory = scratchDirectory,
             RepositoryId = repositoryId,
             StartedAt = DateTimeOffset.UtcNow,
@@ -2192,6 +2195,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             Id = info.Id,
             ProjectName = info.ProjectName,
             ProjectPath = info.ProjectPath,
+            Placement = info.Placement,
             ScratchDirectory = info.ScratchDirectory,
             HistoryMode = info.HistoryMode,
             RepositoryId = info.RepositoryId,
@@ -2230,6 +2234,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         _store.SaveSession(record);
         // The store stamped the row's node at insert and keeps it after: the info reports that.
         info.NodeId = record.NodeId;
+        info.Placement = record.Placement;
     }
 
     private static CodexSessionInfo ToInfo(CodexSessionRecord r) => new()
@@ -2238,6 +2243,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         NodeId = r.NodeId,
+        Placement = r.Placement,
         ScratchDirectory = r.ScratchDirectory,
         HistoryMode = r.HistoryMode,
         RepositoryId = r.RepositoryId,

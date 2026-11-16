@@ -1075,10 +1075,11 @@ public partial class ClaudeSessionService
         // Read here: the launch gate may run the start outside this call's async flow.
         var access = SessionAccessScope.Current;
         var deliveredAsOneMessage = SessionDeliveryScope.DeliveredAsOneMessage;
+        var placement = SessionPlacementScope.Current;
         return LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
             projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratchDirectory, confidential,
-            developerInstructions, access, deliveredAsOneMessage)), ct);
+            developerInstructions, access, deliveredAsOneMessage, placement)), ct);
     }
 
     private ClaudeSessionInfo? StartSessionCore(string projectPath, string? model, string? userId,
@@ -1086,7 +1087,7 @@ public partial class ClaudeSessionService
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory, bool confidential,
         string? developerInstructions, Core.Sessions.SessionAccessState? access,
-        bool deliveredAsOneMessage = false)
+        bool deliveredAsOneMessage = false, string? placement = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -1125,6 +1126,7 @@ public partial class ClaudeSessionService
             ProviderEntity = providerEntity,
             DeveloperInstructions = developerInstructions,
             DeliveredAsOneMessage = deliveredAsOneMessage,
+            Placement = placement,
             // No resolved state means RedCompute did not start this through its access rules: ask.
             Access = access is { AccessLevel: not null } ? access : new Core.Sessions.SessionAccessState(Core.Sessions.SessionAccessLevels.Ask),
         };
@@ -1277,6 +1279,7 @@ public partial class ClaudeSessionService
             ProjectName = sessionRecord.ProjectName,
             ProjectPath = sessionRecord.ProjectPath,
             NodeId = sessionRecord.NodeId,
+            Placement = sessionRecord.Placement,
             ScratchDirectory = sessionRecord.ScratchDirectory,
             RepositoryId = sessionRecord.RepositoryId,
             Status = SessionStatus.Starting,
@@ -2144,6 +2147,7 @@ public partial class ClaudeSessionService
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         NodeId = r.NodeId,
+        Placement = r.Placement,
         ScratchDirectory = r.ScratchDirectory,
         Status = Enum.TryParse<SessionStatus>(r.Status, out var s) ? s : SessionStatus.Stopped,
         StopReason = r.StopReason,
@@ -4674,6 +4678,7 @@ public partial class ClaudeSessionService
                 Id = info.Id,
                 ProjectName = info.ProjectName,
                 ProjectPath = info.ProjectPath,
+                Placement = info.Placement,
                 ScratchDirectory = info.ScratchDirectory,
                 RepositoryId = info.RepositoryId,
                 Status = info.Status.ToString(),
@@ -4715,6 +4720,7 @@ public partial class ClaudeSessionService
             _sessionStore.SaveSession(record);
             // The store stamped the row's node at insert and keeps it after: the info reports that.
             info.NodeId = record.NodeId;
+            info.Placement = record.Placement;
         }
         catch (Exception ex)
         {

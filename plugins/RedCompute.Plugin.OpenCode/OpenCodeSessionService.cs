@@ -161,6 +161,7 @@ public class OpenCodeSessionService
         string? developerInstructions = null)
     {
         var access = SessionAccessScope.Current;
+        var placement = SessionPlacementScope.Current;
         if (_sessions.Count >= _config.MaxSessions)
         {
             LastStartError = $"Max sessions reached ({_config.MaxSessions})";
@@ -186,6 +187,7 @@ public class OpenCodeSessionService
             Id = id,
             ProjectName = Path.GetFileName(projectPath),
             ProjectPath = projectPath,
+            Placement = placement,
             ScratchDirectory = scratchDirectory,
             RepositoryId = repositoryId,
             Status = "Starting",
@@ -285,6 +287,7 @@ public class OpenCodeSessionService
             ProjectName = record.ProjectName,
             ProjectPath = record.ProjectPath,
             NodeId = record.NodeId,
+            Placement = record.Placement,
             ScratchDirectory = record.ScratchDirectory,
             RepositoryId = record.RepositoryId,
             Status = "Starting",
@@ -1822,6 +1825,7 @@ public class OpenCodeSessionService
             Id = info.Id,
             ProjectName = info.ProjectName,
             ProjectPath = info.ProjectPath,
+            Placement = info.Placement,
             ScratchDirectory = info.ScratchDirectory,
             RepositoryId = info.RepositoryId,
             Status = info.Status,
@@ -1856,6 +1860,7 @@ public class OpenCodeSessionService
         _store.SaveSession(record);
         // The store stamped the row's node at insert and keeps it after: the info reports that.
         info.NodeId = record.NodeId;
+        info.Placement = record.Placement;
     }
 
     private void TryKillByPid(int? pid)
@@ -2410,6 +2415,7 @@ public class OpenCodeSessionService
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         NodeId = r.NodeId,
+        Placement = r.Placement,
         ScratchDirectory = r.ScratchDirectory,
         Status = r.Status,
         StopReason = r.StopReason,

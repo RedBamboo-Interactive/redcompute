@@ -370,8 +370,9 @@ public static class UnifiedSessionEndpoints
             if (conversationOnly && !provider.ProviderId.Equals("codex", StringComparison.OrdinalIgnoreCase))
                 return Error(422, "execution_profile_not_supported",
                     $"Provider '{provider.ProviderId}' does not support the conversation-only execution profile");
-            // Validated and its node checked; the legacy fields below still decide the launch.
-            if (ReadPlacement(body, PlacementRoute.Session, conversationOnly, out _) is { } placementError)
+            // Validated and its node checked; the legacy fields below still decide the launch. The
+            // references are stored with the session.
+            if (ReadPlacement(body, PlacementRoute.Session, conversationOnly, out var placement) is { } placementError)
                 return placementError;
 
             var projectPath = body.TryGetProperty("projectPath", out var pp) ? pp.GetString() : null;
@@ -520,6 +521,7 @@ public static class UnifiedSessionEndpoints
                 using (SessionExecutionProfile.Push(executionProfile))
                 using (SessionAccessScope.Push(accessStart.State))
                 using (SessionDeliveryScope.Push(deliveredAsOneMessage))
+                using (SessionPlacementScope.Push(placement?.ToJson().ToJsonString()))
                 {
                     if (conversationOnly)
                     {

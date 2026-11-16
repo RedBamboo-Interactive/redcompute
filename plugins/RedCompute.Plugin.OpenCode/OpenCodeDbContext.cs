@@ -27,6 +27,9 @@ public class OpenCodeDbContext : DbContext
     /// </summary>
     public TimeSpan? NodeIdColumnAddedIn { get; private set; }
 
+    /// <summary>How long adding <c>Sessions.Placement</c> took, when <see cref="Initialize"/> added it; null otherwise.</summary>
+    public TimeSpan? PlacementColumnAddedIn { get; private set; }
+
     public void Initialize()
     {
         Database.EnsureCreated();
@@ -81,6 +84,16 @@ public class OpenCodeDbContext : DbContext
             {
                 cmd.ExecuteNonQuery();
                 NodeIdColumnAddedIn = timer.Elapsed;
+            }
+            catch { /* column already exists */ }
+
+            // The same schema-only add: existing rows read NULL, a session started with path fields only.
+            cmd.CommandText = "ALTER TABLE Sessions ADD COLUMN Placement TEXT";
+            timer.Restart();
+            try
+            {
+                cmd.ExecuteNonQuery();
+                PlacementColumnAddedIn = timer.Elapsed;
             }
             catch { /* column already exists */ }
         }

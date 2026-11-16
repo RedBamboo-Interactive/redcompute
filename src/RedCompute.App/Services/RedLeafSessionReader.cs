@@ -796,6 +796,9 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             ProjectName = Str(d, "project_name") ?? "",
             ProjectPath = Str(d, "project_path") ?? "",
             NodeId = Str(d, "node_id"),
+            Placement = d.TryGetProperty("placement", out var placement) && placement.ValueKind == JsonValueKind.Object
+                ? System.Text.Json.Nodes.JsonNode.Parse(placement.GetRawText()) as System.Text.Json.Nodes.JsonObject
+                : null,
             RepositoryId = Str(d, "repository") is { } repositoryId
                 && Guid.TryParse(repositoryId, out var repositoryGuid)
                     ? repositoryGuid

@@ -291,6 +291,8 @@ public class RelayServer
                 // As the provider recorded it: a NULL is a session older than node ids and reads as
                 // the legacy node. Never filled in here, so a re-mirrored old session stays NULL.
                 node_id = snap.NodeId,
+                // References only (ids, never paths); null for a session started with path fields.
+                placement = SessionPlacementScope.Parse(snap.Placement),
                 repository = snap.RepositoryId,
                 status = snap.Status,
                 stop_reason = snap.StopReason,

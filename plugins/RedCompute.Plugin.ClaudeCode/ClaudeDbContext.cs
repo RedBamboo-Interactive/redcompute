@@ -27,6 +27,9 @@ public class ClaudeDbContext : DbContext
     /// </summary>
     public TimeSpan? NodeIdColumnAddedIn { get; private set; }
 
+    /// <summary>How long adding <c>Sessions.Placement</c> took, when <see cref="Initialize"/> added it; null otherwise.</summary>
+    public TimeSpan? PlacementColumnAddedIn { get; private set; }
+
     public void Initialize()
     {
         Database.EnsureCreated();
@@ -143,6 +146,16 @@ public class ClaudeDbContext : DbContext
             var timer = Stopwatch.StartNew();
             alter.ExecuteNonQuery();
             NodeIdColumnAddedIn = timer.Elapsed;
+        }
+
+        // The same schema-only add: existing rows read NULL, a session started with path fields only.
+        if (!columns.Contains("Placement"))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = "ALTER TABLE Sessions ADD COLUMN Placement TEXT";
+            var timer = Stopwatch.StartNew();
+            alter.ExecuteNonQuery();
+            PlacementColumnAddedIn = timer.Elapsed;
         }
 
         if (!columns.Contains("Unattended"))

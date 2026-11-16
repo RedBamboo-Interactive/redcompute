@@ -38,6 +38,8 @@ public class CodexSessionRecord
     /// insert by <see cref="CodexSessionStore"/>; saving a session never changes it.
     /// </summary>
     public string? NodeId { get; set; }
+    /// <summary>The placement references the session was started with (JSON text), set at insert and never changed.</summary>
+    public string? Placement { get; set; }
 
     public DateTimeOffset? LastActivity { get; set; }
     public string? Effort { get; set; }

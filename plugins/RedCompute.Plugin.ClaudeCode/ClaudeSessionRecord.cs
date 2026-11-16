@@ -38,6 +38,8 @@ public class ClaudeSessionRecord
     /// insert by <see cref="ClaudeSessionStore"/>; saving a session never changes it.
     /// </summary>
     public string? NodeId { get; set; }
+    /// <summary>The placement references the session was started with (JSON text), set at insert and never changed.</summary>
+    public string? Placement { get; set; }
     /// <summary>
     /// Provider-native developer instructions supplied when the session was created. Reapplied
     /// as <c>--append-system-prompt</c> on every CLI launch for this session (start and resume).

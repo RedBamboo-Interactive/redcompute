@@ -17,6 +17,8 @@ public sealed class AiSessionSnapshot
     public string? ProjectPath { get; init; }
     /// <summary>The node the session runs on, as the provider recorded it; null when it recorded none.</summary>
     public string? NodeId { get; init; }
+    /// <summary>The session's placement references as stored (JSON text); null when it was started without.</summary>
+    public string? Placement { get; init; }
     public Guid? RepositoryId { get; init; }
     public string Status { get; init; } = "";
     public string? StopReason { get; init; }

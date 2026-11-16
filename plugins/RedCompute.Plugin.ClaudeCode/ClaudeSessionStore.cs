@@ -84,6 +84,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         NodeId = r.NodeId,
+        Placement = r.Placement,
         RepositoryId = r.RepositoryId,
         Status = r.Status,
         StopReason = r.StopReason,
@@ -238,8 +239,9 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.AccessLevelSource = record.AccessLevelSource;
             if (record.LastActivity.HasValue)
                 existing.LastActivity = record.LastActivity;
-            // The node is the row's, set at insert: the published snapshot carries it as stored.
+            // The node and the placement are the row's, set at insert: the published snapshot carries them as stored.
             record.NodeId = existing.NodeId;
+            record.Placement = existing.Placement;
         }
         else
         {

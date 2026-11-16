@@ -65,6 +65,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             // Once: a later instance (a dedicated provider, a reload) finds the column and logs nothing.
             if (db.NodeIdColumnAddedIn is { } added)
                 log($"[Claude] Added Sessions.NodeId to claude.db in {added.TotalMilliseconds:0.#} ms", null);
+            if (db.PlacementColumnAddedIn is { } placementAdded)
+                log($"[Claude] Added Sessions.Placement to claude.db in {placementAdded.TotalMilliseconds:0.#} ms", null);
         }
         var runtimeOwner = RuntimeOwnerOf(config);
         if (runtimeOwner is not null)
@@ -418,6 +420,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         NodeId = s.NodeId,
+        Placement = SessionPlacementScope.Parse(s.Placement),
         RepositoryId = s.RepositoryId,
         Status = (Core.Sessions.SessionStatus)(int)s.Status,
         StopReason = s.StopReason,

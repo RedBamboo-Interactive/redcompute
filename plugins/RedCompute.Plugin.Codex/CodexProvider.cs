@@ -89,6 +89,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             // Once: a later instance (a dedicated provider, a reload) finds the column and logs nothing.
             if (db.NodeIdColumnAddedIn is { } added)
                 log($"[Codex] Added Sessions.NodeId to codex.db in {added.TotalMilliseconds:0.#} ms", null);
+            if (db.PlacementColumnAddedIn is { } placementAdded)
+                log($"[Codex] Added Sessions.Placement to codex.db in {placementAdded.TotalMilliseconds:0.#} ms", null);
         }
         _store = new CodexSessionStore(nodes?.StampNodeId);
         var codexConfig = BuildConfig(config);
@@ -209,7 +211,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         if (!await ValidateRequestedModelAsync(model)) return null;
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current, access: SessionAccessScope.Current);
+            scratchDirectory, confidential, executionProfile: SessionExecutionProfile.Current, access: SessionAccessScope.Current,
+            placement: SessionPlacementScope.Current);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -222,7 +225,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         if (!await ValidateRequestedModelAsync(model)) return null;
         var info = await _interactive.StartSessionAsync(projectPath, model, userId, userName,
             userAvatarUrl, effort, qualityTier, providerEntity, repositoryId, provenance,
-            scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current, SessionAccessScope.Current);
+            scratchDirectory, confidential, developerInstructions, SessionExecutionProfile.Current, SessionAccessScope.Current,
+            SessionPlacementScope.Current);
         return info != null ? ToUnified(info) : null;
     }
 
@@ -569,6 +573,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,
         NodeId = s.NodeId,
+        Placement = SessionPlacementScope.Parse(s.Placement),
         RepositoryId = s.RepositoryId,
         Status = UnifiedStatus(s.Status) ?? Core.Sessions.SessionStatus.Stopped,
         StartedAt = s.StartedAt,

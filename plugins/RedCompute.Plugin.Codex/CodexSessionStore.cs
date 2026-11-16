@@ -25,6 +25,7 @@ public class CodexSessionStore : ICodexSessionStore
         ProjectName = r.ProjectName,
         ProjectPath = r.ProjectPath,
         NodeId = r.NodeId,
+        Placement = r.Placement,
         RepositoryId = r.RepositoryId,
         Status = r.Status,
         StopReason = r.StopReason,
@@ -163,8 +164,9 @@ public class CodexSessionStore : ICodexSessionStore
             existing.UserAvatarUrl = record.UserAvatarUrl;
             existing.StopReason = record.StopReason;
             existing.StoppedAt = record.StoppedAt;
-            // The node is the row's, set at insert: the published snapshot carries it as stored.
+            // The node and the placement are the row's, set at insert: the published snapshot carries them as stored.
             record.NodeId = existing.NodeId;
+            record.Placement = existing.Placement;
         }
         else
         {

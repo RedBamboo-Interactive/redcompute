@@ -11,6 +11,8 @@ public class OpenCodeSessionInfo
     /// legacy node (the API resolves it).
     /// </summary>
     public string? NodeId { get; set; }
+    /// <summary>The placement references the session was started with (JSON text), set at insert and never changed.</summary>
+    public string? Placement { get; set; }
     public string? ScratchDirectory { get; set; }
     public Guid? RepositoryId { get; set; }
     public string Status { get; set; } = "Starting";

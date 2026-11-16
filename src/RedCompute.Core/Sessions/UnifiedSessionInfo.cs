@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace RedCompute.Core.Sessions;
 
 public class UnifiedSessionInfo
@@ -12,6 +14,12 @@ public class UnifiedSessionInfo
     /// mirror recorded none (every session older than node ids): the API reports the legacy node.
     /// </summary>
     public string? NodeId { get; set; }
+    /// <summary>
+    /// The placement the session was started with, by reference (<c>nodeId</c>, <c>workspace</c>,
+    /// <c>repository</c>, <c>scratch</c>, <c>scratchAs</c>; never a path), as stored at insert. Null for a
+    /// session started with path fields only, which includes every session older than placement.
+    /// </summary>
+    public JsonObject? Placement { get; set; }
     public Guid? RepositoryId { get; set; }
     public SessionStatus Status { get; set; }
     public string? StopReason { get; set; }
