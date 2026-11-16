@@ -1,0 +1,23 @@
+{
+  "jobInput": null,
+  "provider": {
+    "accessLevel": "auto",
+    "confidential": false,
+    "deliveredAsOneMessage": false,
+    "developerInstructions": null,
+    "effort": null,
+    "environment": null,
+    "method": "StartSessionAsync",
+    "model": null,
+    "projectPath": "<root>/songes",
+    "providerId": "claude-code",
+    "repositoryId": "7e1e0000-0000-4000-8000-000000000001",
+    "scratchDirectory": null
+  },
+  "request": {
+    "projectPath": "<root/>/songes",
+    "repositoryId": "7e1e0000-0000-4000-8000-000000000001"
+  },
+  "route": "/ai-session/sessions",
+  "status": 200
+}

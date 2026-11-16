@@ -1,0 +1,44 @@
+{
+  "jobInput": {
+    "model": null,
+    "prompt": "Continue the scene.",
+    "provider": "opencode",
+    "timeout": 600,
+    "workingDir": "<root>\\scratch"
+  },
+  "provider": {
+    "environment": {
+      "OPENCODE_CONFIG_DIR": "<root>\\roleplay\\opencode",
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    },
+    "method": "ExecuteAsync",
+    "model": null,
+    "providerId": "opencode",
+    "providerParams": {
+      "accessLevel": "auto",
+      "userId": "owner"
+    },
+    "timeout": 600,
+    "workingDir": "<root>\\scratch"
+  },
+  "request": {
+    "env": {
+      "OPENCODE_CONFIG_DIR": "<root>\\roleplay\\opencode",
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    },
+    "prompt": "Continue the scene.",
+    "provider": "opencode",
+    "timeout": 600,
+    "workingDir": "<root>\\scratch"
+  },
+  "route": "/ai-session/execute",
+  "status": 200
+}

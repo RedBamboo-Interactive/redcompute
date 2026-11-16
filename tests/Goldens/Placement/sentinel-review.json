@@ -1,0 +1,30 @@
+{
+  "jobInput": {
+    "model": null,
+    "prompt": "Review the attached media.",
+    "provider": "claude-code",
+    "timeout": 300,
+    "workingDir": "<root>\\scratch"
+  },
+  "provider": {
+    "environment": null,
+    "method": "ExecuteAsync",
+    "model": null,
+    "providerId": "claude-code",
+    "providerParams": {
+      "accessLevel": "auto",
+      "addDirs": [],
+      "userId": "owner"
+    },
+    "timeout": 300,
+    "workingDir": "<root>\\scratch"
+  },
+  "request": {
+    "addDirs": [],
+    "prompt": "Review the attached media.",
+    "timeout": 300,
+    "workingDir": "<root>\\scratch"
+  },
+  "route": "/ai-session/execute",
+  "status": 200
+}

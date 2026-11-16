@@ -1,0 +1,31 @@
+{
+  "jobInput": {
+    "model": null,
+    "prompt": "You are tackling GitHub issue #42",
+    "provider": "claude-code",
+    "timeout": 1800,
+    "workingDir": "<root>\\songes"
+  },
+  "provider": {
+    "environment": null,
+    "method": "ExecuteAsync",
+    "model": null,
+    "providerId": "claude-code",
+    "providerParams": {
+      "accessLevel": "auto",
+      "maxTurns": 50,
+      "userId": "owner"
+    },
+    "timeout": 1800,
+    "workingDir": "<root>\\songes"
+  },
+  "request": {
+    "maxTurns": 50,
+    "prompt": "You are tackling GitHub issue #42",
+    "rationale": "Tackle issue #42: Crash on start",
+    "timeout": 1800,
+    "workingDir": "<root>\\songes"
+  },
+  "route": "/ai-session/execute",
+  "status": 200
+}

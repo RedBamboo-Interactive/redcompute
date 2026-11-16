@@ -1,0 +1,41 @@
+{
+  "jobInput": {
+    "model": null,
+    "prompt": "Reply with OK.",
+    "provider": "claude-code",
+    "timeout": 120,
+    "workingDir": "<root>\\scratch"
+  },
+  "provider": {
+    "environment": {
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    },
+    "method": "ExecuteAsync",
+    "model": null,
+    "providerId": "claude-code",
+    "providerParams": {
+      "accessLevel": "auto",
+      "userId": "owner"
+    },
+    "timeout": 120,
+    "workingDir": "<root>\\scratch"
+  },
+  "request": {
+    "env": {
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    },
+    "prompt": "Reply with OK.",
+    "timeout": 120,
+    "workingDir": "<root>\\scratch"
+  },
+  "route": "/ai-session/execute",
+  "status": 200
+}

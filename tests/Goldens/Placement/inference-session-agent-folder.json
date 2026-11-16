@@ -1,0 +1,22 @@
+{
+  "jobInput": null,
+  "provider": {
+    "accessLevel": "auto",
+    "confidential": false,
+    "deliveredAsOneMessage": false,
+    "developerInstructions": null,
+    "effort": null,
+    "environment": null,
+    "method": "StartSessionAsync",
+    "model": null,
+    "projectPath": "<root>\\agents\\nova",
+    "providerId": "claude-code",
+    "repositoryId": null,
+    "scratchDirectory": null
+  },
+  "request": {
+    "projectPath": "<root>\\agents\\nova"
+  },
+  "route": "/ai-session/sessions",
+  "status": 200
+}

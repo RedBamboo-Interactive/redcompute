@@ -1,0 +1,28 @@
+{
+  "jobInput": {
+    "model": null,
+    "prompt": "Summarise the day.",
+    "provider": "claude-code",
+    "timeout": 900,
+    "workingDir": "<root>\\agents\\nova"
+  },
+  "provider": {
+    "environment": null,
+    "method": "ExecuteAsync",
+    "model": null,
+    "providerId": "claude-code",
+    "providerParams": {
+      "accessLevel": "auto",
+      "userId": "owner"
+    },
+    "timeout": 900,
+    "workingDir": "<root>\\agents\\nova"
+  },
+  "request": {
+    "prompt": "Summarise the day.",
+    "timeout": 900,
+    "workingDir": "<root>\\agents\\nova"
+  },
+  "route": "/ai-session/execute",
+  "status": 200
+}

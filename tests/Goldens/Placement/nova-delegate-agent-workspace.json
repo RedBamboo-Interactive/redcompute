@@ -1,0 +1,22 @@
+{
+  "jobInput": null,
+  "provider": {
+    "accessLevel": "auto",
+    "confidential": false,
+    "deliveredAsOneMessage": false,
+    "developerInstructions": null,
+    "effort": null,
+    "environment": null,
+    "method": "StartSessionAsync",
+    "model": null,
+    "projectPath": "<root>\\workspace",
+    "providerId": "claude-code",
+    "repositoryId": null,
+    "scratchDirectory": null
+  },
+  "request": {
+    "projectPath": "<root>\\workspace"
+  },
+  "route": "/ai-session/sessions",
+  "status": 200
+}

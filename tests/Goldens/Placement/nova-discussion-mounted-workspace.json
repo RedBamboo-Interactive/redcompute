@@ -1,0 +1,34 @@
+{
+  "jobInput": null,
+  "provider": {
+    "accessLevel": "auto",
+    "confidential": false,
+    "deliveredAsOneMessage": false,
+    "developerInstructions": null,
+    "effort": null,
+    "environment": {
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    },
+    "method": "StartSessionAsync",
+    "model": null,
+    "projectPath": "<root>\\workspace",
+    "providerId": "claude-code",
+    "repositoryId": null,
+    "scratchDirectory": "<root>\\scratch"
+  },
+  "request": {
+    "addDirs": [
+      "<root>\\scratch"
+    ],
+    "confidential": false,
+    "projectPath": "<root>\\workspace",
+    "qualityTier": null,
+    "scratchDir": "<root>\\scratch"
+  },
+  "route": "/ai-session/sessions",
+  "status": 200
+}

@@ -1,0 +1,78 @@
+{
+  "jobInput": {
+    "model": null,
+    "prompt": "# Automation: Nightly review",
+    "provider": "claude-code",
+    "timeout": 3600,
+    "workingDir": "<root>\\workspace"
+  },
+  "provider": {
+    "environment": {
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    },
+    "method": "ExecuteAsync",
+    "model": null,
+    "providerId": "claude-code",
+    "providerParams": {
+      "accessLevel": "auto",
+      "addDirs": [
+        "<root>\\scratch"
+      ],
+      "allowedTools": [
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash",
+        "WebFetch",
+        "WebSearch",
+        "TodoWrite"
+      ],
+      "maxTurns": 50,
+      "networkAccess": false,
+      "sandbox": null,
+      "userId": "owner"
+    },
+    "timeout": 3600,
+    "workingDir": "<root>\\workspace"
+  },
+  "request": {
+    "addDirs": [
+      "<root>\\scratch"
+    ],
+    "allowedTools": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "TodoWrite"
+    ],
+    "confidential": false,
+    "env": {
+      "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
+      "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+      "TEMP": "<root>\\scratch",
+      "TMP": "<root>\\scratch",
+      "TMPDIR": "<root>\\scratch"
+    },
+    "maxTurns": 50,
+    "networkAccess": false,
+    "prompt": "# Automation: Nightly review",
+    "provider": null,
+    "sandbox": null,
+    "timeout": 3600,
+    "unattended": true,
+    "workingDir": "<root>\\workspace"
+  },
+  "route": "/ai-session/execute",
+  "status": 200
+}
