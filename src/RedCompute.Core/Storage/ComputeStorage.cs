@@ -139,6 +139,49 @@ public sealed class ComputeStorage
     /// <summary><c>cloudflared-process.json</c>: the record of the cloudflared process a tunnel service started.</summary>
     public string TunnelState => Path.Combine(DataRoot, "cloudflared-process.json");
 
+    /// <summary>
+    /// Every location RedCompute owns, with the class a data move gives it. This is the one declaration
+    /// (<c>GET /storage/manifest</c> serves it, the kernel's relocation reads it): a location added to this class
+    /// is declared here or the coverage test fails. Paths are relative to <see cref="DataRoot"/>, '/'-separated.
+    /// Anything under the data root that is not declared here is treated by the kernel as durable and mutable.
+    /// </summary>
+    public IReadOnlyList<ComputeStorageLocation> Locations() =>
+    [
+        Declare("database", Database, StorageClass.Durable, StorageMutability.Mutable),
+        Declare("outputs", Outputs, StorageClass.Durable, StorageMutability.Immutable),
+        Declare("input-attachments", InputAttachments, StorageClass.Durable, StorageMutability.Immutable),
+        Declare("attachments-database", AttachmentsDatabase, StorageClass.Durable, StorageMutability.Mutable),
+        Declare("conversation-sessions", ConversationSessions, StorageClass.Durable, StorageMutability.Mutable),
+        Declare("config", ConfigFile, StorageClass.Durable, StorageMutability.Mutable),
+        Declare("entity-cache", EntityCache, StorageClass.Rebuildable, StorageMutability.Mutable),
+        Declare("quality-mode-cache", QualityModeCache, StorageClass.Rebuildable, StorageMutability.Mutable),
+        Declare("node-identity", Path.Combine(NodeIdentityDirectory, NodeIdentityFileName), StorageClass.Durable, StorageMutability.Mutable),
+        Declare("long-lived-processes-state", Path.Combine(LongLivedProcessesDirectory, LongLivedProcessesFileName), StorageClass.Durable, StorageMutability.Mutable),
+        Declare("long-lived-processes-logs", Path.Combine(LongLivedProcessesDirectory, "long-lived-processes"), StorageClass.Durable, StorageMutability.Mutable),
+        // Process ledgers and the drain checkpoint describe processes that are gone once RedCompute is stopped for a move.
+        Declare("session-processes", SessionProcesses, StorageClass.Disposable, StorageMutability.Mutable),
+        Declare("planned-restart", PlannedRestartCheckpoint, StorageClass.Disposable, StorageMutability.Mutable),
+        Declare("capability-overrides", CapabilityOverrides, StorageClass.Durable, StorageMutability.Mutable),
+        // The one-time Defender exclusions name this folder: the new location must run them again.
+        Declare("defender-exclusions-marker", DefenderExclusionsMarker, StorageClass.Disposable, StorageMutability.Mutable),
+        Declare("backups", Backups, StorageClass.Rebuildable, StorageMutability.Immutable),
+        Declare("telemetry", TelemetryDatabase, StorageClass.Rebuildable, StorageMutability.Mutable),
+        Declare("logs", Logs, StorageClass.Durable, StorageMutability.Mutable),
+        Declare("tunnel-state", TunnelState, StorageClass.Disposable, StorageMutability.Mutable),
+        Declare("plugins", Path.Combine(DataRoot, "plugins"), StorageClass.Durable, StorageMutability.Mutable),
+        // Placement shadow evidence (RedCompute.App's PlacementShadowStore.FileName; this project cannot reference it).
+        Declare("placement-shadow", Path.Combine(DataRoot, "placement-shadow.json"), StorageClass.Durable, StorageMutability.Mutable),
+    ];
+
+    /// <summary>The file name of the node identity record (<c>node.json</c>).</summary>
+    public const string NodeIdentityFileName = "node.json";
+
+    /// <summary>The file name of the long-lived process registry.</summary>
+    public const string LongLivedProcessesFileName = "long-lived-processes.json";
+
+    private ComputeStorageLocation Declare(string name, string absolute, string storageClass, string mutability)
+        => new(name, Path.GetRelativePath(DataRoot, absolute).Replace(Path.DirectorySeparatorChar, '/'), storageClass, mutability);
+
     /// <summary><c>plugins\&lt;pluginId&gt;\</c>: a plugin's own data (for example <c>claude-code</c>, <c>codex</c>, <c>opencode</c>).</summary>
     public string PluginDirectory(string pluginId)
     {
@@ -147,6 +190,27 @@ public sealed class ComputeStorage
         return Path.Combine(DataRoot, "plugins", pluginId);
     }
 }
+
+/// <summary>The class a data move gives a location (<c>GET /storage/manifest</c>).</summary>
+public static class StorageClass
+{
+    /// <summary>Copied and verified.</summary>
+    public const string Durable = "durable";
+    /// <summary>Copied only when the person asks.</summary>
+    public const string Rebuildable = "rebuildable";
+    /// <summary>Never copied (temp, lock and process-state files).</summary>
+    public const string Disposable = "disposable";
+}
+
+/// <summary>Whether a location's files are written once (safe to copy while running) or change in place.</summary>
+public static class StorageMutability
+{
+    public const string Immutable = "immutable";
+    public const string Mutable = "mutable";
+}
+
+/// <summary>One declared location: a path relative to the data root, '/'-separated.</summary>
+public sealed record ComputeStorageLocation(string Name, string Path, string Class, string Mutability);
 
 /// <summary><see cref="ComputeStorage.DataRootVariable"/> holds a value RedCompute must not start on.</summary>
 public sealed class ComputeStorageConfigurationException(string message) : InvalidOperationException(message);
