@@ -61,6 +61,14 @@ public sealed class NodeRegistry : INodeRegistry
     public NodeRegistry(NodeIdentityResult identity, NodePlatform platform, string version,
         DateTimeOffset startedAt, Func<DateTimeOffset>? clock = null, IExecutionHost? localHost = null,
         string? remoteCacheDirectory = null, Action<string>? log = null)
+        : this(identity, platform, version, startedAt, clock, localHost, remoteCacheDirectory, log, ParseCache)
+    {
+    }
+
+    /// <summary>Tests: <paramref name="parseCache"/> stands in for the cache file parser.</summary>
+    internal NodeRegistry(NodeIdentityResult identity, NodePlatform platform, string version,
+        DateTimeOffset startedAt, Func<DateTimeOffset>? clock, IExecutionHost? localHost,
+        string? remoteCacheDirectory, Action<string>? log, Func<string, CachedRemoteNode?> parseCache)
     {
         Identity = identity;
         _platform = platform;
@@ -70,7 +78,7 @@ public sealed class NodeRegistry : INodeRegistry
         LocalHost = localHost ?? new LocalExecutionHost(identity.Identity.Id);
         _cacheDirectory = remoteCacheDirectory;
         _log = log ?? (_ => { });
-        LoadCache();
+        LoadCache(parseCache);
     }
 
     /// <summary>Node zero's execution host: the code that ran every launch before nodes existed.</summary>
@@ -429,31 +437,56 @@ public sealed class NodeRegistry : INodeRegistry
     private string? CachePath(string nodeId)
         => _cacheDirectory is null || !KernelNode.IsNodeId(nodeId) ? null : Path.Combine(_cacheDirectory, nodeId + ".json");
 
-    private void LoadCache()
+    internal static CachedRemoteNode? ParseCache(string json) => JsonSerializer.Deserialize<CachedRemoteNode>(json, CacheJson);
+
+    /// <summary>
+    /// Loads the remote nodes' last state at startup. The cache is rebuildable, so nothing in it may stop
+    /// RedCompute: any failure on a file (whatever the exception) sets that file aside as
+    /// <c>&lt;name&gt;.&lt;UTC time&gt;.bad</c>, logs it and moves on; any failure on the folder is logged.
+    /// </summary>
+    private void LoadCache(Func<string, CachedRemoteNode?> parse)
     {
         if (_cacheDirectory is null) return;
         try
         {
             var directory = LocalHost.Path(_cacheDirectory);
             if (!LocalHost.Files.DirectoryExists(directory)) return;
-            foreach (var file in LocalHost.Files.EnumerateFiles(directory, "node_*.json", SearchOption.TopDirectoryOnly))
+            foreach (var file in LocalHost.Files.EnumerateFiles(directory, "node_*.json", SearchOption.TopDirectoryOnly).ToList())
             {
                 try
                 {
-                    var cached = JsonSerializer.Deserialize<CachedRemoteNode>(LocalHost.Files.ReadAllText(file), CacheJson);
-                    if (cached is null || !KernelNode.IsNodeId(cached.Id) || cached.Id == LocalNodeId) continue;
+                    var cached = parse(LocalHost.Files.ReadAllText(file))
+                                 ?? throw new InvalidDataException("the file holds no node");
+                    if (!KernelNode.IsNodeId(cached.Id)) throw new InvalidDataException($"'{cached.Id}' is not a node id");
+                    if (cached.Id == LocalNodeId) continue;
                     _remote[cached.Id] = RemoteNode.FromCache(cached);
                 }
-                catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+                catch (Exception error)
                 {
-                    _log($"[Nodes] Ignored an unreadable node cache file {file}: {error.Message}");
+                    SetAside(file, error);
                 }
             }
             if (_remote.Count > 0) _log($"[Nodes] {_remote.Count} remote node(s) from the cache, offline until they link");
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        catch (Exception error)
         {
             _log($"[Nodes] Could not read the node cache: {error.Message}");
+        }
+    }
+
+    private void SetAside(HostPath file, Exception error)
+    {
+        var aside = LocalHost.Path($"{file.Value}.{_clock():yyyyMMdd'T'HHmmss'Z'}.bad");
+        try
+        {
+            LocalHost.Files.WriteAllBytes(aside, LocalHost.Files.ReadAllBytes(file));
+            LocalHost.Files.DeleteFile(file);
+            _log($"[Nodes] Set aside an unreadable node cache file {file} as {aside}: {error.GetType().Name}: {error.Message}");
+        }
+        catch (Exception moveError)
+        {
+            _log($"[Nodes] Ignored an unreadable node cache file {file} ({error.GetType().Name}: {error.Message}); "
+                 + $"it could not be set aside: {moveError.Message}");
         }
     }
 
@@ -521,9 +554,10 @@ public sealed class NodeRegistry : INodeRegistry
         public CachedRemoteNode ToCache(DateTimeOffset? lastSeen) => new(Id, Name, OwnerUserId, Confirmed, PairedAt, Os, Arch,
             OsDescription, MachineName, Processor, AgentVersion, Revoked, RevokedReason, KernelStatus, lastSeen, Report);
 
+        /// <summary>A cached record, with what an older or hand-edited file may lack filled in.</summary>
         public static RemoteNode FromCache(CachedRemoteNode cached) => new(cached.Id)
         {
-            Name = cached.Name,
+            Name = string.IsNullOrWhiteSpace(cached.Name) ? cached.Id : cached.Name,
             OwnerUserId = cached.OwnerUserId,
             Confirmed = cached.Confirmed,
             PairedAt = cached.PairedAt,
@@ -537,7 +571,7 @@ public sealed class NodeRegistry : INodeRegistry
             RevokedReason = cached.RevokedReason,
             KernelStatus = cached.KernelStatus,
             KernelLastSeen = cached.LastSeenAt,
-            Report = cached.Report,
+            Report = cached.Report is { } report ? report with { Clis = report.Clis?.Where(cli => cli?.Name is not null).ToList() ?? [] } : null,
             CachedHardwareAt = cached.Report?.ReportedAt,
         };
     }

@@ -181,6 +181,38 @@ public sealed class NodeRegistryRemoteTests : IDisposable
     }
 
     [Fact]
+    public void A_cache_file_that_cannot_be_loaded_is_set_aside_and_startup_goes_on()
+    {
+        // Review finding: the load runs during startup and caught only Json, IO and access exceptions.
+        var first = Registry(_cache);
+        first.ApplyKernelNodes([Kernel(RemoteId(1), "Lab VM"), Kernel(RemoteId(2), "Breaks the parser")]);
+        File.WriteAllText(Path.Combine(_cache, RemoteId(3) + ".json"), "null");
+        File.WriteAllText(Path.Combine(_cache, RemoteId(4) + ".json"), """{ "id": "node_../../etc", "name": "x" }""");
+        File.WriteAllText(Path.Combine(_cache, RemoteId(5) + ".json"), $$"""{ "id": "{{RemoteId(5)}}", "name": null, "report": { "clis": null } }""");
+        var log = new List<string>();
+
+        var registry = new NodeRegistry(Identity, NodeRegistryTests.Platform(), "0.2.0", Now, () => Now, null, _cache, log.Add,
+            json => json.Contains("Breaks the parser") ? throw new InvalidOperationException("a parser bug") : NodeRegistry.ParseCache(json));
+
+        Assert.Equal([LocalId, RemoteId(1), RemoteId(5)], registry.Nodes.Select(node => node.Id).Order(StringComparer.Ordinal));
+        var sanitized = registry.Find(RemoteId(5))!;
+        Assert.Equal(RemoteId(5), sanitized.Name);
+        Assert.Empty(sanitized.Report!.Clis);
+        foreach (var bad in new[] { 2, 3, 4 })
+        {
+            Assert.False(File.Exists(Path.Combine(_cache, RemoteId(bad) + ".json")));
+            Assert.Single(Directory.GetFiles(_cache, RemoteId(bad) + ".json.*.bad"));
+        }
+        Assert.Contains(log, line => line.Contains("InvalidOperationException") && line.Contains(RemoteId(2)));
+        Assert.Equal(3, log.Count(line => line.Contains("Set aside")));
+
+        // The next start does not trip over what was set aside.
+        var again = new List<string>();
+        _ = new NodeRegistry(Identity, NodeRegistryTests.Platform(), "0.2.0", Now, () => Now, remoteCacheDirectory: _cache, log: again.Add);
+        Assert.DoesNotContain(again, line => line.Contains("Set aside") || line.Contains("Could not"));
+    }
+
+    [Fact]
     public void Without_a_cache_directory_nothing_is_written()
     {
         var registry = Registry();
