@@ -55,7 +55,14 @@ public sealed class SunoProvider : IPluginProvider
 
     public Dictionary<string, ParameterSchema> InputParameters => new()
     {
-        ["operation"] = new() { Type = "string", Required = false, Default = "generate", Description = "generate, sounds, extend, split_stem, split_stem_advanced, separate_vocal, wav, or recover" },
+        ["operation"] = new() { Type = "string", Required = false, Default = "generate", Description = "generate, upload_cover, sounds, extend, split_stem, split_stem_advanced, separate_vocal, wav, or recover" },
+        ["uploadUrl"] = new() { Type = "string", Required = false, Description = "Public HTTPS source audio URL for upload_cover (maximum 8 minutes); mutually exclusive with taskId + audioId. Local asset URLs are not reachable by Suno." },
+        ["sourceDurationSeconds"] = new() { Type = "number", Required = false, Description = "Known source duration for upload_cover; must be greater than zero and at most 480 seconds. The provider also validates the actual upload." },
+        ["sourceAssetId"] = new() { Type = "string", Required = false, Description = "Caller-supplied original Asset reference, retained in cover lineage; not an upload URL or authorization to read an Asset" },
+        ["sourceAudioSha256"] = new() { Type = "string", Required = false, Description = "Caller-supplied SHA256 of rendered source audio, retained in cover lineage" },
+        ["audioWeight"] = new() { Type = "number", Required = false, Description = "upload_cover source-audio adherence, from 0 to 1" },
+        ["styleWeight"] = new() { Type = "number", Required = false, Description = "upload_cover style adherence, from 0 to 1" },
+        ["weirdnessConstraint"] = new() { Type = "number", Required = false, Description = "upload_cover creativity, from 0 to 1" },
         ["sourceOperation"] = new() { Type = "string", Required = false, Description = "Original operation for a no-charge recovery of an existing provider task" },
         ["prompt"] = new() { Type = "string", Required = false, Description = "Musical or structural description" },
         ["style"] = new() { Type = "string", Required = false, Description = "Genre and production tags" },
@@ -148,7 +155,7 @@ public sealed class SunoProvider : IPluginProvider
         var operation = Operation(parameters);
         var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "generate", "sounds", "extend", "split_stem", "split_stem_advanced", "separate_vocal", "wav", "recover",
+            "generate", "upload_cover", "sounds", "extend", "split_stem", "split_stem_advanced", "separate_vocal", "wav", "recover",
         };
         if (!supported.Contains(operation)) errors["operation"] = "unsupported";
         var requestedModel = ProviderHelpers.GetParam<string>(parameters, "model") ?? _model;
@@ -157,6 +164,9 @@ public sealed class SunoProvider : IPluginProvider
 
         switch (operation)
         {
+            case "upload_cover":
+                ValidateCover(parameters, errors);
+                break;
             case "generate":
                 Require(parameters, errors, "prompt", "style", "title");
                 var duration = ProviderHelpers.GetParam<double?>(parameters, "duration");
@@ -188,7 +198,7 @@ public sealed class SunoProvider : IPluginProvider
             case "recover":
                 Require(parameters, errors, "taskId", "sourceOperation");
                 var sourceOperation = SourceOperation(parameters);
-                if (sourceOperation is not ("generate" or "sounds" or "extend" or "split_stem" or "split_stem_advanced" or "separate_vocal" or "wav"))
+                if (sourceOperation is not ("generate" or "upload_cover" or "sounds" or "extend" or "split_stem" or "split_stem_advanced" or "separate_vocal" or "wav"))
                     errors["sourceOperation"] = "must identify a recoverable Suno operation";
                 break;
         }
@@ -242,7 +252,8 @@ public sealed class SunoProvider : IPluginProvider
                 : consumed.HasValue ? "balance_delta" : "unavailable";
 
             request.ProgressCallback?.Invoke(1);
-            return BuildJobResult(sourceOperation, taskId, prepared, creditsBefore, creditsAfter, consumed, measurement, recovering);
+            return BuildJobResult(sourceOperation, taskId, prepared, creditsBefore, creditsAfter, consumed, measurement, recovering,
+                sourceOperation == "upload_cover" && !recovering ? request.Parameters : null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -286,10 +297,11 @@ public sealed class SunoProvider : IPluginProvider
     private async Task<string> SubmitAsync(string operation, Dictionary<string, object?> p, CancellationToken ct)
     {
         var callbackUrl = ProviderHelpers.GetExtra(_config, "CallbackUrl", CallbackPlaceholder);
-        var model = ProviderHelpers.GetParam<string>(p, "model") ?? _model;
+        var model = ProviderHelpers.GetParam<string>(p, "model") ?? (operation == "upload_cover" ? "V6" : _model);
         var endpoint = operation switch
         {
             "generate" => "/api/v1/generate",
+            "upload_cover" => "/api/v1/generate/upload-cover",
             "sounds" => "/api/v1/generate/sounds",
             "extend" => "/api/v1/generate/extend",
             "split_stem" or "split_stem_advanced" or "separate_vocal" => "/api/v1/vocal-removal/generate",
@@ -299,6 +311,7 @@ public sealed class SunoProvider : IPluginProvider
         var payload = operation switch
         {
             "generate" => GeneratePayload(p, model, callbackUrl),
+            "upload_cover" => CoverPayload(p, model, callbackUrl),
             "sounds" => SoundsPayload(p, callbackUrl),
             "extend" => ExtendPayload(p, model, callbackUrl),
             "split_stem" or "split_stem_advanced" or "separate_vocal" => StemPayload(p, operation, callbackUrl),
@@ -387,7 +400,7 @@ public sealed class SunoProvider : IPluginProvider
     {
         return operation switch
         {
-            "generate" or "sounds" or "extend" => await PrepareTracksAsync(taskId, taskData, ct),
+            "generate" or "upload_cover" or "sounds" or "extend" => await PrepareTracksAsync(taskId, taskData, ct),
             "split_stem" or "split_stem_advanced" or "separate_vocal" => await PrepareStemsAsync(taskData, ct),
             "wav" => await PrepareWavAsync(taskData, ct),
             _ => throw new InvalidOperationException($"Unsupported output operation '{operation}'"),
@@ -683,7 +696,8 @@ public sealed class SunoProvider : IPluginProvider
         int? creditsAfter,
         int? creditsConsumed,
         string measurement,
-        bool recovered)
+        bool recovered,
+        Dictionary<string, object?>? coverSource = null)
     {
         var primary = prepared.Artifacts[0];
         var artifactRows = new JsonArray(prepared.Artifacts.Select(artifact => (JsonNode?)new JsonObject
@@ -712,6 +726,16 @@ public sealed class SunoProvider : IPluginProvider
                 ["measurement"] = measurement,
             },
         };
+        if (coverSource is not null)
+            result["source"] = new JsonObject
+            {
+                ["kind"] = string.IsNullOrWhiteSpace(ProviderHelpers.GetParam<string>(coverSource, "uploadUrl")) ? "provider_track" : "uploaded_audio",
+                ["assetId"] = ProviderHelpers.GetParam<string>(coverSource, "sourceAssetId"),
+                ["sha256"] = ProviderHelpers.GetParam<string>(coverSource, "sourceAudioSha256"),
+                ["taskId"] = ProviderHelpers.GetParam<string>(coverSource, "taskId"),
+                ["audioId"] = ProviderHelpers.GetParam<string>(coverSource, "audioId"),
+                ["referenceAssurance"] = "caller_supplied",
+            };
         var extras = prepared.Artifacts.Skip(1).Select((artifact, index) => new JobOutputPart
         {
             Suffix = $"_artifact{index + 1}",
@@ -851,6 +875,67 @@ public sealed class SunoProvider : IPluginProvider
             _ => value.ValueKind.ToString().ToLowerInvariant(),
         };
     }
+
+    private static void ValidateCover(Dictionary<string, object?> p, Dictionary<string, string> errors)
+    {
+        var upload = ProviderHelpers.GetParam<string>(p, "uploadUrl");
+        var task = ProviderHelpers.GetParam<string>(p, "taskId");
+        var audio = ProviderHelpers.GetParam<string>(p, "audioId");
+        var hasUpload = !string.IsNullOrWhiteSpace(upload);
+        var hasTask = !string.IsNullOrWhiteSpace(task);
+        var hasAudio = !string.IsNullOrWhiteSpace(audio);
+        if (hasUpload == (hasTask || hasAudio) || (!hasUpload && !(hasTask && hasAudio)))
+            errors["uploadUrl"] = "provide either uploadUrl or both taskId and audioId, exclusively";
+        if (hasUpload && (!Uri.TryCreate(upload, UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeHttps || uri.UserInfo.Length > 0 || uri.Fragment.Length > 0
+            || uri.IsLoopback || !uri.Host.Contains('.') || uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase)
+            || uri.Host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
+            || (IPAddress.TryParse(uri.Host.Trim('[', ']'), out var address) && IsNonPublicAddress(address))))
+            errors["uploadUrl"] = "must be a public HTTPS audio URL without credentials or a fragment";
+        var model = ProviderHelpers.GetParam<string>(p, "model") ?? "V6";
+        if (model is not ("V6" or "V6_WILD" or "V6_MINI" or "V5_5" or "V5" or "V4_5PLUS" or "V4_5ALL" or "V4_5" or "V4"))
+            errors["model"] = "must identify a supported Suno cover model (V6 recommended)";
+        foreach (var key in new[] { "audioWeight", "styleWeight", "weirdnessConstraint" })
+        {
+            var value = ProviderHelpers.GetParam<double?>(p, key);
+            if (p.TryGetValue(key, out var raw) && raw is not null
+                && (!value.HasValue || !double.IsFinite(value.Value) || value < 0 || value > 1)) errors[key] = "must be from 0 to 1";
+        }
+        var duration = ProviderHelpers.GetParam<double?>(p, "sourceDurationSeconds");
+        if (p.TryGetValue("sourceDurationSeconds", out var rawDuration) && rawDuration is not null
+            && (!duration.HasValue || !double.IsFinite(duration.Value) || duration <= 0 || duration > 480))
+            errors["sourceDurationSeconds"] = "must be greater than zero and at most 480 seconds";
+        if (p.ContainsKey("duration")) errors["duration"] = "cover duration is determined by the source and model; use sourceDurationSeconds for the known input duration";
+        var promptLimit = model == "V4" ? 3000 : 5000;
+        var styleLimit = model == "V4" ? 200 : 1000;
+        foreach (var (key, limit) in new[] { ("prompt", promptLimit), ("style", styleLimit), ("title", 80) })
+            if (ProviderHelpers.GetParam<string>(p, key) is { } text && text.Length > limit) errors[key] = $"must be at most {limit} characters";
+        if ((ProviderHelpers.GetParam<bool?>(p, "instrumental") ?? true)
+            && !string.IsNullOrWhiteSpace(ProviderHelpers.GetParam<string>(p, "prompt")))
+            errors["prompt"] = "cover prompt is lyrics; for instrumental covers put arrangement instructions in style";
+        if (ProviderHelpers.GetParam<string>(p, "sourceAudioSha256") is { } hash && !Regex.IsMatch(hash, "\\A[0-9a-fA-F]{64}\\z"))
+            errors["sourceAudioSha256"] = "must be a hexadecimal SHA256";
+    }
+
+    private static Dictionary<string, object?> CoverPayload(Dictionary<string, object?> p, string model, string callback) => new()
+    {
+        ["model"] = model,
+        ["callBackUrl"] = callback,
+        ["instrumental"] = ProviderHelpers.GetParam<bool?>(p, "instrumental") ?? true,
+        ["uploadUrl"] = Nonblank(p, "uploadUrl"),
+        ["taskId"] = Nonblank(p, "taskId"),
+        ["audioId"] = Nonblank(p, "audioId"),
+        ["prompt"] = ProviderHelpers.GetParam<string>(p, "prompt"),
+        ["style"] = ProviderHelpers.GetParam<string>(p, "style"),
+        ["title"] = ProviderHelpers.GetParam<string>(p, "title"),
+        ["negativeTags"] = ProviderHelpers.GetParam<string>(p, "negativeTags"),
+        ["audioWeight"] = ProviderHelpers.GetParam<double?>(p, "audioWeight"),
+        ["styleWeight"] = ProviderHelpers.GetParam<double?>(p, "styleWeight"),
+        ["weirdnessConstraint"] = ProviderHelpers.GetParam<double?>(p, "weirdnessConstraint"),
+    };
+
+    private static string? Nonblank(Dictionary<string, object?> p, string key)
+        => ProviderHelpers.GetParam<string>(p, key) is { } text && !string.IsNullOrWhiteSpace(text) ? text : null;
 
     private static Dictionary<string, object?> GeneratePayload(Dictionary<string, object?> p, string model, string callback) => new()
     {

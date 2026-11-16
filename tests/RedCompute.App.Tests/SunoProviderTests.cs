@@ -10,6 +10,114 @@ namespace RedCompute.App.Tests;
 
 public sealed class SunoProviderTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CoverUsesSourceAudioAndIngestsBothResultsWithExistingBillingAndRecovery(bool existingTrack)
+    {
+        var submitted = 0;
+        var reads = 0;
+        var api = new DelegateHandler(request =>
+        {
+            Assert.Equal("secret-test-key", request.Headers.Authorization?.Parameter);
+            if (request.RequestUri!.AbsolutePath.EndsWith("/generate/credit"))
+                return Json($"{{\"code\":200,\"data\":{(++reads == 1 ? 100 : 90)}}}");
+            if (request.Method == HttpMethod.Post)
+            {
+                Assert.EndsWith("/api/v1/generate/upload-cover", request.RequestUri.AbsolutePath);
+                var body = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!;
+                Assert.Equal("V6", body["model"]!.GetValue<string>());
+                Assert.True(body["instrumental"]!.GetValue<bool>());
+                Assert.Equal(0.85, body["audioWeight"]!.GetValue<double>());
+                Assert.Equal("acoustic fantasy, sparse bells, faint drone", body["style"]!.GetValue<string>());
+                Assert.Null(body["customMode"]);
+                Assert.Null(body["sourceAssetId"]);
+                Assert.Null(body["prompt"]);
+                if (existingTrack)
+                {
+                    Assert.Null(body["uploadUrl"]);
+                    Assert.Equal("original-task", body["taskId"]!.GetValue<string>());
+                    Assert.Equal("original-audio", body["audioId"]!.GetValue<string>());
+                }
+                else Assert.Equal("https://1.1.1.1/source.wav", body["uploadUrl"]!.GetValue<string>());
+                submitted++;
+                return Json("{\"code\":200,\"data\":{\"taskId\":\"cover-task\"}}");
+            }
+            Assert.EndsWith("/generate/record-info", request.RequestUri.AbsolutePath);
+            return Json("""
+                {"code":200,"data":{"status":"SUCCESS","response":{"sunoData":[
+                  {"id":"cover-a","audioUrl":"https://1.1.1.1/a.mp3","duration":40},
+                  {"id":"cover-b","audioUrl":"https://1.1.1.1/b.mp3","duration":42}
+                ]}}}
+                """);
+        });
+        var downloads = new DelegateHandler(request =>
+        {
+            Assert.Null(request.Headers.Authorization);
+            return Bytes("audio/mpeg", [1, 2, 3]);
+        });
+        await using var provider = new SunoProvider(Config([]), "music-gen", _ => { }, new HttpClient(api),
+            new HttpClient(downloads), new SunoProviderTiming(TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2)));
+        var parameters = new Dictionary<string, object?>
+        {
+            ["operation"] = "upload_cover", ["style"] = "acoustic fantasy, sparse bells, faint drone",
+            ["audioWeight"] = 0.85, ["sourceAssetId"] = "original.wav", ["sourceAudioSha256"] = new string('a', 64),
+        };
+        if (existingTrack) { parameters["taskId"] = "original-task"; parameters["audioId"] = "original-audio"; }
+        else parameters["uploadUrl"] = "https://1.1.1.1/source.wav";
+        var result = await provider.ExecuteAsync(new JobRequest { CapabilitySlug = "music-gen", Parameters = parameters });
+        Assert.True(result!.Success, result.ErrorMessage);
+        Assert.Equal(1, submitted);
+        Assert.Single(result.ExtraOutputs!);
+        var metadata = JsonNode.Parse(result.ResultJson!)!;
+        Assert.Equal("upload_cover", metadata["operation"]!.GetValue<string>());
+        Assert.Equal(10, metadata["credits"]!["consumed"]!.GetValue<int>());
+        Assert.Equal("original.wav", metadata["source"]!["assetId"]!.GetValue<string>());
+        Assert.Equal("caller_supplied", metadata["source"]!["referenceAssurance"]!.GetValue<string>());
+        result.OutputStream!.Dispose(); foreach (var extra in result.ExtraOutputs!) extra.Data.Dispose();
+
+        var recovered = await provider.ExecuteAsync(new JobRequest { CapabilitySlug = "music-gen", Parameters = new()
+        {
+            ["operation"] = "recover", ["sourceOperation"] = "upload_cover", ["taskId"] = "cover-task",
+        }});
+        Assert.True(recovered!.Success, recovered.ErrorMessage);
+        Assert.Equal(1, submitted); // Recovery never creates another paid cover.
+        Assert.True(JsonNode.Parse(recovered.ResultJson!)!["recovered"]!.GetValue<bool>());
+        recovered.OutputStream!.Dispose(); foreach (var extra in recovered.ExtraOutputs!) extra.Data.Dispose();
+    }
+
+    [Fact]
+    public async Task CoverRejectsAmbiguousMissingPrivateAndInvalidInputsBeforeAnyHttpRequest()
+    {
+        var requests = 0;
+        await using var provider = new SunoProvider(Config([]), "music-gen", _ => { },
+            new HttpClient(new DelegateHandler(_ => { requests++; throw new Exception("must not submit"); })),
+            null, null);
+        var invalid = new Dictionary<string, object?>[]
+        {
+            new(), new() { ["taskId"] = "only-one-id" },
+            new() { ["uploadUrl"] = "https://1.1.1.1/a.wav", ["taskId"] = "t", ["audioId"] = "a" },
+            new() { ["uploadUrl"] = "http://1.1.1.1/a.wav" },
+            new() { ["uploadUrl"] = "https://127.0.0.1/a.wav" },
+            new() { ["uploadUrl"] = "https://10.0.0.1/a.wav" },
+            new() { ["uploadUrl"] = "/api/assets/source.wav" },
+            new() { ["uploadUrl"] = "https://user:secret@1.1.1.1/a.wav" },
+            new() { ["uploadUrl"] = "https://1.1.1.1/a.wav", ["audioWeight"] = 1.1 },
+            new() { ["uploadUrl"] = "https://1.1.1.1/a.wav", ["styleWeight"] = "bad" },
+            new() { ["uploadUrl"] = "https://1.1.1.1/a.wav", ["sourceDurationSeconds"] = 481 },
+            new() { ["uploadUrl"] = "https://1.1.1.1/a.wav", ["prompt"] = "not lyrics but incorrectly placed style" },
+            new() { ["uploadUrl"] = "https://1.1.1.1/a.wav", ["title"] = new string('a', 81) },
+        };
+        foreach (var input in invalid)
+        {
+            input["operation"] = "upload_cover";
+            var result = await provider.ExecuteAsync(new JobRequest { CapabilitySlug = "music-gen", Parameters = input });
+            Assert.False(result!.Success);
+        }
+        Assert.Equal(0, requests);
+        Assert.Contains("upload_cover", provider.InputParameters["operation"].Description);
+    }
+
     [Fact]
     public async Task GenerateRecordsActualCreditsAndReturnsNamedIngestedArtifactsWithoutLeakingCredential()
     {
