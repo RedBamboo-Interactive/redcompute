@@ -27,7 +27,7 @@ public sealed class ExecutionHostGuardTests
     internal static readonly (string Why, string[] Types)[] Allowlist =
     [
         // ---- the host implementation: node zero's execution host and the code moved into it ----------
-        ("the local execution host (RedCompute.PluginSdk.Hosting.Local, internal but for LocalExecutionHost)", [
+        ("the local execution host (RedCompute.ExecutionHost: RedCompute.PluginSdk.Hosting.Local, internal but for LocalExecutionHost)", [
             "RedCompute.PluginSdk.Hosting.Local.ContainedProcessTree",
             "RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost",
             "RedCompute.PluginSdk.Hosting.Local.LocalHardware",
@@ -130,6 +130,20 @@ public sealed class ExecutionHostGuardTests
         Assert.Equal(expected, scanned);
     }
 
+    [Fact]
+    public void Every_src_assembly_is_scanned()
+    {
+        // RedCompute.App builds RedCompute.dll; every other src project builds its own name.
+        var expected = Directory.EnumerateDirectories(Path.Combine(RepoRoot(), "src"), "RedCompute.*")
+            .Where(directory => Directory.EnumerateFiles(directory, "*.csproj").Any())
+            .Select(directory => Path.GetFileName(directory) is "RedCompute.App" ? "RedCompute" : Path.GetFileName(directory))
+            .Order(StringComparer.Ordinal).ToList();
+        var scanned = ScannedAssemblies().Select(path => Path.GetFileNameWithoutExtension(path))
+            .Where(name => !name.StartsWith("RedCompute.Plugin.", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal).ToList();
+        Assert.Equal(expected, scanned);
+    }
+
     /// <summary>The guard's own test: a type with one forbidden call is found, and by its own name.</summary>
     [Fact]
     public void A_forbidden_call_is_found_and_attributed_to_its_type()
@@ -175,14 +189,15 @@ public sealed class ExecutionHostGuardTests
 
     internal static List<Hit> ScanAll() => ScannedAssemblies().SelectMany(Scan).ToList();
 
-    /// <summary>Core, PluginSdk, App and every plugin, as built beside these tests.</summary>
+    /// <summary>Core, ExecutionHost, PluginSdk, App and every plugin, as built beside these tests.</summary>
     internal static IReadOnlyList<string> ScannedAssemblies()
     {
         var directory = AppContext.BaseDirectory;
         var core = new[]
         {
             typeof(RedCompute.Core.Jobs.JobRecord).Assembly.Location,
-            typeof(RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost).Assembly.Location,
+            typeof(RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost).Assembly.Location, // RedCompute.ExecutionHost.dll
+            typeof(RedCompute.PluginSdk.SessionScratch).Assembly.Location, // RedCompute.PluginSdk.dll
             typeof(RedCompute.App.RedComputeHost).Assembly.Location, // RedCompute.dll
         };
         return core

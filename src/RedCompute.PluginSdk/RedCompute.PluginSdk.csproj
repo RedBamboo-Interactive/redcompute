@@ -10,17 +10,8 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\RedCompute.Core\RedCompute.Core.csproj" />
-    <!--
-      The local host's QuerySqliteReadOnly. Compile-only: RedCompute and the plugins that read SQLite
-      already carry this version (Microsoft.EntityFrameworkCore.Sqlite 9.0.18), and the SDK's consumers
-      gain no package from it.
-    -->
-    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="9.0.18" PrivateAssets="all" />
-    <!--
-      The local host's per-process VRAM on Windows ("GPU Process Memory" counters). Compile-only, like
-      SQLite above: RedCompute already carries this version, and the SDK's consumers gain no package.
-    -->
-    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.0" PrivateAssets="all" />
+    <!-- The execution host moved to its own assembly; this SDK forwards its types (TypeForwards.cs). -->
+    <ProjectReference Include="..\RedCompute.ExecutionHost\RedCompute.ExecutionHost.csproj" />
   </ItemGroup>
 
   <ItemGroup>

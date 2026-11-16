@@ -195,10 +195,17 @@
       "redcompute.core": {
         "type": "Project"
       },
-      "redcompute.pluginsdk": {
+      "redcompute.executionhost": {
         "type": "Project",
         "dependencies": {
           "RedCompute.Core": "[1.0.0, )"
+        }
+      },
+      "redcompute.pluginsdk": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.Core": "[1.0.0, )",
+          "RedCompute.ExecutionHost": "[1.0.0, )"
         }
       }
     },

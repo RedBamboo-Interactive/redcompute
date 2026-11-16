@@ -310,7 +310,7 @@ public interface IHostFileSystem
     void DeleteFile(HostPath path);
     void DeleteDirectory(HostPath path, bool recursive);
 
-    /// <summary>A new empty directory under <see cref="TempPath"/>, named as <see cref="IsolatedWorkingDirectory"/> names them.</summary>
+    /// <summary>A new empty directory under <see cref="TempPath"/>, named as the SDK's <c>IsolatedWorkingDirectory</c> names them.</summary>
     HostPath CreateTempDirectory(string prefix);
 
     HostPath TempPath { get; }

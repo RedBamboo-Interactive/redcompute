@@ -1,0 +1,33 @@
+using System.Runtime.CompilerServices;
+
+// The execution host moved from this assembly to RedCompute.ExecutionHost (same namespaces).
+// Plugins compiled against an SDK that still held these types resolve them through these forwards.
+
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.ContainmentMode))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.DetachedLaunch))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.DetachedSpawnSpec))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.EnvironmentBase))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.HostFileStat))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.HostNetworkExtensions))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.HostPath))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.HostPlatformInfo))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.HostProcessInfo))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.HostProcessParentage))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.HostSpawnSpec))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IContainedTree))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IExecutionHost))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostContainment))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostFileSystem))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostHardware))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostHardwareSampler))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostNetwork))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostPathRules))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostPlatform))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostPortForward))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostProcess))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostProcesses))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.IHostQueries))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.SqliteReadOptions))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.StdioMode))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.PlatformSupport))]

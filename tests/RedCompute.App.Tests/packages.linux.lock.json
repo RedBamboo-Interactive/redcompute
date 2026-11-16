@@ -458,6 +458,12 @@
       "redcompute.core": {
         "type": "Project"
       },
+      "redcompute.executionhost": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.Core": "[1.0.0, )"
+        }
+      },
       "redcompute.plugin.claudecode": {
         "type": "Project",
         "dependencies": {
@@ -542,7 +548,8 @@
       "redcompute.pluginsdk": {
         "type": "Project",
         "dependencies": {
-          "RedCompute.Core": "[1.0.0, )"
+          "RedCompute.Core": "[1.0.0, )",
+          "RedCompute.ExecutionHost": "[1.0.0, )"
         }
       },
       "redcompute.testprobe": {

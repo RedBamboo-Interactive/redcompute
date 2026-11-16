@@ -16,11 +16,14 @@ namespace RedCompute.PluginSdk.Hosting.Local;
 /// </summary>
 public sealed class LocalExecutionHost : IExecutionHost
 {
+    /// <summary>The API alias for the local node, accepted wherever a node id is (the node registry's alias).</summary>
+    public const string LocalNodeAlias = "local";
+
     /// <summary>
     /// The host a provider uses when RedCompute hands it none (tests, tools). Its node id is the
     /// registry's alias for the local node.
     /// </summary>
-    public static LocalExecutionHost Shared { get; } = new(INodeRegistry.LocalAlias);
+    public static LocalExecutionHost Shared { get; } = new(LocalNodeAlias);
 
     public LocalExecutionHost(string nodeId)
     {

@@ -10,7 +10,7 @@ namespace RedCompute.PluginSdk;
 public interface INodeRegistry
 {
     /// <summary>The API alias for the local node, accepted wherever a node id is.</summary>
-    const string LocalAlias = "local";
+    const string LocalAlias = Hosting.Local.LocalExecutionHost.LocalNodeAlias;
 
     /// <summary>The persisted id of the machine this RedCompute runs on.</summary>
     string LocalNodeId { get; }
