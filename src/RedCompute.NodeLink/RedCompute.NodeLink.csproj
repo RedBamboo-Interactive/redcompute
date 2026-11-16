@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The node link: the framed, sequenced, flow-controlled protocol a paired node and RedCompute's
+    NodeHub speak over one WebSocket (design section 4). Used by both ends. Pure: no ASP.NET Core,
+    no OS calls besides the files of the durable-stream spool on the node.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RedCompute.NodeLink</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RedCompute.NodeLink.Tests" />
+  </ItemGroup>
+
+</Project>

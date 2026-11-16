@@ -35,6 +35,10 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.PluginSdk.Hosting.Local.OwnedProcessKiller",
             "RedCompute.PluginSdk.Hosting.Local.SessionProcessContainment",
         ]),
+        // ---- node-side code: it runs on the node, against the node's own disk -------------------------
+        ("node-side: a durable stream's spool lives in the node agent's data folder, on the machine that runs the process", [
+            "RedCompute.NodeLink.Spool.SegmentFileSpool",
+        ]),
         // ---- RedCompute's own state under its data root (%LOCALAPPDATA%/RedCompute by default) ----------
         ("server state: the data root resolver (asks the OS for the default folder)", [
             "RedCompute.Core.Storage.ComputeStorage",
@@ -133,11 +137,14 @@ public sealed class ExecutionHostGuardTests
     [Fact]
     public void Every_src_assembly_is_scanned()
     {
-        // RedCompute.App builds RedCompute.dll; every other src project builds its own name.
-        var expected = Directory.EnumerateDirectories(Path.Combine(RepoRoot(), "src"), "RedCompute.*")
-            .Where(directory => Directory.EnumerateFiles(directory, "*.csproj").Any())
-            .Select(directory => Path.GetFileName(directory) is "RedCompute.App" ? "RedCompute" : Path.GetFileName(directory))
+        // Every src project in the solution (a project not yet in the solution is not built, so not
+        // shipped). RedCompute.App builds RedCompute.dll; every other src project builds its own name.
+        var expected = File.ReadLines(Path.Combine(RepoRoot(), "RedCompute.sln"))
+            .Select(line => System.Text.RegularExpressions.Regex.Match(line, @"""src\\(RedCompute\.[^\\""]+)\\[^""]+\.csproj"""))
+            .Where(match => match.Success)
+            .Select(match => match.Groups[1].Value is "RedCompute.App" ? "RedCompute" : match.Groups[1].Value)
             .Order(StringComparer.Ordinal).ToList();
+        Assert.Contains("RedCompute.ExecutionHost", expected);
         var scanned = ScannedAssemblies().Select(path => Path.GetFileNameWithoutExtension(path))
             .Where(name => !name.StartsWith("RedCompute.Plugin.", StringComparison.Ordinal))
             .Order(StringComparer.Ordinal).ToList();
@@ -198,6 +205,7 @@ public sealed class ExecutionHostGuardTests
             typeof(RedCompute.Core.Jobs.JobRecord).Assembly.Location,
             typeof(RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost).Assembly.Location, // RedCompute.ExecutionHost.dll
             typeof(RedCompute.PluginSdk.SessionScratch).Assembly.Location, // RedCompute.PluginSdk.dll
+            typeof(RedCompute.NodeLink.LinkSession).Assembly.Location, // RedCompute.NodeLink.dll
             typeof(RedCompute.App.RedComputeHost).Assembly.Location, // RedCompute.dll
         };
         return core

@@ -36,6 +36,7 @@ RedCompute is a local AI compute orchestrator: a headless .NET 9 service that ma
 
 - **RedCompute.Core** — Interfaces, models, configuration. No dependencies. Defines `IBackendProvider`, `IPluginProvider`, `JobRequest`/`JobResult`, `CapabilityDefinition`, config classes, discovery models.
 - **RedCompute.ExecutionHost** — References Core only. `IExecutionHost` (paths, files, processes, containment, hardware, network of one machine) and node zero's `LocalExecutionHost`, plus `PlatformSupport`. Namespaces stay `RedCompute.PluginSdk.Hosting(.Local)`; PluginSdk forwards the types (`TypeForwards.cs`). The node agent runs this code without ASP.NET Core.
+- **RedCompute.NodeLink** — No references. The node link protocol (design: Phase 3): 24-byte frame codec, channels with seq/ack/replay/credit windows, priority scheduler, hello/version negotiation, heartbeat, durable-stream spool, `LinkClient` (node) and `LinkServer` (NodeHub core). Tests in `tests/RedCompute.NodeLink.Tests`, including the fault-injection harness (`NODELINK_FAULT_SEEDS` for long runs).
 - **RedCompute.PluginSdk** — References Core + ASP.NET Core. Provides `ICustomEndpointProvider` interface and `ProviderHelpers` utilities for plugin authors.
 - **RedCompute.App** — WPF tray app embedding an ASP.NET Core HTTP server. Contains the generic endpoint engine, discovery, registry, and all orchestration logic.
 - **plugins/** — Individual provider projects, each implementing `IPluginProvider`. Discovered at runtime via assembly scanning.
