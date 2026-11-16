@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    leaf-node, the node agent (Phase 3 design section 2): one process per OS user that pairs with a
+    Leaf server, keeps the node link to it and answers the Phase 3 control methods (describe, hardware,
+    the CLI report, echo diagnostics) and nothing else. One TFM for both OSes. It runs node zero's
+    execution host code (RedCompute.ExecutionHost) without ASP.NET Core or the plugin SDK.
+
+    WinExe: on Windows the background agent (the HKCU Run value) has no console window; the CLI verbs
+    attach to the console they were started from. Off Windows WinExe builds an ordinary executable.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>leaf-node</AssemblyName>
+    <RootNamespace>RedCompute.Node</RootNamespace>
+    <Version>0.1.0</Version>
+    <!-- Footprint (design 2.4): an idle agent on a workstation. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>false</UseSystemResourceKeys>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RedCompute.NodeLink\RedCompute.NodeLink.csproj" />
+    <ProjectReference Include="..\RedCompute.ExecutionHost\RedCompute.ExecutionHost.csproj" />
+    <!--
+      The execution host compiles against this privately (its consumers carry it). The hardware
+      sampler's per-process VRAM reads it on Windows, so the agent ships the same version RedCompute
+      does. The host's SQLite reader is never called on the node, so Microsoft.Data.Sqlite is not shipped.
+    -->
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RedCompute.Node.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -20,7 +20,7 @@ The rebuild script uses the shared `redbamboo-packages/dotnet/rebuild.ps1`. It s
 
 The kernel locates `RedCompute.exe` through the `compute` path in `leaf.workspace.json` (in the `redleaf` repo), which points at this checkout; `src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe` is the probed build output. `computeExePath` in the kernel config overrides it.
 
-Tests live in `tests/` (`RedCompute.App.Tests`, `RedCompute.Plugin.Codex.Tests`, `RedCompute.ReleaseTool.Tests`); run them with `dotnet test` and an `--artifacts-path` outside the checkout when a live RedCompute runs from it. `release/Test-LockedRestoreModes.ps1` checks that every committed lock file restores in locked mode.
+Tests live in `tests/` (`RedCompute.App.Tests`, `RedCompute.Plugin.Codex.Tests`, `RedCompute.ReleaseTool.Tests`, `RedCompute.NodeLink.Tests`, `RedCompute.Node.Tests`); run them with `dotnet test` and an `--artifacts-path` outside the checkout when a live RedCompute runs from it. `release/Test-LockedRestoreModes.ps1` checks that every committed lock file restores in locked mode.
 
 ### Linux (preview)
 
@@ -37,6 +37,7 @@ RedCompute is a local AI compute orchestrator: a headless .NET 9 service that ma
 - **RedCompute.Core** — Interfaces, models, configuration. No dependencies. Defines `IBackendProvider`, `IPluginProvider`, `JobRequest`/`JobResult`, `CapabilityDefinition`, config classes, discovery models.
 - **RedCompute.ExecutionHost** — References Core only. `IExecutionHost` (paths, files, processes, containment, hardware, network of one machine) and node zero's `LocalExecutionHost`, plus `PlatformSupport`. Namespaces stay `RedCompute.PluginSdk.Hosting(.Local)`; PluginSdk forwards the types (`TypeForwards.cs`). The node agent runs this code without ASP.NET Core.
 - **RedCompute.NodeLink** — No references. The node link protocol (design: Phase 3): 24-byte frame codec, channels with seq/ack/replay/credit windows, priority scheduler, hello/version negotiation, heartbeat, durable-stream spool, `LinkClient` (node) and `LinkServer` (NodeHub core). Tests in `tests/RedCompute.NodeLink.Tests`, including the fault-injection harness (`NODELINK_FAULT_SEEDS` for long runs).
+- **RedCompute.Node** — References NodeLink + ExecutionHost (no ASP.NET Core). The node agent `leaf-node` (one process per OS user): pairing (ECDSA P-256 key in CNG + Credential Manager, the Secret Service via libsecret, or a 0600 file with `--allow-file-key`), the link client (ES256 assertion, `X-Leaf-Node-Error` verdicts), the Phase 3 methods only (`node.describe`/`hardware`/`cli`, `diag.echo`; everything else `method_not_allowed` + the local audit log), revocation cleanup, control IPC (same-user pipe/socket), install/uninstall. It sets `REDCOMPUTE_DATA_ROOT` to its own `compute` folder; `LEAF_NODE_HOME` isolates an agent (tests). Tests in `tests/RedCompute.Node.Tests`.
 - **RedCompute.PluginSdk** — References Core + ASP.NET Core. Provides `ICustomEndpointProvider` interface and `ProviderHelpers` utilities for plugin authors.
 - **RedCompute.App** — WPF tray app embedding an ASP.NET Core HTTP server. Contains the generic endpoint engine, discovery, registry, and all orchestration logic.
 - **plugins/** — Individual provider projects, each implementing `IPluginProvider`. Discovered at runtime via assembly scanning.

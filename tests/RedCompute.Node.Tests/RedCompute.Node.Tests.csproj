@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The node agent's tests (design 8.3, node part): pairing, the key stores (CNG + Credential Manager on
+    Windows, the Secret Service where one answers, the file fallback), the assertion and the dial, the
+    Phase 3 methods and refusals, echo and kill-all, revocation cleanup, the control channel, install and
+    uninstall. ASP.NET Core hosts the stand-in kernel ingress for the real WebSocket dial (tests only:
+    the agent itself never loads it). Cross-platform.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <ProjectReference Include="..\..\src\RedCompute.Node\RedCompute.Node.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\PlatformFacts.cs" Link="Shared\PlatformFacts.cs" />
+  </ItemGroup>
+</Project>

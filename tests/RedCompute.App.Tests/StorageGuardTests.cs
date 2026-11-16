@@ -35,6 +35,11 @@ public sealed class StorageGuardTests
             "%APPDATA%\\npm: locating the npm-installed Codex CLI"),
         ("src/RedCompute.ExecutionHost/Hosting/CodexCliLocator.cs", "LocalApplicationData", 1,
             "%LOCALAPPDATA%\\Programs\\OpenAI\\Codex: the official Codex installer's location"),
+        // ---- the node agent: its own folders, not RedCompute's (its execution host data root is set to <node data>/compute)
+        ("src/RedCompute.Node/NodePaths.cs", "LocalApplicationData", 1,
+            "%LOCALAPPDATA%\\LeafNode and %LOCALAPPDATA%\\Programs\\LeafNode: the node agent's data and program files on Windows"),
+        ("src/RedCompute.Node/Reports/CliProbes.cs", "ApplicationData", 1,
+            "%APPDATA%\\npm: the npm global bin the node's CLI probes add to PATH"),
         // Not listed because they never name a folder: LocalExecutionHost's pass-through
         // GetFolderPath(folder) and its one-shot temp directories (Path.GetTempPath, caller-scoped
         // and deleted by the caller), ~/.claude, ~/.codex and ~/.local/share/opencode (UserProfile,
@@ -106,7 +111,7 @@ public sealed class StorageGuardTests
 
     // ---- scanner ---------------------------------------------------------------------------------
 
-    /// <summary>src/ (host, Core, plugin SDK) and plugins/, outside build output.</summary>
+    /// <summary>src/ (host, Core, the execution host, plugin SDK, node link, node agent) and plugins/, outside build output.</summary>
     internal static List<Use> ScanAll(string root)
     {
         var files = new[] { "src", "plugins" }

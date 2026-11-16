@@ -39,6 +39,15 @@ public sealed class ExecutionHostGuardTests
         ("node-side: a durable stream's spool lives in the node agent's data folder, on the machine that runs the process", [
             "RedCompute.NodeLink.Spool.SegmentFileSpool",
         ]),
+        ("node-side: the node agent's own files on the machine it runs as (its log, audit log, key file, lock, control socket, program files; design 2.2, 2.3)", [
+            "RedCompute.Node.AuditLog",
+            "RedCompute.Node.Control.ControlClient",
+            "RedCompute.Node.Control.ControlServer",
+            "RedCompute.Node.Control.InstanceLock",
+            "RedCompute.Node.Credentials.FileKeyStore",
+            "RedCompute.Node.Install.NodeInstaller",
+            "RedCompute.Node.NodeLog",
+        ]),
         // ---- RedCompute's own state under its data root (%LOCALAPPDATA%/RedCompute by default) ----------
         ("server state: the data root resolver (asks the OS for the default folder)", [
             "RedCompute.Core.Storage.ComputeStorage",
@@ -138,11 +147,17 @@ public sealed class ExecutionHostGuardTests
     public void Every_src_assembly_is_scanned()
     {
         // Every src project in the solution (a project not yet in the solution is not built, so not
-        // shipped). RedCompute.App builds RedCompute.dll; every other src project builds its own name.
+        // shipped). RedCompute.App builds RedCompute.dll and RedCompute.Node leaf-node.dll; every other src
+        // project builds its own name.
         var expected = File.ReadLines(Path.Combine(RepoRoot(), "RedCompute.sln"))
             .Select(line => System.Text.RegularExpressions.Regex.Match(line, @"""src\\(RedCompute\.[^\\""]+)\\[^""]+\.csproj"""))
             .Where(match => match.Success)
-            .Select(match => match.Groups[1].Value is "RedCompute.App" ? "RedCompute" : match.Groups[1].Value)
+            .Select(match => match.Groups[1].Value switch
+            {
+                "RedCompute.App" => "RedCompute",
+                "RedCompute.Node" => "leaf-node",
+                var name => name,
+            })
             .Order(StringComparer.Ordinal).ToList();
         Assert.Contains("RedCompute.ExecutionHost", expected);
         var scanned = ScannedAssemblies().Select(path => Path.GetFileNameWithoutExtension(path))
@@ -206,6 +221,7 @@ public sealed class ExecutionHostGuardTests
             typeof(RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost).Assembly.Location, // RedCompute.ExecutionHost.dll
             typeof(RedCompute.PluginSdk.SessionScratch).Assembly.Location, // RedCompute.PluginSdk.dll
             typeof(RedCompute.NodeLink.LinkSession).Assembly.Location, // RedCompute.NodeLink.dll
+            typeof(RedCompute.Node.NodeAgent).Assembly.Location, // leaf-node.dll (RedCompute.Node)
             typeof(RedCompute.App.RedComputeHost).Assembly.Location, // RedCompute.dll
         };
         return core

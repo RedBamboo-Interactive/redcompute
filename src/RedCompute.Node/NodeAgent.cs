@@ -1,0 +1,469 @@
+using System.Security.Cryptography;
+using System.Text.Json.Nodes;
+using RedCompute.Node.Credentials;
+using RedCompute.Node.Link;
+using RedCompute.Node.Pairing;
+using RedCompute.Node.Reports;
+using RedCompute.NodeLink;
+using RedCompute.PluginSdk.Hosting;
+
+namespace RedCompute.Node;
+
+/// <summary>Everything a verb or the agent needs, injectable for tests.</summary>
+public sealed class NodeEnvironment
+{
+    public required NodePaths Paths { get; init; }
+    public required IExecutionHost Host { get; init; }
+    public required INodeKeyStores KeyStores { get; init; }
+    public required NodeLog Log { get; init; }
+    public TimeProvider Time { get; init; } = TimeProvider.System;
+    public Func<NodeServerClient> ServerClient { get; init; } = () => new NodeServerClient();
+    public IProbeRunner? ProbeRunner { get; init; }
+    public LinkOptions Link { get; init; } = LinkOptions.Default;
+    public ReconnectBackoff? Backoff { get; init; }
+
+    /// <summary>Tests: dial something other than the real WebSocket (an in-process server).</summary>
+    public Func<NodePairing, Func<ECDsa>, Func<CancellationToken, Task<ILinkTransport>>>? Dial { get; init; }
+
+    /// <summary>How often the agent pushes a hardware report, and re-probes the CLIs (design 2.4).</summary>
+    public TimeSpan HardwareReportInterval { get; init; } = TimeSpan.FromSeconds(60);
+    public TimeSpan CliReprobeInterval { get; init; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Reap the probe trees an earlier run left (the containment ledger boot sweep, design 2.4). Tests
+    /// turn it off: their process has no ledgers of its own.
+    /// </summary>
+    public bool SweepContainmentAtStart { get; init; } = true;
+
+    public NodeStateStore StateStore => _state ??= new NodeStateStore(Host, Paths);
+    private NodeStateStore? _state;
+
+    public AuditLog Audit => _audit ??= new AuditLog(Paths.Audit, Time);
+    private AuditLog? _audit;
+}
+
+/// <summary>
+/// The background agent (<c>leaf-node run</c>, design 2.2): reads <c>node.json</c>, keeps the link while
+/// paired, pushes reports, answers the control channel, and on revocation (close 4403, or 403/404 with
+/// the server's verdict at a dial) runs the kill switch, deletes its key and spool, records why, and
+/// stops dialling (design 3.5). It keeps running unpaired, so a later <c>leaf-node pair</c> reloads it.
+/// </summary>
+public sealed class NodeAgent : IAsyncDisposable
+{
+    private readonly NodeEnvironment _env;
+    private readonly NodeReporter _reporter;
+    private readonly object _gate = new();
+    private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private CancellationTokenSource? _linkRun;
+    private LinkClient? _client;
+    private NodeLinkHandler? _handler;
+    private NodePairing? _pairing;
+    private TaskCompletionSource _reload = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private DateTimeOffset? _statusSince;
+    private string _linkStatus = "not-paired";
+    private string? _linkReason;
+
+    public NodeAgent(NodeEnvironment env)
+    {
+        _env = env;
+        _reporter = new NodeReporter(env.Host, env.ProbeRunner ?? new HostProbeRunner(env.Host), env.Time);
+    }
+
+    public LinkClient? Client { get { lock (_gate) return _client; } }
+    public NodeLinkHandler? Handler { get { lock (_gate) return _handler; } }
+
+    /// <summary>Completes each time the link status changes (tests wait on it).</summary>
+    public event Action<string, string?>? LinkStatusChanged;
+
+    /// <summary>Runs until <paramref name="ct"/>: one link per pairing, re-read on <see cref="Reload"/>.</summary>
+    public async Task RunAsync(CancellationToken ct)
+    {
+        _env.Log.Info($"leaf-node {AgentIdentity.Version} started ({AgentIdentity.Os} {AgentIdentity.Arch}).");
+        if (_env.SweepContainmentAtStart)
+        {
+            try
+            {
+                var swept = _env.Host.Containment.SweepLedgers();
+                if (swept > 0) _env.Log.Info($"Reaped {swept} probe tree(s) an earlier run left.");
+            }
+            catch (Exception error)
+            {
+                _env.Log.Warn($"Containment sweep: {error.Message}");
+            }
+        }
+
+        while (!ct.IsCancellationRequested)
+        {
+            Task reload;
+            lock (_gate) reload = _reload.Task;
+            // An unpair in progress finishes before node.json is read again.
+            await _lifecycle.WaitAsync(ct);
+            _lifecycle.Release();
+            var state = _env.StateStore.Load();
+            if (state.Pairing is null)
+            {
+                SetLinkStatus(state.Ended is null ? "not-paired" : state.Ended.Reason, null);
+                await Task.WhenAny(reload, Task.Delay(Timeout.Infinite, ct));
+                continue;
+            }
+
+            try
+            {
+                await RunLinkAsync(state.Pairing, reload, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+            }
+            catch (NodeCommandException error)
+            {
+                _env.Log.Error(error.Message);
+                SetLinkStatus("error", error.Message);
+                await Task.WhenAny(reload, Task.Delay(TimeSpan.FromMinutes(1), _env.Time, ct).ContinueWith(_ => { }));
+            }
+        }
+    }
+
+    /// <summary>Re-reads <c>node.json</c>: after a pairing, or after an unpair the CLI did.</summary>
+    public void Reload()
+    {
+        TaskCompletionSource previous;
+        lock (_gate)
+        {
+            previous = _reload;
+            _reload = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _linkRun?.Cancel();
+        }
+        previous.TrySetResult();
+    }
+
+    private async Task RunLinkAsync(NodePairing pairing, Task reload, CancellationToken ct)
+    {
+        var store = _env.KeyStores.ForKeyRef(pairing.KeyRef);
+        ECDsa OpenKey() => store.Open(pairing.KeyRef, pairing.ServerOrigin)
+                           ?? throw new NodeCommandException("key_missing",
+                               $"The node key ({pairing.KeyRef}) is gone. Pair again: leaf-node unpair, then leaf-node pair.");
+        using (OpenKey()) { } // fail now, not at the first dial
+
+        var dial = _env.Dial?.Invoke(pairing, OpenKey) ?? new NodeDialer(pairing, OpenKey, _env.Time).DialAsync;
+        var handler = new NodeLinkHandler(pairing.NodeId, _reporter, _env.Audit, _env.Log, () => pairing.CredentialStore,
+            (session, clis) => PushAsync(session, new JsonObject { ["clis"] = clis }));
+        var client = new LinkClient(new LinkClientOptions
+        {
+            NodeId = pairing.NodeId,
+            Agent = AgentIdentity.Info,
+            Handler = handler,
+            Dial = dial,
+            Features = AgentIdentity.Features,
+            Link = _env.Link,
+            Backoff = _env.Backoff,
+        });
+        client.StatusChanged += (status, reason) => OnClientStatus(client, status, reason);
+
+        using var run = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        lock (_gate)
+        {
+            _client = client;
+            _handler = handler;
+            _pairing = pairing;
+            _linkRun = run;
+        }
+        if (reload.IsCompleted) run.Cancel();
+        _env.Log.Info($"Linking {pairing.NodeId} to {pairing.ServerOrigin}.");
+
+        var reports = ReportLoopAsync(client, pairing, run.Token);
+        try
+        {
+            await client.RunAsync(run.Token);
+        }
+        finally
+        {
+            run.Cancel();
+            try
+            {
+                await reports;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            await client.DisposeAsync();
+            lock (_gate)
+            {
+                _client = null;
+                _handler = null;
+                _linkRun = null;
+            }
+        }
+
+        if (client.Status == LinkClientStatus.Refused)
+        {
+            // Revoked or forgotten by the server (design 3.5 step 4).
+            var reason = client.StatusReason is "node_unknown" ? "unknown" : "revoked";
+            handler.KillAll();
+            await ForgetAsync(pairing, reason, callServer: false, CancellationToken.None);
+            _env.Log.Warn(reason == "revoked"
+                ? $"The server revoked this node ({client.StatusReason}). Its key and spool are deleted; pair again to reconnect."
+                : $"The server does not know this node ({client.StatusReason}). Its key is deleted; pair again to reconnect.");
+        }
+    }
+
+    private void OnClientStatus(LinkClient client, LinkClientStatus status, string? reason)
+    {
+        var text = status switch
+        {
+            LinkClientStatus.Connecting => "connecting",
+            LinkClientStatus.Online => "online",
+            LinkClientStatus.Offline => "offline",
+            LinkClientStatus.Refused => "refused",
+            LinkClientStatus.NeedsUpdate => "needs-update",
+            _ => "stopped",
+        };
+        if (status == LinkClientStatus.Online) _env.Log.Info($"Link online ({reason}).");
+        else if (status is LinkClientStatus.Offline or LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate)
+            _env.Log.Info($"Link {text}{(reason is null ? "" : $": {reason}")}.");
+        SetLinkStatus(text, reason);
+    }
+
+    private void SetLinkStatus(string status, string? reason)
+    {
+        bool changed;
+        lock (_gate)
+        {
+            changed = _linkStatus != status || _linkReason != reason;
+            if (_linkStatus != status) _statusSince = _env.Time.GetUtcNow();
+            _linkStatus = status;
+            _linkReason = reason;
+        }
+        if (changed) LinkStatusChanged?.Invoke(status, reason);
+    }
+
+    /// <summary>Hardware every minute, the CLIs at start and every 30 minutes when they changed (design 2.4).</summary>
+    private async Task ReportLoopAsync(LinkClient client, NodePairing pairing, CancellationToken ct)
+    {
+        var nextCli = _env.Time.GetUtcNow();
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(_env.HardwareReportInterval, _env.Time, ct);
+            if (client.Session is not { IsAttached: true } session) continue;
+            try
+            {
+                var report = new JsonObject();
+                if (session.HasFeature(LinkFeatures.HardwareV1))
+                    report["hardware"] = await _reporter.HardwareReportAsync(pairing.NodeId, ct);
+                if (session.HasFeature(LinkFeatures.CliV1) && _env.Time.GetUtcNow() >= nextCli)
+                {
+                    nextCli = _env.Time.GetUtcNow() + _env.CliReprobeInterval;
+                    var (clis, changed) = await _reporter.ReprobeAsync(ct);
+                    if (changed) report["clis"] = clis;
+                }
+                if (report.Count > 0) await PushAsync(session, report);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                _env.Log.Warn($"Report: {error.Message}");
+            }
+        }
+    }
+
+    private static async Task PushAsync(LinkSession session, JsonObject report)
+    {
+        try
+        {
+            await session.NotifyAsync(NodeLinkHandler.Report, report);
+        }
+        catch (Exception error) when (error is LinkRpcException or LinkClosedException or ObjectDisposedException
+                                          or InvalidOperationException)
+        {
+            // the next report carries it
+        }
+    }
+
+    /// <summary>
+    /// Ends this pairing locally: optionally tells the server (the signed unpair), then deletes the key,
+    /// empties the spool and writes how it ended into <c>node.json</c>.
+    /// </summary>
+    public async Task<bool> ForgetAsync(NodePairing pairing, string reason, bool callServer, CancellationToken ct)
+    {
+        await _lifecycle.WaitAsync(ct);
+        try
+        {
+            return await NodeLifecycle.ForgetAsync(_env, pairing, reason, callServer, ct);
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
+    /// <summary>The <c>unpair</c> verb when the agent runs: say goodbye on the link, stop it, then forget.</summary>
+    public async Task<JsonObject> UnpairAsync(CancellationToken ct)
+    {
+        await _lifecycle.WaitAsync(ct);
+        bool confirmed;
+        NodePairing pairing;
+        try
+        {
+            var state = _env.StateStore.Load();
+            pairing = state.Pairing ?? throw new NodeCommandException("not_paired", "This node is not paired.");
+            await SayByeAsync("unpair");
+            lock (_gate) _linkRun?.Cancel();
+            confirmed = await NodeLifecycle.ForgetAsync(_env, pairing, "unpaired", callServer: true, ct);
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+        Reload();
+        return new JsonObject { ["ok"] = true, ["nodeId"] = pairing.NodeId, ["serverConfirmed"] = confirmed };
+    }
+
+    /// <summary>A graceful close tells the server why (<c>link.bye {reason}</c>, design 4.9).</summary>
+    public async Task SayByeAsync(string reason)
+    {
+        if (Client?.Session is not { IsAttached: true } session) return;
+        try
+        {
+            // A call, not a notification: its answer (or error) proves the server read it before the link closes.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await session.CallAsync(NodeLinkHandler.Bye, new JsonObject { ["reason"] = reason }, timeout.Token);
+        }
+        catch (Exception error) when (error is LinkRpcException or LinkClosedException or OperationCanceledException
+                                          or InvalidOperationException)
+        {
+        }
+    }
+
+    public int KillAll() => Handler?.KillAll() ?? 0;
+
+    /// <summary>The <c>status</c> verb's answer.</summary>
+    public JsonObject Status()
+    {
+        var state = _env.StateStore.Load();
+        LinkClient? client;
+        string status;
+        string? reason;
+        DateTimeOffset? since;
+        lock (_gate)
+        {
+            client = _client;
+            status = _linkStatus;
+            reason = _linkReason;
+            since = _statusSince;
+        }
+        var answer = NodeLifecycle.StateJson(state);
+        answer["ok"] = true;
+        answer["running"] = true;
+        answer["pid"] = Environment.ProcessId;
+        answer["link"] = new JsonObject
+        {
+            ["status"] = status,
+            ["reason"] = reason,
+            ["since"] = since?.ToString("O"),
+            ["connections"] = client?.Connections,
+            ["resumedConnections"] = client?.ResumedConnections,
+            ["serverEpoch"] = client?.Welcome?.ServerEpoch,
+            ["updateAvailable"] = client?.Welcome?.AgentPolicy is { } policy
+                                  && AgentVersions.Compare(AgentIdentity.Version, policy.Recommended) < 0,
+        };
+        return answer;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        lock (_gate) _linkRun?.Cancel();
+        if (Client is { } client) await client.DisposeAsync();
+        _reporter.Dispose();
+    }
+}
+
+/// <summary>What the CLI and the agent both do to a pairing.</summary>
+public static class NodeLifecycle
+{
+    public static async Task<bool> ForgetAsync(NodeEnvironment env, NodePairing pairing, string reason, bool callServer,
+        CancellationToken ct)
+    {
+        var confirmed = false;
+        INodeKeyStore? store = null;
+        try
+        {
+            store = env.KeyStores.ForKeyRef(pairing.KeyRef);
+        }
+        catch (NodeCommandException error)
+        {
+            env.Log.Warn(error.Message);
+        }
+
+        if (callServer && store is not null)
+        {
+            using var key = SafeOpen(env, store, pairing);
+            if (key is not null)
+            {
+                using var server = env.ServerClient();
+                confirmed = await server.UnpairAsync(pairing.ServerOrigin, pairing.NodeId, key, env.Time.GetUtcNow(), ct);
+                if (!confirmed)
+                    env.Log.Warn($"{pairing.ServerOrigin} did not confirm the unpair; the node shows offline there until someone revokes it.");
+            }
+        }
+
+        try
+        {
+            store?.Delete(pairing.KeyRef, pairing.ServerOrigin);
+        }
+        catch (NodeCommandException error)
+        {
+            env.Log.Warn($"The key could not be deleted: {error.Message}");
+        }
+        ClearSpool(env);
+        env.StateStore.Save(new NodeState
+        {
+            Ended = new NodeEnding(pairing.NodeId, pairing.ServerOrigin, reason, env.Time.GetUtcNow()),
+        });
+        env.Audit.Record("local", "forget", reason, pairing.NodeId);
+        return confirmed;
+    }
+
+    private static ECDsa? SafeOpen(NodeEnvironment env, INodeKeyStore store, NodePairing pairing)
+    {
+        try
+        {
+            return store.Open(pairing.KeyRef, pairing.ServerOrigin);
+        }
+        catch (NodeCommandException error)
+        {
+            env.Log.Warn(error.Message);
+            return null;
+        }
+    }
+
+    private static void ClearSpool(NodeEnvironment env)
+    {
+        var spool = env.Host.Path(env.Paths.Spool);
+        if (env.Host.Files.DirectoryExists(spool)) env.Host.Files.DeleteDirectory(spool, recursive: true);
+    }
+
+    /// <summary><c>node.json</c> as the status verb shows it (never the key reference's secret parts: there are none).</summary>
+    public static JsonObject StateJson(NodeState state)
+    {
+        var answer = new JsonObject
+        {
+            ["agent"] = new JsonObject { ["version"] = AgentIdentity.Version, ["os"] = AgentIdentity.Os, ["arch"] = AgentIdentity.Arch },
+            ["paired"] = state.Pairing is not null,
+        };
+        if (state.Pairing is { } pairing)
+        {
+            answer["nodeId"] = pairing.NodeId;
+            answer["serverOrigin"] = pairing.ServerOrigin;
+            answer["fingerprint"] = pairing.Fingerprint;
+            answer["credentialStore"] = pairing.CredentialStore;
+            answer["pairedAt"] = pairing.PairedAt.ToString("O");
+        }
+        if (state.Ended is { } ended)
+            answer["ended"] = new JsonObject
+            {
+                ["nodeId"] = ended.NodeId,
+                ["serverOrigin"] = ended.ServerOrigin,
+                ["reason"] = ended.Reason,
+                ["at"] = ended.At.ToString("O"),
+            };
+        return answer;
+    }
+}

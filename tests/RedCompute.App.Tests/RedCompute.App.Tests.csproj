@@ -21,8 +21,9 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <ProjectReference Include="..\..\src\RedCompute.App\RedCompute.App.csproj" />
-    <!-- Not used by RedCompute yet: referenced so the IL guard scans the node link too. -->
+    <!-- Not used by RedCompute yet: referenced so the IL guard scans the node link and the node agent too. -->
     <ProjectReference Include="..\..\src\RedCompute.NodeLink\RedCompute.NodeLink.csproj" />
+    <ProjectReference Include="..\..\src\RedCompute.Node\RedCompute.Node.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.ClaudeCode\RedCompute.Plugin.ClaudeCode.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.Codex\RedCompute.Plugin.Codex.csproj" />
     <ProjectReference Include="..\..\plugins\RedCompute.Plugin.OpenCode\RedCompute.Plugin.OpenCode.csproj" />

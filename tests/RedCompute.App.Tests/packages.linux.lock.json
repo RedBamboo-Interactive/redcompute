@@ -433,6 +433,14 @@
           "xunit.extensibility.core": "[2.9.2]"
         }
       },
+      "leaf-node": {
+        "type": "Project",
+        "dependencies": {
+          "RedCompute.ExecutionHost": "[1.0.0, )",
+          "RedCompute.NodeLink": "[1.0.0, )",
+          "System.Diagnostics.PerformanceCounter": "[9.0.0, )"
+        }
+      },
       "redbamboo.apphost": {
         "type": "Project",
         "dependencies": {
