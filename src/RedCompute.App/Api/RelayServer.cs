@@ -24,6 +24,7 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Services.Nodes;
+using RedCompute.App.Services.Placement;
 using RedCompute.App.Services.SessionTitles;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Nodes;
@@ -393,6 +394,14 @@ public class RelayServer
         };
         var repositoryValidator = new RepositoryReferenceValidator(_config.RedLeafUrl, redLeafJwt,
             _nodes?.LocalHost ?? LocalExecutionHost.Shared);
+        // Stage A of placement by reference: starts that send placement beside their legacy fields are
+        // resolved through the kernel (workspace, scratch) and RedLeaf's repository entities, compared, counted.
+        var kernelPlacement = new KernelPlacementClient(_config.RedLeafUrl, redLeafJwt);
+        var placementShadow = new PlacementShadow(
+            new PlacementResolver(_nodes, kernelPlacement, kernelPlacement,
+                new RepositoryPlacementResolver(_config.RedLeafUrl, redLeafJwt)),
+            new PlacementShadowStore(Path.Combine(ComputeStorage.Current.DataRoot, PlacementShadowStore.FileName)), _log);
+        PlacementEndpoints.Map(registry, placementShadow.Status);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         _callbacks.AttachDurableStore(_inputAttachments.DatabasePath, inputQueueStore,
@@ -451,7 +460,7 @@ public class RelayServer
                 else
                     broadcaster.Broadcast("session.updated", session);
             },
-            _nodes);
+            _nodes, placementShadow);
         SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access);
         SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
         CliVersionEndpoints.Map(registry, _registry);

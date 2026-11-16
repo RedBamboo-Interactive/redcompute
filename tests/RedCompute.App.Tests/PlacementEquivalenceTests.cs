@@ -17,6 +17,7 @@ using RedCompute.App.Data;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Services.Nodes;
+using RedCompute.App.Services.Placement;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
@@ -193,10 +194,12 @@ public sealed class PlacementEquivalenceTests : IDisposable
         => PlacementGoldens.Verify(name, await CaptureAsync(Fixtures[name], WithPlacement(Fixtures[name], StageAPlacements[name])));
 
     /// <summary>What the provider was handed for <paramref name="body"/>, recorded under the fixture's legacy request.</summary>
-    private async Task<JsonNode> CaptureAsync(PlacementCase fixture, string body, INodeRegistry? nodes = null)
+    private async Task<JsonNode> CaptureAsync(PlacementCase fixture, string body, INodeRegistry? nodes = null,
+        PlacementShadow? shadow = null)
     {
         var recorder = new RecordingProvider();
-        var result = await InvokeAsync(fixture, jobs => recorder.Jobs = jobs, recorder.Providers(), body: body, nodes: nodes);
+        var result = await InvokeAsync(fixture, jobs => recorder.Jobs = jobs, recorder.Providers(), body: body, nodes: nodes,
+            shadow: shadow);
 
         Assert.True(result.Status is 200 or 202, $"{result.Status} {result.Response}");
         var capture = new JsonObject
@@ -283,6 +286,102 @@ public sealed class PlacementEquivalenceTests : IDisposable
         var execute = endpoints.GetEndpoints().Single(e => e.Method == "POST" && e.Path == "/ai-session/execute");
         var schema = JsonSerializer.SerializeToElement(execute.RequestBody);
         Assert.Equal("object", schema.GetProperty("properties").GetProperty("placement").GetProperty("type").GetString());
+    }
+
+    // ── stage A: the shadow compare (R4) ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// How each caller's stage-A placement compares with the legacy fields it is sent with, when the
+    /// references resolve to where that caller's paths point today (field outcome, fields in order).
+    /// Code's browser sends its picker's forward slashes, so its cwd is equivalent, not exact. The
+    /// Sentinel sends <c>addDirs: []</c> and no scratch environment today, while its placement's scratch
+    /// comes with one: the flip gives it the scratch variables (design 2.1, scratchAs cwd), so it shows a
+    /// mismatch here.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string> ShadowOutcomes = new Dictionary<string, string>
+    {
+        ["nova-discussion-mounted-workspace"] = "cwd exact, scratch exact",
+        ["nova-discussion-disposable-workspace"] = "cwd exact, scratch exact",
+        ["nova-heartbeat-resident-unattended"] = "cwd exact, scratch exact",
+        ["nova-delegate-repository"] = "cwd exact, repositoryId exact",
+        ["nova-delegate-branch-worktree"] = "cwd exact, repositoryId exact",
+        ["nova-delegate-agent-workspace"] = "cwd exact",
+        ["nova-delegate-repository-codex"] = "cwd exact, repositoryId exact",
+        ["code-session-checkout"] = "cwd equivalent, repositoryId exact",
+        ["code-session-worktree"] = "cwd equivalent, repositoryId exact",
+        ["nova-automation-session"] = "addDirs exact, cwd exact, env exact",
+        ["code-executor-tackle"] = "cwd exact",
+        ["redleaf-setup-probe"] = "cwd exact, env exact",
+        ["sentinel-review"] = "addDirs equivalent, cwd exact, env mismatch",
+        ["roleplay-turn"] = "cwd exact, env exact",
+    };
+
+    /// <summary>
+    /// Stage A end to end: with the shadow wired, every caller's body still reaches the provider exactly
+    /// as its legacy fields alone do (the same golden), and its placement is resolved and compared once,
+    /// with the outcome above. The workspace and scratch resolvers stand in for the kernel (K2) and answer
+    /// where the fixture's paths are; repositories resolve through the real resolver and real git.
+    /// </summary>
+    [WindowsTheory("Placement goldens are recorded on Windows (path bytes, separators included)")]
+    [MemberData(nameof(StageACases))]
+    public async Task Each_stage_A_start_is_shadow_compared_and_still_runs_on_its_legacy_fields(string name)
+    {
+        var places = new FixturePlaces(_root, mounted: name != "nova-discussion-disposable-workspace");
+        var repositories = new RepositoryPlacementResolver(new HttpClient(new RepositoryEntity(Path.Combine(_root, "songes")))
+        {
+            BaseAddress = new Uri("http://redleaf/"),
+        });
+        var logged = new List<string>();
+        var shadow = new PlacementShadow(new PlacementResolver(null, places, places, repositories), null,
+            (line, _) => { lock (logged) logged.Add(line); });
+
+        PlacementGoldens.Verify(name, await CaptureAsync(Fixtures[name], WithPlacement(Fixtures[name], StageAPlacements[name]),
+            shadow: shadow));
+        await shadow.IdleAsync();
+
+        var path = Assert.Single(shadow.Status().Paths);
+        Assert.Equal(Fixtures[name].Route == "/ai-session/sessions" ? "sessions" : "execute", path.Route);
+        Assert.Equal((1L, 1L), (path.Observed, path.Compared));
+        Assert.Equal(ShadowOutcomes[name], string.Join(", ", path.Fields.Select(pair => pair.Key + " "
+            + (pair.Value.Exact == 1 ? ShadowOutcome.Exact : pair.Value.Equivalent == 1 ? ShadowOutcome.Equivalent : ShadowOutcome.Mismatch))));
+        Assert.All(logged, line => Assert.DoesNotContain(_root, line, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task A_start_without_placement_is_not_shadowed()
+    {
+        var places = new FixturePlaces(_root, mounted: true);
+        var shadow = new PlacementShadow(new PlacementResolver(null, places, places, null), null, (_, _) => { });
+
+        await CaptureAsync(Fixtures["nova-discussion-mounted-workspace"], Fixtures["nova-discussion-mounted-workspace"].Body,
+            shadow: shadow);
+        await CaptureAsync(Fixtures["nova-automation-session"], Fixtures["nova-automation-session"].Body, shadow: shadow);
+        await shadow.IdleAsync();
+
+        Assert.Empty(shadow.Status().Paths);
+        Assert.Equal(0, places.Calls);
+    }
+
+    /// <summary>The kernel's answers for the fixtures: the Agent's workspace (or none) and the scratch folder with its environment.</summary>
+    private sealed class FixturePlaces(string root, bool mounted) : IWorkspaceResolver, IHostScratch
+    {
+        public int Calls;
+
+        public Task<Resolution<WorkspaceResolution>> ResolveAsync(WorkspacePlacement workspace, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref Calls);
+            return Task.FromResult(Resolution<WorkspaceResolution>.Of(mounted
+                ? new(WorkspaceResolution.Mounted, Path.Combine(root, "workspace"))
+                : new(WorkspaceResolution.None, null)));
+        }
+
+        public Task<Resolution<ScratchAllocation>> PrepareAsync(ScratchPlacement scratch, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref Calls);
+            var path = Path.Combine(root, "scratch");
+            return Task.FromResult(Resolution<ScratchAllocation>.Of(new(path,
+                PlacementShadow.ScratchVariables.ToDictionary(name => name, _ => path))));
+        }
     }
 
     // ── the session keeps its references (R3) ─────────────────────────────────────────────────
@@ -396,7 +495,8 @@ public sealed class PlacementEquivalenceTests : IDisposable
 
     private async Task<(int Status, string Response, string? JobInput)> InvokeAsync(PlacementCase fixture,
         Action<IJobTracker> jobsReady, Dictionary<string, IBackendProvider>? providers,
-        Func<IJobTracker, ClaudeCodeProvider>? claude = null, string? body = null, INodeRegistry? nodes = null)
+        Func<IJobTracker, ClaudeCodeProvider>? claude = null, string? body = null, INodeRegistry? nodes = null,
+        PlacementShadow? shadow = null)
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
         var dbPath = Path.Combine(f.Root, "jobs.db");
@@ -421,7 +521,8 @@ public sealed class PlacementEquivalenceTests : IDisposable
             BaseAddress = new Uri("http://redleaf/"),
         });
         UnifiedSessionEndpoints.Map(new EndpointRegistry(app), registry, jobs, (_, _) => { }, f.Config,
-            attachmentStore: f.Attachments, inputQueue: f.Service(), repositoryValidator: repositories, nodes: nodes);
+            attachmentStore: f.Attachments, inputQueue: f.Service(), repositoryValidator: repositories, nodes: nodes,
+            placementShadow: shadow);
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
             .Single(e => e.RoutePattern.RawText == fixture.Route
                 && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("POST"));
@@ -480,11 +581,19 @@ public sealed class PlacementEquivalenceTests : IDisposable
 
     internal sealed record PlacementCase(string Route, string Body, string? IdempotencyKey = null, string? JobName = null);
 
-    /// <summary>The Repository entity RedLeaf answers for <see cref="RepositoryId"/>: active, branch work allowed.</summary>
+    /// <summary>
+    /// The Repository entity RedLeaf answers for <see cref="RepositoryId"/>: active, branch work allowed. It has
+    /// no checkout entities yet, so its <c>local_path</c> is the legacy node's checkout.
+    /// </summary>
     private sealed class RepositoryEntity(string localPath) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri!.PathAndQuery.StartsWith("/api/entities?", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"items":[],"total":0}""", Encoding.UTF8, "application/json"),
+                });
             var body = new
             {
                 id = RepositoryId,

@@ -57,6 +57,7 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.App.Services.Jobs.JobArtifactStore",
             "RedCompute.App.Services.Jobs.JobTrackingService",
             "RedCompute.App.Services.Nodes.NodeIdentityStore",
+            "RedCompute.App.Services.Placement.PlacementShadowStore",
             "RedCompute.App.Services.ProviderConfigService",
             "RedCompute.App.Services.ProviderDiscovery",
             "RedCompute.App.Services.QualityModeService",

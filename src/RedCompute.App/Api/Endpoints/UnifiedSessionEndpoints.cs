@@ -62,6 +62,7 @@ public static class UnifiedSessionEndpoints
     private static SessionTitleStore? _titles;
     private static Action<UnifiedSessionInfo>? _titleChanged;
     private static INodeRegistry? _nodes;
+    private static PlacementShadow? _shadow;
     /// <summary>The node sessions start on: node zero's host (the shared local host without a registry).</summary>
     private static IExecutionHost _host = LocalExecutionHost.Shared;
 
@@ -83,7 +84,7 @@ public static class UnifiedSessionEndpoints
         Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null,
         SessionAccessService? access = null,
         SessionTitleStore? titles = null, Action<UnifiedSessionInfo>? titleChanged = null,
-        INodeRegistry? nodes = null)
+        INodeRegistry? nodes = null, PlacementShadow? placementShadow = null)
     {
         // Without a policy source (tests, hosts with no RedLeaf) the contract's no-record defaults
         // apply: auto (ask where the provider has no auto), Full disabled.
@@ -103,6 +104,7 @@ public static class UnifiedSessionEndpoints
         _titleChanged = titleChanged;
         _nodes = nodes;
         _host = nodes?.HostFor(null) ?? LocalExecutionHost.Shared;
+        _shadow = placementShadow;
 
         bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
             => ComputeResourceAccess.CanReadSession(
@@ -552,6 +554,13 @@ public static class UnifiedSessionEndpoints
                 return Error(500, "tracking_failed", "Session creation was rolled back because its compute job was not created");
             }
             if (keepResident) jobTracker.SetKeepResident(jobId, true);
+            // Stage A: compared off the request path, counted, never used. A conversation-only session's
+            // workspace is RedCompute's own on both paths, so there is nothing to compare.
+            if (placement is not null && !conversationOnly)
+                _shadow?.Observe(placement, PlacementRoute.Session, provenance.Origin.App.Id,
+                    new LegacyPlacement(projectPath, scratchDirectory,
+                        repository is null ? null : repositoryValue.GetString(), null, null),
+                    _host.PathRules);
 
             return Results.Json(WithNode(SessionAccessService.Overlay(session, provider), _nodes));
         })
@@ -2250,7 +2259,7 @@ public static class UnifiedSessionEndpoints
                 return Error(422, "validation_failed", "prompt is required");
             // Validated and its node checked; the legacy fields below still decide the launch. The
             // job input below stays exactly what it was, so idempotency keys keep matching.
-            if (ReadPlacement(body, PlacementRoute.Execute, conversationOnly: false, out _) is { } placementError)
+            if (ReadPlacement(body, PlacementRoute.Execute, conversationOnly: false, out var placement) is { } placementError)
                 return placementError;
 
             var workingDir = body.TryGetProperty("workingDir", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : null;
@@ -2265,6 +2274,7 @@ public static class UnifiedSessionEndpoints
             Dictionary<string, string>? env = null;
             if (body.TryGetProperty("env", out var envProp) && envProp.ValueKind == JsonValueKind.Object)
                 env = envProp.EnumerateObject().ToDictionary(ep => ep.Name, ep => ep.Value.GetString() ?? "");
+            var legacyEnvironment = env;
 
             var providerParams = new Dictionary<string, object?>();
             foreach (var key in new[] { "effort", "maxTurns", "tools", "allowedTools", "addDirs", "container", "dockerImage", "sandbox", "networkAccess" })
@@ -2382,6 +2392,13 @@ public static class UnifiedSessionEndpoints
             }
             jobTracker.StartInvocation(job.Id, provenance);
             log($"[{provider.ProviderId}] Execute job {job.Id} started (model={model ?? "default"})", job.Id);
+            // Stage A: compared off the request path, counted, never used; the job input above has no placement.
+            if (placement is not null)
+                _shadow?.Observe(placement, PlacementRoute.Execute, provenance.Origin.App.Id,
+                    new LegacyPlacement(workingDir, null, null,
+                        providerParams.TryGetValue("addDirs", out var legacyAddDirs) && legacyAddDirs is string[] dirs ? dirs : null,
+                        legacyEnvironment),
+                    _host.PathRules);
 
             var streamKey = job.Id.ToString();
             var asyncMode = ctx.Request.Query.ContainsKey("async");
@@ -3282,7 +3299,8 @@ public static class UnifiedSessionEndpoints
         + "conversation-only sessions take nodeId only. Unknown members and malformed values are 422 validation_failed naming the member "
         + "in fields; an unknown node is 404 node_not_found with nodeId. Accepted and validated today; the legacy path fields "
         + "(projectPath, repositoryId, scratchDir, workingDir, env, addDirs) still decide where the work runs, so send both until "
-        + "GET /ping lists the placement.v1 feature.";
+        + "GET /ping lists the placement.v1 feature. A start that sends both is resolved by reference in the background and "
+        + "compared with them (GET /placement/shadow-status).";
 
     /// <summary>
     /// The execute result document. <c>isolation</c> is what the provider reports it applied to this
