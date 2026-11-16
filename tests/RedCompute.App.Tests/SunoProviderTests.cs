@@ -10,6 +10,86 @@ namespace RedCompute.App.Tests;
 
 public sealed class SunoProviderTests
 {
+    [Fact]
+    public async Task CoverUploadsProvidedAudioToFixedServiceCompanionThenSubmitsOnce()
+    {
+        var uploads = 0; var submissions = 0;
+        byte[] source = [82, 73, 70, 70, 4, 0, 0, 0, 87, 65, 86, 69];
+        var api = new DelegateHandler(request =>
+        {
+            Assert.Equal("secret-test-key", request.Headers.Authorization?.Parameter);
+            if (request.RequestUri!.Host == "sunoapiorg.redpandaai.co")
+            {
+                Assert.Equal("https://sunoapiorg.redpandaai.co/api/file-stream-upload", request.RequestUri.AbsoluteUri);
+                var form = Assert.IsType<MultipartFormDataContent>(request.Content);
+                var file = form.Single(part => part.Headers.ContentDisposition?.Name?.Trim('"') == "file");
+                Assert.Equal(source, file.ReadAsByteArrayAsync().GetAwaiter().GetResult());
+                Assert.Equal("audio/wav", file.Headers.ContentType!.MediaType);
+                uploads++;
+                return Json("{\"code\":200,\"data\":{\"downloadUrl\":\"https://tempfile.redpandaai.co/source.wav\"}}");
+            }
+            Assert.Equal("api.sunoapi.org", request.RequestUri.Host);
+            if (request.RequestUri.AbsolutePath.EndsWith("/generate/credit")) return Json("{\"code\":200,\"data\":100}");
+            if (request.Method == HttpMethod.Post)
+            {
+                Assert.EndsWith("/generate/upload-cover", request.RequestUri.AbsolutePath);
+                var body = JsonNode.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!;
+                Assert.Equal("https://tempfile.redpandaai.co/source.wav", body["uploadUrl"]!.GetValue<string>());
+                Assert.Null(body["sourceAudioBase64"]); submissions++;
+                return Json("{\"code\":200,\"data\":{\"taskId\":\"uploaded-cover\"}}");
+            }
+            return Json("""
+                {"code":200,"data":{"status":"SUCCESS","response":{"sunoData":[
+                  {"id":"cover-a","audioUrl":"https://1.1.1.1/a.mp3","duration":40}
+                ]}}}
+                """);
+        });
+        await using var provider = new SunoProvider(Config([]), "music-gen", _ => { }, new HttpClient(api),
+            new HttpClient(new DelegateHandler(request => { Assert.Null(request.Headers.Authorization); return Bytes("audio/mpeg", [1, 2, 3]); })),
+            new SunoProviderTiming(TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2)));
+        var result = await provider.ExecuteAsync(new JobRequest { CapabilitySlug = "music-gen", Parameters = new()
+        {
+            ["operation"] = "upload_cover", ["sourceAudioBase64"] = Convert.ToBase64String(source), ["sourceAudioFormat"] = "wav",
+        }});
+        Assert.True(result!.Success, result.ErrorMessage);
+        Assert.Equal(1, uploads); Assert.Equal(1, submissions);
+        var metadata = JsonNode.Parse(result.ResultJson!)!;
+        Assert.True(metadata["source"]!["audioHashVerified"]!.GetValue<bool>());
+        Assert.Equal(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(source)).ToLowerInvariant(), metadata["source"]!["sha256"]!.GetValue<string>());
+        Assert.Equal("uploaded_audio", metadata["source"]!["kind"]!.GetValue<string>());
+        result.OutputStream!.Dispose();
+    }
+
+    [Fact]
+    public async Task SourceUploadNeverRedirectsAnExistingKeyToAChangedEndpointOrBinding()
+    {
+        var requests = 0;
+        var parameters = new Dictionary<string, object?> { ["operation"] = "upload_cover", ["sourceAudioFormat"] = "wav",
+            ["sourceAudioBase64"] = Convert.ToBase64String([82, 73, 70, 70, 4, 0, 0, 0, 87, 65, 86, 69]) };
+        var changedEndpoint = Config(new() { ["BaseUrl"] = "https://other.example.com" });
+        var changedBinding = Config([]); changedBinding.KeyBinding = new("secret-test-key", "https://other.example.com:443");
+        foreach (var config in new[] { changedEndpoint, changedBinding })
+        {
+            await using var provider = new SunoProvider(config, "music-gen", _ => { },
+                new HttpClient(new DelegateHandler(_ => { requests++; throw new Exception("must not send"); })), null, null);
+            var result = await provider.ExecuteAsync(new JobRequest { CapabilitySlug = "music-gen", Parameters = parameters });
+            Assert.False(result!.Success);
+        }
+        Assert.Equal(0, requests);
+        await using var normal = new SunoProvider(Config([]), "music-gen", _ => { });
+        foreach (var changed in new Dictionary<string, object?>[]
+        {
+            new() { ["uploadUrl"] = "https://1.1.1.1/a.wav" },
+            new() { ["sourceAudioFormat"] = "exe" }, new() { ["sourceAudioBase64"] = "not base64" },
+            new() { ["sourceAudioSha256"] = new string('0', 64) },
+        })
+        {
+            var input = new Dictionary<string, object?>(parameters);
+            foreach (var pair in changed) input[pair.Key] = pair.Value;
+            Assert.NotEmpty(normal.ValidateParameters(input));
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

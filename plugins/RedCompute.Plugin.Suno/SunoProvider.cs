@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -29,6 +30,11 @@ internal sealed record SunoProviderTiming(
 public sealed class SunoProvider : IPluginProvider
 {
     private const string CallbackPlaceholder = "https://example.com";
+    // Documented service companion, not a caller-configurable credential target:
+    // https://old-docs.sunoapi.org/file-upload-api/upload-file-stream/
+    private const string OfficialApiOrigin = "https://api.sunoapi.org:443";
+    private const string SourceUploadEndpoint = "https://sunoapiorg.redpandaai.co/api/file-stream-upload";
+    private const int MaxSourceAudioBytes = 16 * 1024 * 1024;
     private readonly ProviderConfig _config;
     private readonly string _capabilitySlug;
     private readonly Action<string> _log;
@@ -57,6 +63,8 @@ public sealed class SunoProvider : IPluginProvider
     {
         ["operation"] = new() { Type = "string", Required = false, Default = "generate", Description = "generate, upload_cover, sounds, extend, split_stem, split_stem_advanced, separate_vocal, wav, or recover" },
         ["uploadUrl"] = new() { Type = "string", Required = false, Description = "Public HTTPS source audio URL for upload_cover (maximum 8 minutes); mutually exclusive with taskId + audioId. Local asset URLs are not reachable by Suno." },
+        ["sourceAudioBase64"] = new() { Type = "string", Required = false, Description = "WAV or MP3 source bytes for upload_cover, plain Base64, maximum 16 MiB. Exclusive with uploadUrl or taskId + audioId. Official SunoAPI only: uploads to its fixed documented companion host before submitting the cover. Never accepts a local path." },
+        ["sourceAudioFormat"] = new() { Type = "string", Required = false, Description = "wav or mp3, required with sourceAudioBase64" },
         ["sourceDurationSeconds"] = new() { Type = "number", Required = false, Description = "Known source duration for upload_cover; must be greater than zero and at most 480 seconds. The provider also validates the actual upload." },
         ["sourceAssetId"] = new() { Type = "string", Required = false, Description = "Caller-supplied original Asset reference, retained in cover lineage; not an upload URL or authorization to read an Asset" },
         ["sourceAudioSha256"] = new() { Type = "string", Required = false, Description = "Caller-supplied SHA256 of rendered source audio, retained in cover lineage" },
@@ -111,7 +119,7 @@ public sealed class SunoProvider : IPluginProvider
         _maxDownloadBytes = ParseLong(ProviderHelpers.GetExtra(config, "MaxDownloadBytes", "268435456"), 268_435_456);
 
         _ownsApiHttp = apiHttp is null;
-        _apiHttp = apiHttp ?? new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        _apiHttp = apiHttp ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) };
         // The credential is attached per request, and only for the URL RedLeaf bound it to.
 
         _ownsDownloadHttp = downloadHttp is null;
@@ -166,6 +174,9 @@ public sealed class SunoProvider : IPluginProvider
         {
             case "upload_cover":
                 ValidateCover(parameters, errors);
+                if (Nonblank(parameters, "sourceAudioBase64") is not null
+                    && ProviderKeyBindings.Normalize(_baseUrl) != OfficialApiOrigin)
+                    errors["sourceAudioBase64"] = "direct source upload is supported only for the official SunoAPI endpoint; use uploadUrl with a custom endpoint";
                 break;
             case "generate":
                 Require(parameters, errors, "prompt", "style", "title");
@@ -222,6 +233,7 @@ public sealed class SunoProvider : IPluginProvider
         int? reportedRemaining = null;
         string? taskId = null;
         JsonElement? taskData = null;
+        var coverSource = operation == "upload_cover" ? new Dictionary<string, object?>(request.Parameters) : null;
         try
         {
             if (recovering)
@@ -232,7 +244,7 @@ public sealed class SunoProvider : IPluginProvider
             else
             {
                 creditsBefore = await TryGetCreditsAsync(ct);
-                taskId = await SubmitAsync(operation, request.Parameters, ct);
+                taskId = await SubmitAsync(operation, coverSource ?? request.Parameters, ct);
                 _log($"[Suno] Submitted {operation} task {taskId}");
             }
             request.ProgressCallback?.Invoke(0.08);
@@ -253,7 +265,7 @@ public sealed class SunoProvider : IPluginProvider
 
             request.ProgressCallback?.Invoke(1);
             return BuildJobResult(sourceOperation, taskId, prepared, creditsBefore, creditsAfter, consumed, measurement, recovering,
-                sourceOperation == "upload_cover" && !recovering ? request.Parameters : null);
+                coverSource);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -296,6 +308,14 @@ public sealed class SunoProvider : IPluginProvider
 
     private async Task<string> SubmitAsync(string operation, Dictionary<string, object?> p, CancellationToken ct)
     {
+        if (operation == "upload_cover" && Nonblank(p, "sourceAudioBase64") is not null)
+        {
+            var bytes = ReadSourceAudio(p);
+            p["uploadUrl"] = await UploadSourceAsync(bytes, ProviderHelpers.GetParam<string>(p, "sourceAudioFormat")!, ct);
+            p["sourceAudioSha256"] = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            p["sourceBytesVerified"] = true;
+            p.Remove("sourceAudioBase64");
+        }
         var callbackUrl = ProviderHelpers.GetExtra(_config, "CallbackUrl", CallbackPlaceholder);
         var model = ProviderHelpers.GetParam<string>(p, "model") ?? (operation == "upload_cover" ? "V6" : _model);
         var endpoint = operation switch
@@ -735,6 +755,7 @@ public sealed class SunoProvider : IPluginProvider
                 ["taskId"] = ProviderHelpers.GetParam<string>(coverSource, "taskId"),
                 ["audioId"] = ProviderHelpers.GetParam<string>(coverSource, "audioId"),
                 ["referenceAssurance"] = "caller_supplied",
+                ["audioHashVerified"] = ProviderHelpers.GetParam<bool?>(coverSource, "sourceBytesVerified") ?? false,
             };
         var extras = prepared.Artifacts.Skip(1).Select((artifact, index) => new JobOutputPart
         {
@@ -882,10 +903,16 @@ public sealed class SunoProvider : IPluginProvider
         var task = ProviderHelpers.GetParam<string>(p, "taskId");
         var audio = ProviderHelpers.GetParam<string>(p, "audioId");
         var hasUpload = !string.IsNullOrWhiteSpace(upload);
+        var hasBytes = Nonblank(p, "sourceAudioBase64") is not null;
         var hasTask = !string.IsNullOrWhiteSpace(task);
         var hasAudio = !string.IsNullOrWhiteSpace(audio);
-        if (hasUpload == (hasTask || hasAudio) || (!hasUpload && !(hasTask && hasAudio)))
-            errors["uploadUrl"] = "provide either uploadUrl or both taskId and audioId, exclusively";
+        if ((hasUpload ? 1 : 0) + (hasBytes ? 1 : 0) + (hasTask || hasAudio ? 1 : 0) != 1 || hasTask != hasAudio)
+            errors["uploadUrl"] = "provide exactly one source: sourceAudioBase64, uploadUrl, or both taskId and audioId";
+        if (hasBytes)
+        {
+            try { ReadSourceAudio(p); }
+            catch (FormatException ex) { errors["sourceAudioBase64"] = ex.Message; }
+        }
         if (hasUpload && (!Uri.TryCreate(upload, UriKind.Absolute, out var uri)
             || uri.Scheme != Uri.UriSchemeHttps || uri.UserInfo.Length > 0 || uri.Fragment.Length > 0
             || uri.IsLoopback || !uri.Host.Contains('.') || uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase)
@@ -915,6 +942,53 @@ public sealed class SunoProvider : IPluginProvider
             errors["prompt"] = "cover prompt is lyrics; for instrumental covers put arrangement instructions in style";
         if (ProviderHelpers.GetParam<string>(p, "sourceAudioSha256") is { } hash && !Regex.IsMatch(hash, "\\A[0-9a-fA-F]{64}\\z"))
             errors["sourceAudioSha256"] = "must be a hexadecimal SHA256";
+    }
+
+    private static byte[] ReadSourceAudio(Dictionary<string, object?> p)
+    {
+        var encoded = Nonblank(p, "sourceAudioBase64") ?? throw new FormatException("source audio is required");
+        if (encoded.Length > (MaxSourceAudioBytes + 2) / 3 * 4) throw new FormatException("source audio exceeds 16 MiB");
+        var format = ProviderHelpers.GetParam<string>(p, "sourceAudioFormat");
+        if (format is not ("wav" or "mp3")) throw new FormatException("sourceAudioFormat must be wav or mp3");
+        var bytes = Convert.FromBase64String(encoded);
+        if (bytes.Length is < 12 or > MaxSourceAudioBytes) throw new FormatException("source audio is empty or exceeds 16 MiB");
+        var wav = bytes.AsSpan(0, 4).SequenceEqual("RIFF"u8) && bytes.AsSpan(8, 4).SequenceEqual("WAVE"u8);
+        var mp3 = bytes.AsSpan(0, 3).SequenceEqual("ID3"u8) || (bytes[0] == 0xff && (bytes[1] & 0xe0) == 0xe0);
+        if (format == "wav" ? !wav : !mp3) throw new FormatException("source audio header does not match its format");
+        if (Nonblank(p, "sourceAudioSha256") is { } expected
+            && !Convert.ToHexString(SHA256.HashData(bytes)).Equals(expected, StringComparison.OrdinalIgnoreCase))
+            throw new FormatException("source audio SHA256 does not match its bytes");
+        return bytes;
+    }
+
+    private async Task<string> UploadSourceAsync(byte[] bytes, string format, CancellationToken ct)
+    {
+        // A stored key still has to match the official PRIMARY origin. Changing
+        // BaseUrl or the binding can never redirect this upload or its key.
+        // The additional destination is this one documented service endpoint,
+        // enabled only by an explicit source-audio cover request. No suite bearer.
+        if (ProviderKeyBindings.Normalize(_baseUrl) != OfficialApiOrigin)
+            throw new InvalidOperationException("Direct source upload requires the official SunoAPI endpoint");
+        var key = ProviderKeyBindings.Require(_config, new Uri(_baseUrl));
+        using var request = new HttpRequestMessage(HttpMethod.Post, SourceUploadEndpoint);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        using var content = new MultipartFormDataContent();
+        var name = $"music-source-{Guid.NewGuid():N}.{format}";
+        var audio = new ByteArrayContent(bytes);
+        audio.Headers.ContentType = new MediaTypeHeaderValue(format == "wav" ? "audio/wav" : "audio/mpeg");
+        content.Add(audio, "file", name); content.Add(new StringContent("audio/music-covers"), "uploadPath");
+        content.Add(new StringContent(name), "fileName"); request.Content = content;
+        using var response = await _apiHttp.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Suno source upload HTTP {(int)response.StatusCode}");
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        var root = document.RootElement;
+        if (GetInt(root, "code") != 200 || !root.TryGetProperty("data", out var data))
+            throw new InvalidDataException("Suno source upload was rejected");
+        var url = GetString(data, "downloadUrl");
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https"
+            || uri.UserInfo.Length > 0 || uri.IsLoopback)
+            throw new InvalidDataException("Suno source upload returned an invalid download URL");
+        return uri.AbsoluteUri;
     }
 
     private static Dictionary<string, object?> CoverPayload(Dictionary<string, object?> p, string model, string callback) => new()
