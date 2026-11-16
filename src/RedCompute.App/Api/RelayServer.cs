@@ -140,6 +140,19 @@ public class RelayServer
                 ctx.Response.Headers.CacheControl = "private, no-store";
             await next();
         });
+        // AppHost's /ping carries ok/service/version. RedCompute answers it first so the
+        // same body also names the running commit (see PingInfo); `version` is unchanged.
+        var ping = PingInfo.Create(RedComputeServiceDescriptor.ServiceDisplayName,
+            RedComputeServiceDescriptor.AppVersion, System.Reflection.Assembly.GetEntryAssembly());
+        _app.Use(async (ctx, next) =>
+        {
+            if (HttpMethods.IsGet(ctx.Request.Method) && ctx.Request.Path == "/ping")
+            {
+                await ctx.Response.WriteAsJsonAsync(ping);
+                return;
+            }
+            await next();
+        });
         _app.UseAppHostAuth(new BearerAuthOptions
         {
             // No tunnel access token anymore — the kernel owns the tunnel. Loopback
