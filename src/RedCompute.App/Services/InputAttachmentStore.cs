@@ -31,7 +31,7 @@ public sealed class AttachmentStoreException(string code, string message) : Exce
     public string Code { get; } = code;
 }
 
-/// <summary>Durable staged bytes for provider input. Paths are generated IDs under LocalAppData;
+/// <summary>Durable staged bytes for provider input. Paths are generated IDs under the data root, stored as absolute paths;
 /// user filenames are display metadata only and never participate in storage paths.</summary>
 public sealed class InputAttachmentStore
 {
@@ -59,6 +59,13 @@ public sealed class InputAttachmentStore
     }
 
     public string Root => _root;
+
+    /// <summary>
+    /// The absolute path of a stored <c>StoredPath</c>: the column holds an absolute path (a relative one, which a later
+    /// release may write, resolves against <see cref="Root"/>). Every reader goes through here,
+    /// so a re-sent queued input resolves the row, not the path written into old prompt text.
+    /// </summary>
+    public string ResolveStored(string stored) => StoredPaths.Resolve(_root, stored)!;
     internal string DatabasePath => _databasePath;
 
     public async Task<StagedInputAttachment> UploadAsync(
@@ -258,7 +265,7 @@ public sealed class InputAttachmentStore
         Add(select, "$now", DateTimeOffset.UtcNow.ToString("O"));
         var paths = new List<string>();
         await using (var reader = await select.ExecuteReaderAsync(ct))
-            while (await reader.ReadAsync(ct)) paths.Add(reader.GetString(0));
+            while (await reader.ReadAsync(ct)) paths.Add(ResolveStored(reader.GetString(0)));
         var delete = connection.CreateCommand();
         delete.CommandText = "DELETE FROM InputAttachments WHERE ClaimedSessionId IS NULL AND ExpiresAt <= $now";
         Add(delete, "$now", DateTimeOffset.UtcNow.ToString("O"));
@@ -365,7 +372,7 @@ public sealed class InputAttachmentStore
         cmd.ExecuteNonQuery();
     }
 
-    private static async Task<StagedInputAttachment?> GetCoreAsync(SqliteConnection connection, string id, CancellationToken ct)
+    private async Task<StagedInputAttachment?> GetCoreAsync(SqliteConnection connection, string id, CancellationToken ct)
     {
         var cmd = connection.CreateCommand();
         cmd.CommandText = """
@@ -378,7 +385,7 @@ public sealed class InputAttachmentStore
         if (!await reader.ReadAsync(ct)) return null;
         return new StagedInputAttachment(
             reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4),
-            reader.GetString(5), reader.GetString(6), DateTimeOffset.Parse(reader.GetString(7)),
+            reader.GetString(5), ResolveStored(reader.GetString(6)), DateTimeOffset.Parse(reader.GetString(7)),
             reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8)), reader.GetString(9),
             reader.IsDBNull(10) ? null : reader.GetString(10), reader.IsDBNull(11) ? null : reader.GetString(11));
     }

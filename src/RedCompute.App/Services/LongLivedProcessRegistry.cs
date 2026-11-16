@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RedCompute.Core.Storage;
 using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
 
@@ -48,6 +49,7 @@ public sealed class LongLivedProcessRegistry : IDisposable
     private readonly object _gate = new();
     private readonly string _statePath;
     private readonly string _entryDirectory;
+    private readonly string _dataRoot;
     private readonly Action<string> _log;
     private readonly IExecutionHost _host;
     private readonly Dictionary<string, LongLivedProcessRecord> _records = new(StringComparer.Ordinal);
@@ -68,6 +70,7 @@ public sealed class LongLivedProcessRegistry : IDisposable
     public LongLivedProcessRegistry(string directory, Action<string> log, bool monitor = true, IExecutionHost? host = null)
     {
         _host = host ?? LocalExecutionHost.Shared;
+        _dataRoot = directory;
         _statePath = Path.Combine(directory, "long-lived-processes.json");
         _entryDirectory = Path.Combine(directory, "long-lived-processes");
         _log = log;
@@ -363,9 +366,8 @@ public sealed class LongLivedProcessRegistry : IDisposable
             _relaunchDue.Remove(id);
             if (_disposed || !_records.TryGetValue(id, out record!) || _trees.ContainsKey(id)) return;
         }
-        if (!_host.Files.FileExists(_host.Path(Path.Combine(_entryDirectory, $"{id}.cmd")))
-            || !_host.Files.FileExists(_host.Path(Path.Combine(_entryDirectory, $"{id}.run.cmd"))))
-            WriteScripts(record);
+        // Always rewritten: the scripts embed the working directory and the log path, which a data move changes.
+        WriteScripts(record);
         var started = StartTree(record, record.Environment);
         lock (_gate)
         {
@@ -462,6 +464,9 @@ public sealed class LongLivedProcessRegistry : IDisposable
             foreach (var record in records)
             {
                 record.Restart ??= RestartNever;
+                // Written absolute; a relative value (a later release may write one) resolves against the data root.
+                record.LogPath = StoredPaths.Resolve(_dataRoot, record.LogPath);
+                record.WorkingDirectory = StoredPaths.Resolve(_dataRoot, record.WorkingDirectory);
                 // Its ledger lists every live process of the tree; a record written before ledgers
                 // existed knows only its root.
                 var tree = _host.Files.FileExists(_host.Path(LedgerPath(record.Id)))

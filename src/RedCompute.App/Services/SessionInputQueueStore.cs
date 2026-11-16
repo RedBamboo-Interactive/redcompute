@@ -160,10 +160,12 @@ public sealed class SessionInputQueueStore
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _connectionString;
     private readonly RedComputeConfig _config;
+    private readonly InputAttachmentStore _attachments;
 
     public SessionInputQueueStore(RedComputeConfig config, InputAttachmentStore attachments)
     {
         _config = config;
+        _attachments = attachments;
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = attachments.DatabasePath,
@@ -356,7 +358,7 @@ public sealed class SessionInputQueueStore
                 && (!string.Equals(reader.GetString(4), submission.SessionId, StringComparison.Ordinal)
                     || !string.Equals(reader.GetString(5), submission.MessageUid, StringComparison.Ordinal)))
                 throw new SessionInputQueueStoreException("attachment_already_claimed", $"Attachment '{attachmentId}' has already been sent");
-            if (!File.Exists(reader.GetString(1)))
+            if (!File.Exists(_attachments.ResolveStored(reader.GetString(1))))
                 throw new SessionInputQueueStoreException("attachment_missing", $"Attachment '{attachmentId}' is no longer available");
             totalAttachmentSize += reader.GetInt64(0);
         }

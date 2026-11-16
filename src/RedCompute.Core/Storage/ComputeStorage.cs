@@ -15,8 +15,9 @@ namespace RedCompute.Core.Storage;
 /// <item><see cref="SuiteRoot"/> (<c>RedSuite</c>: keys, badge signing, Google OAuth) is shared with
 /// RedLeaf and never follows the data root.</item>
 /// </list>
-/// Stored rows (job outputs, attachments, session paths) still hold absolute paths; making them
-/// relative is a later phase.
+/// Stored paths are still written absolute (a rolled-back build must read them); readers also accept a relative
+/// value (see <see cref="StoredPaths"/>), and after a move a
+/// <see cref="RebaseMap"/> (<c>REDCOMPUTE_REBASE_MAP</c>) rewrites the ones under a moved folder.
 /// </summary>
 public sealed class ComputeStorage
 {

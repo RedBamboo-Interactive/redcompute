@@ -39,6 +39,12 @@ public sealed class ExecutionHostGuardTests
         ("server state: the data root resolver (asks the OS for the default folder)", [
             "RedCompute.Core.Storage.ComputeStorage",
         ]),
+        ("server state: the stored-path rebasers rewrite RedCompute's own files and databases under its data root at startup, before any node exists", [
+            "RedCompute.App.Rebase.ConfigRebaser",
+            "RedCompute.App.Rebase.LongLivedProcessesRebaser",
+            "RedCompute.App.Rebase.RebaseSupport",
+            "RedCompute.App.Rebase.StoredPathRebaseRunner",
+        ]),
         ("server state", [
             "RedCompute.App.Api.Endpoints.GenericCapabilityEndpoints",
             "RedCompute.App.Api.Endpoints.JobApiResponse",

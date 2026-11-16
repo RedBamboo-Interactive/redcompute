@@ -89,6 +89,12 @@ public static class RedComputeHost
         Console.InputEncoding = Encoding.UTF8;
         Console.OutputEncoding = Encoding.UTF8;
 
+        // A move the kernel described: rewrite the stored paths before anything opens these stores.
+        // Console only until the logger exists, so the rebase cannot open redcompute.db itself.
+        var rebase = RedCompute.App.Rebase.StoredPathRebase.Run(
+            ComputeStorage.Current, StorageStartupCheck.PendingRebase,
+            message => Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {message}"));
+
         InitializeDatabase();
 
         FileLogger.AttachTo(LogService);
@@ -99,6 +105,11 @@ public static class RedComputeHost
         Log("[App] Configuration loaded");
         if (RedCompute.Core.Storage.ComputeStorage.Current.IsRelocated)
             Log($"[App] Data root: {RedCompute.Core.Storage.ComputeStorage.Current.DataRoot} ({RedCompute.Core.Storage.ComputeStorage.DataRootVariable})");
+        if (StorageStartupCheck.PendingRebase is not null)
+            Log($"[App] Storage rebase generation {rebase.Generation}: {rebase.State}"
+                + (rebase.State == RedCompute.App.Rebase.RebaseStates.Failed
+                    ? " (" + string.Join("; ", rebase.Owners.Where(o => o.Error is not null).Select(o => $"{o.Owner}: {o.Error}")) + ")"
+                    : ""));
         Log($"[App] Thread pool minimum: {_threadPoolFloor.Workers} workers, {_threadPoolFloor.CompletionPorts} completion ports");
 
         ProviderConfig = new ProviderConfigService(ConfigManager.Config, (msg, _) => Log(msg));

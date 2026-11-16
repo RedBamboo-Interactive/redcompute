@@ -25,6 +25,26 @@ public class ConfigManager
     private static string BundledBackendPath(string slug)
         => Path.Combine(AppContext.BaseDirectory, "backends", slug);
 
+    /// <summary>The backends RedCompute ships beside its executable.</summary>
+    private static readonly string[] BundledBackendSlugs = ["stt-local", "diarization-local"];
+
+    /// <summary>
+    /// True for a path that is one of RedCompute's own shipped backends: <c>&lt;install directory&gt;/backends/&lt;slug&gt;</c>.
+    /// That directory is recomputed at every start, so it is never persisted (a copy written by an older build
+    /// points into whichever install directory that build ran from, which a move or an update leaves behind).
+    /// </summary>
+    internal static bool IsBundledBackendPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var trimmed = value.Replace('/', '\\').TrimEnd('\\');
+        var slash = trimmed.LastIndexOf('\\');
+        if (slash <= 0) return false;
+        var slug = trimmed[(slash + 1)..];
+        if (!BundledBackendSlugs.Contains(slug, StringComparer.OrdinalIgnoreCase)) return false;
+        var parent = trimmed[..slash];
+        return parent.EndsWith(@"\backends", StringComparison.OrdinalIgnoreCase);
+    }
+
     public RedComputeConfig Config { get; private set; } = new();
 
     public void Load()
@@ -68,6 +88,19 @@ public class ConfigManager
         // "Model") in Extra. Keep the runtime bag intact, but omit those shadow
         // entries from persisted JSON so System.Text.Json cannot emit duplicate keys.
         var shadowedExtensionData = RemoveShadowedProviderExtensionData(config);
+        // RedCompute's own install directory is recomputed at start, never persisted. Only for the providers the
+        // defaults fill in (a previous build refills exactly those when the value is absent); any other
+        // provider keeps its path as written.
+        var defaults = CreateDefault();
+        var bundled = config.Capabilities
+            .SelectMany(capability => capability.Value.Providers.Select(provider => (Slug: capability.Key, Name: provider.Key, Provider: provider.Value)))
+            .Where(entry => IsBundledBackendPath(entry.Provider.ServerPath)
+                && defaults.Capabilities.TryGetValue(entry.Slug, out var capability)
+                && capability.Providers.TryGetValue(entry.Name, out var fallback)
+                && IsBundledBackendPath(fallback.ServerPath))
+            .Select(entry => (entry.Provider, entry.Provider.ServerPath))
+            .ToList();
+        foreach (var (provider, _) in bundled) provider.ServerPath = null;
         JsonObject root;
         try
         {
@@ -78,6 +111,7 @@ public class ConfigManager
         {
             foreach (var (extra, key, value) in shadowedExtensionData)
                 extra[key] = value;
+            foreach (var (provider, serverPath) in bundled) provider.ServerPath = serverPath;
         }
         var capabilities = (root["Capabilities"] ?? root["capabilities"]) as JsonObject;
         if (capabilities != null)
@@ -168,7 +202,8 @@ public class ConfigManager
     private void MergeNewCapabilities()
     {
         var defaults = CreateDefault();
-        var dirty = false;
+        // A bundled backend path the file carries (an older build wrote it) is dropped on the save below.
+        var dirty = AdoptBundledBackends(Config);
         foreach (var (slug, defaultCap) in defaults.Capabilities)
         {
             if (!Config.Capabilities.TryGetValue(slug, out var existingCap))
@@ -192,7 +227,11 @@ public class ConfigManager
                 if (existingProvider.VenvPath == null && defaultProvider.VenvPath != null)
                 { existingProvider.VenvPath = defaultProvider.VenvPath; dirty = true; }
                 if (existingProvider.ServerPath == null && defaultProvider.ServerPath != null)
-                { existingProvider.ServerPath = defaultProvider.ServerPath; dirty = true; }
+                {
+                    existingProvider.ServerPath = defaultProvider.ServerPath;
+                    // The bundled backend directory is never written, so filling it in is not a change to save.
+                    dirty |= !IsBundledBackendPath(defaultProvider.ServerPath);
+                }
                 if (existingProvider.BackendPort == null && defaultProvider.BackendPort != null)
                 { existingProvider.BackendPort = defaultProvider.BackendPort; dirty = true; }
                 if (existingProvider.HealthEndpoint == null && defaultProvider.HealthEndpoint != null)
@@ -248,6 +287,34 @@ public class ConfigManager
             }
         }
         if (dirty) Save();
+    }
+
+    /// <summary>
+    /// A bundled backend path read from the file (an older build persisted it) is pointed at this install's own
+    /// directory, and the file is rewritten without it. Returns true when the file carried one.
+    /// </summary>
+    internal static bool AdoptBundledBackends(RedComputeConfig config)
+    {
+        var dirty = false;
+        var defaults = CreateDefault();
+        foreach (var (capabilitySlug, capability) in config.Capabilities)
+        foreach (var (name, provider) in capability.Providers)
+        {
+            if (!IsBundledBackendPath(provider.ServerPath)) continue;
+            var slug = Path.GetFileName(provider.ServerPath!.Replace('/', '\\').TrimEnd('\\'));
+            var current = BundledBackendPath(BundledBackendSlugs.First(s => s.Equals(slug, StringComparison.OrdinalIgnoreCase)));
+            if (!string.Equals(provider.ServerPath, current, StringComparison.Ordinal))
+            {
+                provider.ServerPath = current;
+                dirty = true;
+            }
+            // Dropped on save only where the defaults refill it (see SerializeForPersistence).
+            if (defaults.Capabilities.TryGetValue(capabilitySlug, out var fallbackCapability)
+                && fallbackCapability.Providers.TryGetValue(name, out var fallback)
+                && IsBundledBackendPath(fallback.ServerPath))
+                dirty = true;
+        }
+        return dirty;
     }
 
     internal static bool RemoveLegacyMachineSpecificSettings(RedComputeConfig config)

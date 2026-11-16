@@ -184,6 +184,10 @@ public class RedComputeDbContext : DbContext
             entity.Property(j => j.LeaseExpiresAt).HasConversion(
                 v => v.HasValue ? v.Value.ToString("O") : null,
                 v => v != null ? DateTimeOffset.Parse(v) : null);
+            // Written exactly as given (absolute, so a rolled-back build reads it); a relative value is accepted on read.
+            entity.Property(j => j.OutputLocation).HasConversion(
+                v => v,
+                v => JobOutputPaths.Resolve(v));
             entity.Ignore(j => j.DurationMs);
             entity.Ignore(j => j.CreationProvenance);
             entity.Ignore(j => j.IsIdempotencyReuse);

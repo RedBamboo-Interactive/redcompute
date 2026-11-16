@@ -372,6 +372,7 @@ public class RelayServer
         GlobalEndpoints.Map(registry, _registry, _jobTracker, _logger, _nodes);
         UsageEndpoints.Map(registry, new UsageCountsService());
         BackupEndpoints.Map(registry, new JobDatabaseSnapshotService(ComputeStorage.Current));
+        StorageEndpoints.Map(registry);
         HardwareEndpoints.Map(registry, _hardwareMonitor);
         if (_nodes is not null)
             NodeEndpoints.Map(registry, _nodes, _registry, _hardwareMonitor);
