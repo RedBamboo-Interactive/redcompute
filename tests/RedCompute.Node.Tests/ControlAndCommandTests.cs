@@ -160,7 +160,7 @@ public sealed class ControlAndCommandTests : IDisposable
         Assert.Equal(0, await new NodeCommands(env, output).RunAsync(["unpair"], CancellationToken.None));
 
         Assert.Contains("Unpaired", output.ToString());
-        Assert.Equal($"/api/nodes/{NodeAgentLinkTests.NodeId}/unpair", Assert.Single(http.Requests).Request.RequestUri!.AbsolutePath);
+        Assert.Equal("/api/nodes/link/unpair", Assert.Single(http.Requests).Request.RequestUri!.AbsolutePath);
         Assert.False(File.Exists(_home.Paths.KeyFile));
         Assert.Equal("unpaired", env.StateStore.Load().Ended!.Reason);
     }

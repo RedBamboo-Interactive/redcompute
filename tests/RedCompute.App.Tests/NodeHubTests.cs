@@ -231,6 +231,8 @@ public sealed class NodeHubTests : IAsyncLifetime
 
         Assert.Equal(503, context.Response.StatusCode);
         Assert.Equal(((int)NodeHub.RegistryRetryAfter.TotalSeconds).ToString(), context.Response.Headers.RetryAfter.ToString());
+        // The kernel's ingress relays the verdict to the node in this header.
+        Assert.Equal("node_registry_unavailable", context.Response.Headers[NodeHub.ErrorHeader].ToString());
     }
 
     [Theory]

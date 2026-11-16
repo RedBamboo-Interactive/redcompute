@@ -310,9 +310,16 @@ public sealed partial class NodeHub : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The refusal's code also goes in this header: the kernel's ingress relays NodeHub's refusal to the node
+    /// unchanged (status, this header, <c>Date</c>, <c>Retry-After</c>), and the node reads its verdict from it.
+    /// </summary>
+    public const string ErrorHeader = "X-Leaf-Node-Error";
+
     private static Task WriteRefusalAsync(HttpContext context, NodeHubRefusal refusal)
     {
         context.Response.StatusCode = refusal.Status;
+        context.Response.Headers[ErrorHeader] = refusal.Code;
         if (refusal.RetryAfter is { } retryAfter)
             context.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return context.Response.WriteAsJsonAsync(new { error = refusal.Code, message = refusal.Message });

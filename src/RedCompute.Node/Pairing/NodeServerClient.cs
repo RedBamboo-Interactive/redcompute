@@ -15,7 +15,9 @@ public sealed record MachineDescription(string Name, string? MachineIdHash, stri
 
 /// <summary>
 /// The node's two plain HTTPS calls to the kernel (design 3.2, 3.5): redeeming a pairing code with a
-/// new key, and the signed unpair. Everything else goes over the link.
+/// new key, and the signed unpair. Everything else goes over the link. Both live under
+/// <c>/api/nodes/link/*</c>, the only routes the kernel lets a node reach without a badge; each
+/// authenticates the node itself (the pairing code and proof, or a signed assertion).
 /// <para>
 /// Errors come back as <c>{ "error": "&lt;code&gt;", "message": "…" }</c>; the codes the CLI explains
 /// are <c>code_invalid</c>, <c>code_expired</c>, <c>code_used</c>, <c>code_burned</c> (too many wrong
@@ -24,9 +26,9 @@ public sealed record MachineDescription(string Name, string? MachineIdHash, stri
 /// </summary>
 public sealed partial class NodeServerClient(HttpMessageHandler? handler = null, TimeSpan? timeout = null) : IDisposable
 {
-    public const string PairPath = "/api/nodes/pair";
+    public const string PairPath = "/api/nodes/link/pair";
     public const string DefaultLinkPath = "/api/nodes/link";
-    public const string UnpairAudiencePath = "/api/nodes/unpair";
+    public const string UnpairPath = "/api/nodes/link/unpair";
 
     private readonly HttpClient _http = new(handler ?? new SocketsHttpHandler { AllowAutoRedirect = false }, disposeHandler: handler is null)
     {
@@ -138,20 +140,21 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
     }
 
     /// <summary>
-    /// The signed unpair (design 3.5): <c>POST /api/nodes/{id}/unpair</c> with an assertion for
-    /// <c>&lt;origin&gt;/api/nodes/unpair</c>. Best effort: true when the server confirmed or already
-    /// forgot the node, false when it could not be reached (the node then shows offline until revoked).
+    /// The signed unpair (design 3.5): <c>POST /api/nodes/link/unpair</c> with an assertion for
+    /// <c>&lt;origin&gt;/api/nodes/link/unpair</c> (its <c>iss</c> names the node). Best effort: true when
+    /// the server confirmed or already forgot the node, false when it could not be reached (the node then
+    /// shows offline until revoked).
     /// </summary>
     public async Task<bool> UnpairAsync(string origin, string nodeId, ECDsa key, DateTimeOffset now, CancellationToken ct)
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"{origin}/api/nodes/{nodeId}/unpair")
+            using var request = new HttpRequestMessage(HttpMethod.Post, origin + UnpairPath)
             {
                 Content = JsonContent.Create(new JsonObject { ["reason"] = "unpaired_by_node" }),
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("LeafNode",
-                NodeCrypto.Assertion(key, nodeId, origin + UnpairAudiencePath, now));
+                NodeCrypto.Assertion(key, nodeId, origin + UnpairPath, now));
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(10));
             using var response = await _http.SendAsync(request, timeout.Token);

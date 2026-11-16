@@ -137,7 +137,7 @@ public sealed class PairingTests : IDisposable
 
         var (request, sent) = Assert.Single(http.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal(Origin + "/api/nodes/pair", request.RequestUri!.ToString());
+        Assert.Equal(Origin + "/api/nodes/link/pair", request.RequestUri!.ToString());
         var json = JsonNode.Parse(sent)!;
         Assert.Equal("ABCD-EFGH", json["code"]!.GetValue<string>());
         Assert.Equal("ab12", json["machine"]!["machineIdHash"]!.GetValue<string>());
@@ -194,7 +194,7 @@ public sealed class PairingTests : IDisposable
         byte[]? spki = null;
         var http = new StubHttp((request, body) =>
         {
-            if (request.RequestUri!.AbsolutePath == "/api/nodes/pair")
+            if (request.RequestUri!.AbsolutePath == "/api/nodes/link/pair")
             {
                 spki = Convert.FromBase64String(JsonNode.Parse(body)!["publicKey"]!.GetValue<string>());
                 return Json(HttpStatusCode.Created, new JsonObject
@@ -212,12 +212,13 @@ public sealed class PairingTests : IDisposable
 
         Assert.Equal("fingerprint_mismatch", error.Code);
         Assert.False(File.Exists(_home.Paths.KeyFile));
-        // The node the server created is unpaired with the same key, for <origin>/api/nodes/unpair.
+        // The node the server created is unpaired with the same key, for <origin>/api/nodes/link/unpair.
         var (unpair, body) = http.Requests[1];
-        Assert.Equal("/api/nodes/node_01JTESTTESTTESTTESTTESTTES/unpair", unpair.RequestUri!.AbsolutePath);
+        Assert.Equal("/api/nodes/link/unpair", unpair.RequestUri!.AbsolutePath);
         Assert.Equal("LeafNode", unpair.Headers.Authorization!.Scheme);
         var claims = NodeCrypto.VerifyAssertion(unpair.Headers.Authorization.Parameter!, spki)!;
-        Assert.Equal(Origin + "/api/nodes/unpair", claims["aud"]!.GetValue<string>());
+        Assert.Equal(Origin + "/api/nodes/link/unpair", claims["aud"]!.GetValue<string>());
+        Assert.Equal("node_01JTESTTESTTESTTESTTESTTES", claims["iss"]!.GetValue<string>());
         Assert.Equal("unpaired_by_node", JsonNode.Parse(body)!["reason"]!.GetValue<string>());
     }
 
@@ -234,7 +235,7 @@ public sealed class PairingTests : IDisposable
             var response = new JsonObject { ["nodeId"] = "node_01JTESTTESTTESTTESTTESTTES" };
             response[field] = value;
             using var client = new NodeServerClient(new StubHttp((request, _) =>
-                request.RequestUri!.AbsolutePath == "/api/nodes/pair"
+                request.RequestUri!.AbsolutePath == "/api/nodes/link/pair"
                     ? Json(HttpStatusCode.Created, (JsonObject)response.DeepClone())
                     : new HttpResponseMessage(HttpStatusCode.NoContent)));
             var error = await Assert.ThrowsAsync<NodeCommandException>(() =>
