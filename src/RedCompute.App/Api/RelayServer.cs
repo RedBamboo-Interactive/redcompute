@@ -546,7 +546,7 @@ public class RelayServer
     {
         var sync = _nodeSync = new KernelNodeSync(nodes, new KernelNodeClient(_config.RedLeafUrl, jwt), message => _log(message, null));
         var hub = _nodeHub = new NodeHub(nodes, message => _log(message, null),
-            new NodeHubOptions { Resync = ct => sync.SyncNowAsync(ct) });
+            new NodeHubOptions { Resync = sync.RefreshAsync });
         NodeEndpoints.Map(registry, nodes, _registry, _hardwareMonitor, hub, sync);
         NodeHub.MapRoute(_app!, hub);
 

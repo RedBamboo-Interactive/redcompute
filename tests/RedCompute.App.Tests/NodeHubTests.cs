@@ -161,11 +161,100 @@ public sealed class NodeHubTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task An_unknown_node_is_404_and_does_not_burn_the_check_order()
+    public async Task An_unknown_node_is_404_only_when_the_kernel_answered_without_it()
     {
-        var (_, refusal) = await AdmitAsync(IngressToken(_jwt, RemoteId(99)));
+        var resyncs = 0;
+        await using var hub = new NodeHub(_registry, _ => { }, new NodeHubOptions
+        {
+            Resync = _ =>
+            {
+                resyncs++;
+                _registry.ApplyKernelNodes([Kernel(_node)]);
+                return Task.FromResult(true);
+            },
+        });
+
+        var (_, refusal) = await hub.AdmitAsync(Context(_jwt, IngressToken(_jwt, RemoteId(99))), CancellationToken.None);
 
         Assert.Equal((404, "node_unknown"), (refusal!.Status, refusal.Code));
+        Assert.Null(refusal.RetryAfter);
+        Assert.Equal(1, resyncs);
+    }
+
+    [Fact]
+    public async Task An_unknown_node_the_kernel_cannot_be_asked_about_is_503_with_retry_after_never_404()
+    {
+        // Review finding: a node that dialled straight after pairing got 404 node_unknown (a verdict: the agent
+        // deletes its key) whenever the registry had not caught up. Only the kernel's answer may say unknown.
+        await using var failing = new NodeHub(_registry, _ => { }, new NodeHubOptions { Resync = _ => Task.FromResult(false) });
+        await using var throwing = new NodeHub(_registry, _ => { }, new NodeHubOptions { Resync = _ => throw new HttpRequestException("refused") });
+
+        foreach (var hub in new[] { _hub, failing, throwing })
+        {
+            var (admission, refusal) = await hub.AdmitAsync(Context(_jwt, IngressToken(_jwt, RemoteId(99))), CancellationToken.None);
+            Assert.Null(admission);
+            Assert.Equal((503, "node_registry_unavailable"), (refusal!.Status, refusal.Code));
+            Assert.Equal(NodeHub.RegistryRetryAfter, refusal.RetryAfter);
+        }
+    }
+
+    [Fact]
+    public async Task A_node_that_dials_while_a_sync_from_before_its_pairing_is_under_way_is_admitted()
+    {
+        var paired = RemoteId(2);
+        var kernel = new NodeRegistryRemoteTests.GatedKernel();
+        await using var sync = new KernelNodeSync(_registry, kernel, _ => { });
+        await using var hub = new NodeHub(_registry, _ => { }, new NodeHubOptions { Resync = sync.RefreshAsync });
+
+        var before = sync.RefreshAsync(CancellationToken.None);
+        await WaitAsync(() => kernel.Lists == 1, "the sync under way");
+        var admitting = hub.AdmitAsync(Context(_jwt, IngressToken(_jwt, paired)), CancellationToken.None);
+        kernel.Answer(0, [Kernel(_node)]);
+        Assert.True(await before);
+        Assert.False(admitting.IsCompleted);
+
+        await WaitAsync(() => kernel.Lists == 2, "a read after the dial", 5_000);
+        kernel.Answer(1, [Kernel(_node), Kernel(paired, "New box")]);
+        var (admission, refusal) = await admitting;
+
+        Assert.Null(refusal);
+        Assert.Equal(paired, admission!.NodeId);
+    }
+
+    [Fact]
+    public async Task A_503_refusal_carries_its_retry_after_header()
+    {
+        var context = Context(_jwt, IngressToken(_jwt, RemoteId(99)));
+        context.Response.Body = new MemoryStream();
+
+        await _hub.HandleAsync(context);
+
+        Assert.Equal(503, context.Response.StatusCode);
+        Assert.Equal(((int)NodeHub.RegistryRetryAfter.TotalSeconds).ToString(), context.Response.Headers.RetryAfter.ToString());
+    }
+
+    [Theory]
+    [InlineData(60, true)]
+    [InlineData(90, false)]
+    [InlineData(300, false)]
+    public async Task Only_a_token_living_at_most_60_seconds_is_the_kernels_identity(int seconds, bool admitted)
+    {
+        var (admission, refusal) = await AdmitAsync(IngressToken(_jwt, _node, lifetime: TimeSpan.FromSeconds(seconds)));
+
+        Assert.Equal(TimeSpan.FromSeconds(60), NodeHub.MaxTokenLifetime);
+        Assert.Equal(admitted, admission is not null);
+        if (!admitted) Assert.Equal((403, "node_identity_required"), (refusal!.Status, refusal.Code));
+    }
+
+    [Fact]
+    public async Task A_node_whose_owner_the_kernel_did_not_say_is_refused()
+    {
+        _registry.ApplyKernelNodes([Kernel(_node, owner: null!)]);
+
+        var (admission, refusal) = await AdmitAsync(IngressToken(_jwt, _node));
+
+        Assert.Null(admission);
+        Assert.Equal((403, "node_owner_unknown"), (refusal!.Status, refusal.Code));
     }
 
     [Fact]
@@ -315,6 +404,44 @@ public sealed class NodeHubTests : IAsyncLifetime
         var (_, refusal) = await AdmitAsync(IngressToken(_jwt, _node));
         Assert.Equal("node_revoked", refusal!.Code);
         Assert.Throws<NodeUnavailableException>(() => _registry.HostFor(_node));
+    }
+
+    [Fact]
+    public async Task A_revoke_between_admission_and_the_handshake_never_lets_the_link_up()
+    {
+        // Review finding: NodeHub checked revocation only at admission, and LinkServer remembered nothing.
+        var (admission, _) = await AdmitAsync(IngressToken(_jwt, _node));
+        Assert.NotNull(admission);
+
+        await _hub.RevokeAsync(_node, "revoked_by_owner");
+        await using var node = new PipedNode(_hub, _node);
+
+        await WaitAsync(() => node.Client.Status == LinkClientStatus.Refused, "the refusal", 5_000);
+        Assert.Equal("node_revoked", node.Client.StatusReason);
+        Assert.Null(_hub.Server.FindSession(_node));
+        Assert.Null(_registry.Find(_node)!.Link);
+        Assert.Equal(NodeStatus.Revoked, _registry.Find(_node)!.Status);
+    }
+
+    [Fact]
+    public async Task A_node_missing_from_one_sync_keeps_its_link_and_comes_back_online()
+    {
+        await using var node = new PipedNode(_hub, _node);
+        await WaitAsync(() => _registry.Find(_node)?.Status == NodeStatus.Online, "the link");
+        var session = _hub.Server.FindSession(_node)!;
+
+        _registry.ApplyKernelNodes([]);
+        await Task.Delay(300);
+
+        Assert.Null(_registry.Find(_node));
+        Assert.False(_hub.Server.IsRevoked(_node));
+        Assert.Same(session, _hub.Server.FindSession(_node));
+        Assert.True(session.IsAttached);
+        Assert.Equal(LinkClientStatus.Online, node.Client.Status);
+
+        _registry.ApplyKernelNodes([Kernel(_node)]);
+        await WaitAsync(() => _registry.Find(_node) is { Status: NodeStatus.Online, Report.Hardware: not null }, "the node to come back");
+        Assert.Equal(session.LinkSessionId, _registry.Find(_node)!.Link!.LinkSessionId);
     }
 
     [Fact]

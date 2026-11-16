@@ -219,6 +219,66 @@ public sealed class LinkSessionTests
     }
 
     [Fact]
+    public async Task A_revoked_node_is_refused_4403_by_the_server_itself_and_never_holds_a_session()
+    {
+        await using var pair = new LinkPair();
+        await pair.Server.RevokeAsync(LinkPair.NodeId);
+        Assert.True(pair.Server.IsRevoked(LinkPair.NodeId));
+
+        var (node, server) = LinkPipe.Create();
+        var run = pair.Server.RunAsync(server, LinkPair.NodeId, CancellationToken.None);
+        await node.SendAsync(LinkHandshake.HelloFrame(new LinkHello(LinkPair.NodeId, LinkProtocol.Supported,
+            new AgentInfo("0.1.0", "linux", "x64"), [])), CancellationToken.None);
+
+        var (welcome, error) = LinkHandshake.ReadWelcome(FrameCodec.Decode(await node.ReceiveAsync(CancellationToken.None)));
+        Assert.Null(welcome);
+        Assert.Equal("node_revoked", error!.Code);
+        Assert.Equal(LinkCloseCodes.Revoked, (await Assert.ThrowsAsync<LinkClosedException>(async () => await node.ReceiveAsync(CancellationToken.None))).Code);
+        Assert.Null(await run);
+        Assert.Null(pair.Server.FindSession(LinkPair.NodeId));
+        Assert.Empty(pair.Server.NodeIds);
+    }
+
+    [Fact]
+    public async Task A_revoke_racing_a_handshake_never_leaves_the_node_a_live_session()
+    {
+        // Review finding: a revoke landing between admission and the server's entry lookup let the handshake
+        // complete on an entry no later revoke could reach. Wherever the revoke lands, the node ends up closed
+        // with 4403 and the server holds nothing for it.
+        for (var round = 0; round < 300; round++)
+        {
+            await using var linkServer = new LinkServer(new LinkServerOptions
+            {
+                ServerEpoch = "race",
+                HandlerFactory = _ => new TestLinkHandler(),
+                Link = LinkPair.FastOptions,
+            });
+            var random = new Random(round);
+            var (node, server) = LinkPipe.Create();
+            var run = Task.Run(() => linkServer.RunAsync(server, LinkPair.NodeId, CancellationToken.None));
+            var hello = node.SendAsync(LinkHandshake.HelloFrame(new LinkHello(LinkPair.NodeId, LinkProtocol.Supported,
+                new AgentInfo("0.1.0", "linux", "x64"), [])), CancellationToken.None);
+            var spin = random.Next(0, 40_000);
+            await Task.Run(async () =>
+            {
+                Thread.SpinWait(spin);
+                await linkServer.RevokeAsync(LinkPair.NodeId);
+            });
+            await hello;
+
+            var closed = await Assert.ThrowsAsync<LinkClosedException>(async () =>
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                while (true) await node.ReceiveAsync(timeout.Token);
+            });
+            Assert.True(closed.Code == LinkCloseCodes.Revoked, $"round {round}: closed {closed.Code}, not 4403");
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Null(linkServer.FindSession(LinkPair.NodeId));
+            Assert.Empty(linkServer.NodeIds);
+        }
+    }
+
+    [Fact]
     public async Task A_corrupt_frame_closes_the_link_with_4400_and_the_node_resumes()
     {
         await using var pair = new LinkPair().Start();

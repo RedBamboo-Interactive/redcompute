@@ -88,21 +88,34 @@ public sealed class NodeRegistryRemoteTests : IDisposable
     }
 
     [Fact]
-    public void A_node_the_kernel_removed_is_forgotten_with_its_cache()
+    public void A_node_missing_from_the_kernels_list_is_forgotten_locally_but_never_revoked()
     {
+        // Review finding: absence used to raise Revoked, and NodeHub closed the link with 4403 (the agent
+        // deletes its key): one bad 200 would have unpaired every node. Design 3.5: absence forgets locally.
         var registry = Registry(_cache);
         registry.ApplyKernelNodes([Kernel(RemoteId(1)), Kernel(RemoteId(2))]);
+        registry.LinkUp(RemoteId(2), Link());
         Assert.True(File.Exists(Path.Combine(_cache, RemoteId(2) + ".json")));
         var changes = new List<NodeStatusChange>();
+        var updates = new List<string>();
         registry.StatusChanged += changes.Add;
+        registry.Updated += updates.Add;
 
         registry.ApplyKernelNodes([Kernel(RemoteId(1))]);
 
         Assert.Null(registry.Find(RemoteId(2)));
         Assert.False(File.Exists(Path.Combine(_cache, RemoteId(2) + ".json")));
         Assert.Equal("node_unknown", registry.LinkRefusal(RemoteId(2)));
-        var removed = Assert.Single(changes);
-        Assert.Equal((RemoteId(2), NodeStatus.Revoked, NodeStatus.Offline), (removed.Node.Id, removed.Node.Status, removed.Previous));
+        Assert.Empty(changes);
+        Assert.Equal([RemoteId(2)], updates);
+
+        // An empty answer forgets everything and revokes nothing; the next good answer brings the nodes back.
+        registry.ApplyKernelNodes([]);
+        Assert.Empty(changes);
+        registry.ApplyKernelNodes([Kernel(RemoteId(1)), Kernel(RemoteId(2))]);
+        Assert.Equal([NodeStatus.Offline, NodeStatus.Offline], registry.Nodes.Skip(1).Select(node => node.Status));
+        Assert.All(changes, change => Assert.Null(change.Previous));
+        Assert.DoesNotContain(changes, change => change.Node.Status == NodeStatus.Revoked);
     }
 
     [Fact]
@@ -223,7 +236,7 @@ public sealed class NodeRegistryRemoteTests : IDisposable
         registry.ApplyKernelNodes([Kernel(RemoteId(1))]);
         await using var sync = new KernelNodeSync(registry, client, _ => { });
 
-        Assert.False(await sync.SyncNowAsync(CancellationToken.None, force: true));
+        Assert.False(await sync.RefreshAsync(CancellationToken.None));
         Assert.NotNull(registry.Find(RemoteId(1)));
         Assert.Contains(((int)status).ToString(), client.LastProblem);
     }
@@ -238,17 +251,101 @@ public sealed class NodeRegistryRemoteTests : IDisposable
     }
 
     [Fact]
-    public async Task Sync_applies_the_list_and_resyncs_asked_for_in_a_burst_are_one()
+    public async Task A_refresh_never_answers_with_a_read_that_started_before_it()
     {
-        var kernel = new FakeKernel { Nodes = [Kernel(RemoteId(1))] };
+        // Review finding: a resync within 2 s of the last one returned false at once, and one asked for while a
+        // read was under way did not wait for it. A node that dials straight after pairing must be found.
+        var kernel = new GatedKernel();
         var registry = Registry();
-        await using var sync = new KernelNodeSync(registry, kernel, _ => { });
+        await using var sync = new KernelNodeSync(registry, kernel, _ => { }, minimumResyncInterval: TimeSpan.Zero);
 
-        Assert.True(await sync.SyncNowAsync(CancellationToken.None));
-        Assert.False(await sync.SyncNowAsync(CancellationToken.None));
+        var early = sync.RefreshAsync(CancellationToken.None);
+        await WaitAsync(() => kernel.Lists == 1, "the first read");
+        // The node pairs while that read is under way; it dials and NodeHub asks for a refresh.
+        var afterPairing = sync.RefreshAsync(CancellationToken.None);
+        kernel.Answer(0, []);
+        Assert.True(await early);
+        Assert.False(afterPairing.IsCompleted);
 
+        await WaitAsync(() => kernel.Lists == 2, "a second read");
+        kernel.Answer(1, [Kernel(RemoteId(1))]);
+        Assert.True(await afterPairing);
         Assert.NotNull(registry.Find(RemoteId(1)));
-        Assert.Equal(1, kernel.Lists);
+    }
+
+    [Fact]
+    public async Task Refreshes_asked_for_together_share_one_read_and_wait_out_the_spacing()
+    {
+        var kernel = new GatedKernel();
+        var registry = Registry();
+        await using var sync = new KernelNodeSync(registry, kernel, _ => { }, minimumResyncInterval: TimeSpan.FromMilliseconds(300));
+
+        var prior = sync.RefreshAsync(CancellationToken.None);
+        await WaitAsync(() => kernel.Lists == 1, "the first read");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var burst = Enumerable.Range(0, 5).Select(_ => sync.RefreshAsync(CancellationToken.None)).ToList();
+        kernel.Answer(0, [Kernel(RemoteId(1))]);
+        Assert.True(await prior);
+
+        // The burst arrived while the first read was under way: it waits for the spacing (it is not refused)
+        // and shares one new read.
+        await WaitAsync(() => kernel.Lists == 2, "the second read");
+        var spacing = watch.Elapsed;
+        kernel.Answer(1, [Kernel(RemoteId(1)), Kernel(RemoteId(2))]);
+
+        Assert.All(await Task.WhenAll(burst), Assert.True);
+        await Task.Delay(50);
+        Assert.Equal(2, kernel.Lists);
+        Assert.True(spacing >= TimeSpan.FromMilliseconds(250), $"the second read started after {spacing.TotalMilliseconds} ms");
+        Assert.NotNull(registry.Find(RemoteId(2)));
+    }
+
+    [Fact]
+    public async Task A_refresh_the_kernel_cannot_answer_is_false_and_the_next_one_reads_again()
+    {
+        var kernel = new GatedKernel();
+        var registry = Registry();
+        await using var sync = new KernelNodeSync(registry, kernel, _ => { }, minimumResyncInterval: TimeSpan.Zero);
+
+        var failed = sync.RefreshAsync(CancellationToken.None);
+        await WaitAsync(() => kernel.Lists == 1, "the read");
+        kernel.Answer(0, null);
+        Assert.False(await failed);
+
+        var thrown = sync.RefreshAsync(CancellationToken.None);
+        await WaitAsync(() => kernel.Lists == 2, "the second read");
+        kernel.Fail(1, new HttpRequestException("refused"));
+        Assert.False(await thrown);
+
+        var answered = sync.RefreshAsync(CancellationToken.None);
+        await WaitAsync(() => kernel.Lists == 3, "the third read");
+        kernel.Answer(2, [Kernel(RemoteId(1))]);
+        Assert.True(await answered);
+    }
+
+    [Fact]
+    public async Task With_no_remote_node_the_presence_loop_sleeps()
+    {
+        // Review finding: the presence loop woke every 2 s for ever, with no remote node at all.
+        var kernel = new FakeKernel();
+        var registry = Registry();
+        await using var sync = new KernelNodeSync(registry, kernel, _ => { }, presenceDelay: TimeSpan.FromMilliseconds(20));
+        sync.Start();
+        await WaitAsync(() => kernel.Lists >= 1, "the start-up sync");
+
+        await Task.Delay(300);
+        Assert.Equal(0, sync.PresenceWakeups);
+        Assert.Empty(kernel.Presence);
+
+        kernel.Nodes = [Kernel(RemoteId(1))];
+        sync.RequestSync();
+        await WaitAsync(() => registry.Find(RemoteId(1)) is not null, "the node");
+        registry.LinkUp(RemoteId(1), Link());
+        await WaitAsync(() =>
+        {
+            lock (kernel.Presence) return kernel.Presence.Any(entry => entry.Body["status"]?.GetValue<string>() == "online");
+        }, "the presence push");
+        Assert.InRange(sync.PresenceWakeups, 1, 3);
     }
 
     [Fact]
@@ -308,16 +405,49 @@ public sealed class NodeRegistryRemoteTests : IDisposable
         }
     }
 
+    /// <summary>A kernel whose every list read waits until the test answers it (by index), or fails it.</summary>
+    internal sealed class GatedKernel : IKernelNodes
+    {
+        private readonly List<TaskCompletionSource<IReadOnlyList<KernelNode>?>> _reads = [];
+
+        public int Lists
+        {
+            get { lock (_reads) return _reads.Count; }
+        }
+
+        public void Answer(int read, IReadOnlyList<KernelNode>? nodes)
+        {
+            lock (_reads) _reads[read].SetResult(nodes);
+        }
+
+        public void Fail(int read, Exception error)
+        {
+            lock (_reads) _reads[read].SetException(error);
+        }
+
+        public Task<IReadOnlyList<KernelNode>?> ListAsync(CancellationToken ct)
+        {
+            var read = new TaskCompletionSource<IReadOnlyList<KernelNode>?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_reads) _reads.Add(read);
+            return read.Task;
+        }
+
+        public Task<bool> PutLocalAsync(JsonObject body, CancellationToken ct) => Task.FromResult(true);
+
+        public Task<bool> PutPresenceAsync(string nodeId, JsonObject body, CancellationToken ct) => Task.FromResult(true);
+    }
+
     internal sealed class FakeKernel : IKernelNodes
     {
         public IReadOnlyList<KernelNode>? Nodes { get; set; } = [];
-        public int Lists { get; private set; }
+        private int _lists;
+        public int Lists => Volatile.Read(ref _lists);
         public List<JsonObject> Local { get; } = [];
         public List<(string Id, JsonObject Body)> Presence { get; } = [];
 
         public Task<IReadOnlyList<KernelNode>?> ListAsync(CancellationToken ct)
         {
-            Lists++;
+            Interlocked.Increment(ref _lists);
             return Task.FromResult(Nodes);
         }
 
@@ -329,7 +459,7 @@ public sealed class NodeRegistryRemoteTests : IDisposable
 
         public Task<bool> PutPresenceAsync(string nodeId, JsonObject body, CancellationToken ct)
         {
-            Presence.Add((nodeId, body));
+            lock (Presence) Presence.Add((nodeId, body));
             return Task.FromResult(true);
         }
     }

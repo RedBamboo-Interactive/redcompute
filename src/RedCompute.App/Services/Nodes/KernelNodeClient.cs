@@ -169,48 +169,63 @@ public sealed class KernelNodeClient : IKernelNodes
 /// kernel's <c>POST /nodes/changed</c>, or NodeHub meeting a node it does not know): node zero's entity, then
 /// the list of nodes;</item>
 /// <item>a remote node's status transition or report change is pushed with <c>PUT /api/nodes/{id}/presence</c>,
-/// coalesced per node over <see cref="PresenceDelay"/>; the kernel throttles its own writes.</item>
+/// coalesced per node over <see cref="PresenceDelay"/>; the kernel throttles its own writes. With no remote
+/// node nothing is queued and the presence loop sleeps.</item>
 /// </list>
 /// With no kernel (or one without nodes) nothing changes: the registry keeps node zero and its cache.
 /// </summary>
 public sealed class KernelNodeSync : IAsyncDisposable
 {
     public static readonly TimeSpan DefaultInterval = TimeSpan.FromMinutes(5);
-    public static readonly TimeSpan PresenceDelay = TimeSpan.FromSeconds(2);
+    public static readonly TimeSpan DefaultPresenceDelay = TimeSpan.FromSeconds(2);
 
-    /// <summary>Two syncs NodeHub asks for are at least this far apart (an unknown node cannot make it spin).</summary>
-    public static readonly TimeSpan MinimumResyncInterval = TimeSpan.FromSeconds(2);
+    /// <summary>Two reads of the kernel's list start at least this far apart (an unknown node cannot make it spin).</summary>
+    public static readonly TimeSpan DefaultMinimumResyncInterval = TimeSpan.FromSeconds(2);
 
     private readonly NodeRegistry _registry;
     private readonly IKernelNodes _kernel;
     private readonly Action<string> _log;
     private readonly TimeProvider _time;
-    private readonly SemaphoreSlim _syncGate = new(1, 1);
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
+    private readonly SemaphoreSlim _presenceWake = new(0, int.MaxValue);
+    private readonly object _flightGate = new();
     private readonly object _pendingGate = new();
     private readonly HashSet<string> _pendingPresence = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _life = new();
     private Task? _loop;
     private Task? _presenceLoop;
-    private long _lastSyncAt;
+    private SyncFlight? _flight;
+    private long _lastListAt;
+    private int _lists;
+    private int _presenceWakeups;
     private readonly HashSet<string> _loggedProblems = new(StringComparer.Ordinal);
 
     public KernelNodeSync(NodeRegistry registry, IKernelNodes kernel, Action<string> log, TimeSpan? interval = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null, TimeSpan? minimumResyncInterval = null, TimeSpan? presenceDelay = null)
     {
         _registry = registry;
         _kernel = kernel;
         _log = log;
         _time = time ?? TimeProvider.System;
         Interval = interval ?? DefaultInterval;
+        MinimumResyncInterval = minimumResyncInterval ?? DefaultMinimumResyncInterval;
+        PresenceDelay = presenceDelay ?? DefaultPresenceDelay;
         _registry.StatusChanged += OnStatusChanged;
         _registry.Updated += QueuePresence;
     }
 
     public TimeSpan Interval { get; }
+    public TimeSpan MinimumResyncInterval { get; }
+    public TimeSpan PresenceDelay { get; }
 
     /// <summary>When the last successful list was applied (null before one).</summary>
     public DateTimeOffset? LastSyncedAt { get; private set; }
+
+    /// <summary>How many times the kernel's list was read (tests).</summary>
+    internal int Lists => Volatile.Read(ref _lists);
+
+    /// <summary>How many times the presence loop woke up (tests: it sleeps while nothing is queued).</summary>
+    internal int PresenceWakeups => Volatile.Read(ref _presenceWakeups);
 
     public void Start()
     {
@@ -222,16 +237,58 @@ public sealed class KernelNodeSync : IAsyncDisposable
     public void RequestSync() => _wake.Release();
 
     /// <summary>
-    /// Lists the kernel's nodes and applies them now; false when the kernel could not say. Calls closer
-    /// than <see cref="MinimumResyncInterval"/> to the previous one return at once with false.
+    /// Reads the kernel's node list and applies it, from a read that starts after this call: a node paired
+    /// just before it is in the answer. Concurrent callers share one read; a read already under way when
+    /// this is called (it may predate the pairing) is awaited and followed by a new one. Reads start at
+    /// least <see cref="MinimumResyncInterval"/> apart: a caller waits for the next one, it is never refused.
+    /// True when the kernel answered and the registry holds its answer; false when it could not say.
     /// </summary>
-    public async Task<bool> SyncNowAsync(CancellationToken ct, bool force = false)
+    public async Task<bool> RefreshAsync(CancellationToken ct)
     {
-        if (!force && _lastSyncAt != 0 && _time.GetElapsedTime(_lastSyncAt) < MinimumResyncInterval) return false;
-        await _syncGate.WaitAsync(ct);
+        while (true)
+        {
+            SyncFlight flight;
+            bool fresh;
+            lock (_flightGate)
+            {
+                if (_life.IsCancellationRequested) return false;
+                if (_flight is { Started: false } pending) (flight, fresh) = (pending, true);
+                else if (_flight is { } running && !running.Task.IsCompleted) (flight, fresh) = (running, false);
+                else (flight, fresh) = (_flight = Launch(), true);
+            }
+            if (fresh) return await flight.Task.WaitAsync(ct);
+            // A read already under way may have started before what the caller must see: wait it out, go again.
+            await flight.Task.WaitAsync(ct);
+        }
+    }
+
+    /// <summary>One read of the kernel's list; <see cref="Started"/> flips (under the gate) as the read begins.</summary>
+    private sealed class SyncFlight
+    {
+        public bool Started;
+        public Task<bool> Task = null!;
+    }
+
+    private SyncFlight Launch()
+    {
+        var delay = _lastListAt == 0 ? TimeSpan.Zero : MinimumResyncInterval - _time.GetElapsedTime(_lastListAt);
+        var flight = new SyncFlight();
+        var ct = _life.Token;
+        flight.Task = Task.Run(() => FlyAsync(flight, delay, ct));
+        return flight;
+    }
+
+    private async Task<bool> FlyAsync(SyncFlight flight, TimeSpan delay, CancellationToken ct)
+    {
         try
         {
-            _lastSyncAt = _time.GetTimestamp();
+            if (delay > TimeSpan.Zero) await Task.Delay(delay, _time, ct);
+            lock (_flightGate)
+            {
+                flight.Started = true;
+                _lastListAt = _time.GetTimestamp();
+            }
+            Interlocked.Increment(ref _lists);
             var nodes = await _kernel.ListAsync(ct);
             if (nodes is null)
             {
@@ -248,9 +305,14 @@ public sealed class KernelNodeSync : IAsyncDisposable
                 }
             return true;
         }
-        finally
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            _syncGate.Release();
+            return false;
+        }
+        catch (Exception error)
+        {
+            Problem(error.Message);
+            return false;
         }
     }
 
@@ -275,7 +337,7 @@ public sealed class KernelNodeSync : IAsyncDisposable
             {
                 // Only a persisted identity is node zero's entity: an unpersisted id is new every run.
                 if (_registry.StampNodeId is not null && !await PutLocalAsync(ct)) Problem("node zero could not be reported");
-                await SyncNowAsync(ct, force: true);
+                await RefreshAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -320,15 +382,21 @@ public sealed class KernelNodeSync : IAsyncDisposable
     {
         if (nodeId == _registry.LocalNodeId) return;
         lock (_pendingGate) _pendingPresence.Add(nodeId);
+        _presenceWake.Release();
     }
 
+    /// <summary>Sleeps until a remote node's presence is queued (with no remote node it never wakes), then coalesces.</summary>
     private async Task PresenceLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             try
             {
+                await _presenceWake.WaitAsync(ct);
+                Interlocked.Increment(ref _presenceWakeups);
                 await Task.Delay(PresenceDelay, _time, ct);
+                // Everything queued during the delay goes in this flush.
+                while (_presenceWake.Wait(0)) { }
                 await FlushPresenceAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -416,8 +484,8 @@ public sealed class KernelNodeSync : IAsyncDisposable
     {
         _registry.StatusChanged -= OnStatusChanged;
         _registry.Updated -= QueuePresence;
-        _life.Cancel();
-        foreach (var task in new[] { _loop, _presenceLoop })
+        lock (_flightGate) _life.Cancel();
+        foreach (var task in new[] { _loop, _presenceLoop, _flight?.Task })
             if (task is not null)
                 try { await task; }
                 catch (OperationCanceledException) { }

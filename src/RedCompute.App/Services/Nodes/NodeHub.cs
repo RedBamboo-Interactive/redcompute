@@ -18,7 +18,11 @@ using RedCompute.NodeLink;
 namespace RedCompute.App.Services.Nodes;
 
 /// <summary>Why NodeHub refused an upgrade: an HTTP status and a stable code, before any WebSocket is accepted.</summary>
-public sealed record NodeHubRefusal(int Status, string Code, string Message);
+public sealed record NodeHubRefusal(int Status, string Code, string Message)
+{
+    /// <summary>Sent as <c>Retry-After</c>: the refusal is not a verdict, the node should dial again.</summary>
+    public TimeSpan? RetryAfter { get; init; }
+}
 
 /// <summary>The upgrade NodeHub accepted: the node the kernel bound to it, and the token that did.</summary>
 public sealed record NodeHubAdmission(string NodeId, string OwnerId, string ExecutionId, DateTimeOffset ExpiresAt);
@@ -43,8 +47,10 @@ public sealed class NodeHubOptions
     public TimeProvider Time { get; init; } = TimeProvider.System;
 
     /// <summary>
-    /// Asked when a node the registry does not know links (it may have paired since the last sync); true
-    /// when the registry was refreshed. Null: unknown nodes are refused at once.
+    /// Asked when a node the registry does not know links (it may have paired since the last sync): reads
+    /// the kernel's list from a read that starts after the call; true when the registry holds the kernel's
+    /// answer. Only that answer can make a node <c>node_unknown</c> (a verdict: the agent forgets its
+    /// pairing); false, a failure or no resync at all is a 503 the node retries.
     /// </summary>
     public Func<CancellationToken, Task<bool>>? Resync { get; init; }
 }
@@ -70,8 +76,11 @@ public sealed partial class NodeHub : IAsyncDisposable
     public const string IngressAppId = "leaf-node-ingress";
     public const string NodeActorKind = "node";
 
-    /// <summary>The kernel mints 60 s tokens; anything living longer than this is not one of them.</summary>
-    public static readonly TimeSpan MaxTokenLifetime = TimeSpan.FromMinutes(5);
+    /// <summary>The kernel mints 60 s tokens (design 5.2); anything living longer than this is not one of them.</summary>
+    public static readonly TimeSpan MaxTokenLifetime = TimeSpan.FromSeconds(60);
+
+    /// <summary>What a 503 <c>node_registry_unavailable</c> asks the node to wait before dialling again.</summary>
+    public static readonly TimeSpan RegistryRetryAfter = TimeSpan.FromSeconds(5);
 
     /// <summary>The features this server speaks in Phase 3 (design 4.9).</summary>
     public static readonly IReadOnlyList<string> Features =
@@ -144,28 +153,43 @@ public sealed partial class NodeHub : IAsyncDisposable
             return (null, new(StatusCodes.Status401Unauthorized, "token_replayed",
                 "This node-link identity was already used; the kernel mints one per connection."));
 
-        var registryRefusal = _registry.LinkRefusal(nodeId);
-        if (registryRefusal == "node_unknown" && _options.Resync is { } resync)
+        if (string.Equals(nodeId, _registry.LocalNodeId, StringComparison.Ordinal))
+            return (null, Unknown());
+
+        var registryRefusal = Server.IsRevoked(nodeId) ? "node_revoked" : _registry.LinkRefusal(nodeId);
+        if (registryRefusal == "node_unknown")
         {
-            // Paired since the last sync: ask the kernel once before refusing.
-            try
-            {
-                if (await resync(ct)) registryRefusal = _registry.LinkRefusal(nodeId);
-            }
-            catch (Exception error) when (error is not OperationCanceledException)
-            {
-                _log($"[NodeHub] Resync for {nodeId} failed: {error.Message}");
-            }
+            // Paired since the last sync, or the registry has not caught up: only the kernel's own answer,
+            // read after this request arrived, may say the node is unknown (the agent then forgets its key).
+            var answered = false;
+            if (_options.Resync is { } resync)
+                try
+                {
+                    answered = await resync(ct);
+                }
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    _log($"[NodeHub] Resync for {nodeId} failed: {error.Message}");
+                }
+            if (!answered)
+                return (null, new(StatusCodes.Status503ServiceUnavailable, "node_registry_unavailable",
+                    "RedCompute cannot check this node with the kernel right now; dial again.") { RetryAfter = RegistryRetryAfter });
+            registryRefusal = Server.IsRevoked(nodeId) ? "node_revoked" : _registry.LinkRefusal(nodeId);
         }
         if (registryRefusal == "node_revoked")
             return (null, new(StatusCodes.Status403Forbidden, "node_revoked", "This node was revoked."));
         if (registryRefusal is not null)
-            return (null, new(StatusCodes.Status404NotFound, "node_unknown", "No paired node has this id."));
-        if (_registry.Find(nodeId) is { OwnerUserId: { } owner } && !string.Equals(owner, ownerId, StringComparison.OrdinalIgnoreCase))
+            return (null, Unknown());
+        // Fail closed: a node whose owner the kernel did not say cannot be matched to the identity's beneficiary.
+        if (_registry.Find(nodeId) is not { OwnerUserId: { } owner } || string.IsNullOrWhiteSpace(owner))
+            return (null, new(StatusCodes.Status403Forbidden, "node_owner_unknown", "The kernel did not say who owns this node."));
+        if (!string.Equals(owner, ownerId, StringComparison.OrdinalIgnoreCase))
             return (null, new(StatusCodes.Status403Forbidden, "node_owner_mismatch", "The identity's beneficiary is not the node's owner."));
 
         return (new NodeHubAdmission(nodeId, ownerId, executionId, expiresAt), null);
     }
+
+    private static NodeHubRefusal Unknown() => new(StatusCodes.Status404NotFound, "node_unknown", "No paired node has this id.");
 
     /// <summary>Only a direct loopback peer, with nothing describing another client in front of it.</summary>
     internal static NodeHubRefusal? RefusePeer(HttpContext context)
@@ -289,6 +313,8 @@ public sealed partial class NodeHub : IAsyncDisposable
     private static Task WriteRefusalAsync(HttpContext context, NodeHubRefusal refusal)
     {
         context.Response.StatusCode = refusal.Status;
+        if (refusal.RetryAfter is { } retryAfter)
+            context.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return context.Response.WriteAsJsonAsync(new { error = refusal.Code, message = refusal.Message });
     }
 
@@ -296,11 +322,28 @@ public sealed partial class NodeHub : IAsyncDisposable
 
     private void OnConnected(string nodeId, LinkSession session, bool resumed)
     {
+        // Revoked in the registry (the cache, a sync) since admission: the link must not stand.
+        if (Server.IsRevoked(nodeId) || _registry.LinkRefusal(nodeId) == "node_revoked")
+        {
+            _ = ObserveAsync(Server.RevokeAsync(nodeId), nodeId);
+            return;
+        }
+        AttachToRegistry(nodeId, session);
+        _log($"[NodeHub] {nodeId} linked ({(resumed ? "resumed" : "new session")} {session.LinkSessionId})");
+    }
+
+    private void AttachToRegistry(string nodeId, LinkSession session)
+    {
         var now = _options.Time.GetUtcNow();
         _registry.LinkUp(nodeId, new NodeLinkState(session.LinkSessionId, now, now, session.Rtt?.TotalMilliseconds,
             session.ClockOffset?.TotalMilliseconds, LinkProtocol.Current, session.Features, null, false, null));
-        _log($"[NodeHub] {nodeId} linked ({(resumed ? "resumed" : "new session")} {session.LinkSessionId})");
         _ = Task.Run(() => LearnAsync(nodeId, session));
+    }
+
+    private async Task ObserveAsync(Task revoke, string nodeId)
+    {
+        try { await revoke; }
+        catch (Exception error) { _log($"[NodeHub] Closing {nodeId}'s link failed: {error.Message}"); }
     }
 
     private void OnDisconnected(string nodeId, LinkSession session, LinkDisconnect ended)
@@ -323,9 +366,18 @@ public sealed partial class NodeHub : IAsyncDisposable
 
     private void OnStatusChanged(NodeStatusChange change)
     {
-        // Revocation (the kernel's call, or a removed entity found by sync) ends the link at once (design 3.5).
-        if (change.Node.Kind == NodeKind.Remote && change.Node.Status == NodeStatus.Revoked)
-            _ = Task.Run(() => Server.RevokeAsync(change.Node.Id));
+        if (change.Node.Kind != NodeKind.Remote) return;
+        var nodeId = change.Node.Id;
+        // Only the kernel's explicit revocation ends the link (design 3.5). LinkServer remembers the node as
+        // revoked before RevokeAsync first yields, so no connection mid-handshake slips past it.
+        if (change.Node.Status == NodeStatus.Revoked)
+        {
+            _ = ObserveAsync(Server.RevokeAsync(nodeId), nodeId);
+            return;
+        }
+        // A node the registry forgot (absent from one sync) and learns again: its link never closed.
+        if (change.Previous is null && Server.FindSession(nodeId) is { IsAttached: true } session)
+            AttachToRegistry(nodeId, session);
     }
 
     /// <summary>What a freshly linked node is: its describe, then its CLIs and one hardware sample.</summary>
@@ -454,8 +506,10 @@ public sealed partial class NodeHub : IAsyncDisposable
     /// <summary>The kernel revoked the node: the registry marks it (terminal) and its link closes 4403 at once.</summary>
     public async Task<NodeDescriptor> RevokeAsync(string nodeId, string reason)
     {
+        // The link server first: from here no connection of this node can complete, then the registry.
+        var closing = Server.RevokeAsync(nodeId);
         var node = _registry.MarkRevoked(nodeId, reason);
-        await Server.RevokeAsync(nodeId);
+        await closing;
         return node;
     }
 

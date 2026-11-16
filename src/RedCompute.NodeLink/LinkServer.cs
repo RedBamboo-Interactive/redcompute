@@ -22,12 +22,14 @@ public sealed class LinkServerOptions
 /// that differs from the bound one (4400) or a protocol/agent too old (4426), supersedes an older
 /// connection of the same node (4409), resumes the node's link session when the hello names it and it
 /// is younger than <see cref="LinkOptions.SessionRetention"/>, or starts a new one (the old one resets
-/// with <c>link_reset</c>), answers the welcome and pumps the connection.
+/// with <c>link_reset</c>), answers the welcome and pumps the connection. A node once revoked here
+/// (<see cref="RevokeAsync"/>) never holds a live session again, whatever stage its connection was at.
 /// </summary>
 public sealed class LinkServer : IAsyncDisposable
 {
     private readonly LinkServerOptions _options;
     private readonly ConcurrentDictionary<string, NodeEntry> _nodes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _revoked = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _life = new();
 
     private sealed class NodeEntry
@@ -59,6 +61,9 @@ public sealed class LinkServer : IAsyncDisposable
     public bool IsOnline(string nodeId) => FindSession(nodeId)?.IsAttached == true;
 
     public IReadOnlyCollection<string> NodeIds => _nodes.Keys.ToList();
+
+    /// <summary>Whether <see cref="RevokeAsync"/> was called for the node (terminal for this server).</summary>
+    public bool IsRevoked(string nodeId) => _revoked.ContainsKey(nodeId);
 
     /// <summary>
     /// Runs one authenticated connection for <paramref name="boundNodeId"/> to its end. Returns how it
@@ -102,6 +107,8 @@ public sealed class LinkServer : IAsyncDisposable
             return await RefuseAsync(transport, LinkCloseCodes.UpgradeRequired, new LinkHandshakeError("upgrade_required",
                 $"Agent {hello.Agent.Version} is older than the minimum {policy.Minimum}.", _options.Protocol.Min, _options.Protocol.Max));
 
+        if (IsRevoked(boundNodeId)) return await RefuseRevokedAsync(transport);
+
         var entry = _nodes.GetOrAdd(boundNodeId, _ => new NodeEntry());
         Task<LinkDisconnect> pump;
         LinkSession session;
@@ -110,6 +117,15 @@ public sealed class LinkServer : IAsyncDisposable
         await entry.Gate.WaitAsync(token);
         try
         {
+            // A revoke may have landed since the check above, and may have removed this very entry (no later
+            // revoke could reach a session left on it): it is the revoked set, read under the gate, that decides.
+            if (IsRevoked(boundNodeId)) return await RefuseRevokedAsync(transport);
+            if (!_nodes.TryGetValue(boundNodeId, out var current) || !ReferenceEquals(current, entry))
+            {
+                // Removed by a shutdown: nothing may attach to an entry the server no longer tracks.
+                await transport.CloseAsync(LinkCloseCodes.ServiceRestart, "server_stopping", CancellationToken.None);
+                return null;
+            }
             // The newest authenticated connection wins (design 4.7).
             if (entry.Session is { IsAttached: true } attached) await attached.DetachAsync(LinkCloseCodes.Superseded, "superseded");
             var existing = entry.Session is { IsReset: false } live ? live : null;
@@ -150,6 +166,9 @@ public sealed class LinkServer : IAsyncDisposable
         return ended;
     }
 
+    private static Task<LinkDisconnect?> RefuseRevokedAsync(ILinkTransport transport)
+        => RefuseAsync(transport, LinkCloseCodes.Revoked, new LinkHandshakeError("node_revoked", "This node was revoked."));
+
     private static async Task<LinkDisconnect?> RefuseAsync(ILinkTransport transport, int code, LinkHandshakeError error)
     {
         try
@@ -177,10 +196,12 @@ public sealed class LinkServer : IAsyncDisposable
 
     /// <summary>
     /// Ends a node's session at once: its connection closes with 4403, its channels and calls fail,
-    /// and nothing more is accepted from it.
+    /// and nothing more is accepted from it, ever: the node is remembered as revoked before this returns
+    /// its task (synchronously), so a connection still in its handshake is refused 4403 too.
     /// </summary>
     public async Task RevokeAsync(string nodeId)
     {
+        _revoked[nodeId] = 0;
         if (!_nodes.TryRemove(nodeId, out var entry)) return;
         await entry.Gate.WaitAsync();
         try

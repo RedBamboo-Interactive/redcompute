@@ -178,8 +178,12 @@ public sealed class NodeRegistry : INodeRegistry
 
     /// <summary>
     /// The kernel's answer to <c>GET /api/nodes</c> (every remote node, RedCompute's service identity).
-    /// Adds and refreshes nodes, marks revoked ones, and forgets nodes the kernel removed (only after a
-    /// revoke, design 3.5). Node zero's entity (<c>kind: local</c>) is ignored: <c>node.json</c> is its truth.
+    /// Adds and refreshes nodes and marks the ones the kernel says are revoked. A node missing from the
+    /// answer is forgotten locally (design 3.5): its entry and cache go and <see cref="Updated"/> is raised,
+    /// but it is not revoked: no <see cref="StatusChanged"/>, so its link stays up. One bad answer (an empty
+    /// list, an access-filter change) must not unpair every node; only the kernel's explicit revoked status
+    /// or <c>POST /nodes/{id}/revoked</c> revokes. Node zero's entity (<c>kind: local</c>) is ignored:
+    /// <c>node.json</c> is its truth.
     /// </summary>
     public void ApplyKernelNodes(IReadOnlyList<KernelNode> nodes)
     {
@@ -231,13 +235,9 @@ public sealed class NodeRegistry : INodeRegistry
 
             foreach (var gone in _remote.Keys.Where(id => !listed.Contains(id)).ToList())
             {
-                var node = _remote[gone];
-                var last = Describe(node);
+                // Forgotten, not revoked: if the kernel lists it again, it comes back (NodeHub re-attaches a live link).
                 _remote.Remove(gone);
                 DeleteCache(gone);
-                // A removed entity is a revoked node the owner deleted: its link must not survive it.
-                if (last.Status != NodeStatus.Revoked)
-                    changes.Add(new(last with { Status = NodeStatus.Revoked, StatusReason = "removed", Link = null }, last.Status));
                 updated.Add(gone);
             }
         }
