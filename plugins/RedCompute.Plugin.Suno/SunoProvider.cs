@@ -977,7 +977,17 @@ public sealed class SunoProvider : IPluginProvider
         var audio = new ByteArrayContent(bytes);
         audio.Headers.ContentType = new MediaTypeHeaderValue(format == "wav" ? "audio/wav" : "audio/mpeg");
         content.Add(audio, "file", name); content.Add(new StringContent("audio/music-covers"), "uploadPath");
-        content.Add(new StringContent(name), "fileName"); request.Content = content;
+        content.Add(new StringContent(name), "fileName");
+        // Suno's multipart parser rejects the legal unquoted names emitted by .NET.
+        // Quote every part name and the file name for its wire-format compatibility.
+        foreach (var part in content)
+        {
+            var disposition = part.Headers.ContentDisposition!;
+            disposition.Name = $"\"{disposition.Name!.Trim('"')}\"";
+            if (disposition.FileName is { } fileName)
+                disposition.FileName = $"\"{fileName.Trim('"')}\"";
+        }
+        request.Content = content;
         using var response = await _apiHttp.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Suno source upload HTTP {(int)response.StatusCode}");
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));

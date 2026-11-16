@@ -25,6 +25,11 @@ public sealed class SunoProviderTests
                 var file = form.Single(part => part.Headers.ContentDisposition?.Name?.Trim('"') == "file");
                 Assert.Equal(source, file.ReadAsByteArrayAsync().GetAwaiter().GetResult());
                 Assert.Equal("audio/wav", file.Headers.ContentType!.MediaType);
+                // Suno's parser requires quoted form names on the serialized wire.
+                var wire = form.ReadAsStringAsync().GetAwaiter().GetResult();
+                foreach (var field in new[] { "file", "uploadPath", "fileName" })
+                    Assert.Contains($"name=\"{field}\"", wire);
+                Assert.Contains("filename=\"music-source-", wire);
                 uploads++;
                 return Json("{\"code\":200,\"data\":{\"downloadUrl\":\"https://tempfile.redpandaai.co/source.wav\"}}");
             }
