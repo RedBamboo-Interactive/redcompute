@@ -102,24 +102,37 @@ public sealed class NodeLog : IDisposable
 /// <summary>
 /// The local audit log (design 4.9, 6.2): one JSON line per server request, refused or answered, and
 /// per channel the server opens, in <c>audit/yyyy-MM-dd.jsonl</c>; the newest 30 days are kept. It is
-/// the node owner's record of what the server asked; it never holds payloads.
+/// the node owner's record of what the server asked; it never holds payloads. A day's file stops at
+/// <see cref="MaxDayBytes"/>: the record that would cross it is replaced by one <c>truncated</c> marker
+/// (kind <c>audit</c>) and the rest of the day is dropped, so a server that floods the node with requests
+/// cannot fill its disk (at most 30 capped days).
 /// </summary>
 public sealed class AuditLog
 {
     public const int KeepDays = 30;
 
+    /// <summary>The default cap of one day's file (about 50,000 records).</summary>
+    public const long DefaultMaxDayBytes = 8L * 1024 * 1024;
+
+    public const string TruncatedOutcome = "truncated";
+
     private readonly object _gate = new();
     private readonly string _folder;
     private readonly TimeProvider _time;
     private string? _pruned;
+    private string? _checkedDay;
+    private string? _truncatedDay;
 
-    public AuditLog(string folder, TimeProvider? time = null)
+    public AuditLog(string folder, TimeProvider? time = null, long maxDayBytes = DefaultMaxDayBytes)
     {
         _folder = folder;
         _time = time ?? TimeProvider.System;
+        MaxDayBytes = maxDayBytes;
     }
 
     public string Folder => _folder;
+
+    public long MaxDayBytes { get; }
 
     /// <summary>Appends one record: <c>{at, kind, name, outcome, detail?}</c>.</summary>
     public void Record(string kind, string name, string outcome, string? detail = null, string? linkSessionId = null)
@@ -140,10 +153,30 @@ public sealed class AuditLog
             try
             {
                 Directory.CreateDirectory(_folder);
-                using (var stream = new FileStream(Path.Combine(_folder, day + ".jsonl"), FileMode.Append, FileAccess.Write,
-                           FileShare.ReadWrite | FileShare.Delete))
+                var path = Path.Combine(_folder, day + ".jsonl");
+                // A restart on a day already capped finds its marker at the end of the file.
+                if (_checkedDay != day)
                 {
-                    stream.Write(Encoding.UTF8.GetBytes(line.ToJsonString() + "\n"));
+                    _checkedDay = day;
+                    if (EndsWithTruncatedMarker(path)) _truncatedDay = day;
+                }
+                if (_truncatedDay == day) return;
+                using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    var bytes = Encoding.UTF8.GetBytes(line.ToJsonString() + "\n");
+                    if (stream.Length + bytes.Length > MaxDayBytes)
+                    {
+                        _truncatedDay = day;
+                        bytes = Encoding.UTF8.GetBytes(new JsonObject
+                        {
+                            ["at"] = now.ToString("O"),
+                            ["kind"] = "audit",
+                            ["name"] = "audit",
+                            ["outcome"] = TruncatedOutcome,
+                            ["detail"] = $"This day's audit log reached its cap of {MaxDayBytes} bytes; the rest of the day's records were dropped.",
+                        }.ToJsonString() + "\n");
+                    }
+                    stream.Write(bytes);
                 }
                 if (_pruned != day)
                 {
@@ -158,6 +191,27 @@ public sealed class AuditLog
             catch (UnauthorizedAccessException)
             {
             }
+        }
+    }
+
+    private static bool EndsWithTruncatedMarker(string path)
+    {
+        if (!File.Exists(path)) return false;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var take = (int)Math.Min(stream.Length, 1024);
+        if (take == 0) return false;
+        stream.Seek(-take, SeekOrigin.End);
+        var buffer = new byte[take];
+        stream.ReadExactly(buffer);
+        var last = Encoding.UTF8.GetString(buffer).TrimEnd('\n').Split('\n')[^1];
+        try
+        {
+            return JsonNode.Parse(last) is JsonObject record
+                   && record["kind"]?.GetValue<string>() == "audit" && record["outcome"]?.GetValue<string>() == TruncatedOutcome;
+        }
+        catch (Exception error) when (error is System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return false;
         }
     }
 
