@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using RedCompute.Plugin.Codex;
+using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
 using RedCompute.Tests;
 using Xunit;

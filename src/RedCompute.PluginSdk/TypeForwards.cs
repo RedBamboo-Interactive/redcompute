@@ -1,8 +1,11 @@
 using System.Runtime.CompilerServices;
 
 // The execution host moved from this assembly to RedCompute.ExecutionHost (same namespaces).
-// Plugins compiled against an SDK that still held these types resolve them through these forwards.
+// Plugins compiled against an SDK that still held these types resolve them through these forwards;
+// host types added since are forwarded too, so the SDK always presents the whole host.
 
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.CliLocators))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.CodexCliLocator))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.ContainmentMode))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.DetachedLaunch))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.DetachedSpawnSpec))]

@@ -932,5 +932,5 @@ public class CodexSessionService
         StoppedAt = r.StoppedAt,
     };
 
-    public string? ResolveCodexPath() => CodexCliLocator.Resolve(_host, _config.CodexPath);
+    public string? ResolveCodexPath() => CliLocators.Codex(_host, _config.CodexPath);
 }

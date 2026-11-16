@@ -29,14 +29,12 @@ public sealed class StorageGuardTests
         // ---- CLI installs and homes: owned by the CLIs and npm, not Leaf data -------------------------
         ("src/RedCompute.PluginSdk/CliVersionManagement.cs", "ApplicationData", 1,
             "%APPDATA%\\npm: the global npm prefix the managed CLIs install into"),
-        ("plugins/RedCompute.Plugin.ClaudeCode/ClaudeSessionService.cs", "ApplicationData", 1,
-            "%APPDATA%\\npm: locating the installed Claude Code CLI"),
-        ("plugins/RedCompute.Plugin.Codex/CodexCliLocator.cs", "ApplicationData", 1,
+        ("src/RedCompute.ExecutionHost/Hosting/CliLocators.cs", "ApplicationData", 2,
+            "%APPDATA%\\npm and %APPDATA%\\Claude: locating the installed Claude Code and OpenCode CLIs"),
+        ("src/RedCompute.ExecutionHost/Hosting/CodexCliLocator.cs", "ApplicationData", 1,
             "%APPDATA%\\npm: locating the npm-installed Codex CLI"),
-        ("plugins/RedCompute.Plugin.Codex/CodexCliLocator.cs", "LocalApplicationData", 1,
+        ("src/RedCompute.ExecutionHost/Hosting/CodexCliLocator.cs", "LocalApplicationData", 1,
             "%LOCALAPPDATA%\\Programs\\OpenAI\\Codex: the official Codex installer's location"),
-        ("plugins/RedCompute.Plugin.OpenCode/OpenCodeSessionService.cs", "ApplicationData", 1,
-            "%APPDATA%\\npm: locating the npm-installed OpenCode CLI"),
         // Not listed because they never name a folder: LocalExecutionHost's pass-through
         // GetFolderPath(folder) and its one-shot temp directories (Path.GetTempPath, caller-scoped
         // and deleted by the caller), ~/.claude, ~/.codex and ~/.local/share/opencode (UserProfile,

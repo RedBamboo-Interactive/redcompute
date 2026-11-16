@@ -2512,48 +2512,6 @@ public class OpenCodeSessionService
         environment["OPENCODE_CONFIG_CONTENT"] = config.ToJsonString();
     }
 
-    /// <summary>
-    /// The CLI on the host: the configured path, npm's global package, PATH, then npm's shim. The PATH
-    /// separator is this process's (the host's on node zero).
-    /// </summary>
-    public string? ResolveOpenCodePath()
-    {
-        if (_config.OpenCodePath != null)
-            return FileExists(_config.OpenCodePath) ? _config.OpenCodePath : null;
-
-        // Try npm global node_modules directly first — avoids .cmd wrapper
-        var appData = _host.Platform.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var npmBinDirect = _host.PathRules.Combine(appData, "npm", "node_modules", "opencode-ai", "bin", "opencode.exe");
-        if (FileExists(npmBinDirect))
-            return npmBinDirect;
-
-        var pathDirs = _host.Platform.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
-        foreach (var dir in pathDirs)
-        {
-            // Prefer .exe over .cmd; skip .cmd wrappers in npm dirs when possible
-            foreach (var ext in new[] { ".exe", ".cmd", "" })
-            {
-                var candidate = _host.PathRules.Combine(dir, $"opencode{ext}");
-                if (!FileExists(candidate)) continue;
-
-                // If we found a .cmd in an npm directory, try to resolve through to the real exe
-                if (ext == ".cmd" && dir.Replace('\\', '/').Contains("/npm", StringComparison.OrdinalIgnoreCase))
-                {
-                    var resolvedExe = _host.PathRules.Combine(dir, "node_modules", "opencode-ai", "bin", "opencode.exe");
-                    if (FileExists(resolvedExe))
-                        return resolvedExe;
-                }
-
-                return candidate;
-            }
-        }
-
-        var npmFallback = _host.PathRules.Combine(appData, "npm", "opencode.cmd");
-        if (FileExists(npmFallback))
-            return npmFallback;
-
-        return null;
-    }
-
-    private bool FileExists(string path) => _host.Files.FileExists(_host.Path(path));
+    /// <summary>The CLI on the host: <see cref="CliLocators.OpenCode"/> (shared with the node agent).</summary>
+    public string? ResolveOpenCodePath() => CliLocators.OpenCode(_host, _config.OpenCodePath);
 }

@@ -1,13 +1,13 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Runtime.InteropServices;
-using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
 
-namespace RedCompute.Plugin.Codex;
+namespace RedCompute.PluginSdk.Hosting;
 
 /// <summary>
-/// Resolves the Codex CLI executable.
+/// Resolves the Codex CLI executable (moved from the Codex plugin unchanged, so the server and the
+/// node agent find the same binary; <see cref="CliLocators.Codex"/> is the entry point).
 ///
 /// The npm package installs shims (codex, codex.cmd, codex.ps1) that re-exec a JS launcher,
 /// which in turn exec's a vendored native binary. Spawning the shim is unreliable — on Windows

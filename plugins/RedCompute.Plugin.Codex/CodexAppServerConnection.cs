@@ -73,7 +73,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         IExecutionHost? host = null)
     {
         host ??= LocalExecutionHost.Shared;
-        var exe = CodexCliLocator.Resolve(host, configuredCliPath)
+        var exe = CliLocators.Codex(host, configuredCliPath)
             ?? throw new InvalidOperationException(
                 "Could not find the Codex CLI. Install the official standalone package or set CodexPath in provider config.");
 

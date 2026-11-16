@@ -2299,74 +2299,15 @@ public partial class ClaudeSessionService
     };
 
     /// <summary>The CLI this service launches, on its host: the configured path, else the managed install.</summary>
-    internal string? ResolveClaudePath()
-        => ResolveClaudePath(
-            _host,
-            _config.ClaudePath,
-            _host.Platform.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            _host.Platform.GetEnvironmentVariable("PATH"));
+    internal string? ResolveClaudePath() => CliLocators.Claude(_host, _config.ClaudePath);
 
+    /// <summary>The search order, shared with the node agent: <see cref="CliLocators.Claude(IExecutionHost, string?, string, string?)"/>.</summary>
     internal static string? ResolveClaudePath(
         IExecutionHost host,
         string? configuredPath,
         string applicationData,
         string? pathEnvironment)
-    {
-        bool FileExists(string path) => host.Files.FileExists(host.Path(path));
-
-        if (configuredPath != null)
-            return FileExists(configuredPath) ? configuredPath : null;
-
-        // Prefer the native binary from the globally installed Claude Code package. This is the
-        // package RedCompute exposes for version management, so the version we report, install,
-        // and launch must all refer to the same bytes.
-        var globalCliExe = host.PathRules.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
-            "claude-code", "bin", "claude.exe");
-        if (FileExists(globalCliExe))
-            return globalCliExe;
-
-        // The Agent SDK also bundles a native CLI that supports stream-json IPC. Keep it as a
-        // compatibility fallback for machines without a global Claude Code package.
-        var sdkExe = host.PathRules.Combine(applicationData, "npm", "node_modules", "@anthropic-ai",
-            "claude-agent-sdk", "node_modules", "@anthropic-ai",
-            "claude-agent-sdk-win32-x64", "claude.exe");
-        if (FileExists(sdkExe))
-            return sdkExe;
-
-        // Claude Desktop bundles versioned native CLIs outside PATH.
-        var desktopRoot = host.PathRules.Combine(applicationData, "Claude", "claude-code");
-        if (host.Files.DirectoryExists(host.Path(desktopRoot)))
-        {
-            var desktopExe = host.Files.EnumerateDirectories(host.Path(desktopRoot), "*", SearchOption.TopDirectoryOnly)
-                .Select(directory => new
-                {
-                    Path = host.PathRules.Combine(directory.Value, "claude.exe"),
-                    Version = Version.TryParse(Path.GetFileName(directory.Value), out var version)
-                        ? version
-                        : new Version(0, 0),
-                })
-                .Where(candidate => FileExists(candidate.Path))
-                .OrderByDescending(candidate => candidate.Version)
-                .Select(candidate => candidate.Path)
-                .FirstOrDefault();
-            if (desktopExe != null)
-                return desktopExe;
-        }
-
-        // Fallback: search PATH for claude.cmd / claude.exe
-        var pathDirs = pathEnvironment?.Split(Path.PathSeparator) ?? [];
-        foreach (var dir in pathDirs)
-        {
-            if (string.IsNullOrWhiteSpace(dir)) continue;
-            foreach (var ext in new[] { ".exe", ".cmd", "" })
-            {
-                var candidate = host.PathRules.Combine(dir.Trim().Trim('"'), $"claude{ext}");
-                if (FileExists(candidate))
-                    return candidate;
-            }
-        }
-        return null;
-    }
+        => CliLocators.Claude(host, configuredPath, applicationData, pathEnvironment);
 
     private void PopulateSessionArgs(List<string> arguments, string permissionMode, string? resumeClaudeSessionId = null,
         string? model = null, string? effort = null, string? developerInstructions = null)
