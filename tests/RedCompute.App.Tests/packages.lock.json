@@ -489,6 +489,7 @@
           "Markdig": "[0.41.3, )",
           "Microsoft.EntityFrameworkCore.Sqlite": "[9.0.18, )",
           "RedBamboo.AppHost": "[0.1.0, )",
+          "RedCompute.NodeLink": "[1.0.0, )",
           "RedCompute.Plugin.ClaudeCode": "[1.0.0, )",
           "RedCompute.PluginSdk": "[1.0.0, )",
           "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )",

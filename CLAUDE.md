@@ -91,6 +91,8 @@ Providers register additional endpoints via `ICustomEndpointProvider.MapCustomEn
 
 Cross-cutting: `/status`, `/jobs`, `/logs`, `/control/start|stop/{slug}`, `/settings`, `/ws` (WebSocket events).
 
+Nodes: `GET /nodes` lists node zero and the remote nodes paired in the kernel (identity synced from the kernel's `GET /api/nodes` at boot, every 5 minutes and on `POST /nodes/changed`; liveness from the link), each with `placement {eligible, reason}`. `INodeRegistry.HostFor` throws `NodeUnavailableException` for a remote node (Phase 3 runs no work there). `/nodes/hub` is NodeHub, the kernel's internal WebSocket hop for node links: it accepts only the kernel's single-use `leaf-node-ingress` execution identity from loopback and is hidden from `/discover`. The last state of each remote node is cached in `<data root>\nodes\<id>.json`.
+
 ### Frontend
 
 None in this repo. The dashboard is the `compute-dashboard` Leaf plugin (its own repo, `T:\Projects\compute-dashboard`), served by the Leaf kernel; it reaches this service through the kernel's `/compute/*` proxy.

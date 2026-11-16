@@ -1,14 +1,25 @@
+using RedCompute.Core.Hardware;
+
 namespace RedCompute.Core.Nodes;
 
-/// <summary>Where a node runs. Phase 1 knows only the machine RedCompute itself runs on.</summary>
-public enum NodeKind { Local }
+/// <summary>
+/// Where a node runs: <see cref="Local"/> is the machine RedCompute itself runs on (node zero);
+/// <see cref="Remote"/> is a paired machine running the node agent, reached over its link.
+/// </summary>
+public enum NodeKind { Local, Remote }
 
-/// <summary>Whether a node can take work. The local node is always online while RedCompute runs.</summary>
-public enum NodeStatus { Online, Offline, Revoked }
+/// <summary>
+/// Whether a node can take work. The local node is always online while RedCompute runs. A remote node
+/// is online while its link is up, <see cref="NeedsUpdate"/> when its agent is too old to link,
+/// <see cref="PendingConfirmation"/> while it is online but its owner has not confirmed it, and
+/// <see cref="Revoked"/> for good once revoked.
+/// </summary>
+public enum NodeStatus { Online, Offline, Revoked, NeedsUpdate, PendingConfirmation }
 
 /// <summary>
 /// A computer RedCompute runs work on. Node zero is the machine this RedCompute runs on; its id is
-/// generated once and persisted in <c>node.json</c>, so it stays the same across restarts.
+/// generated once and persisted in <c>node.json</c>, so it stays the same across restarts. A remote
+/// node's identity comes from the kernel (its <c>node</c> entity), its liveness from the link.
 /// </summary>
 public sealed record NodeDescriptor(
     string Id,
@@ -22,4 +33,41 @@ public sealed record NodeDescriptor(
     string? ProcessorName,
     string AgentVersion,
     DateTimeOffset StartedAt,
-    DateTimeOffset LastSeenAt);
+    DateTimeOffset LastSeenAt)
+{
+    /// <summary>The person the node belongs to (the kernel's <c>ownerId</c>); null for node zero.</summary>
+    public string? OwnerUserId { get; init; }
+
+    /// <summary>"This is my node" was confirmed. Node zero is always confirmed; an unconfirmed node is never eligible.</summary>
+    public bool Confirmed { get; init; } = true;
+
+    public DateTimeOffset? PairedAt { get; init; }
+
+    /// <summary>Why the node is in its status (<c>heartbeat_timeout</c>, <c>revoked_by_owner</c>, …), when it says.</summary>
+    public string? StatusReason { get; init; }
+
+    /// <summary>The live link of a remote node, while it is up; null for node zero and offline nodes.</summary>
+    public NodeLinkState? Link { get; init; }
+
+    /// <summary>What a remote node last reported (CLIs, hardware), kept across restarts.</summary>
+    public NodeReport? Report { get; init; }
+}
+
+/// <summary>A remote node's live link (design 7.1).</summary>
+public sealed record NodeLinkState(
+    string LinkSessionId,
+    DateTimeOffset ConnectedAt,
+    DateTimeOffset? LastHeartbeatAt,
+    double? RttMs,
+    double? ClockOffsetMs,
+    int Protocol,
+    IReadOnlyList<string> Features,
+    string? AgentVersion,
+    bool UpdateAvailable,
+    string? CredentialStore);
+
+/// <summary>One CLI as the node's fixed probe found it: never its output, auth files or tokens.</summary>
+public sealed record NodeCliReport(string Name, bool Installed, string? Version, bool SignedIn, string? AuthMethod, string? Path);
+
+/// <summary>What a remote node last reported: its CLIs and its last hardware sample.</summary>
+public sealed record NodeReport(IReadOnlyList<NodeCliReport> Clis, HardwareSnapshot? Hardware, DateTimeOffset? ReportedAt);

@@ -51,7 +51,16 @@ public sealed class PlacementResolver
             return new(null, nodeError);
         // Phase 2 has one node, so every routing step (design 2.3) yields it.
         var nodeId = requested ?? _nodes?.LocalNodeId ?? INodeRegistry.LocalAlias;
-        var host = _nodes?.HostFor(nodeId) ?? PluginSdk.Hosting.Local.LocalExecutionHost.Shared;
+        IExecutionHost host;
+        try
+        {
+            host = _nodes?.HostFor(nodeId) ?? PluginSdk.Hosting.Local.LocalExecutionHost.Shared;
+        }
+        catch (RedCompute.Core.Nodes.NodeUnavailableException error)
+        {
+            // The node went offline or was revoked between ResolveNode and here.
+            return new(null, PlacementError.Unavailable(error));
+        }
         var legacyNode = _nodes is null
             || string.Equals(nodeId, _nodes.LocalNodeId, StringComparison.Ordinal)
             || string.Equals(nodeId, _nodes.LegacyNodeId, StringComparison.Ordinal);

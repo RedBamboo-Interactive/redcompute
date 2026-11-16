@@ -145,7 +145,8 @@ public static class RedComputeHost
             Log($"[App] Recovering {plannedRestart.Sessions.Count} session(s) from planned restart {plannedRestart.RunId}");
 
         // Node identity before any provider exists: work is attributed to this node from the start.
-        Nodes = NodeRegistry.Open(NodeIdentityStore.DefaultDirectory, RedComputeServiceDescriptor.AppVersion, s => Log(s));
+        Nodes = NodeRegistry.Open(NodeIdentityStore.DefaultDirectory, RedComputeServiceDescriptor.AppVersion, s => Log(s),
+            ComputeStorage.Current.RemoteNodes);
         Log($"[App] Node zero: {Nodes.LocalNodeId} ({Nodes.Local.MachineName})");
         JobTracker.StampNodeId = Nodes.StampNodeId;
         HardwareMonitor.NodeId = Nodes.LocalNodeId;

@@ -66,6 +66,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RedCompute.PluginSdk\RedCompute.PluginSdk.csproj" />
+    <!-- The node link protocol: NodeHub (/nodes/hub) is its server end. -->
+    <ProjectReference Include="..\RedCompute.NodeLink\RedCompute.NodeLink.csproj" />
     <!-- One level deeper than the standalone repo: compute/ lives inside the Leaf monorepo now. -->
     <!-- AppHost is a source input owned by RedBamboo. Give its consumer restore
          graph the same neutral + host-RID shape and keep its lock in this repo, one

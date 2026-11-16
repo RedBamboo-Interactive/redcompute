@@ -4,8 +4,9 @@ using RedCompute.PluginSdk.Hosting;
 namespace RedCompute.PluginSdk;
 
 /// <summary>
-/// The computers RedCompute runs work on. In Phase 1 this is exactly one node, the local one
-/// ("node zero"). Read-only: nodes are not added, renamed or removed through this interface.
+/// The computers RedCompute runs work on: the local one ("node zero") and, since Phase 3, the
+/// remote nodes paired with the kernel. Read-only: nodes are paired, renamed and revoked in the
+/// kernel, never through this interface.
 /// </summary>
 public interface INodeRegistry
 {
@@ -24,7 +25,7 @@ public interface INodeRegistry
     /// <summary>The local node, with <see cref="NodeDescriptor.LastSeenAt"/> set to now.</summary>
     NodeDescriptor Local { get; }
 
-    /// <summary>Every known node: exactly [<see cref="Local"/>] in Phase 1.</summary>
+    /// <summary>Every known node: <see cref="Local"/> first, then the remote nodes by name.</summary>
     IReadOnlyList<NodeDescriptor> Nodes { get; }
 
     /// <summary>The node with this id (or <see cref="LocalAlias"/>), or null when none is known.</summary>
@@ -48,7 +49,10 @@ public interface INodeRegistry
 
     /// <summary>
     /// The execution host of a node: null, the legacy id, the local id and <see cref="LocalAlias"/>
-    /// are the local host. An unknown id throws <see cref="KeyNotFoundException"/>.
+    /// are the local host. A known node that cannot run work throws
+    /// <see cref="Core.Nodes.NodeUnavailableException"/> with its reason (in Phase 3, every remote
+    /// node: <c>remote_execution_not_available</c>, <c>offline</c>, <c>revoked</c>, <c>not_confirmed</c>
+    /// or <c>needs_update</c>). An unknown id throws <see cref="KeyNotFoundException"/>.
     /// </summary>
     IExecutionHost HostFor(string? nodeId);
 }

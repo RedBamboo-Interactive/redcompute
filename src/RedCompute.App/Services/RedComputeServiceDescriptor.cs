@@ -74,19 +74,28 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         Name: "Computers",
         Kind: "kernel",
         RoutePrefix: "/nodes",
-        Summary: "The computers RedCompute runs work on, read-only. Phase 1 has one: this machine, node zero. "
-            + "Each node reports its platform, a hardware summary, and the capabilities and providers it runs with their status. "
-            + "Use 'local' as the id of this machine.",
+        Summary: "The computers RedCompute runs work on: node zero (this machine, kind local) and the machines paired with "
+            + "Leaf that run the leaf-node agent (kind remote). Each node reports its platform, a hardware summary, its status, "
+            + "and placement {eligible, reason}; node zero also lists the capabilities and providers it runs. Remote nodes do not "
+            + "run work yet (placement reason remote_execution_not_available). Pairing, confirming, renaming and revoking are "
+            + "the kernel's /api/nodes routes. Use 'local' as the id of this machine.",
         Concepts:
         [
             new DiscoveryConcept("node", "Computer",
-                "A machine RedCompute runs work on. Its id is generated once and kept in node.json, so it is stable across restarts.",
+                "A machine RedCompute runs work on. Node zero's id is generated once and kept in node.json; a remote node's id is "
+                + "its kernel node entity's. Identity comes from the kernel, liveness from the node's link.",
                 [
                     new DiscoveryField("id", "string", Required: true, Description: "Stable node id (node_<ulid>); 'local' is an alias for this machine"),
-                    new DiscoveryField("name", "string", Required: true, Description: "Display name: the machine name"),
-                    new DiscoveryField("kind", "string", Required: true, Description: "local (remote nodes arrive with pairing)"),
-                    new DiscoveryField("status", "string", Required: true, Description: "online, offline or revoked"),
+                    new DiscoveryField("name", "string", Required: true, Description: "Display name"),
+                    new DiscoveryField("kind", "string", Required: true, Description: "local (this machine) or remote (a paired machine running leaf-node)"),
+                    new DiscoveryField("status", "string", Required: true, Description: "online, offline, revoked, needs-update or pending-confirmation"),
+                    new DiscoveryField("statusReason", "string", Description: "Why, e.g. heartbeat_timeout, revoked_by_owner, unpaired_by_node"),
                     new DiscoveryField("isLocal", "boolean", Required: true, Description: "True for the machine this RedCompute runs on"),
+                    new DiscoveryField("owner", "string", Description: "The user id the remote node belongs to"),
+                    new DiscoveryField("confirmed", "boolean", Description: "The owner confirmed 'This is my node'; unconfirmed nodes are never eligible"),
+                    new DiscoveryField("placement", "object", Required: true, Description: "{eligible, reason}: whether work may be placed on the node"),
+                    new DiscoveryField("link", "object", Description: "A remote node's live link: connectedAt, rttMs, protocol, features, agentVersion, updateAvailable"),
+                    new DiscoveryField("clis", "array", Description: "CLIs a remote node found: name, installed, version, signedIn, authMethod"),
                     new DiscoveryField("capabilities", "array", Description: "Capabilities on this node, each with its providers and their status"),
                 ]),
         ]);

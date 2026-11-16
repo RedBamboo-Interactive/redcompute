@@ -112,6 +112,9 @@ public sealed class ComputeStorage
     /// <summary>The folder holding <c>node.json</c> (this node's identity).</summary>
     public string NodeIdentityDirectory => DataRoot;
 
+    /// <summary><c>nodes\</c>: the last known state of each paired remote node (<c>&lt;id&gt;.json</c>), so an offline node still shows its last report after a restart.</summary>
+    public string RemoteNodes => Path.Combine(DataRoot, "nodes");
+
     /// <summary>The folder holding <c>long-lived-processes.json</c> and <c>long-lived-processes\</c> (logs).</summary>
     public string LongLivedProcessesDirectory => DataRoot;
 
@@ -156,6 +159,8 @@ public sealed class ComputeStorage
         Declare("entity-cache", EntityCache, StorageClass.Rebuildable, StorageMutability.Mutable),
         Declare("quality-mode-cache", QualityModeCache, StorageClass.Rebuildable, StorageMutability.Mutable),
         Declare("node-identity", Path.Combine(NodeIdentityDirectory, NodeIdentityFileName), StorageClass.Durable, StorageMutability.Mutable),
+        // The kernel holds every remote node's identity; this is only the last report, refreshed by the next link.
+        Declare("remote-nodes", RemoteNodes, StorageClass.Rebuildable, StorageMutability.Mutable),
         Declare("long-lived-processes-state", Path.Combine(LongLivedProcessesDirectory, LongLivedProcessesFileName), StorageClass.Durable, StorageMutability.Mutable),
         Declare("long-lived-processes-logs", Path.Combine(LongLivedProcessesDirectory, "long-lived-processes"), StorageClass.Durable, StorageMutability.Mutable),
         // Process ledgers and the drain checkpoint describe processes that are gone once RedCompute is stopped for a move.

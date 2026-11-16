@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using RedCompute.Core.Discovery;
+using RedCompute.Core.Nodes;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services.Placement;
@@ -82,15 +83,26 @@ public sealed record ScratchPlacement(string Owner, string ExecutionKey);
 
 /// <summary>A refused placement: status, a stable code, and the references involved, never paths.</summary>
 public sealed record PlacementError(int Status, string Code, string Message, string? NodeId = null,
-    Dictionary<string, string>? Fields = null)
+    Dictionary<string, string>? Fields = null, string? Reason = null)
 {
     public IResult ToResult() => Results.Json(new PlacementErrorResponse
     {
         Error = Code,
         Message = Message,
         NodeId = NodeId,
+        Reason = Reason,
         Fields = Fields,
     }, statusCode: Status);
+
+    /// <summary>
+    /// A known node that cannot run work (Phase 2 design, error table): 409 <c>node_offline</c> (retryable)
+    /// when its link is down, else 409 <c>node_not_eligible</c> with the registry's reason.
+    /// </summary>
+    public static PlacementError Unavailable(NodeUnavailableException error) => error.Retryable
+        ? new(StatusCodes.Status409Conflict, "node_offline",
+            $"Node '{error.NodeId}' is offline; try again when it is back", NodeId: error.NodeId, Reason: error.Reason)
+        : new(StatusCodes.Status409Conflict, "node_not_eligible",
+            $"Node '{error.NodeId}' cannot run work: {error.Reason}", NodeId: error.NodeId, Reason: error.Reason);
 
     internal static PlacementError Invalid(string member, string message) => new(
         StatusCodes.Status422UnprocessableEntity, "validation_failed", $"{member} {message}",
@@ -103,6 +115,11 @@ public sealed class PlacementErrorResponse : ErrorResponse
     [JsonPropertyName("nodeId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? NodeId { get; init; }
+
+    /// <summary>Why the node cannot run work (<c>offline</c>, <c>revoked</c>, <c>not_confirmed</c>, …), on a 409.</summary>
+    [JsonPropertyName("reason")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
 }
 
 /// <summary>Parses and validates <c>placement</c>, and resolves its node against the registry.</summary>
@@ -185,7 +202,8 @@ public static class PlacementParser
 
     /// <summary>
     /// The node a placement names, as the registry knows it: the local node for <c>local</c>, its own
-    /// id or the legacy id; 404 <c>node_not_found</c> for anything else. Without a registry (hosts and
+    /// id or the legacy id; 409 <c>node_offline</c> / <c>node_not_eligible</c> for a known node that cannot
+    /// run work (every remote node in Phase 3); 404 <c>node_not_found</c> for anything else. Without a registry (hosts and
     /// tests with no node identity) only <c>local</c> is known. A null node id is routed later (2.3)
     /// and resolves to null here.
     /// </summary>
@@ -204,7 +222,17 @@ public static class PlacementParser
         else if (nodes.Find(requested) is { } node)
         {
             nodeId = node.Id;
-            return null;
+            if (node.Kind == NodeKind.Local) return null;
+            try
+            {
+                nodes.HostFor(node.Id);
+                return null;
+            }
+            catch (NodeUnavailableException error)
+            {
+                nodeId = null;
+                return PlacementError.Unavailable(error);
+            }
         }
         else if (string.Equals(requested, nodes.LegacyNodeId, StringComparison.Ordinal))
         {

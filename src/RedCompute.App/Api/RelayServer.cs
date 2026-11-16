@@ -62,6 +62,9 @@ public class RelayServer
     // debounced upsert that still carries the previous name.
     private readonly ConcurrentDictionary<string, AiSessionSnapshot> _lastSessionSnapshots = new(StringComparer.OrdinalIgnoreCase);
     private SessionTitleStore? _titles;
+    private NodeHub? _nodeHub;
+    private KernelNodeSync? _nodeSync;
+    private NodeEvents? _nodeEvents;
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
@@ -378,7 +381,7 @@ public class RelayServer
         StorageEndpoints.Map(registry);
         HardwareEndpoints.Map(registry, _hardwareMonitor);
         if (_nodes is not null)
-            NodeEndpoints.Map(registry, _nodes, _registry, _hardwareMonitor);
+            MapNodes(registry, _nodes, jwt, _app.Services.GetRequiredService<WebSocketBroadcaster>());
         SettingsEndpoints.Map(registry, _configManager, _registry, _providerConfig);
 
         SuiteTelemetryEndpoints.Map(registry);
@@ -532,6 +535,29 @@ public class RelayServer
         // retrying only when that initial RedLeaf/cache sync could not supply an entity snapshot.
         _ = DetachedWork.Start(() => _providerConfig.EnsureLoadedAsync(ct));
         _ = DetachedWork.Start(() => _qualityModes.EnsureLoadedAsync(ct));
+    }
+
+    /// <summary>
+    /// The node API, NodeHub and the kernel sync (Phase 3). <c>/nodes/hub</c> is mapped on the app, not the
+    /// registry: it is the kernel's internal hop, hidden from <c>/discover</c> and OpenAPI. With no paired
+    /// node nothing here changes what node zero does.
+    /// </summary>
+    private void MapNodes(EndpointRegistry registry, NodeRegistry nodes, JwtService jwt, WebSocketBroadcaster broadcaster)
+    {
+        var sync = _nodeSync = new KernelNodeSync(nodes, new KernelNodeClient(_config.RedLeafUrl, jwt), message => _log(message, null));
+        var hub = _nodeHub = new NodeHub(nodes, message => _log(message, null),
+            new NodeHubOptions { Resync = ct => sync.SyncNowAsync(ct) });
+        NodeEndpoints.Map(registry, nodes, _registry, _hardwareMonitor, hub, sync);
+        NodeHub.MapRoute(_app!, hub);
+
+        broadcaster.RegisterEvent(new WsEventSchema(NodeEvents.StatusEvent,
+            "A node's status changed (online, offline, revoked, needs-update, pending-confirmation); transitions only, never per heartbeat",
+            Fields: ["nodeId", "status", "reason", "lastSeenAt"]));
+        broadcaster.RegisterEvent(new WsEventSchema(NodeEvents.UpdatedEvent,
+            "A node's identity, link or CLI report changed (debounced 2 s per node); re-read GET /nodes/{nodeId}",
+            Fields: ["nodeId"]));
+        _nodeEvents = new NodeEvents(nodes, (type, data) => broadcaster.Broadcast(type, data));
+        sync.Start();
     }
 
     private void RegisterWsEvents(WebSocketBroadcaster broadcaster, SessionTranscriptPipeline transcriptPipeline,
@@ -749,6 +775,21 @@ public class RelayServer
             _voiceSessions = null;
         }
         await _docker.StopAllAsync();
+
+        // Links close with 1012 (service restart): nodes redial and find a fresh session.
+        if (_nodeHub is not null)
+        {
+            try { await _nodeHub.DisposeAsync(); }
+            catch (Exception error) { _log($"[NodeHub] Shutdown: {error.Message}", null); }
+            _nodeHub = null;
+        }
+        if (_nodeSync is not null)
+        {
+            await _nodeSync.DisposeAsync();
+            _nodeSync = null;
+        }
+        _nodeEvents?.Dispose();
+        _nodeEvents = null;
 
         SuiteMirror.SessionUpserted = null;
         SuiteMirror.MessagesAdded = null;

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
@@ -21,6 +22,14 @@ namespace RedCompute.App.Api.Endpoints;
 public sealed record NodeListView(IReadOnlyList<NodeView> Nodes, string LegacyNodeId);
 
 /// <summary>A computer RedCompute runs work on, with what it has and what runs on it right now.</summary>
+/// <param name="Kind"><c>local</c> (node zero, this machine) or <c>remote</c> (a paired machine running leaf-node).</param>
+/// <param name="Status"><c>online</c>, <c>offline</c>, <c>revoked</c>, <c>needs-update</c> or <c>pending-confirmation</c> (online, not yet confirmed by its owner).</param>
+/// <param name="Owner">The user id of the person the node belongs to; null for node zero.</param>
+/// <param name="Confirmed">"This is my node" was confirmed; an unconfirmed node is never eligible for work. Always true for node zero.</param>
+/// <param name="StatusReason">Why the node is in its status (<c>heartbeat_timeout</c>, <c>revoked_by_owner</c>, <c>unpaired_by_node</c>, …).</param>
+/// <param name="Link">A remote node's live link while it is up; null otherwise.</param>
+/// <param name="Clis">The CLIs a remote node's fixed probe found (never their output or credentials); empty for node zero.</param>
+/// <param name="Placement">Whether placement may choose this node, and why not. Phase 2's Run-on reads only this.</param>
 public sealed record NodeView(
     string Id,
     string Name,
@@ -33,7 +42,14 @@ public sealed record NodeView(
     DateTimeOffset LastSeenAt,
     NodeIdentityView Identity,
     NodeHardwareView Hardware,
-    IReadOnlyList<NodeCapabilityView> Capabilities);
+    IReadOnlyList<NodeCapabilityView> Capabilities,
+    string? Owner,
+    bool Confirmed,
+    string? StatusReason,
+    DateTimeOffset? PairedAt,
+    NodeLinkView? Link,
+    IReadOnlyList<NodeCliView> Clis,
+    NodePlacementView Placement);
 
 public sealed record NodePlatformView(string Os, string OsDescription, string Architecture, string MachineName,
     string? ProcessorName);
@@ -50,6 +66,24 @@ public sealed record NodeRamView(ulong TotalBytes, ulong UsedBytes);
 
 public sealed record NodeGpuView(int Index, string Name, ulong MemoryTotalBytes, ulong MemoryUsedBytes);
 
+/// <summary>A remote node's link: when it came up, its last report, round trip and clock offset, what it speaks.</summary>
+public sealed record NodeLinkView(
+    DateTimeOffset ConnectedAt,
+    DateTimeOffset? LastHeartbeatAt,
+    double? RttMs,
+    double? ClockOffsetMs,
+    int Protocol,
+    IReadOnlyList<string> Features,
+    string? AgentVersion,
+    bool UpdateAvailable,
+    string? CredentialStore);
+
+/// <summary>One CLI on a remote node: installed, version, signed in and how (never a token or an auth file).</summary>
+public sealed record NodeCliView(string Name, bool Installed, string? Version, bool SignedIn, string? AuthMethod);
+
+/// <param name="Reason">Null when eligible; else <c>remote_execution_not_available</c>, <c>offline</c>, <c>revoked</c>, <c>not_confirmed</c> or <c>needs_update</c>.</param>
+public sealed record NodePlacementView(bool Eligible, string? Reason);
+
 public sealed record NodeCapabilityView(
     string Slug,
     string DisplayName,
@@ -64,30 +98,40 @@ public sealed record NodeCapabilityView(
 
 public sealed record NodeProviderView(string Name, string? Type, string Status, string? StatusDetail, bool IsDefault);
 
+/// <summary>What <c>POST /nodes/{id}/revoked</c> did.</summary>
+public sealed record NodeRevokedView(string NodeId, string Status, string? Reason);
+
 /// <summary>
-/// Read-only node API: <c>GET /nodes</c> and <c>GET /nodes/{id}</c>, with <c>local</c> accepted as the
-/// local node's id. In Phase 1 every capability and provider runs on node zero.
+/// The node API: <c>GET /nodes</c> and <c>GET /nodes/{id}</c> (<c>local</c> is node zero's alias), node zero
+/// and every paired remote node; the kernel's <c>POST /nodes/{id}/revoked</c> and <c>POST /nodes/changed</c>;
+/// the admin diagnostics <c>POST /nodes/{id}/diag/echo</c>. In Phase 3 every capability and provider runs on
+/// node zero, and no remote node is eligible for work.
 /// </summary>
 public static class NodeEndpoints
 {
-    public static void Map(EndpointRegistry endpoints, NodeRegistry nodes, CapabilityRegistry registry,
-        HardwareMonitorService hardwareMonitor)
-        => Map(endpoints, nodes, registry, hardwareMonitor.GetSnapshot);
+    /// <summary>The default and largest echo runs.</summary>
+    public const long DefaultEchoBytes = 1L << 20;
 
     public static void Map(EndpointRegistry endpoints, NodeRegistry nodes, CapabilityRegistry registry,
-        Func<HardwareSnapshot?> hardware)
+        HardwareMonitorService hardwareMonitor, NodeHub? hub = null, KernelNodeSync? sync = null)
+        => Map(endpoints, nodes, registry, hardwareMonitor.GetSnapshot, hub, sync);
+
+    public static void Map(EndpointRegistry endpoints, NodeRegistry nodes, CapabilityRegistry registry,
+        Func<HardwareSnapshot?> hardware, NodeHub? hub = null, KernelNodeSync? sync = null)
     {
         endpoints.MapGet("/nodes",
-            "The computers RedCompute runs work on, each with its platform, hardware summary, and the capabilities and providers on it with their current status. Phase 1: exactly one, this machine (isLocal). legacyNodeId is the node records older than node ids belong to.",
+            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform, hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is not in this release (reason remote_execution_not_available, offline, revoked, not_confirmed or needs_update). Capabilities and providers run on node zero only. legacyNodeId is the node records older than node ids belong to.",
             async Task<Ok<NodeListView>> () =>
             {
-                var view = await BuildAsync(nodes, nodes.Local, registry, hardware());
-                return TypedResults.Ok(new NodeListView([view], nodes.LegacyNodeId));
+                var views = new List<NodeView>();
+                foreach (var node in nodes.Nodes)
+                    views.Add(await BuildAsync(nodes, node, registry, node.Kind == NodeKind.Local ? hardware() : node.Report?.Hardware));
+                return TypedResults.Ok(new NodeListView(views, nodes.LegacyNodeId));
             })
             .WithResponse(SchemaOf<NodeListView>());
 
         endpoints.MapGet("/nodes/{id}",
-            "One computer by id; 'local' is accepted for this machine. 404 problem details for an unknown id.",
+            "One computer by id, the same shape as an item of GET /nodes; 'local' is accepted for this machine. 404 problem details for an unknown id.",
             async Task<Results<Ok<NodeView>, ProblemHttpResult>> (string id) =>
             {
                 var node = nodes.Find(id);
@@ -96,9 +140,76 @@ public static class NodeEndpoints
                         title: "Unknown node",
                         detail: $"No node has the id '{id}'. Known: {nodes.LocalNodeId} (alias '{INodeRegistry.LocalAlias}').",
                         statusCode: StatusCodes.Status404NotFound);
-                return TypedResults.Ok(await BuildAsync(nodes, node, registry, hardware()));
+                return TypedResults.Ok(await BuildAsync(nodes, node, registry, node.Kind == NodeKind.Local ? hardware() : node.Report?.Hardware));
             })
             .WithResponse(SchemaOf<NodeView>());
+
+        endpoints.MapPost("/nodes/{id}/revoked",
+            "The kernel revoked a remote node (service:redleaf only; 403 otherwise). RedCompute marks it revoked for good, closes its link at once (close code 4403) and refuses every later link. Body {reason?}. Node zero cannot be revoked (409 node_zero_not_revocable).",
+            async (string id, HttpContext context) =>
+            {
+                if (!SettingsEndpoints.IsRedLeafService(context.User))
+                    return Error(StatusCodes.Status403Forbidden, "service_only", "Only the kernel reports a revocation.");
+                if (!KernelNode.IsNodeId(id))
+                    return Error(StatusCodes.Status400BadRequest, "invalid_node_id", "id must be node_ followed by a 26-character ULID.");
+                if (id == nodes.LocalNodeId || id == nodes.LegacyNodeId)
+                    return Error(StatusCodes.Status409Conflict, "node_zero_not_revocable", "Node zero is the machine RedCompute runs on.");
+                var reason = await ReasonAsync(context) ?? "revoked_by_owner";
+                var node = hub is not null ? await hub.RevokeAsync(id, reason) : nodes.MarkRevoked(id, reason);
+                return Results.Json(new NodeRevokedView(node.Id, StatusText(node.Status), node.StatusReason));
+            })
+            .WithParam("reason", "string", location: ParamLocation.Body, description: "Why (revoked_by_owner, unpaired_by_node, …); default revoked_by_owner")
+            .WithResponse(SchemaOf<NodeRevokedView>());
+
+        endpoints.MapPost("/nodes/changed",
+            "The kernel says a node entity changed (paired, confirmed, renamed, removed): RedCompute re-reads GET /api/nodes now instead of at its next 5-minute sync. service:redleaf only. 202.",
+            (HttpContext context) =>
+            {
+                if (!SettingsEndpoints.IsRedLeafService(context.User))
+                    return Error(StatusCodes.Status403Forbidden, "service_only", "Only the kernel reports a node change.");
+                sync?.RequestSync();
+                return Results.Json(new { accepted = sync is not null }, statusCode: StatusCodes.Status202Accepted);
+            });
+
+        endpoints.MapPost("/nodes/{id}/diag/echo",
+            "Admin diagnostics, in person only: streams {bytes} (default 1 MiB, at most 1 GiB, rounded up to 8) through the remote node's diag.echo channel and checks every word comes back once and in order. Returns {bytes, framesSent, framesReceived, duplicates, outOfOrder, rttMs, durationMs, mebibytesPerSecond}. 403 for anyone else; 404 unknown node; 409 node_offline, node_revoked or node_zero (node zero has no link); 422 feature_not_supported; 504 echo_timeout.",
+            async (string id, HttpContext context) =>
+            {
+                if (!ComputeResourceAccess.IsPersonPresent(context)
+                    || !RedBamboo.AppHost.Auth.ExecutionIdentityClaims.ReadRoles(context.User).Contains("admin", StringComparer.OrdinalIgnoreCase))
+                    return Error(StatusCodes.Status403Forbidden, "admin_person_required", "Only an admin, in person, runs node diagnostics.");
+                var node = nodes.Find(id);
+                if (node is null) return Error(StatusCodes.Status404NotFound, "node_not_found", $"No node has the id '{id}'.");
+                if (node.Kind == NodeKind.Local) return Error(StatusCodes.Status409Conflict, "node_zero", "Node zero has no link to test.");
+                if (node.Status == NodeStatus.Revoked) return Error(StatusCodes.Status409Conflict, "node_revoked", "This node was revoked.");
+                if (hub is null) return Error(StatusCodes.Status503ServiceUnavailable, "node_hub_unavailable", "NodeHub is not running.");
+
+                var bytes = DefaultEchoBytes;
+                var body = await BodyAsync(context);
+                if (body?["bytes"] is JsonValue value)
+                    if (!value.TryGetValue<long>(out bytes) || bytes is <= 0 or > NodeHub.MaxEchoBytes)
+                        return Error(StatusCodes.Status400BadRequest, "invalid_bytes", $"bytes must be between 1 and {NodeHub.MaxEchoBytes}.");
+                // 30 s plus 1 s per MiB: the acceptance's 256 MiB over a tunnel fits.
+                var timeout = TimeSpan.FromSeconds(30 + bytes / (double)(1 << 20));
+                try
+                {
+                    return Results.Json(await hub.EchoAsync(node.Id, bytes, timeout, context.RequestAborted));
+                }
+                catch (NodeHubException error)
+                {
+                    var status = error.Code switch
+                    {
+                        "node_offline" => StatusCodes.Status409Conflict,
+                        "feature_not_supported" => StatusCodes.Status422UnprocessableEntity,
+                        "echo_timeout" => StatusCodes.Status504GatewayTimeout,
+                        "invalid_bytes" => StatusCodes.Status400BadRequest,
+                        _ => StatusCodes.Status502BadGateway,
+                    };
+                    return Error(status, error.Code, error.Message);
+                }
+            })
+            .WithParam("bytes", "integer", location: ParamLocation.Body, description: "How many bytes to echo (default 1048576, at most 1073741824)")
+            .WithResponse(SchemaOf<NodeEchoResult>());
     }
 
     /// <summary>
@@ -108,24 +219,70 @@ public static class NodeEndpoints
     private static JsonNode SchemaOf<T>() => JsonSchemaExporter.GetJsonSchemaAsNode(JsonSerializerOptions.Web, typeof(T),
         new JsonSchemaExporterOptions { TreatNullObliviousAsNonNullable = true });
 
+    private static IResult Error(int status, string code, string message)
+        => Results.Json(new { error = code, message }, statusCode: status);
+
+    private static async Task<JsonObject?> BodyAsync(HttpContext context)
+    {
+        if (context.Request.ContentLength is 0 || context.Request.Body is null) return null;
+        try
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var text = await reader.ReadToEndAsync(context.RequestAborted);
+            return text.Length is 0 or > 16 * 1024 ? null : JsonNode.Parse(text) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<string?> ReasonAsync(HttpContext context)
+        => (await BodyAsync(context))?["reason"] is JsonValue value && value.TryGetValue<string>(out var reason)
+           && !string.IsNullOrWhiteSpace(reason)
+            ? reason.Trim().Length <= 120 ? reason.Trim() : reason.Trim()[..120]
+            : null;
+
+    /// <summary>The status as the API spells it (the kernel's <c>needs-update</c>, not the enum name).</summary>
+    public static string StatusText(NodeStatus status) => status switch
+    {
+        NodeStatus.Online => "online",
+        NodeStatus.Offline => "offline",
+        NodeStatus.Revoked => "revoked",
+        NodeStatus.NeedsUpdate => "needs-update",
+        NodeStatus.PendingConfirmation => "pending-confirmation",
+        _ => status.ToString().ToLowerInvariant(),
+    };
+
     internal static async Task<NodeView> BuildAsync(NodeRegistry nodes, NodeDescriptor node,
         CapabilityRegistry registry, HardwareSnapshot? snapshot)
     {
         var isLocal = node.Id == nodes.LocalNodeId;
+        var placement = NodeRegistry.PlacementOf(node);
         return new NodeView(
             node.Id,
             node.Name,
             node.Kind.ToString().ToLowerInvariant(),
-            node.Status.ToString().ToLowerInvariant(),
+            StatusText(node.Status),
             isLocal,
             new NodePlatformView(node.Os, node.OsDescription, node.Architecture, node.MachineName, node.ProcessorName),
             node.AgentVersion,
             node.StartedAt,
             node.LastSeenAt,
-            new NodeIdentityView(nodes.Identity.Persisted, nodes.Identity.Problem),
+            isLocal ? new NodeIdentityView(nodes.Identity.Persisted, nodes.Identity.Problem) : new NodeIdentityView(true, null),
             Hardware(snapshot),
-            // Phase 1: every capability runs on node zero.
-            isLocal ? await CapabilitiesAsync(registry) : []);
+            // Phase 3: every capability runs on node zero.
+            isLocal ? await CapabilitiesAsync(registry) : [],
+            node.OwnerUserId,
+            node.Confirmed,
+            node.StatusReason,
+            node.PairedAt,
+            node.Link is { } link
+                ? new NodeLinkView(link.ConnectedAt, link.LastHeartbeatAt, link.RttMs, link.ClockOffsetMs, link.Protocol, link.Features,
+                    link.AgentVersion, link.UpdateAvailable, link.CredentialStore)
+                : null,
+            node.Report?.Clis.Select(cli => new NodeCliView(cli.Name, cli.Installed, cli.Version, cli.SignedIn, cli.AuthMethod)).ToList() ?? [],
+            new NodePlacementView(placement.Eligible, placement.Reason));
     }
 
     private static NodeHardwareView Hardware(HardwareSnapshot? snapshot) => snapshot is null
