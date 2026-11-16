@@ -41,6 +41,11 @@
     <ProjectReference Include="..\RedCompute.TestProbe\RedCompute.TestProbe.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The link harness's seeded fault proxy, shared with the NodeLink tests: NodeLinkEndToEndTests runs the
+         real agent against NodeHub through it. -->
+    <Compile Include="..\RedCompute.NodeLink.Tests\LinkFaultProxy.cs" Link="Shared\LinkFaultProxy.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <Content Include="..\..\rebuild.ps1" Link="rebuild.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
