@@ -671,6 +671,79 @@ public sealed class SunoProviderTests
         Assert.Equal(0, audit["credits"]!["consumed"]!.GetValue<int>());
     }
 
+    [Fact]
+    public async Task ConcurrentOperationsWaitPastFiveSecondsAndCancelledWaiterDoesNotSubmitOrReleasePermit()
+    {
+        var firstPolling = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var submissions = 0;
+        var creditReads = 0;
+        using var api = new HttpClient(new AsyncDelegateHandler(async (request, ct) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/generate/credit"))
+            {
+                var balance = Interlocked.Increment(ref creditReads) switch
+                {
+                    1 => 100, 2 => 88, 3 => 88, _ => 76,
+                };
+                return Json($"{{\"code\":200,\"data\":{balance}}}");
+            }
+            if (request.Method == HttpMethod.Post)
+            {
+                var number = Interlocked.Increment(ref submissions);
+                return Json($"{{\"code\":200,\"data\":{{\"taskId\":\"task-{number}\"}}}}");
+            }
+            if (Volatile.Read(ref submissions) == 1)
+            {
+                firstPolling.TrySetResult();
+                await releaseFirst.Task.WaitAsync(ct);
+            }
+            return Json("""
+                {"code":200,"data":{"status":"SUCCESS","response":{"sunoData":[
+                  {"id":"audio","audioUrl":"https://1.1.1.1/a.mp3","duration":30}
+                ]}}}
+                """);
+        }));
+        using var downloads = new HttpClient(new DelegateHandler(_ => Bytes("audio/mpeg", [1, 2, 3])));
+        await using var provider = new SunoProvider(Config([]), "music-gen", _ => { }, api, downloads,
+            new SunoProviderTiming(TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(30)));
+        JobRequest Request() => new()
+        {
+            CapabilitySlug = "music-gen",
+            Parameters = new() { ["prompt"] = "gears", ["style"] = "drumless", ["title"] = "Gears" },
+        };
+
+        var first = provider.ExecuteAsync(Request());
+        Task<JobResult?>? second = null;
+        try
+        {
+            await firstPolling.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            using var cancelled = new CancellationTokenSource();
+            var cancelledWaiter = provider.ExecuteAsync(Request(), cancelled.Token);
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelledWaiter);
+            second = provider.ExecuteAsync(Request());
+            await Task.Delay(TimeSpan.FromMilliseconds(5250));
+            Assert.False(second.IsCompleted);
+            Assert.Equal(1, Volatile.Read(ref submissions));
+            Assert.Equal(1, Volatile.Read(ref creditReads));
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+        }
+
+        var results = await Task.WhenAll(first, second!);
+        foreach (var result in results)
+        {
+            Assert.True(result!.Success, result.ErrorMessage);
+            Assert.Equal(12, JsonNode.Parse(result.ResultJson!)!["credits"]!["consumed"]!.GetValue<int>());
+            result.OutputStream!.Dispose();
+        }
+        Assert.Equal(2, submissions);
+        Assert.Equal(4, creditReads);
+    }
+
     private static ProviderConfig Config(Dictionary<string, object?> extra) => new()
     {
         Type = "Suno",
@@ -691,6 +764,12 @@ public sealed class SunoProviderTests
             Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType) },
         },
     };
+
+    private sealed class AsyncDelegateHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => handler(request, cancellationToken);
+    }
 
     private sealed class DelegateHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {

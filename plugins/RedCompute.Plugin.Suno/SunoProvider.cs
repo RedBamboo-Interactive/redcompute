@@ -221,8 +221,10 @@ public sealed class SunoProvider : IPluginProvider
         var validation = ValidateParameters(request.Parameters);
         if (validation.Count > 0)
             return Failure(string.Join("; ", validation.Select(pair => $"{pair.Key}: {pair.Value}")));
-        if (!await _semaphore.WaitAsync(TimeSpan.FromSeconds(5), ct))
-            return Failure("Another Suno operation is in progress. Try again shortly.");
+        // Serialize submission and balance measurements, but let admitted jobs wait
+        // for the current operation instead of failing after five seconds.
+        // Cancellation before acquisition must not release another job's permit.
+        await _semaphore.WaitAsync(ct);
 
         var operation = Operation(request.Parameters);
         var sourceOperation = operation == "recover" ? SourceOperation(request.Parameters) : operation;
