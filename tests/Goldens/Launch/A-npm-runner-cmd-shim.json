@@ -1,10 +1,5 @@
 {
-  "argumentList": [
-    "/d",
-    "/s",
-    "/c",
-    "\"<root>\\npm\\npm.cmd\" \"install\" \"-g\" \"@anthropic-ai/claude-code@latest\""
-  ],
+  "arguments": "/d /s /c \"\"<root>\\npm\\npm.cmd\" \"install\" \"-g\" \"@anthropic-ai/claude-code@latest\"\"",
   "containment": "none",
   "createNoWindow": true,
   "encoding": {

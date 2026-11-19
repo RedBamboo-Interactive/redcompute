@@ -119,7 +119,10 @@ public sealed class ProcessCliCommandRunner : ICliCommandRunner
         return new HostSpawnSpec
         {
             FileName = batch ? host.Platform.GetEnvironmentVariable("ComSpec") ?? "cmd.exe" : command.FileName,
-            ArgumentList = batch ? ["/d", "/s", "/c", FormatWindowsBatchCommand(command)] : [.. command.Arguments],
+            // cmd.exe parses its own command language, not the CRT argv escaping applied by
+            // ArgumentList. /s strips the outer quote pair, leaving the quoted shim and arguments.
+            RawArguments = batch ? $"/d /s /c \"{FormatWindowsBatchCommand(command)}\"" : null,
+            ArgumentList = batch ? null : [.. command.Arguments],
             UseShellExecute = false,
             CreateNoWindow = true,
             StandardOutput = StdioMode.Pipe,
