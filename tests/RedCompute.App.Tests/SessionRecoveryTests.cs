@@ -184,6 +184,47 @@ public sealed class SessionRecoveryTests
         Assert.Equal(variant == "external" ? 0 : 1, handler.Calls);
     }
 
+    // Replay of q_1d499357f4c748029cca53d41c6eca35 (2026-11-16): input the owner typed into Code's
+    // composer is stored with the Code app as actor. Its recovery identity is that same app actor.
+    [Theory]
+    [InlineData("valid", null)]
+    [InlineData("agent_minted_for_app_input", "recovery_identity_invalid")]
+    [InlineData("other_app_actor", "recovery_identity_invalid")]
+    [InlineData("wrong_entity", "recovery_identity_invalid")]
+    [InlineData("user_actor", "recovery_identity_invalid")]
+    public async Task Recovery_transport_accepts_the_app_actor_that_queued_owner_typed_input(string variant, string? error)
+    {
+        using var f = new Fixture("maintenance_restart");
+        var codeId = Guid.NewGuid().ToString();
+        var submission = f.Submission();
+        submission = submission with { Provenance = submission.Provenance with {
+            Origin = submission.Provenance.Origin with { App = new("app", "codered", codeId, "Code") },
+            Actor = new("app", "Code", codeId, "codered"),
+            Context = [new("browser"), new("execution", Guid.NewGuid().ToString())],
+            Cause = "beneficiary" } };
+        var item = (await f.Store.EnqueueAsync(submission)).Item;
+        var options = new JwtOptions { SigningKey = "recovery-transport-test-secret-1234567890123456789" };
+        var jwt = new JwtService(options);
+        ExecutionActorIdentity actor = variant switch
+        {
+            "agent_minted_for_app_input" => new("agent", "nova", "Nova", codeId),
+            "other_app_actor" => new("app", "nova", "Nova", codeId),
+            "wrong_entity" => new("app", "codered", "Code", Guid.NewGuid().ToString()),
+            "user_actor" => new("user", "owner", "Owner", codeId),
+            _ => new("app", "codered", "Code", codeId),
+        };
+        var identity = new ExecutionIdentity(1, Guid.NewGuid().ToString(), new("codered", "Code", codeId), actor,
+            new("user", "owner"),
+            [new("browser"), new("accepted-input-recovery", item.Id, Route: item.MessageUid), new("ai-session", "session")],
+            item.Provenance.Context.First(c => c.Kind == "execution").Id);
+        var token = new ExecutionTokenIssuer(jwt, options)
+            .Issue(identity, new ExecutionPrincipal("owner", "owner@test", "Owner", ["operator"])).AccessToken;
+        using var http = new HttpClient(new RecoveryHandler(token)) { BaseAddress = new Uri("http://127.0.0.1:1234/") };
+        var authority = await new RedLeafSessionReader(http, null!, jwt).RecoverAuthorityAsync(f.Runtime.Info, item, default);
+        Assert.Equal(error, authority.ErrorCode);
+        Assert.Equal(error is null, authority.AccessToken is not null);
+    }
+
     private sealed class RecoveryHandler(string token) : HttpMessageHandler
     {
         internal int Calls;

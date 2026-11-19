@@ -158,8 +158,13 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         var principal = token is null ? null : _recoveryJwt?.ValidateToken(token);
         if (principal is null || !ExecutionIdentityClaims.TryRead(principal, out var identity, out _)
             || identity is null || identity.Beneficiary.Kind != "user" || identity.Beneficiary.Id != item.OwnerUserId
-            || identity.Actor.Kind != "agent" || identity.Actor.EntityId != item.Provenance.Actor.EntityId
+            // Recovery runs as exactly who queued the input: the owning Agent, or the first-party app
+            // the owner typed into (Code's composer). Never a different actor or kind.
+            || identity.Actor.Kind is not ("agent" or "app") || identity.Actor.Kind != item.Provenance.Actor.Kind
+            || identity.Actor.EntityId != item.Provenance.Actor.EntityId
             || identity.App.Id != item.Provenance.Origin.App.Id
+            || identity.Actor.Kind == "app" && (identity.Actor.Id != identity.App.Id
+                || item.Provenance.Actor.Id != item.Provenance.Origin.App.Id)
             || !identity.Context.Any(c => c.Kind == "accepted-input-recovery" && c.Id == item.Id && c.Route == item.MessageUid)
             || !identity.Context.Any(c => c.Kind == "ai-session" && c.Id == session.Id))
             return new(null, "recovery_identity_invalid", false);
