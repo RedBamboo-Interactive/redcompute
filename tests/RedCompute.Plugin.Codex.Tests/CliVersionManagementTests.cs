@@ -549,6 +549,154 @@ public class CliVersionManagementTests
         Assert.Equal("npm ERR! version not found", failed.Error);
     }
 
+    [Fact]
+    public async Task Update_ClosesActiveAndIdleSessionsBeforeInstalling()
+    {
+        var state = new CliProviderSessionState(2, ["idle"], [41, 42, 43]);
+        var closed = false;
+        var runner = new FakeRunner(command =>
+        {
+            Assert.True(closed);
+            return command.Arguments[0] == "install"
+                ? new CliCommandResult(0, "installed", "")
+                : new CliCommandResult(0, "codex-cli 0.164.0", "");
+        });
+        var manager = CreateManager("@openai/codex", runner, () => state,
+            closeSessionsForInstall: _ =>
+            {
+                closed = true;
+                state = CliProviderSessionState.Empty;
+                return Task.CompletedTask;
+            });
+
+        var operation = manager.StartInstall("latest");
+        var completed = await WaitForTerminalAsync(manager, operation.Id);
+
+        Assert.True(closed);
+        Assert.Equal("completed", completed.Status);
+        Assert.Equal("0.164.0", completed.InstalledVersion);
+    }
+
+    [Fact]
+    public async Task Update_StatusRemainsReadableAndNewLaunchesWaitWhileSessionsClose()
+    {
+        var closing = NewSignal();
+        var release = NewSignal();
+        var state = new CliProviderSessionState(1, ["idle"], [41, 42]);
+        var manager = CreateManager("@openai/codex", SuccessfulInstallRunner("0.164.0"), () => state,
+            closeSessionsForInstall: async ct =>
+            {
+                closing.TrySetResult();
+                await release.Task.WaitAsync(ct);
+                state = CliProviderSessionState.Empty;
+            });
+        var ready = await manager.GetStatusAsync();
+        Assert.True(ready.InstallAllowed);
+        Assert.True(ready.ClosesActiveSessions);
+        Assert.Equal(1, ready.ActiveSessionCount);
+
+        var operation = manager.StartInstall("latest");
+        await closing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var status = await manager.GetStatusAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal("closing_sessions", status.Operation!.Status);
+        Assert.Equal("0.164.0", status.InstalledVersion);
+        Assert.False(status.InstallAllowed);
+        var duplicate = Assert.Throws<CliInstallRejectedException>(() => manager.StartInstall("latest"));
+        Assert.Equal("install_in_progress", duplicate.Code);
+        var launch = manager.RunWhenInstallIdleAsync(() => Task.FromResult(42));
+        Assert.False(launch.IsCompleted);
+
+        release.TrySetResult();
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+        Assert.Equal(42, await launch.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task Update_RefusesIfClosingLeavesAnActiveSession()
+    {
+        var runner = SuccessfulInstallRunner("0.164.0");
+        var manager = CreateManager("@openai/codex", runner,
+            () => new CliProviderSessionState(1, [], []),
+            closeSessionsForInstall: _ => Task.CompletedTask);
+
+        var operation = manager.StartInstall("latest");
+        var refused = await WaitForTerminalAsync(manager, operation.Id);
+
+        Assert.Equal("refused", refused.Status);
+        Assert.Equal("sessions_running", refused.ErrorCode);
+        Assert.Empty(runner.Commands);
+    }
+
+    [Fact]
+    public async Task Update_RefusesIfAProcessSurvivesSessionClosure()
+    {
+        var state = new CliProviderSessionState(1, [], [41]);
+        var runner = SuccessfulInstallRunner("0.164.0");
+        var manager = CreateManager("@openai/codex", runner, () => state,
+            processInspector: new FakeProcessInspector((_, owned) => owned.Count > 0
+                ? [] : [new CliProcessInfo(41, "C:\\fake-package\\codex.exe")]),
+            closeSessionsForInstall: _ =>
+            {
+                state = CliProviderSessionState.Empty;
+                return Task.CompletedTask;
+            });
+
+        var operation = manager.StartInstall("latest");
+        var refused = await WaitForTerminalAsync(manager, operation.Id);
+
+        Assert.Equal("external_processes", refused.ErrorCode);
+        Assert.Empty(runner.Commands);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Update_ClosingFailureOrTimeoutDoesNotInstallAndReleasesLaunches(bool timeout)
+    {
+        var runner = SuccessfulInstallRunner("0.164.0");
+        var manager = CreateManager("@openai/codex", runner,
+            () => new CliProviderSessionState(1, [], []),
+            closeSessionsForInstall: async ct =>
+            {
+                if (timeout) await Task.Delay(Timeout.Infinite, ct);
+                throw new InvalidOperationException("session could not close");
+            }, installTimeout: TimeSpan.FromMilliseconds(100));
+        var operation = manager.StartInstall("latest");
+        var terminal = await WaitForTerminalAsync(manager, operation.Id);
+
+        Assert.Equal("failed", terminal.Status);
+        Assert.Equal(timeout ? "install_timeout" : "session_close_failed", terminal.ErrorCode);
+        Assert.Empty(runner.Commands);
+        Assert.Equal(42, await manager.RunWhenInstallIdleAsync(() => Task.FromResult(42))
+            .WaitAsync(TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public async Task Update_StillRefusesUntrackedRunsBeforeClosingSessions()
+    {
+        var closed = false;
+        var manager = CreateManager("@openai/codex", SuccessfulInstallRunner("0.164.0"),
+            () => new CliProviderSessionState(1, [], []),
+            closeSessionsForInstall: _ => { closed = true; return Task.CompletedTask; });
+        var spawned = NewSignal();
+        var finish = NewSignal();
+        var run = manager.RunWhenInstallIdleAsync(async signal =>
+        {
+            signal();
+            spawned.TrySetResult();
+            await finish.Task;
+            return 1;
+        });
+        await spawned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var refused = Assert.Throws<CliInstallRejectedException>(() => manager.StartInstall("latest"));
+            Assert.Equal("cli_runs_active", refused.Code);
+            Assert.False(closed);
+        }
+        finally { finish.TrySetResult(); await run; }
+    }
+
     private static TaskCompletionSource NewSignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -572,7 +720,9 @@ public class CliVersionManagementTests
         ICliCommandRunner runner,
         Func<CliProviderSessionState>? sessionState = null,
         Func<IReadOnlyList<string>, CancellationToken, Task>? parkIdleSessions = null,
-        ICliProcessInspector? processInspector = null)
+        ICliProcessInspector? processInspector = null,
+        Func<CancellationToken, Task>? closeSessionsForInstall = null,
+        TimeSpan? installTimeout = null)
         => new(
             packageName,
             packageName.Contains("claude", StringComparison.OrdinalIgnoreCase) ? "Claude Code" : "Codex",
@@ -583,7 +733,8 @@ public class CliVersionManagementTests
             () => "npm.cmd",
             () => "C:\\fake-package",
             processInspector ?? new FakeProcessInspector((_, _) => []),
-            TimeSpan.FromSeconds(5));
+            installTimeout ?? TimeSpan.FromSeconds(5),
+            closeSessionsForInstall: closeSessionsForInstall);
 
     private static async Task<CliInstallOperation> WaitForTerminalAsync(
         NpmCliVersionManager manager, Guid operationId)
@@ -593,7 +744,7 @@ public class CliVersionManagementTests
         {
             timeout.Token.ThrowIfCancellationRequested();
             var operation = Assert.IsType<CliInstallOperation>(manager.GetOperation(operationId));
-            if (operation.Status is not ("queued" or "running")) return operation;
+            if (operation.Status is not ("queued" or "closing_sessions" or "running")) return operation;
             await Task.Delay(10, timeout.Token);
         }
     }

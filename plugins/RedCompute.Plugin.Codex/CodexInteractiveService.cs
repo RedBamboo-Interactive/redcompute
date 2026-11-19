@@ -551,7 +551,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         return true;
     }
 
-    private async Task StopSessionAsync(string sessionId, string stopReason)
+    private async Task StopSessionAsync(string sessionId, string stopReason, bool onlyLive = false)
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
@@ -569,6 +569,9 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             SessionEnded?.Invoke(sessionId, "stopped");
             return;
         }
+
+        // A concurrent explicit stop must never be rewritten into a resumable update stop.
+        if (onlyLive) return;
 
         var stored = _store.FindSession(sessionId);
         if (stored == null) return;
@@ -597,6 +600,15 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
         _store.SaveSession(stored);
         SessionEnded?.Invoke(sessionId, "stopped");
+    }
+
+    internal async Task CloseSessionsForCliUpdateAsync(CancellationToken ct)
+    {
+        // The updater has reserved the launch gate. Stop live processes only; preserve history,
+        // provider threads and jobs, and leave previously stopped sessions unchanged.
+        var sessionIds = _sessions.Keys.ToArray();
+        await Task.WhenAll(sessionIds.Select(sessionId =>
+            StopSessionAsync(sessionId, SessionStopReasons.MaintenanceRestart, onlyLive: true).WaitAsync(ct)));
     }
 
     public Task ForceKillAsync(string sessionId) => StopSessionAsync(sessionId);
@@ -714,6 +726,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         catch (Exception ex)
         {
             _log($"[Codex] turn/start failed for {sessionId}: {ex.Message}", null);
+            // Closing the connection can reject a pending acknowledgement after maintenance removed
+            // this session. Never write it back as Idle or emit a second terminal error.
+            if (!_sessions.TryGetValue(sessionId, out var current) || !ReferenceEquals(current, session))
+                return false;
             // turn/started is authoritative: the turn is running and only its acknowledgement failed.
             if (info.Status == "Active" && session.ActiveTurnId != null) return true;
             Emit(session, new CodexStreamEvent { Type = "error", Content = ex.Message });

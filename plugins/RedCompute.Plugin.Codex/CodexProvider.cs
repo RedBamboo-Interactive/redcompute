@@ -98,6 +98,9 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _codex = new CodexSessionService(codexConfig, jobTracker, _store, log, host);
         _models = new CodexModelCatalog(codexConfig, log, host);
         _accountUsage = new CodexAccountUsageService(codexConfig, log, host);
+        _interactive = new CodexInteractiveService(
+            codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
+            () => GetTitleQualityTier(config), log, host);
         _cliVersionManager = new NpmCliVersionManager(
             "@openai/codex",
             "Codex",
@@ -105,10 +108,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
             () => _codex.ResolveCodexPath(),
             GetCliSessionState,
             ParkIdleCliSessionsAsync,
-            host: host);
-        _interactive = new CodexInteractiveService(
-            codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
-            () => GetTitleQualityTier(config), log, host);
+            host: host,
+            closeSessionsForInstall: ct => _interactive.CloseSessionsForCliUpdateAsync(ct));
         _codex.LaunchGate = _cliVersionManager;
         _interactive.LaunchGate = _cliVersionManager;
         _models.LaunchGate = _cliVersionManager;

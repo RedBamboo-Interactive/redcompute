@@ -215,7 +215,8 @@ public sealed record CliVersionStatus(
     bool InstallAllowed,
     string? BlockedReason,
     CliInstallOperation? Operation,
-    int ActiveRunCount = 0);
+    int ActiveRunCount = 0,
+    bool ClosesActiveSessions = false);
 
 public sealed record CliVersionCatalog(
     IReadOnlyList<string> Versions,
@@ -246,9 +247,9 @@ public sealed class CliInstallRejectedException : Exception
 }
 
 /// <summary>
-/// Shared npm-backed version manager. Starting or Active sessions, runs admitted through the launch
-/// gate, and non-Leaf package processes block installs. Idle provider sessions are parked through
-/// the provider's existing resumable maintenance-stop path immediately before npm is launched.
+/// Shared npm-backed version manager. Providers may close sessions resumably before installing;
+/// providers without that callback still refuse active sessions and park idle sessions. Non-session
+/// runs and non-Leaf package processes always block installs.
 /// </summary>
 public sealed class NpmCliVersionManager : ICliProcessLaunchGate
 {
@@ -268,6 +269,8 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
     private readonly ICliCommandRunner _runner;
     private readonly ICliProcessInspector _processInspector;
     private readonly TimeSpan _installTimeout;
+    private readonly Func<CancellationToken, Task>? _closeSessionsForInstall;
+    private CliInstalledVersionResult? _lastInstalledVersion;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _launchGate = new(1, 1);
     // Runs past their spawn. They are not sessions, and the process inspector can miss them (an
@@ -291,7 +294,8 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
         Func<string?>? resolvePackageDirectory = null,
         ICliProcessInspector? processInspector = null,
         TimeSpan? installTimeout = null,
-        IExecutionHost? host = null)
+        IExecutionHost? host = null,
+        Func<CancellationToken, Task>? closeSessionsForInstall = null)
     {
         // The CLI, npm and the package all live on the provider's host.
         host ??= LocalExecutionHost.Shared;
@@ -306,18 +310,22 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             ?? (() => ResolveGlobalNpmPackageDirectory(host, packageName));
         _processInspector = processInspector ?? new SystemCliProcessInspector(host);
         _installTimeout = installTimeout ?? TimeSpan.FromMinutes(10);
+        _closeSessionsForInstall = closeSessionsForInstall;
     }
 
     public async Task<CliVersionStatus> GetStatusAsync(CancellationToken ct = default)
     {
-        var installed = await GetInstalledVersionAsync(ct);
+        // Status must remain readable while closing the very session that requested the update.
+        var installed = PendingInstall() is not null
+            ? _lastInstalledVersion ?? new CliInstalledVersionResult(null, null)
+            : await GetInstalledVersionAsync(ct);
         var sessions = GetSessionState();
         var activeCount = sessions.BlockingSessionCount;
         var activeRuns = ActiveRunCount();
         var externalProcesses = FindExternalProcesses(sessions);
         var operation = CurrentOperation();
-        var installing = operation?.Status is "queued" or "running";
-        var blockedReason = activeCount > 0 ? FormatSessionCount(activeCount)
+        var installing = operation?.Status is "queued" or "closing_sessions" or "running";
+        var blockedReason = activeCount > 0 && _closeSessionsForInstall is null ? FormatSessionCount(activeCount)
             : activeRuns > 0 ? FormatRunCount(activeRuns)
             : externalProcesses.Count > 0 ? FormatExternalProcessCount(externalProcesses.Count)
             : installing ? "Install already in progress"
@@ -332,11 +340,12 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             blockedReason is null,
             blockedReason,
             operation,
-            activeRuns);
+            activeRuns,
+            _closeSessionsForInstall is not null);
     }
 
-    public Task<CliInstalledVersionResult> GetInstalledVersionAsync(CancellationToken ct = default)
-        => RunWhenInstallIdleAsync(() => GetInstalledVersionCoreAsync(ct), ct);
+    public async Task<CliInstalledVersionResult> GetInstalledVersionAsync(CancellationToken ct = default)
+        => _lastInstalledVersion = await RunWhenInstallIdleAsync(() => GetInstalledVersionCoreAsync(ct), ct);
 
     private async Task<CliInstalledVersionResult> GetInstalledVersionCoreAsync(CancellationToken ct)
     {
@@ -399,12 +408,12 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
         lock (_gate)
         {
             var current = CurrentOperationUnsafe();
-            if (current?.Status is "queued" or "running")
+            if (current?.Status is "queued" or "closing_sessions" or "running")
                 throw new CliInstallRejectedException("install_in_progress", "Install already in progress");
 
             var sessions = GetSessionState();
             var activeCount = sessions.BlockingSessionCount;
-            if (activeCount > 0)
+            if (activeCount > 0 && _closeSessionsForInstall is null)
                 throw new CliInstallRejectedException("sessions_running", FormatSessionCount(activeCount), activeCount);
             if (_activeRuns > 0)
                 throw new CliInstallRejectedException("cli_runs_active", FormatRunCount(_activeRuns));
@@ -517,7 +526,7 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
     private Task? PendingInstall()
     {
         lock (_gate)
-            return CurrentOperationUnsafe()?.Status is "queued" or "running"
+            return CurrentOperationUnsafe()?.Status is "queued" or "closing_sessions" or "running"
                 ? _installFinished?.Task
                 : null;
     }
@@ -567,7 +576,7 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
             launchGateAcquired = true;
             var sessions = GetSessionState();
             var activeCount = sessions.BlockingSessionCount;
-            if (activeCount > 0)
+            if (activeCount > 0 && _closeSessionsForInstall is null)
             {
                 Complete(operationId, "refused", "sessions_running", FormatSessionCount(activeCount));
                 return;
@@ -582,7 +591,12 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
                 return;
             }
 
-            if (sessions.IdleSessionIds.Count > 0)
+            if (_closeSessionsForInstall is not null)
+            {
+                Update(operationId, operation => operation with { Status = "closing_sessions" });
+                await _closeSessionsForInstall(ct).WaitAsync(ct);
+            }
+            else if (sessions.IdleSessionIds.Count > 0)
                 await _parkIdleSessions(sessions.IdleSessionIds, ct);
 
             sessions = GetSessionState();
@@ -617,7 +631,7 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
                     ? $"npm install exited with code {result.ExitCode}"
                     : result.CombinedOutput);
 
-            var installed = await GetInstalledVersionCoreAsync(ct);
+            var installed = _lastInstalledVersion = await GetInstalledVersionCoreAsync(ct);
             Update(operationId, current => current with
             {
                 Status = "completed",
@@ -633,7 +647,9 @@ public sealed class NpmCliVersionManager : ICliProcessLaunchGate
         }
         catch (Exception ex)
         {
-            Complete(operationId, "failed", "npm_install_failed", ex.Message);
+            Complete(operationId, "failed",
+                GetOperation(operationId)?.Status == "closing_sessions" ? "session_close_failed" : "npm_install_failed",
+                ex.Message);
         }
         finally
         {

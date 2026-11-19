@@ -127,6 +127,97 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         Assert.Equal(1, Volatile.Read(ref spawnCount));
     }
 
+    [WindowsFact("uses a local stand-in app-server, no inference")]
+    public Task Cli_update_closes_active_and_idle_processes_and_preserves_resume_and_history()
+        => RunCliUpdateLifecycleAsync(false);
+
+    [WindowsFact("uses a local stand-in app-server, no inference")]
+    public Task Cli_update_during_turn_admission_does_not_resurrect_the_closed_session()
+        => RunCliUpdateLifecycleAsync(true);
+
+    private async Task RunCliUpdateLifecycleAsync(bool pendingTurnStart)
+    {
+        Directory.CreateDirectory(_root);
+        var codexPath = Path.Combine(_root, "codex.exe");
+        File.WriteAllText(codexPath, "test seam only");
+        var job = new JobRecord
+        {
+            Id = Guid.NewGuid(), CapabilitySlug = "ai-session", ProviderName = "Codex",
+            CreationProvenance = Provenance(),
+        };
+        var store = new TestStore(new CodexSessionRecord
+        {
+            Id = "explicit-stop", ProjectName = "Stopped", ProjectPath = _root,
+            Status = "Stopped", StopReason = SessionStopReasons.UserStopped,
+            ThreadId = "stopped-thread", StartedAt = DateTimeOffset.UtcNow,
+        }, retainSaved: true);
+        var config = new CodexConfig { CodexPath = codexPath };
+        var jobs = new TestJobTracker(job);
+        await using var interactive = new CodexInteractiveService(
+            config, store, new CodexModelCatalog(config, (_, _) => { }),
+            new CodexSessionService(config, jobs, store, (_, _) => { }), jobs,
+            new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
+            () => null, (_, _) => { });
+        var spawnCount = 0;
+        interactive.LaunchAppServerProcess = HostSeams.From(_ =>
+        {
+            Interlocked.Increment(ref spawnCount);
+            return StartSteeringFakeAppServer(pendingTurnStart ? "hold-start" : "item");
+        });
+        var active = Assert.IsType<CodexSessionInfo>(await interactive.StartSessionAsync(
+            _root, null, "owner", null, null, null, null, null, null, Provenance()));
+        var idle = Assert.IsType<CodexSessionInfo>(await interactive.StartSessionAsync(
+            _root, null, "owner", null, null, null, null, null, null, Provenance()));
+        var send = interactive.SendInputAsync(active.Id,
+            [SessionInputPart.TextPart("original input")], messageUid: "original-uid");
+        await WaitUntilAsync(() => active.Status == "Active");
+        if (!pendingTurnStart) Assert.True(await send);
+        Assert.Equal("Active", active.Status);
+        Assert.Equal("Idle", idle.Status);
+        using var activeProcess = Process.GetProcessById(active.ProcessId!.Value);
+        using var idleProcess = Process.GetProcessById(idle.ProcessId!.Value);
+        var originalThread = active.ThreadId;
+        var installStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseInstall = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var manager = new NpmCliVersionManager(
+            "@openai/codex", "Codex", () => codexPath,
+            () => new CliProviderSessionState(
+                interactive.GetSessions(100).Count(s => s.Status is "Starting" or "Active"),
+                interactive.GetResidentIdleSessions().Select(s => s.Id).ToArray(), []),
+            (_, _) => Task.CompletedTask,
+            new BlockingInstallRunner(installStarted, releaseInstall), () => "npm.cmd", () => _root,
+            new EmptyProcessInspector(), TimeSpan.FromSeconds(10),
+            closeSessionsForInstall: interactive.CloseSessionsForCliUpdateAsync);
+        interactive.LaunchGate = manager;
+
+        var operation = manager.StartInstall("latest");
+        await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(activeProcess.WaitForExit(5000));
+        Assert.True(idleProcess.WaitForExit(5000));
+        await send.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("Stopped", active.Status);
+        Assert.Equal("Stopped", idle.Status);
+        Assert.Equal(SessionStopReasons.MaintenanceRestart, active.StopReason);
+        Assert.Equal(SessionStopReasons.MaintenanceRestart, idle.StopReason);
+        Assert.Equal(SessionStopReasons.UserStopped, store.FindSession("explicit-stop")!.StopReason);
+        Assert.Equal(originalThread, active.ThreadId);
+        Assert.Equal(0, jobs.CompletedCount);
+        Assert.Single(store.Messages, m => m.MessageUid == "original-uid");
+        var resume = interactive.ResumeSessionAsync(active.Id, Provenance());
+        Assert.False(resume.IsCompleted);
+        Assert.Equal(2, spawnCount);
+
+        releaseInstall.TrySetResult();
+        Assert.Equal("completed", (await WaitForTerminalAsync(manager, operation.Id)).Status);
+        var resumed = Assert.IsType<CodexSessionInfo>(await resume.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(active.Id, resumed.Id);
+        Assert.Equal(originalThread, resumed.ThreadId);
+        Assert.Equal(job.Id, resumed.JobId);
+        Assert.Equal("Idle", resumed.Status);
+        Assert.Single(store.Messages, m => m.MessageUid == "original-uid");
+        Assert.Equal(3, spawnCount);
+    }
+
     private const string ExecOutput =
         "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n" +
         "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n" +
@@ -688,6 +779,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             while ($null -ne ($line = [Console]::In.ReadLine())) {
               try { $request = $line | ConvertFrom-Json } catch { continue }
               if ($null -eq $request.id) { continue }
+              if ($request.method -eq 'turn/start' -and $behavior -eq 'hold-start') { continue }
               if ($request.method -eq 'thread/start') {
                 $result = @{ thread = @{ id = 'thread-1' } }
               } elseif ($request.method -eq 'turn/start') {
@@ -754,7 +846,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         while (true)
         {
             var operation = Assert.IsType<CliInstallOperation>(manager.GetOperation(operationId));
-            if (operation.Status is not ("queued" or "running")) return operation;
+            if (operation.Status is not ("queued" or "closing_sessions" or "running")) return operation;
             await Task.Delay(10, timeout.Token);
         }
     }
@@ -811,13 +903,14 @@ public sealed class CodexCliLaunchGateTests : IDisposable
 
     private sealed class TestJobTracker(JobRecord job) : IJobTracker
     {
+        public int CompletedCount;
         public JobRecord CreateJob(JobSubmission submission) => job;
         public void MarkRunning(Guid jobId) { }
         public void StartInvocation(Guid jobId, JobProvenance provenance,
             JobEventKind kind = JobEventKind.Started) { }
         public void MarkCompleted(Guid jobId, string? outputLocation = null,
             long? outputSizeBytes = null, string? contentType = null,
-            string? resultJson = null, double? costUsd = null) { }
+            string? resultJson = null, double? costUsd = null) { CompletedCount++; }
         public void MarkFailed(Guid jobId, string errorMessage, string? errorDetails = null,
             string? resultJson = null) { }
         public void MarkCancelled(Guid jobId) { }
@@ -825,11 +918,12 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         public JobRecord? GetJob(Guid jobId) => job.Id == jobId ? job : null;
     }
 
-    private sealed class TestStore(CodexSessionRecord session) : ICodexSessionStore
+    private sealed class TestStore(CodexSessionRecord session, bool retainSaved = false) : ICodexSessionStore
     {
+        private readonly Dictionary<string, CodexSessionRecord> _saved = [];
         public List<CodexMessageRecord> Messages { get; } = [];
         public CodexSessionRecord? FindSession(string sessionId) =>
-            session.Id == sessionId ? session : null;
+            retainSaved && _saved.TryGetValue(sessionId, out var saved) ? saved : session.Id == sessionId ? session : null;
         public CodexSessionRecord? FindSessionByJobId(Guid jobId) =>
             session.JobId == jobId ? session : null;
         public List<CodexSessionRecord> GetActiveSessions() => [];
@@ -838,7 +932,7 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         public List<CodexSessionRecord> GetRecentSessions(HashSet<string> excludeIds,
             int limit = 20, bool includeDismissed = false) =>
             excludeIds.Contains(session.Id) ? [] : [session];
-        public void SaveSession(CodexSessionRecord record) { }
+        public void SaveSession(CodexSessionRecord record) { if (retainSaved) _saved[record.Id] = record; }
         public void DismissSession(string sessionId) { }
         public void AddMessage(CodexMessageRecord message) => Messages.Add(message);
         public void AddMessages(List<CodexMessageRecord> messages) => Messages.AddRange(messages);

@@ -50,7 +50,7 @@ public static class CliVersionEndpoints
             });
 
         endpoints.MapPost("/ai-session/providers/{providerId}/cli/install",
-            "Start an asynchronous npm install for latest or a specific published CLI version. Refuses while provider sessions are Starting or Active, or while one-shot or agent runs are in progress.",
+            "Start an asynchronous npm install for latest or a specific published CLI version. Codex sessions are closed resumably before installation. Refuses while one-shot or agent runs are in progress, or external CLI processes remain.",
             async (HttpContext ctx, string providerId) =>
             {
                 var provider = FindProvider(registry, providerId);
