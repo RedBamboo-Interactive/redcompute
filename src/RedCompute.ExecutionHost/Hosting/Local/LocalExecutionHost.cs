@@ -375,7 +375,7 @@ public sealed class LocalExecutionHost : IExecutionHost
             RuntimeInformation.OSDescription.Trim(),
             RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(),
             Environment.MachineName,
-            Environment.UserName));
+            Environment.UserName) { Chassis = LocalChassis.Current });
 
         public HostPlatformInfo Info => _info.Value;
         public bool IsWindows => OperatingSystem.IsWindows();

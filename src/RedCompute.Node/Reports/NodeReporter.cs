@@ -50,6 +50,7 @@ public sealed class NodeReporter : IDisposable
                 ["os"] = info.Os,
                 ["osDescription"] = info.OsDescription,
                 ["arch"] = info.Architecture,
+                ["chassis"] = info.Chassis,
             },
             ["machineName"] = info.MachineName,
             ["processor"] = _processor ??= _host.Hardware.ProcessorName(),

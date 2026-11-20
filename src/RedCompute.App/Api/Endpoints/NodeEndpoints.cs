@@ -32,6 +32,8 @@ public sealed record NodeListView(IReadOnlyList<NodeView> Nodes, string LegacyNo
 /// <param name="Link">A remote node's live link while it is up; null otherwise.</param>
 /// <param name="Clis">The CLIs a remote node's fixed probe found (never their output or credentials); empty for node zero.</param>
 /// <param name="Placement">Whether placement may choose this node, and why not. Phase 2's Run-on reads only this.</param>
+/// <param name="Icon">The node's icon, a curated Phosphor name, from its kernel entity; null from an older kernel (show the platform's).</param>
+/// <param name="Color">The node's colour, a palette token, from its kernel entity; null from an older kernel (show it neutral).</param>
 public sealed record NodeView(
     string Id,
     string Name,
@@ -51,10 +53,13 @@ public sealed record NodeView(
     DateTimeOffset? PairedAt,
     NodeLinkView? Link,
     IReadOnlyList<NodeCliView> Clis,
-    NodePlacementView Placement);
+    NodePlacementView Placement,
+    string? Icon = null,
+    string? Color = null);
 
+/// <param name="Chassis">What kind of machine its firmware says it is (desktop, all-in-one, laptop, tablet, mini, server), when it says.</param>
 public sealed record NodePlatformView(string Os, string OsDescription, string Architecture, string MachineName,
-    string? ProcessorName);
+    string? ProcessorName, string? Chassis = null);
 
 /// <summary>Persisted is false when node.json could not be read or written; Problem then says why.</summary>
 public sealed record NodeIdentityView(bool Persisted, string? Problem);
@@ -123,7 +128,7 @@ public static class NodeEndpoints
         Func<HardwareSnapshot?> hardware, NodeHub? hub = null, KernelNodeSync? sync = null)
     {
         endpoints.MapGet("/nodes",
-            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform, hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is not in this release (reason remote_execution_not_available, offline, revoked, not_confirmed or needs_update). Capabilities and providers run on node zero only. legacyNodeId is the node records older than node ids belong to. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
+            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform (with chassis when the firmware says), its icon and color from the kernel's node entity (null from an older kernel), hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is not in this release (reason remote_execution_not_available, offline, revoked, not_confirmed or needs_update). Capabilities and providers run on node zero only. legacyNodeId is the node records older than node ids belong to. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
             async Task<Ok<NodeListView>> (HttpContext context) =>
             {
                 var views = new List<NodeView>();
@@ -298,7 +303,7 @@ public static class NodeEndpoints
             node.Kind.ToString().ToLowerInvariant(),
             StatusText(node.Status),
             isLocal,
-            new NodePlatformView(node.Os, node.OsDescription, node.Architecture, node.MachineName, node.ProcessorName),
+            new NodePlatformView(node.Os, node.OsDescription, node.Architecture, node.MachineName, node.ProcessorName, node.Chassis),
             node.AgentVersion,
             node.StartedAt,
             node.LastSeenAt,
@@ -315,7 +320,9 @@ public static class NodeEndpoints
                     link.AgentVersion, link.UpdateAvailable, link.CredentialStore)
                 : null,
             node.Report?.Clis.Select(cli => new NodeCliView(cli.Name, cli.Installed, cli.Version, cli.SignedIn, cli.AuthMethod)).ToList() ?? [],
-            new NodePlacementView(placement.Eligible, placement.Reason));
+            new NodePlacementView(placement.Eligible, placement.Reason),
+            node.Icon,
+            node.Color);
     }
 
     private static NodeHardwareView Hardware(HardwareSnapshot? snapshot) => snapshot is null

@@ -10,7 +10,7 @@ namespace RedCompute.App.Services.Nodes;
 
 /// <summary>The machine facts a node reports, read once at boot.</summary>
 public sealed record NodePlatform(string Os, string OsDescription, string Architecture, string MachineName,
-    string? ProcessorName)
+    string? ProcessorName, string? Chassis = null)
 {
     /// <summary>This machine's facts, read through the shared local host.</summary>
     public static NodePlatform Detect() => Detect(LocalExecutionHost.Shared);
@@ -20,7 +20,7 @@ public sealed record NodePlatform(string Os, string OsDescription, string Archit
     {
         var platform = host.Platform.Info;
         return new(platform.Os, platform.OsDescription, platform.Architecture, platform.MachineName,
-            host.Hardware.ProcessorName());
+            host.Hardware.ProcessorName(), platform.Chassis);
     }
 }
 
@@ -57,6 +57,9 @@ public sealed class NodeRegistry : INodeRegistry
     private readonly Action<string> _log;
     private readonly object _gate = new();
     private readonly Dictionary<string, RemoteNode> _remote = new(StringComparer.Ordinal);
+    // Node zero's look, from its kernel entity (node.json has none): null until the kernel lists it.
+    private string? _localIcon;
+    private string? _localColor;
 
     public NodeRegistry(NodeIdentityResult identity, NodePlatform platform, string version,
         DateTimeOffset startedAt, Func<DateTimeOffset>? clock = null, IExecutionHost? localHost = null,
@@ -121,7 +124,12 @@ public sealed class NodeRegistry : INodeRegistry
         _platform.ProcessorName,
         _version,
         _startedAt,
-        _clock());
+        _clock())
+    {
+        Chassis = _platform.Chassis,
+        Icon = _localIcon,
+        Color = _localColor,
+    };
 
     /// <summary>Node zero first, then the remote nodes by name.</summary>
     public IReadOnlyList<NodeDescriptor> Nodes
@@ -191,7 +199,7 @@ public sealed class NodeRegistry : INodeRegistry
     /// but it is not revoked: no <see cref="StatusChanged"/>, so its link stays up. One bad answer (an empty
     /// list, an access-filter change) must not unpair every node; only the kernel's explicit revoked status
     /// or <c>POST /nodes/{id}/revoked</c> revokes. Node zero's entity (<c>kind: local</c>) is ignored:
-    /// <c>node.json</c> is its truth.
+    /// <c>node.json</c> is its truth, except for its icon and colour, which only the kernel keeps.
     /// </summary>
     public void ApplyKernelNodes(IReadOnlyList<KernelNode> nodes)
     {
@@ -202,7 +210,17 @@ public sealed class NodeRegistry : INodeRegistry
             var listed = new HashSet<string>(StringComparer.Ordinal);
             foreach (var kernel in nodes)
             {
-                if (kernel.Kind != KernelNode.RemoteKind || kernel.Id == LocalNodeId) continue;
+                if (kernel.Id == LocalNodeId)
+                {
+                    if (kernel.Kind == KernelNode.LocalKind && (kernel.Icon != _localIcon || kernel.Color != _localColor))
+                    {
+                        _localIcon = kernel.Icon;
+                        _localColor = kernel.Color;
+                        updated.Add(LocalNodeId);
+                    }
+                    continue;
+                }
+                if (kernel.Kind != KernelNode.RemoteKind) continue;
                 listed.Add(kernel.Id);
                 var isNew = !_remote.TryGetValue(kernel.Id, out var node);
                 node ??= _remote[kernel.Id] = new RemoteNode(kernel.Id);
@@ -216,6 +234,9 @@ public sealed class NodeRegistry : INodeRegistry
                 node.KernelStatus = kernel.Status;
                 node.KernelStatusReason = kernel.StatusReason;
                 node.KernelLastSeen = kernel.LastSeen;
+                // The kernel owns the look: an older kernel has none, and the dashboard falls back.
+                node.Icon = kernel.Icon;
+                node.Color = kernel.Color;
                 // The node's own describe is fresher than the kernel's copy while the link is up.
                 if (node.Link is null)
                 {
@@ -224,6 +245,7 @@ public sealed class NodeRegistry : INodeRegistry
                     node.OsDescription = kernel.OsDescription ?? node.OsDescription;
                     node.MachineName = kernel.MachineName ?? node.MachineName;
                     node.AgentVersion = kernel.AgentVersion ?? node.AgentVersion;
+                    node.Chassis = kernel.Chassis ?? node.Chassis;
                 }
                 if (kernel.Status == KernelNode.RevokedStatus && !node.Revoked)
                 {
@@ -311,6 +333,7 @@ public sealed class NodeRegistry : INodeRegistry
             node.MachineName = describe.MachineName ?? node.MachineName;
             node.Processor = describe.Processor ?? node.Processor;
             node.AgentVersion = describe.AgentVersion ?? node.AgentVersion;
+            node.Chassis = describe.Chassis ?? node.Chassis;
             if (node.Link is { } link)
                 node.Link = link with
                 {
@@ -426,6 +449,9 @@ public sealed class NodeRegistry : INodeRegistry
             StatusReason = reason,
             Link = node.Link,
             Report = node.Report,
+            Chassis = node.Chassis,
+            Icon = node.Icon,
+            Color = node.Color,
         };
     }
 
@@ -543,16 +569,20 @@ public sealed class NodeRegistry : INodeRegistry
         public string? LinkDownReason { get; set; }
         public DateTimeOffset? LastLinkSeen { get; set; }
         public NodeReport? Report { get; set; }
+        public string? Chassis { get; set; }
+        public string? Icon { get; set; }
+        public string? Color { get; set; }
         public bool CacheDue { get; set; }
         public DateTimeOffset? CachedHardwareAt { get; set; }
 
         /// <summary>The fields whose change is a <c>node.updated</c> (identity and platform; not liveness).</summary>
         public string IdentityKey()
             => string.Join('\u001f', Name, OwnerUserId, Confirmed, PairedAt, Os, Arch, OsDescription, MachineName, Processor,
-                AgentVersion, Link?.CredentialStore, Link?.Protocol, Link?.UpdateAvailable);
+                AgentVersion, Link?.CredentialStore, Link?.Protocol, Link?.UpdateAvailable, Chassis, Icon, Color);
 
         public CachedRemoteNode ToCache(DateTimeOffset? lastSeen) => new(Id, Name, OwnerUserId, Confirmed, PairedAt, Os, Arch,
-            OsDescription, MachineName, Processor, AgentVersion, Revoked, RevokedReason, KernelStatus, lastSeen, Report);
+            OsDescription, MachineName, Processor, AgentVersion, Revoked, RevokedReason, KernelStatus, lastSeen, Report,
+            Chassis, Icon, Color);
 
         /// <summary>A cached record, with what an older or hand-edited file may lack filled in.</summary>
         public static RemoteNode FromCache(CachedRemoteNode cached) => new(cached.Id)
@@ -573,15 +603,19 @@ public sealed class NodeRegistry : INodeRegistry
             KernelLastSeen = cached.LastSeenAt,
             Report = cached.Report is { } report ? report with { Clis = report.Clis?.Where(cli => cli?.Name is not null).ToList() ?? [] } : null,
             CachedHardwareAt = cached.Report?.ReportedAt,
+            Chassis = KernelNode.Token(cached.Chassis),
+            Icon = KernelNode.Token(cached.Icon),
+            Color = KernelNode.Token(cached.Color),
         };
     }
 
     /// <summary>The shape of <c>nodes/&lt;id&gt;.json</c>.</summary>
     internal sealed record CachedRemoteNode(string Id, string Name, string? OwnerUserId, bool Confirmed, DateTimeOffset? PairedAt,
         string? Os, string? Arch, string? OsDescription, string? MachineName, string? Processor, string? AgentVersion,
-        bool Revoked, string? RevokedReason, string? KernelStatus, DateTimeOffset? LastSeenAt, NodeReport? Report);
+        bool Revoked, string? RevokedReason, string? KernelStatus, DateTimeOffset? LastSeenAt, NodeReport? Report,
+        string? Chassis = null, string? Icon = null, string? Color = null);
 }
 
 /// <summary>What a node's <c>node.describe</c> said about itself.</summary>
 public sealed record NodeDescribe(string? Os, string? Arch, string? OsDescription, string? MachineName, string? Processor,
-    string? AgentVersion, string? CredentialStore);
+    string? AgentVersion, string? CredentialStore, string? Chassis = null);

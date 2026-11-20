@@ -131,7 +131,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         var info = env.Host.Platform.Info;
         var machine = new MachineDescription(
             options.TryGetValue("name", out var name) && !string.IsNullOrWhiteSpace(name) ? name! : info.MachineName,
-            MachineIdentity.MachineIdHash(env.Host), AgentIdentity.Os, AgentIdentity.Arch, info.OsDescription);
+            MachineIdentity.MachineIdHash(env.Host), AgentIdentity.Os, AgentIdentity.Arch, info.OsDescription, info.Chassis);
         using var server = env.ServerClient();
         var pairing = await server.PairAsync(origin, code, machine.Name, store, machine, AgentIdentity.Info, env.Time.GetUtcNow(), ct);
         env.StateStore.Save(new NodeState { Pairing = pairing });

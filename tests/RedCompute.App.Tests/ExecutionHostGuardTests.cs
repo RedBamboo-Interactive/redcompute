@@ -29,6 +29,7 @@ public sealed class ExecutionHostGuardTests
         // ---- the host implementation: node zero's execution host and the code moved into it ----------
         ("the local execution host (RedCompute.ExecutionHost: RedCompute.PluginSdk.Hosting.Local, internal but for LocalExecutionHost)", [
             "RedCompute.PluginSdk.Hosting.Local.ContainedProcessTree",
+            "RedCompute.PluginSdk.Hosting.Local.LocalChassis",
             "RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost",
             "RedCompute.PluginSdk.Hosting.Local.LocalHardware",
             "RedCompute.PluginSdk.Hosting.Local.LocalHardwareSampler",

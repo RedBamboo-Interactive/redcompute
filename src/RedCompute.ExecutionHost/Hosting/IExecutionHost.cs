@@ -339,7 +339,14 @@ public interface IHostNetwork
 // ---- platform ------------------------------------------------------------------------------------
 
 public sealed record HostPlatformInfo(string Os, string OsDescription, string Architecture, string MachineName,
-    string UserName);
+    string UserName)
+{
+    /// <summary>
+    /// What kind of machine the firmware says this is (desktop, all-in-one, laptop, tablet, mini, server),
+    /// or null when it does not say. A hint for the node's default icon, nothing more.
+    /// </summary>
+    public string? Chassis { get; init; }
+}
 
 public interface IHostPlatform
 {

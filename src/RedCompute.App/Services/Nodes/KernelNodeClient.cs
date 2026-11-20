@@ -11,8 +11,9 @@ namespace RedCompute.App.Services.Nodes;
 
 /// <summary>
 /// One <c>node</c> entity as the kernel's <c>GET /api/nodes</c> lists it (RedLeaf L1:
-/// <c>{id, name, kind, status, statusReason, ownerId, confirmed, platform{os, arch, osDescription, machineName},
-/// agentVersion, protocolVersion, lastSeen, pairedAt, …}</c>). Unknown members are ignored.
+/// <c>{id, name, kind, status, statusReason, ownerId, confirmed, platform{os, arch, osDescription, machineName, chassis?},
+/// agentVersion, protocolVersion, lastSeen, pairedAt, icon?, color?, …}</c>). Unknown members are ignored; an
+/// older kernel has no icon, colour or chassis.
 /// </summary>
 public sealed partial record KernelNode(
     string Id,
@@ -29,7 +30,10 @@ public sealed partial record KernelNode(
     string? AgentVersion,
     int? ProtocolVersion,
     DateTimeOffset? LastSeen,
-    DateTimeOffset? PairedAt)
+    DateTimeOffset? PairedAt,
+    string? Icon = null,
+    string? Color = null,
+    string? Chassis = null)
 {
     public const string LocalKind = "local";
     public const string RemoteKind = "remote";
@@ -38,6 +42,14 @@ public sealed partial record KernelNode(
 
     [GeneratedRegex("^node_[0-9A-HJKMNP-TV-Z]{26}$")]
     private static partial Regex NodeIdPattern();
+
+    // An icon name, a colour token or a chassis hint: what the kernel accepts is its business (and the
+    // dashboard falls back for a name it does not know), only the shape is checked here.
+    [GeneratedRegex("^[a-z0-9][a-z0-9-]{0,39}$")]
+    private static partial Regex TokenPattern();
+
+    /// <summary>A lowercase token of at most 40 letters, digits and dashes, or null.</summary>
+    public static string? Token(string? text) => text is not null && TokenPattern().IsMatch(text) ? text : null;
 
     /// <summary><c>node_</c> + a 26-character ULID: the only ids a remote node can have (and safe as a file name).</summary>
     public static bool IsNodeId(string? text) => text is not null && NodeIdPattern().IsMatch(text);
@@ -65,7 +77,10 @@ public sealed partial record KernelNode(
             Clip(Text(node, "agentVersion"), 64),
             node["protocolVersion"] is JsonValue protocol && protocol.TryGetValue<int>(out var version) ? version : null,
             Date(node, "lastSeen"),
-            Date(node, "pairedAt"));
+            Date(node, "pairedAt"),
+            Token(Text(node, "icon")),
+            Token(Text(node, "color")),
+            Token(Text(platform, "chassis")));
     }
 
     private static string? Text(JsonObject? node, string key)
@@ -472,13 +487,22 @@ public sealed class KernelNodeSync : IAsyncDisposable
         return body;
     }
 
-    private static JsonObject Platform(NodeDescriptor node) => new()
+    /// <summary>
+    /// The platform as the kernel's node routes take it. <c>chassis</c> is the hint the kernel draws a default
+    /// icon from, only when the firmware said; an older kernel drops it.
+    /// </summary>
+    private static JsonObject Platform(NodeDescriptor node)
     {
-        ["os"] = node.Os,
-        ["arch"] = node.Architecture,
-        ["osDescription"] = node.OsDescription,
-        ["machineName"] = node.MachineName,
-    };
+        var platform = new JsonObject
+        {
+            ["os"] = node.Os,
+            ["arch"] = node.Architecture,
+            ["osDescription"] = node.OsDescription,
+            ["machineName"] = node.MachineName,
+        };
+        if (node.Chassis is { } chassis) platform["chassis"] = chassis;
+        return platform;
+    }
 
     public async ValueTask DisposeAsync()
     {

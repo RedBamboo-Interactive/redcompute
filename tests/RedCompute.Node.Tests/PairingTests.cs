@@ -165,6 +165,30 @@ public sealed class PairingTests : IDisposable
         Assert.Equal("file", pairing.CredentialStore);
         using var stored = store.Open(pairing.KeyRef, Origin)!;
         Assert.Equal(spki, stored.ExportSubjectPublicKeyInfo());
+        // No chassis known: the member is there, null, and the kernel falls back to the platform.
+        Assert.Null(json["machine"]!["chassis"]);
+    }
+
+    [Fact]
+    public async Task Pairing_sends_the_firmwares_chassis_hint_for_the_default_icon()
+    {
+        var http = new StubHttp((_, body) => Json(HttpStatusCode.Created, new JsonObject
+        {
+            ["nodeId"] = "node_01JTESTTESTTESTTESTTESTTES",
+            ["serverOrigin"] = Origin,
+            ["linkPath"] = "/api/nodes/link",
+            ["fingerprint"] = NodeCrypto.Fingerprint(Convert.FromBase64String(JsonNode.Parse(body)!["publicKey"]!.GetValue<string>())),
+        }));
+        using var client = new NodeServerClient(http);
+
+        await client.PairAsync(Origin, "ABCD-EFGH", "leaflinux", new FileKeyStore(_home.Paths), Machine with { Chassis = "laptop" },
+            Agent, Now, CancellationToken.None);
+
+        var json = JsonNode.Parse(Assert.Single(http.Requests).Body)!;
+        Assert.Equal("laptop", json["machine"]!["chassis"]!.GetValue<string>());
+        // Never an icon or a colour: they are the owner's choice, kept by the kernel.
+        Assert.Null(json["icon"]);
+        Assert.Null(json["machine"]!["icon"]);
     }
 
     [Theory]

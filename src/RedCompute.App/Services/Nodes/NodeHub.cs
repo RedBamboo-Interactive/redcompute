@@ -430,7 +430,8 @@ public sealed partial class NodeHub : IAsyncDisposable
         var version = Text(agent, "version", 64);
         return new NodeDescribe(Text(platform, "os"), Text(platform, "arch"), Text(platform, "osDescription"),
             Text(describe, "machineName"), Text(describe, "processor"),
-            AgentVersions.IsValid(version) ? version : null, Text(describe, "credentialStore", 32));
+            AgentVersions.IsValid(version) ? version : null, Text(describe, "credentialStore", 32),
+            KernelNode.Token(Text(platform, "chassis", 40)));
     }
 
     internal static IReadOnlyList<NodeCliReport>? ParseClis(JsonElement clis)

@@ -51,6 +51,18 @@ public sealed record NodeDescriptor(
 
     /// <summary>What a remote node last reported (CLIs, hardware), kept across restarts.</summary>
     public NodeReport? Report { get; init; }
+
+    /// <summary>
+    /// What kind of machine its firmware says it is (desktop, all-in-one, laptop, tablet, mini, server), when
+    /// it says: the hint the kernel draws the node's default icon from.
+    /// </summary>
+    public string? Chassis { get; init; }
+
+    /// <summary>The node's icon (a curated Phosphor name) as the kernel's node entity has it; null from an older kernel.</summary>
+    public string? Icon { get; init; }
+
+    /// <summary>The node's colour (a palette token) as the kernel's node entity has it; null from an older kernel.</summary>
+    public string? Color { get; init; }
 }
 
 /// <summary>A remote node's live link (design 7.1).</summary>

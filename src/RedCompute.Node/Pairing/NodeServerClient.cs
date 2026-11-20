@@ -11,7 +11,9 @@ using RedCompute.NodeLink;
 namespace RedCompute.Node.Pairing;
 
 /// <summary>The machine a node describes at pairing (design 3.2). The machine id goes only as a hash.</summary>
-public sealed record MachineDescription(string Name, string? MachineIdHash, string Os, string Arch, string OsDescription);
+/// <param name="Chassis">What kind of machine its firmware says it is, when it says: the kernel's default icon comes from it.</param>
+public sealed record MachineDescription(string Name, string? MachineIdHash, string Os, string Arch, string OsDescription,
+    string? Chassis = null);
 
 /// <summary>
 /// The node's two plain HTTPS calls to the kernel (design 3.2, 3.5): redeeming a pairing code with a
@@ -67,6 +69,7 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
                     ["os"] = machine.Os,
                     ["arch"] = machine.Arch,
                     ["osDescription"] = machine.OsDescription,
+                    ["chassis"] = machine.Chassis,
                 },
                 ["agent"] = new JsonObject
                 {
