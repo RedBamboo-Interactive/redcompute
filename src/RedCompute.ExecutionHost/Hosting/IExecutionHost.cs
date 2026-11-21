@@ -334,6 +334,23 @@ public interface IHostNetwork
 
     /// <summary>Makes a server-local endpoint reachable from the host. Locally the same Uri.</summary>
     Task<IHostPortForward> ReverseForwardAsync(Uri serverLocalUri, CancellationToken ct = default);
+
+    /// <summary>
+    /// The handler for the server's HTTP to a service the host serves at <paramref name="hostLocalUri"/>
+    /// (Phase 4, design 2.2). Requests name the URL <see cref="ResolveServiceUri"/> gave. Locally a new
+    /// default <see cref="System.Net.Http.HttpClientHandler"/>, exactly the handler <c>new HttpClient()</c>
+    /// builds for itself; a remote host carries each request over the node link. The caller owns it
+    /// (an <c>HttpClient</c> built on it disposes it by default).
+    /// </summary>
+    System.Net.Http.HttpMessageHandler CreateServiceHandler(Uri hostLocalUri);
+
+    /// <summary>
+    /// A connected WebSocket to a service the host serves at <paramref name="hostLocalUri"/> (a
+    /// <c>ws://</c> Uri as the host sees it). Locally a <see cref="System.Net.WebSockets.ClientWebSocket"/>
+    /// with default options, connected to that Uri; a remote host carries its messages over the node
+    /// link. The caller disposes it.
+    /// </summary>
+    Task<System.Net.WebSockets.WebSocket> ConnectWebSocketAsync(Uri hostLocalUri, CancellationToken ct = default);
 }
 
 // ---- platform ------------------------------------------------------------------------------------

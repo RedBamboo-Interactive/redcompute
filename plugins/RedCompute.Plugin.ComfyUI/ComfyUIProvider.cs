@@ -27,8 +27,9 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly Action<string> _log;
     private readonly string _host;
     private readonly int _port;
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(30) };
-    private readonly HttpClient _healthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+    // Both over the host's handler (design 2.2): built in the constructor, once the host is known.
+    private readonly HttpClient _http;
+    private readonly HttpClient _healthClient;
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly IDisposable? _acceleratorRegistration;
     private readonly string _acceleratorId;
@@ -101,6 +102,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         _host = ProviderHelpers.GetExtra(config, "Host", "127.0.0.1");
         _port = config.BackendPort ?? 8188;
         _baseUrl = _executionHost.Network.ResolveServiceBaseUrl($"http://{_host}:{_port}");
+        _http = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30));
+        _healthClient = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromSeconds(5));
         _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
         _acceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0");
         _acceleratorAdmission = acceleratorAdmission;
@@ -136,7 +139,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
         // Launching goes through wsl.exe or a Windows Python; elsewhere only an already-running
         // ComfyUI (local or remote, reached over HTTP above) can serve.
-        if (!PlatformSupport.CanLaunchLocalBackends)
+        if (!_executionHost.Platform.CanLaunchLocalBackends)
         {
             _status = BackendStatus.Unsupported;
             _log($"[ComfyUI] {UnsupportedDetail} (no ComfyUI answered at {BaseUrl})");
@@ -897,19 +900,22 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private async Task<(MemoryStream? stream, string? contentType, string? error)?> RunWithWebSocketAsync(
         Dictionary<string, JsonElement> workflow, string outputNode, string clientId, Action<double>? progressCallback, CancellationToken ct)
     {
-        using var ws = new ClientWebSocket();
+        // The progress socket goes through the host like every other request (design 2.2): the Uri is
+        // ComfyUI's as the host sees it, never a resolved one.
+        WebSocket connected;
         try
         {
             var wsUri = new Uri($"ws://{_host}:{_port}/ws?clientId={clientId}");
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             connectCts.CancelAfter(TimeSpan.FromSeconds(10));
-            await ws.ConnectAsync(wsUri, connectCts.Token);
+            connected = await _executionHost.Network.ConnectWebSocketAsync(wsUri, connectCts.Token);
         }
         catch (Exception ex)
         {
             _log($"[ComfyUI] WebSocket connect failed: {ex.Message}");
             return (null, null, $"WebSocket connection failed: {ex.Message}");
         }
+        using var ws = connected;
 
         ct.ThrowIfCancellationRequested();
         var promptId = await QueuePromptAsync(workflow, clientId);
@@ -939,7 +945,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     }
 
     private async Task<(MemoryStream? stream, string? contentType, string? error)?> FollowPromptAsync(
-        ClientWebSocket ws, string promptId, int workflowNodeCount, string outputNode,
+        WebSocket ws, string promptId, int workflowNodeCount, string outputNode,
         Action<double>? progressCallback, Action markSettled, CancellationToken ct)
     {
         var totalNodes = Math.Max(workflowNodeCount, 1);

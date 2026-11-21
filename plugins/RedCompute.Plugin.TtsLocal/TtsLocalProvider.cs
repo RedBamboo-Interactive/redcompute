@@ -15,7 +15,7 @@ using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.TtsLocal;
 
-public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
+public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider, IServiceProxyClient
 {
     private readonly LocalWslProvider _inner;
     private readonly ProviderConfig _config;
@@ -38,6 +38,8 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
 
     /// <summary>The host the backend and its voice files are on.</summary>
     private IExecutionHost Host { get; }
+
+    public HttpClient ProxyClient => _inner.ProxyClient;
 
     // IBackendProvider delegation
     public string Name => "TTS Local";
@@ -177,11 +179,8 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
         var speaker = body.GetValueOrDefault("speaker")?.ToString();
         if (string.IsNullOrEmpty(speaker)) return null;
 
-        using var http = new HttpClient
-        {
-            BaseAddress = new Uri(proxyUrl),
-            Timeout = TimeSpan.FromSeconds(10)
-        };
+        using var http = _inner.CreateServiceClient(TimeSpan.FromSeconds(10));
+        http.BaseAddress = new Uri(proxyUrl);
 
         try
         {
@@ -219,11 +218,8 @@ public class TtsLocalProvider : IPluginProvider, ICustomEndpointProvider
 
         try
         {
-            using var reloadHttp = new HttpClient
-            {
-                BaseAddress = new Uri(proxyUrl),
-                Timeout = TimeSpan.FromSeconds(120)
-            };
+            using var reloadHttp = _inner.CreateServiceClient(TimeSpan.FromSeconds(120));
+            reloadHttp.BaseAddress = new Uri(proxyUrl);
             var reloadResp = await reloadHttp.PostAsJsonAsync("/model/reload",
                 new { checkpoint_path = checkpointPath }, ct);
 

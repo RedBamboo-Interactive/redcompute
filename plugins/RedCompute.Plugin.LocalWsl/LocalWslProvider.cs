@@ -10,7 +10,7 @@ using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.LocalWsl;
 
-public class LocalWslProvider : IPluginProvider
+public class LocalWslProvider : IPluginProvider, IServiceProxyClient
 {
     private const string ProcessMarker = "REDCOMPUTE_LOCALWSL_PROCESS=";
     private readonly ProviderConfig _config;
@@ -34,7 +34,7 @@ public class LocalWslProvider : IPluginProvider
 
     public int? ProcessId => _process is { HasExited: false } ? _process.Id : null;
     private string? _backendHost;
-    private static readonly HttpClient HealthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private readonly HttpClient _healthClient;
 
     public static string ProviderTypeName => "LocalWsl";
     public string Name => "Local WSL";
@@ -59,7 +59,20 @@ public class LocalWslProvider : IPluginProvider
         LaunchServerProcess = spec => _executionHost.Processes.Start(spec);
         LaunchStopProcess = spec => _executionHost.Processes.Start(spec);
         LaunchHostnameProcess = spec => _executionHost.Processes.Start(spec);
+        _healthClient = CreateServiceClient(TimeSpan.FromSeconds(5));
+        ProxyClient = CreateServiceClient(IServiceProxyClient.ProxyTimeout);
     }
+
+    /// <summary>The generic proxy's client, over the host's handler (<see cref="IServiceProxyClient"/>).</summary>
+    public HttpClient ProxyClient { get; }
+
+    /// <summary>
+    /// A client for this backend over the host's handler (design 2.2). The service is named by its port
+    /// as the host sees it; the host, not the server, knows which address (loopback or the WSL
+    /// distro's) it answers on. The caller owns the client.
+    /// </summary>
+    public HttpClient CreateServiceClient(TimeSpan timeout)
+        => _executionHost.Network.CreateServiceClient($"http://127.0.0.1:{_config.BackendPort}", timeout);
 
     public string? StatusDetail { get; private set; }
 
@@ -193,6 +206,8 @@ public class LocalWslProvider : IPluginProvider
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
+        _healthClient.Dispose();
+        ProxyClient.Dispose();
     }
 
     /// <summary>The backend launch: uncontained, as local backends always ran (design section 6).</summary>
@@ -361,7 +376,7 @@ public class LocalWslProvider : IPluginProvider
             var host = _backendHost ?? "127.0.0.1";
             var endpoint = _config.HealthEndpoint ?? "/health";
             var baseUrl = _executionHost.Network.ResolveServiceBaseUrl($"http://{host}:{_config.BackendPort}");
-            var response = await HealthClient.GetAsync($"{baseUrl}{endpoint}");
+            var response = await _healthClient.GetAsync($"{baseUrl}{endpoint}");
             return response.IsSuccessStatusCode;
         }
         catch

@@ -110,6 +110,46 @@ public sealed class ComfyUIPromptCancellationTests
         await provider.DisposeAsync();
     }
 
+    /// <summary>
+    /// Phase 4 P2 (design 2.2): on a host whose resolved service address never resolves, a whole run
+    /// still works, because every HTTP request goes through the host's handler and the progress socket
+    /// through the host's ConnectWebSocketAsync, to ComfyUI's address as the host sees it. The socket
+    /// used to be a ClientWebSocket of the provider's own, to host and port directly.
+    /// </summary>
+    [Fact]
+    public async Task Every_request_and_the_progress_socket_go_through_the_host()
+    {
+        await using var comfy = await FakeComfy.StartAsync(supportsCancelById: true);
+        var host = new SentinelNetworkHost();
+        var provider = new ComfyUIProvider(new ProviderConfig
+        {
+            Type = "ComfyUI",
+            BackendPort = comfy.Port,
+            Extra = new Dictionary<string, object?> { ["Host"] = "127.0.0.1" },
+        }, "image-gen", _ => { }, new RecordingAdmission(comfy.Events), host)
+        {
+            PromptCancelTimeout = TimeSpan.FromSeconds(10),
+            PromptCancelPollInterval = TimeSpan.FromMilliseconds(20),
+        };
+
+        using var job = new CancellationTokenSource();
+        var execution = provider.ExecuteAsync(Request(() => job.Cancel()), job.Token);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution.WaitAsync(TimeSpan.FromSeconds(15)));
+        await provider.DisposeAsync();
+
+        Assert.Contains($"POST /api/jobs/{Mine}/cancel", comfy.Requests);
+        var service = new Uri($"http://127.0.0.1:{comfy.Port}");
+        Assert.Equal([service, service], host.Recorder.Handlers);
+        var socket = Assert.Single(host.Recorder.Sockets);
+        Assert.Equal($"ws://127.0.0.1:{comfy.Port}/ws", socket.GetLeftPart(UriPartial.Path));
+        Assert.StartsWith("?clientId=", socket.Query);
+        Assert.Contains($"POST {SentinelNetworkHost.SentinelHost} /prompt", host.Recorder.Sent);
+        Assert.Contains($"POST {SentinelNetworkHost.SentinelHost} /api/jobs/{Mine}/cancel", host.Recorder.Sent);
+        // Every request ComfyUI saw but the socket's came through the host's handler.
+        Assert.Equal(comfy.Requests.Count(request => request != "GET /ws"), host.Recorder.Sent.Count);
+        Assert.Single(comfy.Requests, request => request == "GET /ws");
+    }
+
     private static async Task<ComfyUIProvider.PromptCancelOutcome> QueueThenCancelAsync(ComfyUIProvider provider, FakeComfy comfy)
     {
         comfy.Pending.Add(Mine);

@@ -11,17 +11,20 @@ using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.DiarizationLocal;
 
-public sealed class DiarizationLocalProvider : IPluginProvider, ICustomEndpointProvider
+public sealed class DiarizationLocalProvider : IPluginProvider, ICustomEndpointProvider, IServiceProxyClient
 {
     private readonly LocalWslProvider _inner;
-    private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _modelClient;
 
     public DiarizationLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
         IExecutionHost? host = null)
     {
         _inner = new LocalWslProvider(config, capabilitySlug, log, host);
+        _modelClient = _inner.CreateServiceClient(TimeSpan.FromSeconds(30));
         CapabilitySlug = capabilitySlug;
     }
+
+    public System.Net.Http.HttpClient ProxyClient => _inner.ProxyClient;
 
     public static string ProviderTypeName => "DiarizationLocal";
     public string Name => "Diarization Local";
@@ -146,7 +149,7 @@ public sealed class DiarizationLocalProvider : IPluginProvider, ICustomEndpointP
             if (proxyUrl is null) return Results.StatusCode(503);
             try
             {
-                var response = await ProxyClient.GetAsync($"{proxyUrl}/model/info");
+                var response = await _modelClient.GetAsync($"{proxyUrl}/model/info");
                 var content = await response.Content.ReadAsStringAsync();
                 return Results.Content(content, "application/json", statusCode: (int)response.StatusCode);
             }

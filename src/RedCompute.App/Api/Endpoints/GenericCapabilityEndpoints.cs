@@ -174,7 +174,8 @@ public static class GenericCapabilityEndpoints
                     }
                     try
                     {
-                        var (data, contentType) = await StreamingProxy.FetchFromPathAsync(ctx, proxyUrl, backendPath, body);
+                        var (data, contentType) = await StreamingProxy.FetchFromPathAsync(ctx, proxyUrl, backendPath, body,
+                            (provider as IServiceProxyClient)?.ProxyClient);
                         var outputPath = SaveOutput(job.Id, data, contentType);
                         var size = new FileInfo(outputPath).Length;
                         jobTracker.TryMarkCompletedUnlessCancelled(job.Id, outputPath, size, contentType);
@@ -490,7 +491,7 @@ public static class GenericCapabilityEndpoints
         var proxyUrl = provider?.GetProxyTargetUrl();
         if (proxyUrl != null)
         {
-            await StreamingProxy.ForwardRawAsync(ctx, proxyUrl, path, log);
+            await StreamingProxy.ForwardRawAsync(ctx, proxyUrl, path, log, (provider as IServiceProxyClient)?.ProxyClient);
             return Results.Empty;
         }
 

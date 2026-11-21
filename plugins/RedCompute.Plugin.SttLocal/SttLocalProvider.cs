@@ -12,12 +12,12 @@ using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Plugin.SttLocal;
 
-public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
+public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider, IServiceProxyClient
 {
     private readonly LocalWslProvider _inner;
     private readonly ProviderConfig _config;
     private readonly string _capabilitySlug;
-    private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _modelsClient;
 
     public SttLocalProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
         IExecutionHost? host = null)
@@ -25,7 +25,10 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
         _config = config;
         _capabilitySlug = capabilitySlug;
         _inner = new LocalWslProvider(config, capabilitySlug, log, host);
+        _modelsClient = _inner.CreateServiceClient(TimeSpan.FromSeconds(30));
     }
+
+    public HttpClient ProxyClient => _inner.ProxyClient;
 
     // IBackendProvider delegation
     public string Name => "STT Local";
@@ -204,7 +207,7 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
 
             try
             {
-                var response = await ProxyClient.GetAsync($"{proxyUrl}/models");
+                var response = await _modelsClient.GetAsync($"{proxyUrl}/models");
                 var content = await response.Content.ReadAsStringAsync();
                 return Results.Content(content, "application/json", statusCode: (int)response.StatusCode);
             }
@@ -222,7 +225,7 @@ public class SttLocalProvider : IPluginProvider, ICustomEndpointProvider
 
             try
             {
-                var response = await ProxyClient.GetAsync($"{proxyUrl}/languages");
+                var response = await _modelsClient.GetAsync($"{proxyUrl}/languages");
                 var content = await response.Content.ReadAsStringAsync();
                 return Results.Content(content, "application/json", statusCode: (int)response.StatusCode);
             }

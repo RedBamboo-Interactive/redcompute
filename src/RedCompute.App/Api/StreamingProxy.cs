@@ -8,12 +8,17 @@ namespace RedCompute.App.Api;
 
 public static class StreamingProxy
 {
+    /// <summary>
+    /// For a provider that is not an <see cref="RedCompute.PluginSdk.IServiceProxyClient"/>; one that is
+    /// passes its own client, over its host's handler (design 3.3).
+    /// </summary>
     private static readonly HttpClient Client = new()
     {
         Timeout = TimeSpan.FromMinutes(5)
     };
 
-    public static async Task ForwardAsync(HttpContext ctx, string baseUrl, Dictionary<string, object?> body, Action<string, Guid?> log)
+    public static async Task ForwardAsync(HttpContext ctx, string baseUrl, Dictionary<string, object?> body, Action<string, Guid?> log,
+        HttpClient? client = null)
     {
         var targetUrl = baseUrl.TrimEnd('/') + ctx.Request.Path;
         var json = JsonSerializer.Serialize(body);
@@ -24,7 +29,7 @@ public static class StreamingProxy
 
         CopyHeaders(ctx.Request, request);
 
-        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+        using var response = await (client ?? Client).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
 
         ctx.Response.StatusCode = (int)response.StatusCode;
         ctx.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
@@ -36,9 +41,10 @@ public static class StreamingProxy
         await stream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
     }
 
-    public static async Task ForwardToPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body, Action<string, Guid?> log)
+    public static async Task ForwardToPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body, Action<string, Guid?> log,
+        HttpClient? client = null)
     {
-        var (data, contentType) = await FetchFromPathAsync(ctx, baseUrl, path, body);
+        var (data, contentType) = await FetchFromPathAsync(ctx, baseUrl, path, body, client);
         ctx.Response.StatusCode = 200;
         ctx.Response.ContentType = contentType;
         ctx.Response.ContentLength = data.Length;
@@ -46,7 +52,8 @@ public static class StreamingProxy
         await data.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
     }
 
-    public static async Task<(MemoryStream Data, string ContentType)> FetchFromPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body)
+    public static async Task<(MemoryStream Data, string ContentType)> FetchFromPathAsync(HttpContext ctx, string baseUrl, string path, Dictionary<string, object?> body,
+        HttpClient? client = null)
     {
         var targetUrl = baseUrl.TrimEnd('/') + path;
         var json = JsonSerializer.Serialize(body);
@@ -57,7 +64,7 @@ public static class StreamingProxy
 
         CopyHeaders(ctx.Request, request);
 
-        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+        using var response = await (client ?? Client).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -72,7 +79,8 @@ public static class StreamingProxy
         return (ms, contentType);
     }
 
-    public static async Task ForwardRawAsync(HttpContext ctx, string baseUrl, string? path, Action<string, Guid?> log)
+    public static async Task ForwardRawAsync(HttpContext ctx, string baseUrl, string? path, Action<string, Guid?> log,
+        HttpClient? client = null)
     {
         var targetUrl = baseUrl.TrimEnd('/') + "/" + (path ?? "");
         if (ctx.Request.QueryString.HasValue)
@@ -89,7 +97,7 @@ public static class StreamingProxy
 
         CopyHeaders(ctx.Request, request);
 
-        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+        using var response = await (client ?? Client).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
 
         ctx.Response.StatusCode = (int)response.StatusCode;
         foreach (var header in response.Content.Headers)

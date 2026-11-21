@@ -239,6 +239,13 @@ public sealed class ExecutionHostGuardTests
         .ToDictionary(code => code.Value);
 
     internal static List<Hit> Scan(string path)
+        => Scan(path, (_, _, type, member) => IsForbidden(type, member));
+
+    /// <summary>
+    /// Every call in <paramref name="path"/> whose target <paramref name="forbidden"/> names, given the
+    /// metadata, the call's handle, and the target's type and member name.
+    /// </summary>
+    internal static List<Hit> Scan(string path, Func<MetadataReader, EntityHandle, string, string, bool> forbidden)
     {
         using var stream = File.OpenRead(path);
         using var pe = new PEReader(stream);
@@ -263,8 +270,9 @@ public sealed class ExecutionHostGuardTests
                     {
                         case OperandType.InlineMethod:
                             var token = il.ReadInt32();
-                            if (Target(metadata, MetadataTokens.EntityHandle(token)) is { } target
-                                && IsForbidden(target.Type, target.Member))
+                            var handle = MetadataTokens.EntityHandle(token);
+                            if (Target(metadata, handle) is { } target
+                                && forbidden(metadata, handle, target.Type, target.Member))
                                 hits.Add(new Hit(assembly, owner, metadata.GetString(method.Name),
                                     $"{target.Type}::{target.Member}"));
                             break;

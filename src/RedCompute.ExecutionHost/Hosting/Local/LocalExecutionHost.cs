@@ -358,6 +358,25 @@ public sealed class LocalExecutionHost : IExecutionHost
         public Task<IHostPortForward> ReverseForwardAsync(Uri serverLocalUri, CancellationToken ct = default)
             => Task.FromResult<IHostPortForward>(new IdentityForward(serverLocalUri));
 
+        // What new HttpClient() builds for itself (HostNetworkSeamTests pins it).
+        public System.Net.Http.HttpMessageHandler CreateServiceHandler(Uri hostLocalUri)
+            => new System.Net.Http.HttpClientHandler();
+
+        public async Task<System.Net.WebSockets.WebSocket> ConnectWebSocketAsync(Uri hostLocalUri, CancellationToken ct = default)
+        {
+            var socket = new System.Net.WebSockets.ClientWebSocket();
+            try
+            {
+                await socket.ConnectAsync(hostLocalUri, ct);
+                return socket;
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
+
         private sealed class IdentityForward(Uri uri) : IHostPortForward
         {
             public Uri ServerSideUri { get; } = uri;
