@@ -363,8 +363,11 @@ public sealed class HostThreadingTests : IDisposable
         await using var redLeaf = await PayloadRedLeaf.StartAsync();
         var socket = new StreamSocket();
         var broadcaster = new WebSocketBroadcaster();
-        typeof(WebSocketBroadcaster).GetMethod("AddClient", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(broadcaster, ["test", socket]);
+        // AppHost cbe0265 added allowsLogEvents; the release pin predates it, so pass it only when AddClient takes it.
+        var addClient = typeof(WebSocketBroadcaster).GetMethod("AddClient", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        addClient.Invoke(broadcaster, addClient.GetParameters().Length == 3
+            ? new object?[] { "test", socket, false }
+            : new object?[] { "test", socket });
         var pipeline = new SessionTranscriptPipeline(redLeaf.Client, broadcaster, (_, _) => { }, (_, _) => false,
             new TranscriptSequenceStore(Path.Combine(_root, "cursor.db")));
 

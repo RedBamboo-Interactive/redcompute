@@ -411,8 +411,11 @@ public sealed class PermissionContractAlignmentTests : IDisposable
         {
             Directory.CreateDirectory(_root);
             var broadcaster = new WebSocketBroadcaster();
-            typeof(WebSocketBroadcaster).GetMethod("AddClient", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(broadcaster, ["test", _socket]);
+            // AppHost cbe0265 added allowsLogEvents; the release pin predates it, so pass it only when AddClient takes it.
+            var addClient = typeof(WebSocketBroadcaster).GetMethod("AddClient", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            addClient.Invoke(broadcaster, addClient.GetParameters().Length == 3
+                ? new object?[] { "test", _socket, false }
+                : new object?[] { "test", _socket });
             _client = new RedLeafStreamClient("http://127.0.0.1:9", "RedComputeTests",
                 new JwtService(new JwtOptions { SigningKey = new string('a', 64) }));
             Pipeline = new SessionTranscriptPipeline(_client, broadcaster, (_, _) => { }, (_, _) => false,

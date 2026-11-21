@@ -776,8 +776,11 @@ public sealed class SessionRollbackTests
         internal RecordingWebSocket AttachClient()
         {
             var socket = new RecordingWebSocket();
-            typeof(WebSocketBroadcaster).GetMethod("AddClient", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(_broadcaster, ["test", socket]);
+            // AppHost cbe0265 added allowsLogEvents; the release pin predates it, so pass it only when AddClient takes it.
+            var addClient = typeof(WebSocketBroadcaster).GetMethod("AddClient", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            addClient.Invoke(_broadcaster, addClient.GetParameters().Length == 3
+                ? new object?[] { "test", socket, false }
+                : new object?[] { "test", socket });
             return socket;
         }
 
