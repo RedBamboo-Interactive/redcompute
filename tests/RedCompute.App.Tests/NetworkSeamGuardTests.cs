@@ -58,6 +58,10 @@ public sealed class NetworkSeamGuardTests
             "RedCompute.Node.Link.NodeDialer",
             "RedCompute.Node.Pairing.NodeServerClient",
         ]),
+        ("node-side: the far end of the forward. leaf-node reaches its owner's runtimes on its own 127.0.0.1 (the forward target and the health probe), with a hardened handler: no proxy, no cookies, no redirects", [
+            "RedCompute.Node.Runtimes.RuntimeForwardTarget",
+            "RedCompute.Node.Runtimes.RuntimeManager",
+        ]),
     ];
 
     [Fact]

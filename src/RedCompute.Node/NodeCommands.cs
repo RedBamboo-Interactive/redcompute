@@ -470,7 +470,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         var path = Option("path", "server-path");
         if (!attach && path is not null && wsl is null)
         {
-            if (!File.Exists(Path.Combine(path, "main.py")))
+            if (!env.Host.Files.FileExists(env.Host.Path(Path.Combine(path, "main.py"))))
                 throw new NodeCommandException("bad_runtime", $"{path} has no main.py: --path is the ComfyUI folder.", NodeExitCodes.Usage);
             if (!PortFree(port))
                 throw new NodeCommandException("port_taken", $"Something already listens on 127.0.0.1:{port}. Pick another --port, or --attach to it.",

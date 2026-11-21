@@ -49,6 +49,9 @@ public sealed class ExecutionHostGuardTests
             "RedCompute.Node.Install.NodeInstaller",
             "RedCompute.Node.NodeLog",
         ]),
+        ("node-side: leaf-node kills the tree of a runtime it started and re-adopted with no containment tree (Linux), after checking its PID and creation time through the host (the host's KillIdentity reads creation times on Windows only)", [
+            "RedCompute.Node.Runtimes.RuntimeManager",
+        ]),
         // ---- RedCompute's own state under its data root (%LOCALAPPDATA%/RedCompute by default) ----------
         ("server state: the data root resolver (asks the OS for the default folder)", [
             "RedCompute.Core.Storage.ComputeStorage",
