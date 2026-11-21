@@ -385,7 +385,9 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         var before = _comfy.Requests.Count;
         var error = await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.SendAsync(new HttpRequestMessage(new HttpMethod(method), target)));
         Assert.Equal(ForwardErrorCodes.RouteNotAllowed, FindCode(error));
-        Assert.Equal(before, _comfy.Requests.Count);
+        // Nothing reached the runtime but the agent's own health probe, which polls /system_stats on its own schedule
+        // (counting every request made this test flaky).
+        Assert.DoesNotContain(_comfy.Requests.Skip(before), request => request.Target != "/system_stats");
         Assert.Contains(_home.Environment().Audit.Read(), l => l["kind"]!.GetValue<string>() == "forward"
             && l["outcome"]!.GetValue<string>() == ForwardErrorCodes.RouteNotAllowed);
     }
