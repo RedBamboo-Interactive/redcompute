@@ -104,6 +104,28 @@ public sealed class RuntimeRoutesTests
     }
 
     [Fact]
+    public void The_queue_answer_keeps_only_numbers_and_the_servers_ids()
+    {
+        // Review item 5: GET /queue is rewritten on the node.
+        Assert.Equal(ResponseRule.QueueRedacted, RuntimeRoutes.Http(Kind, "GET", "/queue", "", out _)!.Response);
+        Assert.Equal(ResponseRule.Pass, RuntimeRoutes.Http(Kind, "GET", "/system_stats", "", out _)!.Response);
+
+        var answer = """
+            {"queue_running":[[3,"mine-1",{"6":{"inputs":{"text":"owner secret"}}},{"client_id":"c"},["9"]]],
+             "queue_pending":[[4,"owners-2",{"x":"owner secret"},{"extra_pnginfo":"owner secret"},[]],[5],"junk",[6,7],[7,"bad id!"]],
+             "owner":"owner secret"}
+            """u8;
+        var redacted = Encoding.UTF8.GetString(RuntimeAnswers.RedactQueue(answer, id => id == "mine-1"));
+        Assert.Equal("""{"queue_running":[[3,"mine-1"]],"queue_pending":[[4,"other"],[5,"other"],[0,"other"],[6,"other"],[7,"other"]]}""", redacted);
+
+        // A missing or non-array queue is left out (the provider then refuses to read it); not JSON is upstream_failed.
+        Assert.Equal("""{"queue_running":[]}""", Encoding.UTF8.GetString(RuntimeAnswers.RedactQueue("""{"queue_running":[],"queue_pending":{}}"""u8, _ => true)));
+        foreach (var bad in new[] { "[]", "nope", "" })
+            Assert.Equal(ForwardErrorCodes.UpstreamFailed,
+                Assert.Throws<ForwardTargetException>(() => RuntimeAnswers.RedactQueue(Encoding.UTF8.GetBytes(bad), _ => true)).Code);
+    }
+
+    [Fact]
     public void The_websocket_is_ws_with_one_client_id()
     {
         Assert.Equal("clientId=a1-b_2.c", RuntimeRoutes.Ws(Kind, "/ws", "clientId=a1-b_2.c", out _)!.Query);

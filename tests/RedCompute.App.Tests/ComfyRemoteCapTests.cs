@@ -69,7 +69,9 @@ public sealed class ComfyRemoteCapTests : IAsyncLifetime
 
         Assert.False(release.Success);
         Assert.Contains("/queue", release.Detail);
-        Assert.Contains("64 KiB cap", release.Detail);
+        // The node reads a /queue answer whole to redact it (review item 5), so its own cap cuts an endless one before
+        // anything reaches the server's JSON cap.
+        Assert.Contains("over 32 MiB", release.Detail);
         await _kit.Comfy.EndlessAborted.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.NotEqual("ok", (await ForwardedAsync("/queue")).Outcome);
     }

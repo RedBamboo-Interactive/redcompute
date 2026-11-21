@@ -35,8 +35,10 @@ public enum BodyRule
 /// <summary>
 /// An allowed exchange: the request the node sends the runtime, rebuilt from parsed parts. <paramref name="PromptId"/> is
 /// the prompt a route acts on by its path (<c>/api/jobs/{id}/cancel</c>): one the server must have submitted.
+/// <paramref name="Response"/> is what the node does with the runtime's answer (<see cref="ResponseRule"/>).
 /// </summary>
-public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyRule Body, string? PromptId = null)
+public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyRule Body, string? PromptId = null,
+    ResponseRule Response = ResponseRule.Pass)
 {
     /// <summary>Whether the route needs a body (its rule reads one): a body-less request there is refused.</summary>
     public bool NeedsBody => Body is BodyRule.ImageUpload or BodyRule.QueueDeleteOnly or BodyRule.PromptSubmit or BodyRule.InterruptOwnPrompt;
@@ -75,7 +77,9 @@ public static class RuntimeRoutes
         var route = (method, segments) switch
         {
             ("GET", ["system_stats"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal),
-            ("GET", ["queue"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal),
+            ("GET", ["queue"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal) is { } queue
+                ? queue with { Response = ResponseRule.QueueRedacted }
+                : null,
             ("GET", ["history", var id]) when IsId(id) => Plain(rebuiltPath, pairs, ["max_items"], 0, BodyRule.None, ref refusal),
             ("GET", ["view"]) => View(rebuiltPath, pairs, ref refusal),
             ("POST", ["prompt"]) => Plain(rebuiltPath, pairs, [], 16 * MiB, BodyRule.PromptSubmit, ref refusal),

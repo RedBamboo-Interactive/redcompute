@@ -18,6 +18,8 @@ namespace RedCompute.Node.Runtimes;
 /// <item>the path and query rebuilt from parsed parts (<see cref="RuntimeRoutes"/>), with the route's body rule.</item>
 /// <item>at most one <c>Content-Type</c>; an upload's is the one the guard parsed, rebuilt.</item>
 /// <item>the prompt routes acting only on the prompts the server submitted here (<see cref="Submitted"/>).</item>
+/// <item>an answer the node rewrites (<see cref="ResponseRule"/>: <c>GET /queue</c> redacted) asked for without
+/// <c>Accept-Encoding</c>, so the node reads it as it is.</item>
 /// </list>
 /// </summary>
 public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarget
@@ -93,6 +95,7 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
         foreach (var (name, value) in RuntimeRoutes.ForwardedHeaders(open.Headers))
         {
             if (route.Body == BodyRule.ImageUpload && name.Equals("content-type", StringComparison.OrdinalIgnoreCase)) continue;
+            if (route.Response != ResponseRule.Pass && name.Equals("accept-encoding", StringComparison.OrdinalIgnoreCase)) continue;
             if (!request.Headers.TryAddWithoutValidation(name, value))
                 request.Content?.Headers.TryAddWithoutValidation(name, value);
         }
@@ -110,6 +113,7 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
         {
             throw new ForwardTargetException(ForwardErrorCodes.UpstreamFailed, $"{runtime.Id} did not answer: {error.Message}");
         }
+        if (route.Response == ResponseRule.QueueRedacted) return await RedactedQueueAsync(runtime, response, ct);
         var headers = new List<KeyValuePair<string, string>>();
         foreach (var (name, values) in response.Headers.Concat(response.Content.Headers))
         {
@@ -121,6 +125,28 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
         if (route.Body == BodyRule.PromptSubmit && response.IsSuccessStatusCode)
             stream = new PromptAnswerRecorder(stream, id => Submitted.Add(runtime.Id, id));
         return new ForwardUpstreamResponse((int)response.StatusCode, headers, stream, response);
+    }
+
+    /// <summary>
+    /// <c>GET /queue</c>, redacted on the node (<see cref="ResponseRule.QueueRedacted"/>): read whole (capped), rewritten,
+    /// and sent as JSON with its own length. A failed answer goes back as its status alone, with no body.
+    /// </summary>
+    private async Task<ForwardUpstreamResponse> RedactedQueueAsync(RuntimeRegistration runtime, HttpResponseMessage response,
+        CancellationToken ct)
+    {
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode) return new ForwardUpstreamResponse((int)response.StatusCode, [], Stream.Null);
+            if (response.Content.Headers.ContentEncoding.Any(encoding => !encoding.Equals("identity", StringComparison.OrdinalIgnoreCase)))
+                throw new ForwardTargetException(ForwardErrorCodes.UpstreamFailed, "The runtime's /queue answer is encoded.");
+            byte[] answer;
+            await using (var body = await response.Content.ReadAsStreamAsync(ct))
+                answer = await RuntimeAnswers.ReadCappedAsync(body, RuntimeAnswers.MaxQueueBytes, "/queue", ct);
+            var redacted = RuntimeAnswers.RedactQueue(answer, id => Submitted.Contains(runtime.Id, id));
+            return new ForwardUpstreamResponse((int)response.StatusCode,
+                [new("content-type", "application/json"), new("content-length", redacted.Length.ToString(System.Globalization.CultureInfo.InvariantCulture))],
+                new MemoryStream(redacted));
+        }
     }
 
     public async Task<WebSocket> ConnectAsync(ForwardOpen open, ForwardDecision decision, CancellationToken ct)
