@@ -124,6 +124,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
     // The machine the app-servers run on: their processes and project directories. Node zero's local host by default.
     private readonly IExecutionHost _host;
+    private readonly ISessionScratchWriteResolver? _scratchWriteResolver;
 
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
     // The session cap and the "already live" resume check are check-then-act across the app-server
@@ -145,10 +146,11 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         CodexSessionService exec, IJobTracker jobTracker,
         CodexAccountUsageService accountUsage,
         IProviderQualityModeResolver qualityModes, Func<string?> titleQualityTier,
-        Action<string, Guid?> log, IExecutionHost? host = null)
+        Action<string, Guid?> log, IExecutionHost? host = null, ISessionScratchWriteResolver? scratchWriteResolver = null)
     {
         // Before recovery below: it kills recorded processes on this host.
         _host = host ?? LocalExecutionHost.Shared;
+        _scratchWriteResolver = scratchWriteResolver;
         LaunchAppServerProcess = spec => _host.Processes.Start(spec);
         _config = config;
         _store = store;
@@ -333,6 +335,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             conn = await ConnectAsync(id, projectPath, scratchDirectory,
                 suiteAccess: !SessionExecutionProfile.IsConversationOnly(executionProfile),
                 spawned);
+            info.WritableScratchDirectory = await ResolveWritableScratchAsync(info, conn.InitializeResult, () => provenance);
             var session = new ManagedSession { Info = info, Connection = conn };
 
             var result = await conn.SendRequestAsync(
@@ -414,6 +417,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 ScratchDirectoryForResume(record),
                 suiteAccess: !conversationOnly,
                 spawned);
+            info.WritableScratchDirectory = await ResolveWritableScratchAsync(info, conn.InitializeResult,
+                () => _jobLifecycle.GetCreationProvenance(info));
             try
             {
                 var resumedThread = await conn.SendRequestAsync(
@@ -495,6 +500,34 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
            && threadId.ValueKind == JsonValueKind.String
             ? threadId.GetString()
             : null;
+
+    private Task<string?> ResolveWritableScratchAsync(CodexSessionInfo info, JsonElement initializeResult,
+        Func<JobProvenance?> creationProvenance)
+        => _host.Platform.IsWindows && _scratchWriteResolver is not null
+            && !string.IsNullOrWhiteSpace(info.ScratchDirectory)
+            && _config.SandboxMode != "read-only"
+            && !SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            && SupportsPhysicalScratchWriteRoot(initializeResult)
+            ? _scratchWriteResolver.ResolveWritableAsync(_host, creationProvenance(), info.ScratchDirectory)
+            : Task.FromResult<string?>(null);
+
+    // Older clients may refuse the additional root at command startup. 0.170 is the first version
+    // we tested with exact physical roots on the Windows restricted-token backend.
+    private static readonly Version PhysicalScratchMinimumVersion = new(0, 170, 0);
+
+    internal static bool SupportsPhysicalScratchWriteRoot(JsonElement initializeResult)
+    {
+        const string prefix = "redcompute/";
+        if (initializeResult.ValueKind != JsonValueKind.Object
+            || !initializeResult.TryGetProperty("userAgent", out var userAgent)
+            || userAgent.ValueKind != JsonValueKind.String
+            || userAgent.GetString()?.Split(' ', 2)[0] is not { } product
+            || !product.StartsWith(prefix, StringComparison.Ordinal))
+            return false;
+
+        return Version.TryParse(product.AsSpan(prefix.Length), out var version)
+            && version >= PhysicalScratchMinimumVersion;
+    }
 
     internal static string? ScratchDirectoryForResume(CodexSessionRecord record)
         => SessionExecutionProfile.IsConversationOnly(record.ExecutionProfile)
@@ -942,7 +975,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// The per-turn sandbox, by level (sent every turn, so a live change applies from the next one).
     /// At Full the configured sandbox applies as before. Below Full Codex runs only what its
     /// sandbox allows and asks (on-request) for anything more, so the sandbox is what the level
-    /// means: Auto is workspaceWrite on the project with the network (Codex's sandbox is its safety
+    /// means: Auto is workspaceWrite with the network (Codex's sandbox is its safety
     /// check, as the classifier is Claude's), Ask the same without the network. Never the configured
     /// danger-full-access below Full (with nothing left to escalate, that made Ask the same as Full). The
     /// sandbox param on thread/start is a *string* enum and is ignored here; the per-turn policy is
@@ -956,14 +989,16 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         if (full && _config.SandboxMode == "danger-full-access")
             return new { type = "dangerFullAccess" };
         var networkAccess = full || info.AccessLevel == Core.Sessions.SessionAccessLevels.Auto;
-        // Codex's Windows sandbox cannot enforce the tmp roots workspaceWrite adds by default ("split
-        // writable root sets"), so without these two every command is refused and asks. The project
-        // stays the only writable root. The session's execution host decides, as for the launch argv.
+        // Keep implicit temp grants disabled. On Windows, only add scratch that Leaf verified
+        // for this session. The session's execution host decides, as for the launch argv.
         if (_host.Platform.IsWindows)
             return new
             {
                 type = "workspaceWrite",
-                writableRoots = new[] { info.ProjectPath },
+                writableRoots = info.WritableScratchDirectory is { } scratch
+                    && !string.Equals(scratch, info.ProjectPath, _host.PathRules.Comparison)
+                        ? new[] { info.ProjectPath, scratch }
+                        : new[] { info.ProjectPath },
                 networkAccess,
                 excludeTmpdirEnvVar = true,
                 excludeSlashTmp = true,

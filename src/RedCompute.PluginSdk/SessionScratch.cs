@@ -1,7 +1,14 @@
+using RedCompute.Core.Jobs;
 using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.PluginSdk;
+
+/// <summary>Verifies a session's existing scratch directory before a provider grants it write access.</summary>
+public interface ISessionScratchWriteResolver
+{
+    Task<string?> ResolveWritableAsync(IExecutionHost host, JobProvenance? provenance, string? scratchDirectory);
+}
 
 public static class SessionScratch
 {

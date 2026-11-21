@@ -6,6 +6,7 @@ using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
 using RedCompute.App.Services.Nodes;
+using RedCompute.App.Services.Placement;
 using RedCompute.App.Api;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
@@ -34,6 +35,7 @@ public static class RedComputeHost
     private static readonly SemaphoreSlim ProviderRefreshGate = new(1, 1);
     private static CancellationTokenSource? _relayCts;
     private static RelayServer? _relayServer;
+    private static KernelPlacementClient? _kernelPlacement;
 
     public static SqliteLogPersistence LogPersistence { get; } = new();
     public static LogService LogService { get; } = new(new LogServiceOptions
@@ -192,6 +194,7 @@ public static class RedComputeHost
     private static void InitializeCapabilities()
     {
         var config = ConfigManager.Config;
+        _kernelPlacement = new KernelPlacementClient(config.RedLeafUrl, BadgeSigning.Shared);
 
         var extraServices = new object?[]
         {
@@ -201,6 +204,7 @@ public static class RedComputeHost
             (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),
             (IExecutionHost)Nodes.LocalHost,
             (INodeRegistry)Nodes,
+            _kernelPlacement,
         };
 
         foreach (var (slug, capConfig) in config.Capabilities)
@@ -283,6 +287,7 @@ public static class RedComputeHost
                 (Action<string, Guid?>)((message, jobId) => Log(message, jobId)),
                 (IExecutionHost)Nodes.LocalHost,
                 (INodeRegistry)Nodes,
+                _kernelPlacement,
             };
             foreach (var (capabilitySlug, providerName) in changed)
             {

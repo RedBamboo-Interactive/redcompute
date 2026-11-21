@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.Placement;
+using RedCompute.Core.Jobs;
 using RedCompute.PluginSdk;
 using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
@@ -77,6 +78,46 @@ public sealed class PlacementResolverTests : IDisposable
         Assert.Equal("S:\\Nova\\d1", result.Value!.Path);
         Assert.Equal(5, result.Value.Environment.Count);
         Assert.Equal("""{"scratch":{"owner":"Nova","executionKey":"d1/node run"}}""", Assert.Single(kernel.Requests).Body);
+    }
+
+    [Theory]
+    [InlineData("nova", JobProvenanceAssurance.Verified, "d1", true, false, true, true)]
+    [InlineData("nova", JobProvenanceAssurance.Verified, "d2", true, false, true, false)]
+    [InlineData("nova", JobProvenanceAssurance.Verified, "", true, false, true, false)]
+    [InlineData("nova", JobProvenanceAssurance.Verified, "d1", true, true, false, false)]
+    [InlineData("nova", JobProvenanceAssurance.Verified, "d1", false, false, false, false)]
+    [InlineData("nova", JobProvenanceAssurance.Asserted, "d1", true, false, false, false)]
+    [InlineData("codered", JobProvenanceAssurance.Verified, "d1", true, false, false, false)]
+    public async Task A_scratch_write_grant_requires_the_allocation_for_the_verified_nova_discussion(
+        string app, JobProvenanceAssurance assurance, string requestedKey,
+        bool signed, bool ambiguous, bool callsKernel, bool allowed)
+    {
+        var ownerDirectory = Path.Combine(_root, "Nova");
+        var allocated = Path.Combine(ownerDirectory, "d1");
+        Directory.CreateDirectory(allocated);
+        Directory.CreateDirectory(Path.Combine(ownerDirectory, "d2"));
+        var environment = SessionScratch.Environment(allocated);
+        var kernel = new Kernel((_, _) => (HttpStatusCode.OK, JsonSerializer.Serialize(
+            new { scratch = new { path = allocated, environment } })));
+        var context = new List<JobContextReference> { new("discussion", "d1") };
+        if (signed) context.Add(new("execution", Guid.NewGuid().ToString("D")));
+        if (ambiguous) context.Add(new("discussion", "d2"));
+        var provenance = new JobProvenance(JobProvenance.CurrentSchemaVersion,
+            new JobOrigin("redcompute", new JobAppReference("plugin", app, null, app),
+                new JobEntrypoint("http", "/ai-session/sessions")),
+            new JobActor("agent", "Nova", AgentId.ToString()), new JobBeneficiary("user", "owner"),
+            context, new JobTrace(), assurance, DateTimeOffset.UtcNow);
+        var host = LocalExecutionHost.Shared;
+
+        var result = await new KernelPlacementClient(kernel.Client())
+            .ResolveWritableAsync(host, provenance, Path.Combine(ownerDirectory, requestedKey));
+
+        Assert.Equal(allowed ? host.Files.GetFinalDirectoryPath(host.Path(allocated)) : null, result);
+        if (allowed) Assert.NotNull(result);
+        if (callsKernel)
+            Assert.Equal("""{"scratch":{"owner":"Nova","executionKey":"d1"}}""", Assert.Single(kernel.Requests).Body);
+        else
+            Assert.Empty(kernel.Requests);
     }
 
     [Theory]

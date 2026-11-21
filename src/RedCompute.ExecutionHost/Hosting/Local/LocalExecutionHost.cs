@@ -3,6 +3,7 @@ using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Data.Sqlite;
+using Microsoft.Win32.SafeHandles;
 using RedCompute.Core.Hardware;
 using RedCompute.Core.Storage;
 
@@ -290,6 +291,42 @@ public sealed class LocalExecutionHost : IExecutionHost
                 ? new HostFileStat(true, true, 0, directory.Attributes, directory.LastWriteTimeUtc)
                 : new HostFileStat(false, false, 0, default, default);
         }
+
+        public string? GetFinalDirectoryPath(HostPath path)
+        {
+            if (!DirectoryExists(path)) return null;
+            if (!OperatingSystem.IsWindows()) return System.IO.Path.GetFullPath(path.Value);
+
+            const uint backupSemantics = 0x02000000;
+            using var directory = OpenDirectory(path.Value, 0, FileShare.ReadWrite | FileShare.Delete,
+                IntPtr.Zero, FileMode.Open, backupSemantics, IntPtr.Zero);
+            if (directory.IsInvalid) return null;
+
+            var buffer = new StringBuilder(260);
+            var length = GetFinalPathNameByHandleW(directory, buffer, (uint)buffer.Capacity, 0);
+            if (length >= buffer.Capacity)
+            {
+                buffer.EnsureCapacity(checked((int)length + 1));
+                length = GetFinalPathNameByHandleW(directory, buffer, (uint)buffer.Capacity, 0);
+            }
+            if (length == 0 || length >= buffer.Capacity) return null;
+
+            // The Windows Codex sandbox takes DOS paths. Avoid granting an unresolved alias or share.
+            var resolved = buffer.ToString();
+            const string devicePrefix = @"\\?\";
+            return resolved.StartsWith(devicePrefix, StringComparison.Ordinal)
+                && resolved.Length >= 7 && char.IsAsciiLetter(resolved[4])
+                && resolved[5] == ':' && resolved[6] == '\\'
+                ? resolved[devicePrefix.Length..]
+                : null;
+        }
+
+        [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern SafeFileHandle OpenDirectory(string path, uint access, FileShare share,
+            IntPtr securityAttributes, FileMode creationDisposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle directory, StringBuilder path, uint length, uint flags);
 
         public string ReadAllText(HostPath path) => File.ReadAllText(path.Value);
         public Task<string> ReadAllTextAsync(HostPath path, CancellationToken ct = default) => File.ReadAllTextAsync(path.Value, ct);

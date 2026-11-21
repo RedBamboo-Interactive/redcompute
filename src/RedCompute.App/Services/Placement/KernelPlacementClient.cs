@@ -6,6 +6,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Auth;
+using RedCompute.Core.Jobs;
+using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.App.Services.Placement;
 
@@ -59,7 +62,7 @@ public interface IHostScratch
 /// A kernel without the route (404 without one of those codes), an unreachable kernel and any malformed
 /// answer are 503 <c>placement_resolution_unavailable</c>: the caller keeps its legacy fields.
 /// </summary>
-public sealed class KernelPlacementClient : IWorkspaceResolver, IHostScratch
+public sealed class KernelPlacementClient : IWorkspaceResolver, IHostScratch, ISessionScratchWriteResolver
 {
     internal const string Route = "api/compute/placement/resolve";
 
@@ -118,6 +121,50 @@ public sealed class KernelPlacementClient : IWorkspaceResolver, IHostScratch
         }
         if (ScratchVariables.Any(name => !variables.ContainsKey(name))) return Malformed<ScratchAllocation>("scratch");
         return Resolution<ScratchAllocation>.Of(new(path!, variables));
+    }
+
+    /// <summary>Nova allocates scratch using the Agent name and discussion ID in its verified creation provenance.</summary>
+    public async Task<string?> ResolveWritableAsync(IExecutionHost host, JobProvenance? provenance, string? scratchDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(scratchDirectory)
+            || provenance is not { Assurance: JobProvenanceAssurance.Verified, Origin.App.Id: "nova", Actor.Kind: "agent" }
+            || !Guid.TryParse(provenance.Actor.EntityId, out _)
+            || string.IsNullOrWhiteSpace(provenance.Actor.NameSnapshot)
+            || !provenance.Context.Any(reference => reference.Kind == "execution" && Guid.TryParse(reference.Id, out _)))
+            return null;
+
+        var discussions = provenance.Context
+            .Where(reference => reference.Kind == "discussion")
+            .Select(reference => reference.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (discussions is not [string discussionId] || string.IsNullOrWhiteSpace(discussionId))
+            return null;
+
+        // Resolve from the verified identity. The requested path is only a consistency check.
+        var allocation = await PrepareAsync(new ScratchPlacement(provenance.Actor.NameSnapshot, discussionId));
+        if (allocation.Value is not { } scratch
+            || !SessionScratch.TryResolveDirectory(host, scratch.Path, out var allocated)
+            || !string.Equals(allocated, scratchDirectory, host.PathRules.Comparison)
+            || Path.GetDirectoryName(allocated) is not { } parent
+            || !IsUnredirectedDirectory(host, parent)
+            || !IsUnredirectedDirectory(host, allocated!))
+            return null;
+
+        return host.Files.GetFinalDirectoryPath(host.Path(allocated!));
+    }
+
+    private static bool IsUnredirectedDirectory(IExecutionHost host, string path)
+    {
+        try
+        {
+            return host.Files.Stat(host.Path(path)) is { Exists: true, IsDirectory: true } stat
+                && (stat.Attributes & FileAttributes.ReparsePoint) == 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>The kernel's answer, or the error to report: its own code when it is one it may send.</summary>

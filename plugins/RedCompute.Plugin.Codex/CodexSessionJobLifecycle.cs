@@ -27,11 +27,12 @@ internal sealed class CodexSessionJobLifecycle
         info.JobId = job.Id;
     }
 
+    public JobProvenance? GetCreationProvenance(CodexSessionInfo info)
+        => info.JobId is { } jobId ? _jobs.GetJob(jobId)?.CreationProvenance : null;
+
     public void Resume(CodexSessionInfo info, JobProvenance? provenance = null)
     {
-        provenance ??= info.JobId is { } jobId
-            ? _jobs.GetJob(jobId)?.CreationProvenance
-            : null;
+        provenance ??= GetCreationProvenance(info);
         if (provenance is null)
             throw new JobProvenanceValidationException(
                 "A tracked job with provenance is required to resume this session");

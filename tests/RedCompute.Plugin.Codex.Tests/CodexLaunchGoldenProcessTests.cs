@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using RedCompute.Core.Jobs;
 using RedCompute.Plugin.Codex;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 using Xunit;
 
 namespace RedCompute.Plugin.Codex.Tests;
@@ -63,6 +64,54 @@ public sealed class CodexLaunchGoldenProcessTests : IDisposable
         Assert.NotNull(info);
         _probe.Normalizer.Add(info!.Id, "<session-id>");
         LaunchGoldens.Verify("B-codex-app-server-session", Canonical(launches));
+    }
+
+    [WindowsFact("the verified scratch root is added only on Windows")]
+    public async Task Scratch_root_on_resume_uses_the_creation_record_and_keeps_the_existing_scratch_environment()
+    {
+        var script = (JsonObject)AppServer.DeepClone();
+        var results = script["rpc"]!["results"]!.AsObject();
+        results["initialize"] = new JsonObject { ["userAgent"] = "redcompute/0.170.0" };
+        results["thread/resume"] = new JsonObject { ["thread"] = new JsonObject { ["id"] = "thread-golden" } };
+        var config = Config(script);
+        var jobs = new GoldenJobTracker();
+        var store = new GoldenStore();
+        var resolver = new ScratchWriteResolver(_scratch);
+        await using var interactive = new CodexInteractiveService(
+            config, store, new CodexModelCatalog(config, (_, _) => { }),
+            new CodexSessionService(config, jobs, store, (_, _) => { }), jobs,
+            new CodexAccountUsageService(config, (_, _) => { }), new NoQualityModes(),
+            () => null, (_, _) => { }, scratchWriteResolver: resolver);
+        var createdBy = Provenance();
+        var resumedBy = createdBy with { Actor = createdBy.Actor with { NameSnapshot = "Later caller" } };
+
+        await _probe.RunAsync(async () =>
+        {
+            var started = await interactive.StartSessionAsync(_project, null, "owner", null, null, null, null, null, null,
+                createdBy, _scratch);
+            Assert.NotNull(started);
+            Assert.Equal(_scratch, started.WritableScratchDirectory);
+            await interactive.StopSessionAsync(started.Id);
+
+            var resumed = await interactive.ResumeSessionAsync(started.Id, resumedBy);
+            Assert.NotNull(resumed);
+            Assert.Equal(_scratch, resumed.ScratchDirectory);
+            Assert.Equal(_scratch, resumed.WritableScratchDirectory);
+        });
+
+        Assert.Equal(new[] { createdBy.Actor.NameSnapshot, createdBy.Actor.NameSnapshot }, resolver.Owners);
+    }
+
+    private sealed class ScratchWriteResolver(string scratch) : ISessionScratchWriteResolver
+    {
+        public List<string?> Owners { get; } = [];
+
+        public Task<string?> ResolveWritableAsync(IExecutionHost host, JobProvenance? provenance, string? scratchDirectory)
+        {
+            Owners.Add(provenance?.Actor.NameSnapshot);
+            Assert.Equal(scratch, scratchDirectory);
+            return Task.FromResult<string?>(scratch);
+        }
     }
 
     [WindowsFact("containment is a Windows Job Object and the probe replaces codex.exe")]

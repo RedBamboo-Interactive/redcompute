@@ -278,6 +278,9 @@ public interface IHostFileSystem
     bool FileExists(HostPath path);
     bool DirectoryExists(HostPath path);
     HostFileStat Stat(HostPath path);
+
+    /// <summary>The backing path of an existing local directory, with drive aliases resolved.</summary>
+    string? GetFinalDirectoryPath(HostPath path) => null;
     string ReadAllText(HostPath path);
     Task<string> ReadAllTextAsync(HostPath path, CancellationToken ct = default);
     IEnumerable<string> ReadLines(HostPath path);

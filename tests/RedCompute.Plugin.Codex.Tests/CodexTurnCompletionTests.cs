@@ -33,13 +33,59 @@ public sealed class CodexTurnCompletionTests
     {
         var service = new CodexInteractiveService(new CodexConfig { SandboxMode = configured }, new RecordingStore(),
             null!, null!, null!, null!, null!, () => null, (_, _) => { });
-        var info = new CodexSessionInfo { Id = "session-1", ProjectName = "Test", ProjectPath = ".", ThreadId = "thread-1", AccessLevel = level };
+        var info = new CodexSessionInfo
+        {
+            Id = "session-1", ProjectName = "Test", ProjectPath = ".", ThreadId = "thread-1", AccessLevel = level,
+            ScratchDirectory = @"S:\Nova\d1", WritableScratchDirectory = @"C:\Scratch\Nova\d1",
+        };
 
-        var policy = JsonSerializer.SerializeToElement(service.BuildTurnStartParams(info, [])).GetProperty("sandboxPolicy");
+        var turn = JsonSerializer.SerializeToElement(service.BuildTurnStartParams(info, []));
+        var policy = turn.GetProperty("sandboxPolicy");
 
+        Assert.Equal("on-request", turn.GetProperty("approvalPolicy").GetString());
         Assert.Equal(type, policy.GetProperty("type").GetString());
         Assert.Equal(network, policy.TryGetProperty("networkAccess", out var value) ? value.GetBoolean() : null);
+        if (type == "workspaceWrite")
+        {
+            var roots = policy.GetProperty("writableRoots").Deserialize<string[]>();
+            Assert.Equal(OperatingSystem.IsWindows() ? [".", info.WritableScratchDirectory] : ["."], roots);
+            if (OperatingSystem.IsWindows())
+            {
+                Assert.True(policy.GetProperty("excludeTmpdirEnvVar").GetBoolean());
+                Assert.True(policy.GetProperty("excludeSlashTmp").GetBoolean());
+            }
+        }
+        else
+        {
+            Assert.False(policy.TryGetProperty("writableRoots", out _));
+        }
     }
+
+    [Fact]
+    public void A_scratch_environment_path_alone_does_not_grant_writes()
+    {
+        var service = new CodexInteractiveService(new CodexConfig(), new RecordingStore(),
+            null!, null!, null!, null!, null!, () => null, (_, _) => { });
+        var info = new CodexSessionInfo
+        {
+            Id = "session-1", ProjectName = "Test", ProjectPath = ".", ThreadId = "thread-1",
+            ScratchDirectory = @"S:\Nova\d1",
+        };
+
+        var policy = JsonSerializer.SerializeToElement(service.BuildSandboxPolicy(info));
+
+        Assert.Equal(new[] { "." }, policy.GetProperty("writableRoots").Deserialize<string[]>());
+    }
+
+    [Theory]
+    [InlineData("redcompute/0.170.0 (Windows 10.0.26200; x86_64) dumb (redcompute; 0.2.0)", true)]
+    [InlineData("redcompute/0.171.0", true)]
+    [InlineData("redcompute/0.169.0", false)]
+    [InlineData("redcompute/0.170.0-alpha.1", false)]
+    [InlineData(null, false)]
+    public void Only_a_supported_app_server_gets_the_additional_windows_root(string? userAgent, bool supported)
+        => Assert.Equal(supported, CodexInteractiveService.SupportsPhysicalScratchWriteRoot(
+            JsonSerializer.SerializeToElement(new { userAgent })));
 
     [Theory]
     [InlineData("")]

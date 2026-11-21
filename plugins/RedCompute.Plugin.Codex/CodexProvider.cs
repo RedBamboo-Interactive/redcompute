@@ -77,7 +77,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
 
     public CodexProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
-        Action<string, Guid?> log, IExecutionHost? host = null, INodeRegistry? nodes = null)
+        Action<string, Guid?> log, IExecutionHost? host = null, INodeRegistry? nodes = null,
+        ISessionScratchWriteResolver? scratchWriteResolver = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -100,7 +101,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         _accountUsage = new CodexAccountUsageService(codexConfig, log, host);
         _interactive = new CodexInteractiveService(
             codexConfig, _store, _models, _codex, jobTracker, _accountUsage, qualityModes,
-            () => GetTitleQualityTier(config), log, host);
+            () => GetTitleQualityTier(config), log, host, scratchWriteResolver);
         _cliVersionManager = new NpmCliVersionManager(
             "@openai/codex",
             "Codex",
