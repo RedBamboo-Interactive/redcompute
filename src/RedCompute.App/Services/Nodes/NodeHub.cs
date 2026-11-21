@@ -170,12 +170,22 @@ public sealed partial class NodeHub : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, RuntimeChanges> _runtimeChanges = new(StringComparer.Ordinal);
 
+    /// <summary>Test hook: a window's batch was taken and is about to be applied (the gap a whole list must not enter).</summary>
+    internal Action<string>? RuntimeBatchTaken { get; set; }
+
     /// <summary>One node's pending <c>runtime.changed</c>: the latest per runtime id, applied once per window.</summary>
     private sealed class RuntimeChanges(NodeHub hub, string nodeId)
     {
         private readonly object _gate = new();
         private Dictionary<string, PluginSdk.Hosting.HostRuntime> _pending = new(StringComparer.Ordinal);
         private bool _scheduled;
+
+        /// <summary>
+        /// Held from taking a batch to the end of applying it, and around a whole list (review follow-up 1): a batch
+        /// taken before a list is applied before it, never after, so an older batch cannot overwrite a newer list.
+        /// Never taken under the registry's lock or <see cref="_gate"/>.
+        /// </summary>
+        public readonly object Apply = new();
 
         public void Add(PluginSdk.Hosting.HostRuntime runtime)
         {
@@ -215,27 +225,31 @@ public sealed partial class NodeHub : IAsyncDisposable
             {
                 return;
             }
-            IReadOnlyList<PluginSdk.Hosting.HostRuntime> batch;
-            lock (_gate)
+            lock (Apply)
             {
-                batch = _pending.Values.ToList();
-                _pending = new(StringComparer.Ordinal);
-                _scheduled = false;
-            }
-            if (batch.Count == 0) return;
-            try
-            {
-                hub.ApplyRuntimesNow(nodeId, batch, whole: false);
-            }
-            catch (Exception error)
-            {
-                hub._log($"[NodeHub] Applying {nodeId}'s runtime changes failed: {error.Message}");
+                IReadOnlyList<PluginSdk.Hosting.HostRuntime> batch;
+                lock (_gate)
+                {
+                    batch = _pending.Values.ToList();
+                    _pending = new(StringComparer.Ordinal);
+                    _scheduled = false;
+                }
+                if (batch.Count == 0) return;
+                try
+                {
+                    hub.RuntimeBatchTaken?.Invoke(nodeId);
+                    hub.ApplyRuntimesNow(nodeId, batch, whole: false);
+                }
+                catch (Exception error)
+                {
+                    hub._log($"[NodeHub] Applying {nodeId}'s runtime changes failed: {error.Message}");
+                }
             }
         }
     }
 
     /// <summary>A node reported runtimes: a whole list at once, single changes gathered per node (see <see cref="RuntimeChangeWindow"/>).</summary>
-    private void ApplyRuntimes(string nodeId, IReadOnlyList<PluginSdk.Hosting.HostRuntime> runtimes, bool whole)
+    internal void ApplyRuntimes(string nodeId, IReadOnlyList<PluginSdk.Hosting.HostRuntime> runtimes, bool whole)
     {
         var changes = _runtimeChanges.GetOrAdd(nodeId, id => new RuntimeChanges(this, id));
         if (!whole)
@@ -243,9 +257,13 @@ public sealed partial class NodeHub : IAsyncDisposable
             foreach (var runtime in runtimes) changes.Add(runtime);
             return;
         }
-        // What was pushed before the list answer is older than it: applied first, then replaced by the list.
-        if (changes.Take() is { Count: > 0 } earlier) ApplyRuntimesNow(nodeId, earlier, whole: false);
-        ApplyRuntimesNow(nodeId, runtimes, whole: true);
+        // What was pushed before the list answer is older than it: applied first, then replaced by the list. Under the
+        // node's apply lock, so a window's batch already taken is applied before the list, never after it.
+        lock (changes.Apply)
+        {
+            if (changes.Take() is { Count: > 0 } earlier) ApplyRuntimesNow(nodeId, earlier, whole: false);
+            ApplyRuntimesNow(nodeId, runtimes, whole: true);
+        }
     }
 
     /// <summary>The registry keeps them, and the node's host's observers hear each one.</summary>

@@ -41,6 +41,44 @@ public sealed class RuntimeChangeFloodTests : IAsyncLifetime
     private string CacheFile => Path.Combine(_cache, _node + ".json");
 
     [Fact]
+    public async Task A_batch_taken_before_a_runtime_list_is_applied_before_it_and_never_overwrites_it()
+    {
+        // Review follow-up 1: the window's batch is taken, then the link-up runtime.list answer (newer) lands before the
+        // batch is applied. The batch must go first and the list win.
+        _piped = new PipedNode(_hub, _node, nodeHandler: new RuntimeNodeHandler(), features: RuntimeNodeHandler.Phase4Features);
+        await WaitAsync(() => _registry.RuntimesOf(_node).Count == 1, "the runtime list");
+        var session = _piped.Client.Session!;
+
+        for (var round = 0; round < 5; round++)
+        {
+            var listPort = 8300 + round;
+            var list = RemoteRuntimeReport.ParseList(System.Text.Json.JsonSerializer.SerializeToElement(
+                new JsonArray(RuntimeNodeHandler.ComfyUi(status: "running", port: listPort))));
+            Task? listed = null;
+            var gap = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _hub.RuntimeBatchTaken = id =>
+            {
+                if (id != _node) return;
+                _hub.RuntimeBatchTaken = null;
+                // The list answer arrives in the gap. Given time to land: without one apply lock it would land now.
+                listed = Task.Run(() => _hub.ApplyRuntimes(_node, list, whole: true));
+                listed.Wait(TimeSpan.FromMilliseconds(300));
+                gap.TrySetResult();
+            };
+
+            await session.NotifyAsync("runtime.changed", RuntimeNodeHandler.ComfyUi(status: "stopped", port: 8200));
+            await gap.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await listed!.WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.Delay(_hub.RuntimeChangeWindow * 2); // nothing else is pending
+
+            Assert.Equal((BackendStatus.Running, listPort), (_registry.RuntimesOf(_node).Single().Status, _registry.RuntimesOf(_node).Single().Ports.Single()));
+            await _registry.FlushCacheAsync();
+            var cached = JsonNode.Parse(File.ReadAllText(CacheFile))!["runtimes"]!.AsArray().Single()!;
+            Assert.Equal(("running", listPort), ((string?)cached["status"], (int)cached["ports"]![0]!));
+        }
+    }
+
+    [Fact]
     public async Task A_flood_of_runtime_changes_costs_a_few_updates_and_the_latest_state_wins()
     {
         _piped = new PipedNode(_hub, _node, nodeHandler: new RuntimeNodeHandler(), features: RuntimeNodeHandler.Phase4Features);
