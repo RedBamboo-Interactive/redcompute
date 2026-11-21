@@ -367,6 +367,70 @@ public sealed class NodeProviderTests : IAsyncLifetime
         Assert.Equal((409, "node_offline"), (answer.Status, answer.Code));
     }
 
+    // ================================================================= rerun (review P4-P7, item 10)
+
+    [Fact]
+    public async Task A_rerun_of_a_remote_job_runs_on_its_node_and_a_node_zero_job_reruns_as_before()
+    {
+        var first = await GenerateAsync(User(Owner), Own);
+        Assert.Equal(200, first.Status);
+        var inner = (ForwardingProvider)NodeProvider(Own).Inner;
+        var original = _jobs.GetJob(Assert.Single(inner.Requests).JobId!.Value)!;
+
+        var rerun = await SendAsync("POST", "/image-gen/generate", User(Owner), GlobalEndpoints.RerunBody(original, _nodes));
+
+        Assert.Equal(200, rerun.Status);
+        Assert.Equal(2, inner.Requests.Count);
+        var again = _jobs.GetJob(inner.Requests[1].JobId!.Value)!;
+        Assert.Equal((Own, "explicit"), (again.NodeId, again.PlacementWhy));
+        Assert.Equal(["prompt"], inner.Requests[1].Parameters.Keys); // placement is not the provider's
+        Assert.Empty(_zero.Requests);
+
+        // Node zero's job: the body it always had, no placement, and it reruns on node zero.
+        var zeroFirst = await GenerateAsync(User(Owner), null, noPlacement: true);
+        Assert.Equal(200, zeroFirst.Status);
+        var zeroJob = _jobs.GetJob(Assert.Single(_zero.Requests).JobId!.Value)!;
+        Assert.Equal(_nodes.StampNodeId, zeroJob.NodeId);
+        var zeroBody = GlobalEndpoints.RerunBody(zeroJob, _nodes);
+        Assert.Equal($$"""{"prompt":"a red leaf","name":"Rerun: image-gen","rationale":"Rerun of job {{zeroJob.Id}}"}""", zeroBody);
+        foreach (var legacy in new[] { null, _nodes.LegacyNodeId, _nodes.LocalNodeId, "local" })
+        {
+            zeroJob.NodeId = legacy;
+            Assert.Equal(zeroBody, GlobalEndpoints.RerunBody(zeroJob, _nodes));
+        }
+        Assert.Equal(200, (await SendAsync("POST", "/image-gen/generate", User(Owner), zeroBody)).Status);
+        Assert.Equal(2, _zero.Requests.Count);
+        Assert.Equal(2, inner.Requests.Count);
+    }
+
+    [Fact]
+    public async Task A_rerun_of_a_remote_job_whose_node_is_offline_or_gone_is_the_typed_error_never_node_zero()
+    {
+        var first = await GenerateAsync(User(Owner), Own);
+        Assert.Equal(200, first.Status);
+        var original = _jobs.GetJob(Assert.Single(((ForwardingProvider)NodeProvider(Own).Inner).Requests).JobId!.Value)!;
+        var body = GlobalEndpoints.RerunBody(original, _nodes);
+        var jobs = _jobs.GetJobs(null, null, null, 100, 0).TotalCount;
+
+        await _piped[0].DisposeAsync();
+        _piped.RemoveAt(0);
+        await WaitAsync(() => _nodes.Find(Own)?.Status == Core.Nodes.NodeStatus.Offline, "the link to close");
+
+        // Exactly what a fresh generate naming the offline node answers.
+        var offline = await SendAsync("POST", "/image-gen/generate", User(Owner), body);
+        var fresh = await GenerateAsync(User(Owner), Own);
+        Assert.Equal((409, "node_offline"), (offline.Status, offline.Code));
+        Assert.Equal(fresh.Body, offline.Body);
+
+        // The node is gone from the kernel's list: 404 node_not_found, as for any id no node has.
+        _nodes.ApplyKernelNodes([Kernel(Others, "Other's box", owner: "user-other")]);
+        var gone = await SendAsync("POST", "/image-gen/generate", User(Owner), body);
+        Assert.Equal((404, "node_not_found"), (gone.Status, gone.Code));
+
+        Assert.Empty(_zero.Requests);
+        Assert.Equal(jobs, _jobs.GetJobs(null, null, null, 100, 0).TotalCount);
+    }
+
     // ================================================================= Automatic (design 3.3 without the GPU preference)
 
     /// <summary>The routing matrix: where the work runs for each placement, node zero's state and the remote runtime's accelerator.</summary>

@@ -300,7 +300,7 @@ public static class GlobalEndpoints
             return Results.Ok(new { id, status = "Cancelled" });
         });
 
-        endpoints.MapPost("/jobs/{id:guid}/rerun", "Rerun a completed job", async (Guid id, HttpContext ctx) =>
+        endpoints.MapPost("/jobs/{id:guid}/rerun", "Rerun a completed job. A job a remote node ran reruns on that node, or fails as a generate naming it would (409 node_offline or node_not_eligible, 404 node_not_found), never on node zero instead",async (Guid id, HttpContext ctx) =>
         {
             var job = jobTracker.GetJob(id);
             if (job == null) return Results.NotFound(new { error = "not_found", message = $"Job {id} not found" });
@@ -311,11 +311,7 @@ public static class GlobalEndpoints
             if (!canRerun)
                 return Results.BadRequest(new { error = "not_rerunnable", message = $"Cannot rerun '{job.CapabilitySlug}' jobs" });
             var generatePath = $"/{job.CapabilitySlug}/generate";
-
-            var inputDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(job.InputJson) ?? new();
-            inputDict["name"] = $"Rerun: {job.Name ?? job.CapabilitySlug}";
-            inputDict["rationale"] = $"Rerun of job {id}";
-            var rerunBody = System.Text.Json.JsonSerializer.Serialize(inputDict);
+            var rerunBody = RerunBody(job, nodes);
 
             JobProvenance provenance;
             try
@@ -718,6 +714,30 @@ public static class GlobalEndpoints
             .WithParam("offset", "integer", description: "Pagination offset", defaultValue: 0, location: ParamLocation.Query);
 
     }
+
+    /// <summary>
+    /// What a rerun posts to <c>/{slug}/generate</c>: the job's input, its name and rationale, and, for a job a remote
+    /// node ran, <c>placement {nodeId}</c> naming that node (review P4-P7, item 10). So the rerun runs where the job ran
+    /// or fails as a fresh job naming that node would (409 <c>node_offline</c> or <c>node_not_eligible</c>, 404
+    /// <c>node_not_found</c> for a node that is gone or the caller may not use), never silently on node zero. A job
+    /// node zero ran (its id, the legacy id or no id) posts exactly what it did before.
+    /// </summary>
+    internal static string RerunBody(JobRecord job, INodeRegistry? nodes)
+    {
+        var input = JsonSerializer.Deserialize<Dictionary<string, object?>>(job.InputJson) ?? new();
+        input["name"] = $"Rerun: {job.Name ?? job.CapabilitySlug}";
+        input["rationale"] = $"Rerun of job {job.Id}";
+        if (RemoteNodeOf(job, nodes) is { } nodeId)
+            input[PlacementRequest.Member] = new Dictionary<string, object?> { ["nodeId"] = nodeId };
+        return JsonSerializer.Serialize(input);
+    }
+
+    /// <summary>The remote node a job ran on, or null for node zero (its id, the legacy id, the alias or a row with none).</summary>
+    private static string? RemoteNodeOf(JobRecord job, INodeRegistry? nodes)
+        => nodes is not null && job.NodeId is { } nodeId
+           && nodeId != nodes.LocalNodeId && nodeId != nodes.LegacyNodeId && nodeId != INodeRegistry.LocalAlias
+            ? nodeId
+            : null;
 
     internal static void ApplyRerunCredentials(
         HttpContext context,
