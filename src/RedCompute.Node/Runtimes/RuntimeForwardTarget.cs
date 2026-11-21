@@ -22,12 +22,15 @@ namespace RedCompute.Node.Runtimes;
 /// <c>Accept-Encoding</c>, so the node reads it as it is.</item>
 /// </list>
 /// </summary>
-public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarget
+public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? time = null) : IForwardTarget
 {
     private sealed record Admitted(RuntimeRegistration Runtime, AllowedRoute Route, string? Boundary);
 
     /// <summary>The prompt ids each runtime answered to the server's <c>/prompt</c> through this forward.</summary>
     public SubmittedPrompts Submitted { get; } = new();
+
+    /// <summary>The files each runtime's <c>/history</c> listed for those prompts: what <c>/view</c> serves.</summary>
+    public ServerOutputs Outputs { get; } = new(time ?? TimeProvider.System);
 
     private static readonly HttpClient Http = new(new SocketsHttpHandler
     {
@@ -59,6 +62,10 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
         if (route.PromptId is { } promptId && !Submitted.Contains(runtime.Id, promptId))
             return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed,
                 $"{route.Path} acts only on a prompt the server submitted through this node.");
+        // Never the owner's own files, even one that exists under a guessed name (review item 5).
+        if (route.View is { } file && !Outputs.Contains(runtime.Id, file))
+            return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed,
+                "/view serves only the files the server's own prompts produced on this node.");
         string? boundary = null;
         if (route.Body == BodyRule.ImageUpload && (boundary = RuntimeRoutes.Boundary(open.Headers)) is null)
             return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, "An upload is multipart/form-data with one boundary.");
@@ -128,6 +135,8 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
         var stream = await response.Content.ReadAsStreamAsync(ct);
         if (route.Body == BodyRule.PromptSubmit && response.IsSuccessStatusCode)
             stream = new PromptAnswerRecorder(stream, id => Submitted.Add(runtime.Id, id));
+        if (route.Response == ResponseRule.HistoryOutputs && response.IsSuccessStatusCode && route.PromptId is { } historyOf)
+            stream = new HistoryAnswerRecorder(stream, answer => Outputs.Add(runtime.Id, ServerOutputs.FilesOf(answer.Span, historyOf)));
         return new ForwardUpstreamResponse((int)response.StatusCode, headers, stream, response);
     }
 

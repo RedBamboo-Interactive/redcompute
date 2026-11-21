@@ -16,6 +16,12 @@ public enum ResponseRule
     /// own graphs, extra data and outputs, and their prompt ids, never leave the node.
     /// </summary>
     QueueRedacted,
+
+    /// <summary>
+    /// <c>GET /history/{id}</c> (review item 5): passed through, and the output files it lists for the server's prompt
+    /// recorded (<see cref="ServerOutputs"/>), the only files <c>/view</c> then serves.
+    /// </summary>
+    HistoryOutputs,
 }
 
 /// <summary>The node's rewrites of a runtime's answer (<see cref="ResponseRule"/>).</summary>

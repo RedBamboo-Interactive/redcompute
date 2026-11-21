@@ -241,6 +241,8 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
     [Fact]
     public async Task A_get_reaches_the_runtime_as_the_node_rebuilds_it()
     {
+        // A file one of the server's prompts produced here (as its /history answer listed it): /view serves only these.
+        _linked.Agent.ForwardTarget.Outputs.Add(Attached, [new OutputFile("output", "", "ComfyUI_00001_.png")]);
         using var http = Http();
         using var request = new HttpRequestMessage(HttpMethod.Get, "/view?filename=ComfyUI_00001_.png&type=output&subfolder=");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "leaf-secret");
@@ -376,6 +378,7 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
     [InlineData("GET", "/api/userdata/comfy.settings.json")]
     [InlineData("GET", "/view?filename=../../models/x.safetensors&type=output")]
     [InlineData("GET", "/view?filename=owners-photo.png&type=input")]
+    [InlineData("GET", "/view?filename=ComfyUI_00001_.png&type=output&subfolder=")] // the owner's, guessed: never recorded
     [InlineData("GET", "/object_info")]
     [InlineData("POST", "/customnode/install")]
     [InlineData("GET", "/internal/logs")]
@@ -422,6 +425,7 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
     {
         await _linked.ServerSession.CallAsync("runtime.start", new JsonObject { ["id"] = Managed });
         var pid = PidOf(_home, Managed);
+        _linked.Agent.ForwardTarget.Outputs.Add(Attached, [new OutputFile("output", "", "slow.bin")]);
         using var http = Http();
         using var response = await http.GetAsync("/view?filename=slow.bin", HttpCompletionOption.ResponseHeadersRead);
         var body = await response.Content.ReadAsStreamAsync();

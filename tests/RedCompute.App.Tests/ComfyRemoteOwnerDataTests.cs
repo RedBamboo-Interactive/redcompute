@@ -101,6 +101,43 @@ public sealed class ComfyRemoteOwnerDataTests : IAsyncLifetime
         }
     }
 
+    // ================================================================= GET /view
+
+    [Fact]
+    public async Task View_serves_only_the_files_the_servers_own_prompts_produced()
+    {
+        // Before any job of the server's: even the name its job will produce is not served yet.
+        using var http = Forward();
+        const string own = "/view?filename=out_00001_.png&subfolder=&type=output";
+        Assert.Equal("route_not_allowed", CodeOf(await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.GetAsync(own))));
+        Assert.DoesNotContain(_kit.Comfy.Requests, request => request.Target.StartsWith("/view", StringComparison.Ordinal));
+
+        // The server's job end to end: its output came from /history, then /view, through the real forward.
+        await using var provider = Provider();
+        await ServerJobAsync(provider);
+        Assert.Contains(_kit.Comfy.Requests, request => request.Target.StartsWith("/view?filename=out_00001_.png", StringComparison.Ordinal));
+        Assert.Equal(_kit.Comfy.Output, await http.GetByteArrayAsync(own));
+
+        // The owner's files are refused though the runtime has them (the fake serves any name): a guessed sequential
+        // name, the server's own name in another type or subfolder, and a name with no type (ComfyUI's "output").
+        foreach (var target in new[]
+                 {
+                     "/view?filename=ComfyUI_00001_.png&subfolder=&type=output",
+                     "/view?filename=ComfyUI_00001_.png",
+                     "/view?filename=out_00002_.png&type=output",
+                     "/view?filename=out_00001_.png&subfolder=&type=temp",
+                     "/view?filename=out_00001_.png&subfolder=owner&type=output",
+                 })
+        {
+            var before = _kit.Comfy.Requests.Count(request => request.Target.StartsWith("/view", StringComparison.Ordinal));
+            Assert.Equal("route_not_allowed", CodeOf(await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.GetAsync(target))));
+            Assert.Equal(before, _kit.Comfy.Requests.Count(request => request.Target.StartsWith("/view", StringComparison.Ordinal)));
+        }
+
+        // The same file asked as ComfyUI defaults it (no subfolder, no type) is the one recorded.
+        Assert.Equal(_kit.Comfy.Output, await http.GetByteArrayAsync("/view?filename=out_00001_.png"));
+    }
+
     // ================================================================= POST /free
 
     private static StringContent Json(string body) => new(body, System.Text.Encoding.UTF8, "application/json");

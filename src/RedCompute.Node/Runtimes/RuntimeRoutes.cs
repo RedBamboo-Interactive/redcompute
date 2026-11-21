@@ -42,9 +42,10 @@ public enum BodyRule
 /// An allowed exchange: the request the node sends the runtime, rebuilt from parsed parts. <paramref name="PromptId"/> is
 /// the prompt a route acts on by its path (<c>/api/jobs/{id}/cancel</c>): one the server must have submitted.
 /// <paramref name="Response"/> is what the node does with the runtime's answer (<see cref="ResponseRule"/>).
+/// <paramref name="View"/> is the file a <c>/view</c> asks for: one the server's own prompts produced.
 /// </summary>
 public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyRule Body, string? PromptId = null,
-    ResponseRule Response = ResponseRule.Pass)
+    ResponseRule Response = ResponseRule.Pass, OutputFile? View = null)
 {
     /// <summary>Whether the route needs a body (its rule reads one): a body-less request there is refused.</summary>
     public bool NeedsBody => Body is BodyRule.ImageUpload or BodyRule.QueueDeleteOnly or BodyRule.PromptSubmit or BodyRule.InterruptOwnPrompt
@@ -61,7 +62,8 @@ public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyR
 /// What the owner keeps on the node stays there (review P4-P7, item 4): <c>/view</c> reads only <c>output</c> and
 /// <c>temp</c> (never <c>input</c>, the owner's own images); <c>/object_info</c> is not on the list, since it lists the
 /// owner's input files and models and the server never asks for it; the routes that stop or dequeue a prompt, and
-/// <c>/history/{id}</c>, act only on prompts the server submitted through this node; and <c>GET /queue</c> is redacted.
+/// <c>/history/{id}</c>, act only on prompts the server submitted through this node; <c>GET /queue</c> is redacted; and
+/// <c>/view</c> serves only the files those prompts produced (<see cref="ServerOutputs"/>).
 /// </para>
 /// </summary>
 public static class RuntimeRoutes
@@ -90,7 +92,9 @@ public static class RuntimeRoutes
             // Only a prompt the server submitted through this node (review item 5): never the owner's history, and never
             // the whole history (GET /history with no id is not on the list).
             ("GET", ["history", var id]) when IsId(id)
-                => Plain(rebuiltPath, pairs, ["max_items"], 0, BodyRule.None, ref refusal) is { } history ? history with { PromptId = id } : null,
+                => Plain(rebuiltPath, pairs, ["max_items"], 0, BodyRule.None, ref refusal) is { } history
+                    ? history with { PromptId = id, Response = ResponseRule.HistoryOutputs }
+                    : null,
             ("GET", ["view"]) => View(rebuiltPath, pairs, ref refusal),
             ("POST", ["prompt"]) => Plain(rebuiltPath, pairs, [], 16 * MiB, BodyRule.PromptSubmit, ref refusal),
             ("POST", ["upload", "image"]) => Plain(rebuiltPath, pairs, [], 256 * MiB, BodyRule.ImageUpload, ref refusal),
@@ -182,7 +186,10 @@ public static class RuntimeRoutes
             refusal = "/view needs a filename.";
             return null;
         }
-        return new AllowedRoute(path, Query(pairs), 0, BodyRule.None);
+        // The file as ComfyUI reads the query: no subfolder is "", no type is "output".
+        string Value(string key, string absent) => pairs.FirstOrDefault(pair => pair.Key == key).Value ?? absent;
+        var file = new OutputFile(Value("type", "output"), Value("subfolder", ""), Value("filename", ""));
+        return new AllowedRoute(path, Query(pairs), 0, BodyRule.None, View: file);
     }
 
     /// <summary>A file name: no separator, no <c>..</c>, no drive, no control character, not hidden.</summary>
