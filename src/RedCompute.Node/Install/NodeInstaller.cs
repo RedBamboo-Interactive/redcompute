@@ -282,7 +282,7 @@ public sealed class IsolatedInstallPlatform(NodePaths paths, IExecutionHost host
 
     public void UnregisterApp() => Delete(AppFile);
 
-    public IReadOnlyList<string> Leftovers() => new[] { AutostartFile, AppFile }.Where(File.Exists).ToArray();
+    public IReadOnlyList<string> Leftovers() => new[] { AutostartFile, AppFile }.Where(file => host.Files.FileExists(host.Path(file))).ToArray();
 
     /// <summary>
     /// Starts <c>leaf-node run</c> in the background, holding none of this process's handles: the
@@ -314,7 +314,8 @@ public sealed class IsolatedInstallPlatform(NodePaths paths, IExecutionHost host
 
     private void Delete(string file)
     {
-        if (File.Exists(file)) File.Delete(file);
+        var path = host.Path(file);
+        if (host.Files.FileExists(path)) host.Files.DeleteFile(path);
     }
 }
 
