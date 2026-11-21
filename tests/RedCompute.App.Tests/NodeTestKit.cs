@@ -22,9 +22,9 @@ internal static class NodeTestKit
     /// <summary>A valid remote node id: <c>node_01JD</c> + 22 digits.</summary>
     public static string RemoteId(int n) => "node_01JD" + n.ToString("D22");
 
-    public static NodeRegistry Registry(string? cacheDirectory = null, Func<DateTimeOffset>? clock = null)
+    public static NodeRegistry Registry(string? cacheDirectory = null, Func<DateTimeOffset>? clock = null, string? trustDirectory = null)
         => new(Identity, NodeRegistryTests.Platform(), "0.2.0", Now.AddHours(-1), clock ?? (() => Now),
-            remoteCacheDirectory: cacheDirectory);
+            remoteCacheDirectory: cacheDirectory, trustDirectory: trustDirectory);
 
     public static KernelNode Kernel(string id, string name = "Lab VM", bool confirmed = true, string status = "offline",
         string owner = Owner, string? reason = null)

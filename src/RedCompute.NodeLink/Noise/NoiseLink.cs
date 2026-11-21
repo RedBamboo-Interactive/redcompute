@@ -348,6 +348,19 @@ public sealed class NoiseLinkTransport : ILinkTransport
 
     public ILinkTransport Inner => _inner;
 
+    /// <summary>
+    /// Runs once, inline, when the first record from the peer opens. That is the proof the peer holds this session's
+    /// keys: message 1 alone can be replayed (inherent to IK), so a responder defers every side effect of a handshake
+    /// (marking the node encrypted, logging which key it used) to here (review item 7). An exception in it is ignored.
+    /// </summary>
+    public Action? FirstRecordOpened
+    {
+        get => Volatile.Read(ref _firstRecordOpened);
+        set => Volatile.Write(ref _firstRecordOpened, value);
+    }
+
+    private Action? _firstRecordOpened;
+
     public async ValueTask SendAsync(ReadOnlyMemory<byte> message, CancellationToken ct)
     {
         if (message.Length > FrameCodec.MaxFrame - NoiseLink.RecordOverhead)
@@ -378,6 +391,15 @@ public sealed class NoiseLinkTransport : ILinkTransport
                 throw new CryptographicException("Not a record.");
             var frame = _receive.DecryptWithAd([NoiseLink.Record], record.AsSpan(1));
             if (_receive.Nonce % _rekeyEvery == 0) _receive.Rekey();
+            if (Interlocked.Exchange(ref _firstRecordOpened, null) is { } opened)
+                try
+                {
+                    opened();
+                }
+                catch
+                {
+                    // the owner logs its own failures; the link stands
+                }
             return frame;
         }
         catch (CryptographicException)

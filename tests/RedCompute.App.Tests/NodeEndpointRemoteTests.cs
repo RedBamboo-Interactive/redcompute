@@ -144,6 +144,44 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task Only_the_owner_or_an_admin_in_person_resets_an_identity_pin_and_the_next_list_pins_anew()
+    {
+        using var first = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        using var second = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        KernelNode[] Listed(byte[] spki) =>
+        [
+            Kernel(RemoteId(1), "Lab VM") with { PublicKeySpki = spki },
+            Kernel(RemoteId(2), "Spare", confirmed: false, status: "needs-update") with { PublicKeySpki = spki },
+        ];
+        _nodes.ApplyKernelNodes(Listed(first.ExportSubjectPublicKeyInfo()));
+        _nodes.ApplyKernelNodes(Listed(second.ExportSubjectPublicKeyInfo())); // the kernel now lists another key
+        Assert.Equal("conflict", _nodes.Find(RemoteId(1))!.IdentityPin);
+        Assert.Equal(first.ExportSubjectPublicKeyInfo(), _nodes.LinkSecurity(RemoteId(1)).IdentitySpki);
+        var (_, listed) = await SendAsync("GET", "/nodes/{id}", RemoteId(1), user: User(Owner));
+        Assert.Equal("conflict", listed.RootElement.GetProperty("identityPin").GetString());
+
+        var agent = Validate(IngressToken(_jwt, "agent-1", owner: Owner, app: "nova", actorKind: "agent", roles: ["user"]));
+        const string route = "/nodes/{id}/identity-pin/reset";
+        Assert.Equal(404, (await SendAsync("POST", route, RemoteId(1), user: User("user-stranger"))).Status);
+        Assert.Equal(404, (await SendAsync("POST", route, RemoteId(1), user: LocalDefault())).Status);
+        Assert.Equal(403, (await SendAsync("POST", route, RemoteId(1), user: agent)).Status);
+        Assert.Equal(403, (await SendAsync("POST", route, RemoteId(1), user: RedLeafService(_jwt))).Status);
+        Assert.Equal(409, (await SendAsync("POST", route, "local", user: User(Owner))).Status);
+        Assert.Equal(404, (await SendAsync("POST", route, RemoteId(9), user: User(Owner))).Status);
+        Assert.Equal("conflict", _nodes.Find(RemoteId(1))!.IdentityPin); // nothing above changed it
+
+        var (status, json) = await SendAsync("POST", route, RemoteId(1), user: User(Owner));
+        Assert.Equal(200, status);
+        Assert.True(json.RootElement.GetProperty("reset").GetBoolean());
+        Assert.Null(_nodes.Find(RemoteId(1))!.IdentityPin);
+        Assert.Equal(200, (await SendAsync("POST", route, RemoteId(2), user: User("someone-admin", "admin"))).Status);
+
+        _nodes.ApplyKernelNodes(Listed(second.ExportSubjectPublicKeyInfo()));
+        Assert.Equal("pinned", _nodes.Find(RemoteId(1))!.IdentityPin);
+        Assert.Equal(second.ExportSubjectPublicKeyInfo(), _nodes.LinkSecurity(RemoteId(1)).IdentitySpki);
+    }
+
     private ClaimsPrincipal User(string subject, string role = "user")
         => Validate(_jwt.GenerateAccessToken(subject, subject + "@example.test", subject, [role]));
 

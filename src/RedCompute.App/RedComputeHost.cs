@@ -146,7 +146,7 @@ public static class RedComputeHost
 
         // Node identity before any provider exists: work is attributed to this node from the start.
         Nodes = NodeRegistry.Open(NodeIdentityStore.DefaultDirectory, RedComputeServiceDescriptor.AppVersion, s => Log(s),
-            ComputeStorage.Current.RemoteNodes);
+            ComputeStorage.Current.RemoteNodes, ComputeStorage.Current.NodeTrust);
         Log($"[App] Node zero: {Nodes.LocalNodeId} ({Nodes.Local.MachineName})");
         JobTracker.StampNodeId = Nodes.StampNodeId;
         HardwareMonitor.NodeId = Nodes.LocalNodeId;

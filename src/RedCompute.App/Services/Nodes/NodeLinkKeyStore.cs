@@ -54,6 +54,23 @@ public sealed class NodeLinkKeyStore : IDisposable
         return new NodeLinkKeyView(info.Protocol, info.PublicKey, info.Fingerprint, info.KeyId, _createdAt);
     }
 
+    /// <summary><see cref="Describe"/> without creating the key: null before it exists, or when it does not open.</summary>
+    public NodeLinkKeyView? DescribeIfCreated()
+    {
+        lock (_gate)
+            if (_keys is null && !File.Exists(Path.Combine(_directory, CurrentFile)))
+                return null;
+        try
+        {
+            return Describe();
+        }
+        catch (Exception error) when (error is CryptographicException or IOException or JsonException or FormatException
+                                          or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     private IReadOnlyList<NoiseKeyPair> LoadOrCreate()
     {
         var current = Path.Combine(_directory, CurrentFile);

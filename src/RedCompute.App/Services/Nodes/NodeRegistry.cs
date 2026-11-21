@@ -63,15 +63,15 @@ public sealed class NodeRegistry : INodeRegistry
 
     public NodeRegistry(NodeIdentityResult identity, NodePlatform platform, string version,
         DateTimeOffset startedAt, Func<DateTimeOffset>? clock = null, IExecutionHost? localHost = null,
-        string? remoteCacheDirectory = null, Action<string>? log = null)
-        : this(identity, platform, version, startedAt, clock, localHost, remoteCacheDirectory, log, ParseCache)
+        string? remoteCacheDirectory = null, Action<string>? log = null, string? trustDirectory = null)
+        : this(identity, platform, version, startedAt, clock, localHost, remoteCacheDirectory, log, ParseCache, trustDirectory)
     {
     }
 
     /// <summary>Tests: <paramref name="parseCache"/> stands in for the cache file parser.</summary>
     internal NodeRegistry(NodeIdentityResult identity, NodePlatform platform, string version,
         DateTimeOffset startedAt, Func<DateTimeOffset>? clock, IExecutionHost? localHost,
-        string? remoteCacheDirectory, Action<string>? log, Func<string, CachedRemoteNode?> parseCache)
+        string? remoteCacheDirectory, Action<string>? log, Func<string, CachedRemoteNode?> parseCache, string? trustDirectory = null)
     {
         Identity = identity;
         _platform = platform;
@@ -81,22 +81,28 @@ public sealed class NodeRegistry : INodeRegistry
         LocalHost = localHost ?? new LocalExecutionHost(identity.Identity.Id);
         _cacheDirectory = remoteCacheDirectory;
         _log = log ?? (_ => { });
+        _trust = new NodeTrustStore(LocalHost, trustDirectory, _log, _clock);
         LoadCache(parseCache);
     }
+
+    // RedCompute's own pins and "encrypted for good" (review item 2): Durable, apart from the rebuildable cache.
+    private readonly NodeTrustStore _trust;
 
     /// <summary>Node zero's execution host: the code that ran every launch before nodes existed.</summary>
     public IExecutionHost LocalHost { get; }
 
     /// <summary>
     /// Opens node.json in <paramref name="directory"/> (creating it on first boot) and detects the platform.
-    /// <paramref name="remoteCacheDirectory"/>, when given, is where remote nodes' last state is kept.
+    /// <paramref name="remoteCacheDirectory"/>, when given, is where remote nodes' last state is kept;
+    /// <paramref name="trustDirectory"/> is where RedCompute's own pins of their identity keys are (Durable).
     /// </summary>
-    public static NodeRegistry Open(string directory, string version, Action<string> log, string? remoteCacheDirectory = null)
+    public static NodeRegistry Open(string directory, string version, Action<string> log, string? remoteCacheDirectory = null,
+        string? trustDirectory = null)
     {
         var identity = NodeIdentityStore.LoadOrCreate(directory, log);
         var host = new LocalExecutionHost(identity.Identity.Id);
         return new(identity, NodePlatform.Detect(host), version, DateTimeOffset.UtcNow, localHost: host,
-            remoteCacheDirectory: remoteCacheDirectory, log: log);
+            remoteCacheDirectory: remoteCacheDirectory, log: log, trustDirectory: trustDirectory);
     }
 
     /// <summary>The identity this run uses, and whether it is the persisted one.</summary>
@@ -225,7 +231,7 @@ public sealed class NodeRegistry : INodeRegistry
                 var isNew = !_remote.TryGetValue(kernel.Id, out var node);
                 node ??= _remote[kernel.Id] = new RemoteNode(kernel.Id);
                 var before = isNew ? (NodeStatus?)null : Describe(node).Status;
-                var identityBefore = node.IdentityKey();
+                var identityBefore = Key(node);
 
                 node.Name = kernel.Name;
                 node.OwnerUserId = kernel.OwnerId;
@@ -237,13 +243,9 @@ public sealed class NodeRegistry : INodeRegistry
                 // The kernel owns the look: an older kernel has none, and the dashboard falls back.
                 node.Icon = kernel.Icon;
                 node.Color = kernel.Color;
-                // E2E (P0.5): the identity key the link binding is checked against, and "required", which only
-                // ever turns on here (a kernel that stops saying it, or an older one, never reopens plaintext).
-                var spkiBefore = node.IdentitySpki;
-                var requiredBefore = node.E2eRequired;
-                node.IdentitySpki = kernel.PublicKeySpki ?? node.IdentitySpki;
-                node.E2eRequired |= kernel.LinkE2eRequired;
-                var securityChanged = !SameBytes(spkiBefore, node.IdentitySpki) || requiredBefore != node.E2eRequired;
+                // E2E (P0.5): the identity key is pinned on first use and never replaced by a later list; "required"
+                // only ever turns on. Both live in the trust store, which no forget or rebuild resets.
+                _trust.ObserveKernel(kernel.Id, kernel.PublicKeySpki, kernel.LinkE2eRequired);
                 // The node's own describe is fresher than the kernel's copy while the link is up.
                 if (node.Link is null)
                 {
@@ -263,13 +265,9 @@ public sealed class NodeRegistry : INodeRegistry
 
                 var after = Describe(node);
                 if (before != after.Status) changes.Add(new(after, before));
-                if (isNew || node.IdentityKey() != identityBefore)
+                if (isNew || Key(node) != identityBefore)
                 {
                     updated.Add(node.Id);
-                    SaveCache(node);
-                }
-                else if (securityChanged)
-                {
                     SaveCache(node);
                 }
             }
@@ -310,31 +308,43 @@ public sealed class NodeRegistry : INodeRegistry
     // ================================================================= the live link (NodeHub)
 
     /// <summary>
-    /// What NodeHub needs to set up a node's encrypted link (Phase 4 P0.5): the identity key to verify the
-    /// binding against (null until the kernel lists it, K0), and whether plaintext is refused. Null for an
-    /// unknown node.
+    /// What NodeHub needs to set up a node's encrypted link (Phase 4 P0.5), from RedCompute's own trust record, never
+    /// straight from the kernel: the identity key pinned on first use (null until a kernel list names one), whether
+    /// plaintext is refused, and whether the record does not open (fail closed). A node RedCompute holds no record
+    /// for has no pin and may link in plaintext, as before.
     /// </summary>
-    public NodeLinkSecurity? LinkSecurity(string nodeId)
+    public NodeLinkSecurity LinkSecurity(string nodeId)
     {
-        lock (_gate)
-            return _remote.TryGetValue(nodeId, out var node)
-                ? new NodeLinkSecurity(node.IdentitySpki, node.E2eRequired || node.SeenEncrypted)
-                : null;
+        if (_trust.IsUnreadable(nodeId)) return new NodeLinkSecurity(null, true, TrustUnreadable: true);
+        var trust = _trust.Find(nodeId);
+        return new NodeLinkSecurity(trust?.IdentitySpkiBytes(), trust?.PlaintextRefused == true);
     }
 
-    /// <summary>The node linked encrypted: from now on plaintext from it is refused (kept in its cache file).</summary>
+    /// <summary>The node's first encrypted record opened: from now on plaintext from it is refused (kept in its trust record).</summary>
     public void MarkSeenEncrypted(string nodeId)
     {
-        lock (_gate)
-        {
-            if (!_remote.TryGetValue(nodeId, out var node) || node.SeenEncrypted) return;
-            node.SeenEncrypted = true;
-            SaveCache(node);
-        }
+        if (!_trust.MarkSeenEncrypted(nodeId)) return;
+        bool known;
+        lock (_gate) known = _remote.ContainsKey(nodeId);
+        if (known) Raise([], [nodeId]);
     }
 
-    private static bool SameBytes(byte[]? a, byte[]? b)
-        => a is null ? b is null : b is not null && a.AsSpan().SequenceEqual(b);
+    /// <summary>
+    /// The node's owner or an admin, in person, resets RedCompute's pin of its identity key: the next kernel list pins
+    /// anew. "Encrypted for good" stays. False when there was no pin.
+    /// </summary>
+    public bool ResetIdentityPin(string nodeId, string by)
+    {
+        if (!_trust.ResetIdentityPin(nodeId, by)) return false;
+        bool known;
+        lock (_gate) known = _remote.ContainsKey(nodeId);
+        if (known) Raise([], [nodeId]);
+        return true;
+    }
+
+    /// <summary>What makes a <c>node.updated</c>: the node's identity and platform, and its trust state.</summary>
+    private string Key(RemoteNode node)
+        => node.IdentityKey() + '\u001f' + (_trust.Find(node.Id) is { } trust ? $"{trust.PlaintextRefused}/{trust.PinState}" : "");
 
     /// <summary>A link for the node completed its handshake.</summary>
     public void LinkUp(string nodeId, NodeLinkState link)
@@ -417,7 +427,7 @@ public sealed class NodeRegistry : INodeRegistry
         {
             if (!_remote.TryGetValue(nodeId, out var node) || node.Revoked) return;
             var before = Describe(node).Status;
-            var identityBefore = node.IdentityKey();
+            var identityBefore = Key(node);
             updated = change(node);
             var after = Describe(node);
             if (before != after.Status)
@@ -425,7 +435,7 @@ public sealed class NodeRegistry : INodeRegistry
                 statusChange = new(after, before);
                 updated = true;
             }
-            if (node.IdentityKey() != identityBefore) updated = true;
+            if (Key(node) != identityBefore) updated = true;
             if (updated || node.CacheDue) SaveCache(node);
         }
         Raise(statusChange is null ? [] : [statusChange], updated ? [nodeId] : []);
@@ -490,7 +500,8 @@ public sealed class NodeRegistry : INodeRegistry
             Chassis = node.Chassis,
             Icon = node.Icon,
             Color = node.Color,
-            E2eRequired = node.E2eRequired || node.SeenEncrypted,
+            E2eRequired = _trust.IsUnreadable(node.Id) || _trust.Find(node.Id)?.PlaintextRefused == true,
+            IdentityPin = _trust.IsUnreadable(node.Id) ? "unreadable" : _trust.Find(node.Id)?.PinState,
         };
     }
 
@@ -613,19 +624,15 @@ public sealed class NodeRegistry : INodeRegistry
         public string? Color { get; set; }
         public bool CacheDue { get; set; }
         public DateTimeOffset? CachedHardwareAt { get; set; }
-        public byte[]? IdentitySpki { get; set; }
-        public bool E2eRequired { get; set; }
-        public bool SeenEncrypted { get; set; }
 
         /// <summary>The fields whose change is a <c>node.updated</c> (identity and platform; not liveness).</summary>
         public string IdentityKey()
             => string.Join('\u001f', Name, OwnerUserId, Confirmed, PairedAt, Os, Arch, OsDescription, MachineName, Processor,
-                AgentVersion, Link?.CredentialStore, Link?.Protocol, Link?.UpdateAvailable, Link?.Encrypted, Chassis, Icon, Color,
-                E2eRequired || SeenEncrypted);
+                AgentVersion, Link?.CredentialStore, Link?.Protocol, Link?.UpdateAvailable, Link?.Encrypted, Chassis, Icon, Color);
 
         public CachedRemoteNode ToCache(DateTimeOffset? lastSeen) => new(Id, Name, OwnerUserId, Confirmed, PairedAt, Os, Arch,
             OsDescription, MachineName, Processor, AgentVersion, Revoked, RevokedReason, KernelStatus, lastSeen, Report,
-            Chassis, Icon, Color, IdentitySpki is null ? null : Convert.ToBase64String(IdentitySpki), E2eRequired, SeenEncrypted);
+            Chassis, Icon, Color);
 
         /// <summary>A cached record, with what an older or hand-edited file may lack filled in.</summary>
         public static RemoteNode FromCache(CachedRemoteNode cached) => new(cached.Id)
@@ -649,29 +656,21 @@ public sealed class NodeRegistry : INodeRegistry
             Chassis = KernelNode.Token(cached.Chassis),
             Icon = KernelNode.Token(cached.Icon),
             Color = KernelNode.Token(cached.Color),
-            IdentitySpki = SpkiOrNull(cached.IdentitySpki),
-            E2eRequired = cached.E2eRequired,
-            SeenEncrypted = cached.SeenEncrypted,
         };
-
-        private static byte[]? SpkiOrNull(string? base64)
-        {
-            if (base64 is null) return null;
-            try { return Convert.FromBase64String(base64); }
-            catch (FormatException) { return null; }
-        }
     }
 
     /// <summary>The shape of <c>nodes/&lt;id&gt;.json</c>.</summary>
     internal sealed record CachedRemoteNode(string Id, string Name, string? OwnerUserId, bool Confirmed, DateTimeOffset? PairedAt,
         string? Os, string? Arch, string? OsDescription, string? MachineName, string? Processor, string? AgentVersion,
         bool Revoked, string? RevokedReason, string? KernelStatus, DateTimeOffset? LastSeenAt, NodeReport? Report,
-        string? Chassis = null, string? Icon = null, string? Color = null,
-        string? IdentitySpki = null, bool E2eRequired = false, bool SeenEncrypted = false);
+        string? Chassis = null, string? Icon = null, string? Color = null);
 }
 
-/// <summary>A remote node's link security: its identity key (null until the kernel lists it) and whether plaintext is refused.</summary>
-public sealed record NodeLinkSecurity(byte[]? IdentitySpki, bool E2eRequired);
+/// <summary>
+/// A remote node's link security, from RedCompute's trust record: its pinned identity key (null until a kernel list names
+/// one), whether plaintext is refused, and whether the record does not open (every link is then refused 1011).
+/// </summary>
+public sealed record NodeLinkSecurity(byte[]? IdentitySpki, bool E2eRequired, bool TrustUnreadable = false);
 
 /// <summary>What a node's <c>node.describe</c> said about itself.</summary>
 public sealed record NodeDescribe(string? Os, string? Arch, string? OsDescription, string? MachineName, string? Processor,

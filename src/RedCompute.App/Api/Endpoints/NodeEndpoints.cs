@@ -21,7 +21,11 @@ namespace RedCompute.App.Api.Endpoints;
 /// The node a record stored before node ids existed belongs to: every response already reports such a
 /// record under this id. Equal to node zero's id unless its identity was recreated.
 /// </param>
-public sealed record NodeListView(IReadOnlyList<NodeView> Nodes, string LegacyNodeId);
+/// <param name="LinkKey">
+/// RedCompute's own node link key (its fingerprint is what <c>leaf-node status</c> shows a pinned node holds), read from
+/// RedCompute's key file rather than the kernel's pair response; null before the first pinned pairing created it.
+/// </param>
+public sealed record NodeListView(IReadOnlyList<NodeView> Nodes, string LegacyNodeId, NodeLinkKeyView? LinkKey = null);
 
 /// <summary>A computer RedCompute runs work on, with what it has and what runs on it right now.</summary>
 /// <param name="Kind"><c>local</c> (node zero, this machine) or <c>remote</c> (a paired machine running leaf-node).</param>
@@ -56,7 +60,8 @@ public sealed record NodeView(
     NodePlacementView Placement,
     string? Icon = null,
     string? Color = null,
-    string? Encryption = null);
+    string? Encryption = null,
+    string? IdentityPin = null);
 
 /// <param name="Chassis">What kind of machine its firmware says it is (desktop, all-in-one, laptop, tablet, mini, server), when it says.</param>
 public sealed record NodePlatformView(string Os, string OsDescription, string Architecture, string MachineName,
@@ -107,6 +112,9 @@ public sealed record NodeCapabilityView(
 
 public sealed record NodeProviderView(string Name, string? Type, string Status, string? StatusDetail, bool IsDefault);
 
+/// <summary>What <c>POST /nodes/{id}/identity-pin/reset</c> did: Reset is false when there was no pin to clear.</summary>
+public sealed record NodeIdentityPinResetView(string NodeId, bool Reset);
+
 /// <summary>What <c>POST /nodes/{id}/revoked</c> did.</summary>
 public sealed record NodeRevokedView(string NodeId, string Status, string? Reason);
 
@@ -144,7 +152,7 @@ public static class NodeEndpoints
                 var views = new List<NodeView>();
                 foreach (var node in nodes.Nodes.Where(node => CanSee(context.User, node)))
                     views.Add(await BuildAsync(nodes, node, registry, node.Kind == NodeKind.Local ? hardware() : node.Report?.Hardware));
-                return TypedResults.Ok(new NodeListView(views, nodes.LegacyNodeId));
+                return TypedResults.Ok(new NodeListView(views, nodes.LegacyNodeId, hub?.LinkKeyIfCreated()));
             })
             .WithResponse(SchemaOf<NodeListView>());
 
@@ -178,6 +186,24 @@ public static class NodeEndpoints
             })
             .WithParam("reason", "string", location: ParamLocation.Body, description: "Why (revoked_by_owner, unpaired_by_node, …); default revoked_by_owner")
             .WithResponse(SchemaOf<NodeRevokedView>());
+
+        endpoints.MapPost("/nodes/{id}/identity-pin/reset",
+            "Resets RedCompute's pin of a remote node's identity key (taken on first use from the kernel's list; a later list with another key is shown as identityPin conflict and never replaces it): the next kernel list pins anew, and the node can link encrypted only with that key. Its owner or an admin, in person only (not an Agent, not a service); 403 owner_or_admin_in_person otherwise. Encryption stays required. Returns {nodeId, reset} (reset false when there was no pin). 404 node_not_found; 409 node_zero.",
+            (string id, HttpContext context) =>
+            {
+                var node = nodes.Find(id);
+                if (node is null || !CanSee(context.User, node))
+                    return Error(StatusCodes.Status404NotFound, "node_not_found", $"No node has the id '{id}'.");
+                if (node.Kind == NodeKind.Local) return Error(StatusCodes.Status409Conflict, "node_zero", "Node zero has no link to pin.");
+                if (!ComputeResourceAccess.IsPersonPresent(context) || !NodeAccess.Allows(context.User, node, NodeUse.Place)
+                    || NodeAccess.Subject(context.User) is not { } subject)
+                    return Error(StatusCodes.Status403Forbidden, "owner_or_admin_in_person",
+                        "Only the node's owner or an admin, in person, resets its identity pin.");
+                var reset = nodes.ResetIdentityPin(node.Id, subject);
+                sync?.RequestSync();
+                return Results.Json(new NodeIdentityPinResetView(node.Id, reset));
+            })
+            .WithResponse(SchemaOf<NodeIdentityPinResetView>());
 
         endpoints.MapPost("/nodes/changed",
             "The kernel says a node entity changed (paired, confirmed, renamed, removed): RedCompute re-reads GET /api/nodes now instead of at its next 5-minute sync. service:redleaf only. 202.",
@@ -309,7 +335,8 @@ public static class NodeEndpoints
             new NodePlacementView(placement.Eligible, placement.Reason),
             node.Icon,
             node.Color,
-            node.Kind == NodeKind.Local ? null : node.E2eRequired ? "required" : "none");
+            node.Kind == NodeKind.Local ? null : node.E2eRequired ? "required" : "none",
+            node.Kind == NodeKind.Local ? null : node.IdentityPin);
     }
 
     private static NodeHardwareView Hardware(HardwareSnapshot? snapshot) => snapshot is null

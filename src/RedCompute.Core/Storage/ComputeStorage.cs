@@ -121,6 +121,9 @@ public sealed class ComputeStorage
     /// </summary>
     public string NodeLinkKey => Path.Combine(DataRoot, "node-link-key");
 
+    /// <summary>RedCompute's own pins of remote nodes' identity keys, and "encrypted for good" (Phase 4 design 1b.11).</summary>
+    public string NodeTrust => Path.Combine(DataRoot, "node-trust");
+
     /// <summary>The folder holding <c>long-lived-processes.json</c> and <c>long-lived-processes\</c> (logs).</summary>
     public string LongLivedProcessesDirectory => DataRoot;
 
@@ -169,6 +172,7 @@ public sealed class ComputeStorage
         Declare("remote-nodes", RemoteNodes, StorageClass.Rebuildable, StorageMutability.Mutable),
         // Not rebuildable: every pinned node encrypts to this key. DPAPI-protected on Windows (same user and machine).
         Declare("node-link-key", NodeLinkKey, StorageClass.Durable, StorageMutability.Mutable),
+        Declare("node-trust", NodeTrust, StorageClass.Durable, StorageMutability.Mutable),
         Declare("long-lived-processes-state", Path.Combine(LongLivedProcessesDirectory, LongLivedProcessesFileName), StorageClass.Durable, StorageMutability.Mutable),
         Declare("long-lived-processes-logs", Path.Combine(LongLivedProcessesDirectory, "long-lived-processes"), StorageClass.Durable, StorageMutability.Mutable),
         // Process ledgers and the drain checkpoint describe processes that are gone once RedCompute is stopped for a move.

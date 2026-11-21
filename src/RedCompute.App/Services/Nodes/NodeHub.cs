@@ -205,15 +205,23 @@ public sealed partial class NodeHub : IAsyncDisposable
     // ================================================================= end-to-end encryption (P0.5)
 
     /// <summary>
-    /// The link's first message, before the hello (design 1b.7). A Noise handshake is answered with RedCompute's
-    /// link key once the node's identity binding verifies against the SPKI the kernel lists for it (4497 when it
-    /// does not; 1012 while the kernel has not listed one, so the node retries). Plaintext is accepted only from a
-    /// node that never pinned the key and never linked encrypted (else 4496). A handshake for a key RedCompute does
-    /// not hold is 4495.
+    /// The link's first message, before the hello (design 1b.7, 1b.11). A Noise handshake is answered with RedCompute's
+    /// link key once the node's identity binding verifies against RedCompute's own pin of its identity key, taken on
+    /// first use from the kernel's list and never replaced by a later one (4497 when it does not verify; 1012 while no
+    /// list has named a key yet, so the node retries). Plaintext is accepted only from a node that is not encrypted for
+    /// good (else 4496). A handshake for a key RedCompute does not hold is 4495. A trust record that does not open, or
+    /// any fault here, is 1011: the server's problem, never a verdict on the node.
+    /// <para>
+    /// Message 1 can be replayed, so nothing is recorded when it is answered: the node is marked encrypted, and the use
+    /// of a previous key logged, only when its first record opens (<see cref="NoiseLinkTransport.FirstRecordOpened"/>).
+    /// </para>
     /// </summary>
     private async Task<ILinkTransport> SecureAsync(ILinkTransport transport, string nodeId, CancellationToken ct)
     {
         var security = _registry.LinkSecurity(nodeId);
+        if (security.TrustUnreadable)
+            throw new LinkProtocolException(LinkCloseCodes.InternalError,
+                $"{NoiseLink.IdentityUnverifiable}: RedCompute's trust record for this node does not open.");
         IReadOnlyList<NoiseKeyPair> keys;
         try
         {
@@ -229,18 +237,26 @@ public sealed partial class NodeHub : IAsyncDisposable
         {
             NodeId = nodeId,
             LocalStatics = keys,
-            AllowPlaintext = _ => ValueTask.FromResult(security is not { E2eRequired: true }),
-            Verify = (binding, payload, _) => security?.IdentitySpki is { } spki
+            AllowPlaintext = _ => ValueTask.FromResult(!security.E2eRequired),
+            Verify = (binding, payload, _) => security.IdentitySpki is { } spki
                 ? ValueTask.FromResult(NoiseBinding.Verify(spki, binding, payload))
                 : throw new LinkProtocolException(LinkCloseCodes.ServiceRestart,
                     "link_identity_unavailable: the kernel has not listed this node's identity key yet."),
         }, ct);
-        _lastConnectionEncrypted[nodeId] = result.Encrypted;
-        if (result.Encrypted)
+        if (result.Transport is NoiseLinkTransport sealedLink)
         {
-            _registry.MarkSeenEncrypted(nodeId);
-            if (result.Accepted!.ServerKeyIndex > 0)
-                _log($"[NodeHub] {nodeId} linked with the previous link key; it needs the current one before the grace ends.");
+            var keyIndex = result.Accepted!.ServerKeyIndex;
+            sealedLink.FirstRecordOpened = () =>
+            {
+                _lastConnectionEncrypted[nodeId] = true;
+                _registry.MarkSeenEncrypted(nodeId);
+                if (keyIndex > 0)
+                    _log($"[NodeHub] {nodeId} linked with the previous link key; it needs the current one before the grace ends.");
+            };
+        }
+        else
+        {
+            _lastConnectionEncrypted[nodeId] = false;
         }
         return result.Transport;
     }
@@ -250,6 +266,13 @@ public sealed partial class NodeHub : IAsyncDisposable
     /// (<c>service:redleaf</c>), hidden from <c>/discover</c>. 503 <c>link_key_unavailable</c> when the key file does not open.
     /// </summary>
     public const string LinkKeyRoute = "/nodes/link-key";
+
+    /// <summary>
+    /// RedCompute's current link key as <c>GET /nodes</c> shows it to the person adding a node (review item 2): read
+    /// from RedCompute's own key file, so the fingerprint to compare with <c>leaf-node status</c> does not come only from
+    /// the kernel's pair response. Null before the key exists (it is never created for this) or when it does not open.
+    /// </summary>
+    public NodeLinkKeyView? LinkKeyIfCreated() => _options.LinkKeys?.DescribeIfCreated();
 
     public static IEndpointConventionBuilder MapLinkKeyRoute(IEndpointRouteBuilder app, NodeLinkKeyStore keys)
         => app.MapGet(LinkKeyRoute, (HttpContext context) =>

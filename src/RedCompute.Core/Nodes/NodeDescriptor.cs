@@ -68,6 +68,12 @@ public sealed record NodeDescriptor(
     /// </summary>
     public bool E2eRequired { get; init; }
 
+    /// <summary>
+    /// RedCompute's own pin of a remote node's identity key: <c>pinned</c>, <c>conflict</c> (the kernel lists another
+    /// key; the pin stays), <c>unreadable</c> (its trust record does not open; every link is refused), or null.
+    /// </summary>
+    public string? IdentityPin { get; init; }
+
     /// <summary>The node's colour (a palette token) as the kernel's node entity has it; null from an older kernel.</summary>
     public string? Color { get; init; }
 }

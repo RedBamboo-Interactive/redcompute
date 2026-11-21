@@ -33,7 +33,7 @@ public sealed class NodeLinkE2eTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-        _registry = Registry(Path.Combine(_root, "nodes"));
+        _registry = NewRegistry();
         _keys = new NodeLinkKeyStore(Path.Combine(_root, "node-link-key"), _ => { });
         _hub = new NodeHub(_registry, _ => { }, new NodeHubOptions { LinkKeys = _keys });
         return Task.CompletedTask;
@@ -49,6 +49,9 @@ public sealed class NodeLinkE2eTests : IAsyncLifetime
     }
 
     private byte[] Spki => _identity.ExportSubjectPublicKeyInfo();
+
+    /// <summary>A registry over this test's data root: the rebuildable cache and the Durable trust records.</summary>
+    private NodeRegistry NewRegistry() => Registry(Path.Combine(_root, "nodes"), trustDirectory: Path.Combine(_root, "node-trust"));
 
     private KernelNode Paired(bool required = true, byte[]? spki = null)
         => Kernel(_node) with { PublicKeySpki = spki ?? Spki, LinkE2eRequired = required };
@@ -156,14 +159,14 @@ public sealed class NodeLinkE2eTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Required_only_ever_turns_on_and_survives_a_restart_from_the_cache()
+    public void Required_only_ever_turns_on_and_survives_a_restart()
     {
         _registry.ApplyKernelNodes([Paired(required: true)]);
         _registry.ApplyKernelNodes([Kernel(_node)]); // an older kernel, or one that stopped saying it
         Assert.Equal(new NodeLinkSecurity(Spki, true), _registry.LinkSecurity(_node), new SecurityComparer());
         Assert.True(_registry.Find(_node)!.E2eRequired);
 
-        var restarted = Registry(Path.Combine(_root, "nodes"));
+        var restarted = NewRegistry();
         Assert.Equal(new NodeLinkSecurity(Spki, true), restarted.LinkSecurity(_node), new SecurityComparer());
     }
 
@@ -171,10 +174,46 @@ public sealed class NodeLinkE2eTests : IAsyncLifetime
     public void Seen_encrypted_is_kept_across_a_restart()
     {
         _registry.ApplyKernelNodes([Paired(required: false)]);
-        Assert.False(_registry.LinkSecurity(_node)!.E2eRequired);
+        Assert.False(_registry.LinkSecurity(_node).E2eRequired);
         _registry.MarkSeenEncrypted(_node);
-        var restarted = Registry(Path.Combine(_root, "nodes"));
-        Assert.True(restarted.LinkSecurity(_node)!.E2eRequired);
+        var restarted = NewRegistry();
+        Assert.True(restarted.LinkSecurity(_node).E2eRequired);
+    }
+
+    /// <summary>
+    /// Review item 2: the pin and "encrypted for good" are RedCompute's, Durable, apart from the rebuildable cache. A
+    /// kernel that leaves the node out of one list (the cache is deleted) and lists it again with another key and
+    /// without "required" reopens nothing: the pin stays, plaintext stays refused, the conflict shows.
+    /// </summary>
+    [Fact]
+    public void A_kernel_that_forgets_a_node_and_lists_it_again_with_another_key_changes_nothing_that_matters()
+    {
+        using var other = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        _registry.ApplyKernelNodes([Paired(required: true)]);
+        _registry.ApplyKernelNodes([]); // forgotten: its cache file is deleted
+        Assert.False(File.Exists(Path.Combine(_root, "nodes", _node + ".json")));
+        _registry.ApplyKernelNodes([Paired(required: false, spki: other.ExportSubjectPublicKeyInfo())]);
+
+        Assert.Equal(new NodeLinkSecurity(Spki, true), _registry.LinkSecurity(_node), new SecurityComparer());
+        Assert.Equal("conflict", _registry.Find(_node)!.IdentityPin);
+        Assert.True(_registry.Find(_node)!.E2eRequired);
+        var restarted = NewRegistry();
+        Assert.Equal(new NodeLinkSecurity(Spki, true), restarted.LinkSecurity(_node), new SecurityComparer());
+        Assert.True(File.Exists(Path.Combine(_root, "node-trust", _node + ".json")));
+    }
+
+    [Fact]
+    public void A_trust_record_that_does_not_open_fails_closed_and_is_left_as_it_is()
+    {
+        _registry.ApplyKernelNodes([Paired(required: false)]);
+        var file = Path.Combine(_root, "node-trust", _node + ".json");
+        File.WriteAllText(file, "{ not json");
+        var restarted = NewRegistry();
+        restarted.ApplyKernelNodes([Paired(required: false)]);
+        Assert.True(restarted.LinkSecurity(_node).TrustUnreadable);
+        Assert.True(restarted.LinkSecurity(_node).E2eRequired);
+        Assert.Equal("unreadable", restarted.Find(_node)!.IdentityPin);
+        Assert.Equal("{ not json", File.ReadAllText(file));
     }
 
     private sealed class SecurityComparer : IEqualityComparer<NodeLinkSecurity?>
@@ -261,6 +300,81 @@ public sealed class NodeLinkE2eTests : IAsyncLifetime
         _registry.ApplyKernelNodes([Paired()]);
         await WaitAsync(() => _registry.Find(_node)?.Status == NodeStatus.Online, "the link once the kernel lists the key");
         Assert.True(_registry.Find(_node)!.Link!.Encrypted);
+    }
+
+    [Fact]
+    public async Task A_kernel_that_swaps_the_identity_key_cannot_put_an_impostor_on_the_node_s_link()
+    {
+        using var impostor = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        _registry.ApplyKernelNodes([Paired()]);
+        // The kernel now lists the impostor's key for this node id (and would admit its assertions).
+        _registry.ApplyKernelNodes([Paired(spki: impostor.ExportSubjectPublicKeyInfo())]);
+        await using (var fake = new PipedNode(_hub, _node, secure: Pinned(identity: impostor)))
+        {
+            await WaitAsync(() => fake.Client.Status == LinkClientStatus.NeedsRepin, "the refusal");
+            Assert.Contains(NoiseLink.IdentityInvalid, fake.Client.StatusReason);
+        }
+        await using var real = new PipedNode(_hub, _node, secure: Pinned());
+        await WaitAsync(() => _registry.Find(_node)?.Status == NodeStatus.Online, "the real node's link");
+        Assert.True(_registry.Find(_node)!.Link!.Encrypted);
+    }
+
+    [Fact]
+    public async Task A_trust_record_that_does_not_open_refuses_every_link_with_a_retry_never_a_verdict()
+    {
+        _registry.ApplyKernelNodes([Paired(required: false)]);
+        File.WriteAllText(Path.Combine(_root, "node-trust", _node + ".json"), "{ not json");
+        var registry = NewRegistry();
+        registry.ApplyKernelNodes([Paired(required: false)]);
+        await using var hub = new NodeHub(registry, _ => { }, new NodeHubOptions { LinkKeys = _keys });
+        await using (var encrypted = new PipedNode(hub, _node, secure: Pinned()))
+        {
+            await WaitAsync(() => encrypted.Client.StatusReason?.Contains("1011") == true, "the 1011");
+            Assert.NotEqual(LinkClientStatus.NeedsRepin, encrypted.Client.Status);
+        }
+        await using var plaintext = new PipedNode(hub, _node);
+        await WaitAsync(() => plaintext.Client.StatusReason?.Contains("1011") == true, "the 1011");
+        Assert.Null(hub.Server.FindSession(_node));
+    }
+
+    /// <summary>
+    /// Review item 7: message 1 can be replayed (IK). Replayed alone, it is answered, but nothing is recorded: the node is
+    /// not marked encrypted. Only a first record that opens (the real node, which holds the keys) records it.
+    /// </summary>
+    [Fact]
+    public async Task A_replayed_first_message_is_answered_but_records_nothing()
+    {
+        _registry.ApplyKernelNodes([Paired(required: false)]);
+        var (node, captured) = LinkPipe.Create();
+        var original = Pinned()(node, CancellationToken.None);
+        var message1 = await captured.ReceiveAsync(CancellationToken.None);
+        _ = original.ContinueWith(_ => { });
+
+        var (attacker, server) = LinkPipe.Create();
+        var run = _hub.Server.RunAsync(server, _node, CancellationToken.None);
+        await attacker.SendAsync(message1, CancellationToken.None);
+        var answer = await attacker.ReceiveAsync(CancellationToken.None);
+        Assert.Equal(NoiseLink.ResponderHandshake, answer[0]); // answered: IK cannot tell a replay from the node
+        await attacker.SendAsync(new byte[] { NoiseLink.Record, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 }, CancellationToken.None);
+        Assert.Null(await run.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.False(_registry.LinkSecurity(_node).E2eRequired);
+        Assert.False(_registry.Find(_node)!.E2eRequired);
+        Assert.False(File.ReadAllText(Path.Combine(_root, "node-trust", _node + ".json")).Contains("\"seenEncrypted\": true"));
+
+        await using var real = new PipedNode(_hub, _node, secure: Pinned());
+        await WaitAsync(() => _registry.Find(_node)?.Status == NodeStatus.Online, "the real node's link");
+        Assert.True(_registry.LinkSecurity(_node).E2eRequired);
+    }
+
+    [Fact]
+    public void The_nodes_list_shows_redcompute_s_own_link_key_once_it_exists()
+    {
+        Assert.Null(_hub.LinkKeyIfCreated());
+        Assert.False(File.Exists(Path.Combine(_keys.Directory, NodeLinkKeyStore.CurrentFile))); // not created for this
+        var key = _keys.Describe();
+        Assert.Equal(key.Fingerprint, _hub.LinkKeyIfCreated()!.Fingerprint);
+        Assert.Equal(key.KeyId, _hub.LinkKeyIfCreated()!.KeyId);
     }
 
     [Fact]
