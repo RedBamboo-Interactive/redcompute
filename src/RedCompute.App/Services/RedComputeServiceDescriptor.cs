@@ -78,7 +78,8 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
             + "Leaf that run the leaf-node agent (kind remote). Each node reports its platform, a hardware summary, its status, "
             + "and placement {eligible, reason}; node zero also lists the capabilities and providers it runs. Remote nodes do not "
             + "run work yet (placement reason remote_execution_not_available). Pairing, confirming, renaming and revoking are "
-            + "the kernel's /api/nodes routes. Use 'local' as the id of this machine.",
+            + "the kernel's /api/nodes routes. Use 'local' as the id of this machine. GET /nodes/agent says where the Nightly "
+            + "published the leaf-node agent (archives, hashes, one install command per OS).",
         Concepts:
         [
             new DiscoveryConcept("node", "Computer",

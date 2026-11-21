@@ -49,7 +49,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                 "stop" => await SimpleAsync("stop", "Stopped.", ct),
                 "kill-all" => await KillAllAsync(ct),
                 "logs" => await LogsAsync(options, ct),
-                "install" => Install(options),
+                "install" => await InstallAsync(options, ct),
                 "uninstall" => await UninstallAsync(ct),
                 "update" => throw new NodeCommandException("not_available",
                     "Updates are installed by downloading the new version for now (leaf-node update comes later)."),
@@ -246,8 +246,15 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
 
     // ---- install / uninstall -----------------------------------------------------------------------
 
-    private int Install(IReadOnlyDictionary<string, string?> options)
+    private async Task<int> InstallAsync(IReadOnlyDictionary<string, string?> options, CancellationToken ct)
     {
+        // An upgrade (or a reinstall): the running agent stops first, so the new one can take the lock
+        // and the version folder it runs from can be replaced.
+        if (await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "stop" }, ct: ct) is not null)
+        {
+            output.WriteLine("Stopping the running leaf-node...");
+            await WaitForStopAsync(ct);
+        }
         var installer = new NodeInstaller(env.Paths, env.Host, Platform(), env.Log);
         var executable = installer.Install(AppContext.BaseDirectory, AgentIdentity.Version, options.ContainsKey("keep-running-when-logged-out"));
         output.WriteLine($"Installed leaf-node {AgentIdentity.Version} ({executable}); it starts at logon and is running now.");
@@ -290,11 +297,17 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         throw new NodeCommandException("still_running", "The agent did not stop; try again.");
     }
 
-    private INodeInstallPlatform Platform()
+    /// <summary>
+    /// The user's real registrations, except for an agent that LEAF_NODE_HOME isolates: it keeps them
+    /// in its own home and never touches the Run value, the Uninstall key or the systemd unit.
+    /// </summary>
+    internal INodeInstallPlatform Platform()
         => installPlatform?.Invoke()
-           ?? (OperatingSystem.IsWindows()
-               ? new WindowsInstallPlatform(env.Host)
-               : new LinuxInstallPlatform(env.Paths, env.Host, env.Log));
+           ?? (env.Paths.IsolatedHome is not null
+               ? new IsolatedInstallPlatform(env.Paths, env.Host)
+               : OperatingSystem.IsWindows()
+                   ? new WindowsInstallPlatform(env.Host)
+                   : new LinuxInstallPlatform(env.Paths, env.Host, env.Log));
 
     // ---- helpers -----------------------------------------------------------------------------------
 

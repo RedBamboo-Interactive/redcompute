@@ -66,3 +66,21 @@ https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute
 ```
 
 These producer assets remain unsigned and convey no trust. The producer is pinned to the audited RedLeaf commit above; central RedLeaf alone checks the reviewed source URLs and hashes and signs metadata that continues to reference the exact RedCompute bytes. It does not copy the ZIP into a RedLeaf release. No SBOM, CycloneDX input, provenance graph, package registry, or live service is part of this boundary.
+
+## leaf-node artifacts (Phase 3 R7)
+
+The node agent ships with the Nightly beside RedCompute, from the same clone and source commit, as five additional files. They change nothing RedCompute ships: its archive, evidence and descriptors are built exactly as above, and `src/RedCompute.Node` is outside RedCompute.App's project graph.
+
+| File | What it is |
+|---|---|
+| `leaf-node-win-x64.zip` | the win-x64 agent, self-contained and untrimmed (`Properties/PublishProfiles/win-x64.pubxml`), as the same deterministic zip as RedCompute's |
+| `leaf-node-linux-x64.tar.gz` | the linux-x64 agent (`linux-x64.pubxml`), a deterministic ustar tarball: sorted entries, one timestamp, uid/gid 0, 0755 for ELF files and shared libraries |
+| `leaf-node-manifest.v1.json` | version, source commit, and the size and SHA-256 of each archive (`RedCompute.ReleaseTool node validate` checks it) |
+| `leaf-node-install.ps1` | the Windows installer: `irm <release>/leaf-node-install.ps1 \| iex; Install-LeafNode` |
+| `leaf-node-install.sh` | the Linux installer: `curl -fsSL <release>/leaf-node-install.sh \| sh` |
+
+`release/leaf-node/Build-LeafNodeArtifacts.ps1` is the recipe: per runtime a locked restore (`-r` on the command line, so the right lock file is used), a publish with the profile and `-p:Version=<the Nightly's version>`, then `RedCompute.ReleaseTool node archive`; then `node manifest` and `node validate`. It writes `[{name, path, sha256}]`, the shape of `result.json` `extraAssets`. Release Manager's RedCompute recipe runs it after RedCompute's own files and publishes the five files in RedCompute's Windows release; a source without `release/leaf-node` builds what it did before, and a failure never fails the RedCompute build.
+
+The installers verify before they install, the way the kernel's `install.sh` does: the signed feed's RedCompute channel pointer, the record it names by SHA-256, `leaf-node-manifest.v1.json` in that record's release (it must name the record's version and source commit), then the archive's size and SHA-256. They are per user (they refuse root and an elevated PowerShell), run `leaf-node install` (an installed agent is stopped and upgraded side by side) and never pair: `leaf-node pair --server <origin> --code <code>` stays its own step. `LEAF_NODE_FEED_URL`, `LEAF_NODE_CHANNEL` and `LEAF_NODE_HOME` serve dry runs; with `LEAF_NODE_HOME` the agent keeps its registrations in that folder and never writes the Run value, the Uninstall key or the systemd unit. The archives are checked by hash through the feed's chain, not signed themselves: a signature of their own needs leaf-node as a feed component (a RedLeaf release definition).
+
+`GET /nodes/agent` resolves the same chain on request (10-minute cache) and gives the "Add a node" dialog the download links and one install command per OS, or `available: false` and a reason.

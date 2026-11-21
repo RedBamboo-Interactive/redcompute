@@ -1,0 +1,18 @@
+# The leaf-node systemd user unit (Phase 3 design 2.2): ~/.config/systemd/user/leaf-node.service.
+# `leaf-node install` renders it, replacing @EXECUTABLE@ with the stable shim (~/.local/bin/leaf-node),
+# then runs `systemctl --user enable --now leaf-node`. Lines starting with # are not written.
+[Unit]
+Description=Leaf node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@EXECUTABLE@ run
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

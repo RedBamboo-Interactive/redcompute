@@ -1,0 +1,5 @@
+# Release files whose bytes are published: the same on every builder, whatever core.autocrlf says.
+# The Linux installer and the systemd unit template must keep LF to run at all.
+release/leaf-node/*.sh text eol=lf
+release/leaf-node/*.ps1 text eol=crlf
+src/RedCompute.Node/Install/*.service text eol=lf

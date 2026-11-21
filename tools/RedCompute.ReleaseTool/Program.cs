@@ -18,6 +18,9 @@ public static class ReleaseToolProgram
                 ("evidence", "validate") => ValidateEvidence(options),
                 ("descriptor", "build") => BuildDescriptor(options),
                 ("descriptor", "validate") => ValidateDescriptor(options),
+                ("node", "archive") => CreateNodeArchive(options),
+                ("node", "manifest") => BuildNodeManifest(options),
+                ("node", "validate") => ValidateNodeManifest(options),
                 _ => Usage(),
             };
         }
@@ -185,6 +188,56 @@ public static class ReleaseToolProgram
         return 0;
     }
 
+    // ---- leaf-node (Phase 3 R7): additions beside RedCompute's artifact, never inputs to it ----
+
+    private static int CreateNodeArchive(Arguments options)
+    {
+        options.EnsureOnly("source", "output", "rid");
+        var rid = options.Required("rid");
+        if (!LeafNodeRuntime.IsSupported(rid)) throw new ArgumentException("--rid must be win-x64 or linux-x64.");
+        var output = options.Required("output");
+        if (!string.Equals(Path.GetFileName(output), LeafNodeRuntime.ArchiveName(rid), StringComparison.Ordinal))
+            throw new ArgumentException($"The {rid} archive must be named {LeafNodeRuntime.ArchiveName(rid)}.");
+        LeafNodeArchive.Create(options.Required("source"), output, rid);
+        Console.WriteLine($"Created deterministic leaf-node {rid} archive.");
+        return 0;
+    }
+
+    private static int BuildNodeManifest(Arguments options)
+    {
+        options.EnsureOnly("version", "source-commit", "windows-archive", "linux-archive", "output");
+        var output = Path.GetFullPath(options.Required("output"));
+        if (!string.Equals(Path.GetFileName(output), LeafNodeRuntime.ManifestName, StringComparison.Ordinal))
+            throw new ArgumentException($"The manifest must be named {LeafNodeRuntime.ManifestName}.");
+        var manifest = LeafNodeManifests.Build(options.Required("version"), options.Required("source-commit"),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["win-x64"] = Path.GetFullPath(options.Required("windows-archive")),
+                ["linux-x64"] = Path.GetFullPath(options.Required("linux-archive")),
+            });
+        WriteUtf8(output, ComponentJson.Serialize(manifest));
+        Console.WriteLine("Built leaf-node manifest.");
+        return 0;
+    }
+
+    private static int ValidateNodeManifest(Arguments options)
+    {
+        options.EnsureOnly("input", "archives");
+        var input = Path.GetFullPath(options.Required("input"));
+        var manifest = ComponentJson.Deserialize<LeafNodeManifest>(File.ReadAllText(input));
+        LeafNodeManifests.Validate(manifest);
+        // With --archives, every archive the manifest names must be there with that size and hash.
+        if (options.Optional("archives") is { } folder)
+            foreach (var artifact in manifest.Artifacts)
+            {
+                var facts = ComponentJson.Inspect(Path.Combine(folder, artifact.Name));
+                if (facts.Sha256 != artifact.Sha256 || facts.SizeBytes != artifact.SizeBytes)
+                    throw new InvalidDataException($"{artifact.Name} does not match the manifest.");
+            }
+        Console.WriteLine("Validated leaf-node manifest.");
+        return 0;
+    }
+
     private static void VerifySelfContainedPublish(string root, string rid)
     {
         foreach (var relative in RedComputeRuntime.RequiredFiles(rid))
@@ -238,7 +291,7 @@ public static class ReleaseToolProgram
 
     private static int Usage()
     {
-        Console.Error.WriteLine("Usage: RedCompute.ReleaseTool archive create | evidence <build|validate> | descriptor <build|validate>");
+        Console.Error.WriteLine("Usage: RedCompute.ReleaseTool archive create | evidence <build|validate> | descriptor <build|validate> | node <archive|manifest|validate>");
         return 2;
     }
 

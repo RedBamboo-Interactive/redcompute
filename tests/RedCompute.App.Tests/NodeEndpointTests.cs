@@ -137,7 +137,7 @@ public sealed class NodeEndpointTests : IAsyncLifetime
         var catalog = DiscoveryCatalog.Build(((IEndpointRouteBuilder)_app).DataSources, _endpoints.GetEndpoints(),
             [], [RedComputeServiceDescriptor.NodesArea]);
         var routes = catalog.Routes.Where(route => route.Area == "nodes").ToList();
-        Assert.Equal(["/nodes", "/nodes/changed", "/nodes/{id}", "/nodes/{id}/diag/echo", "/nodes/{id}/revoked"],
+        Assert.Equal(["/nodes", "/nodes/agent", "/nodes/changed", "/nodes/{id}", "/nodes/{id}/diag/echo", "/nodes/{id}/revoked"],
             routes.Select(route => route.Path).Distinct().Order(StringComparer.Ordinal));
         // Each response schema is the record's own: nothing to maintain by hand.
         Assert.All(routes.Where(route => route.Path != "/nodes/changed"), route => Assert.NotNull(route.Response));

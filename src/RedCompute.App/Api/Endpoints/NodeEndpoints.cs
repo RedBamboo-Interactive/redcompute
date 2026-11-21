@@ -121,12 +121,20 @@ public static class NodeEndpoints
     public const long DefaultEchoBytes = 1L << 20;
 
     public static void Map(EndpointRegistry endpoints, NodeRegistry nodes, CapabilityRegistry registry,
-        HardwareMonitorService hardwareMonitor, NodeHub? hub = null, KernelNodeSync? sync = null)
-        => Map(endpoints, nodes, registry, hardwareMonitor.GetSnapshot, hub, sync);
+        HardwareMonitorService hardwareMonitor, NodeHub? hub = null, KernelNodeSync? sync = null,
+        NodeAgentRelease? agentRelease = null)
+        => Map(endpoints, nodes, registry, hardwareMonitor.GetSnapshot, hub, sync, agentRelease);
 
     public static void Map(EndpointRegistry endpoints, NodeRegistry nodes, CapabilityRegistry registry,
-        Func<HardwareSnapshot?> hardware, NodeHub? hub = null, KernelNodeSync? sync = null)
+        Func<HardwareSnapshot?> hardware, NodeHub? hub = null, KernelNodeSync? sync = null,
+        NodeAgentRelease? agentRelease = null)
     {
+        var release = agentRelease ?? new NodeAgentRelease();
+        endpoints.MapGet("/nodes/agent",
+            "Where to get leaf-node, the agent a machine runs to become a node (the \"Add a node\" dialog): the Nightly publishes it beside RedCompute's Windows release. Read on request from the signed release feed's current nightly RedCompute record (the pointer, then the record it names by SHA-256), then leaf-node-manifest.v1.json in that release, which must name the record's version and source commit: the chain the installers follow before installing. Returns {available, reason, channel, version, sourceCommit, releaseUrl, manifestUrl, windows, linux}; windows and linux are {archiveUrl, sha256, sizeBytes, installerUrl, installCommand}. installCommand only installs: pairing stays the separate `leaf-node pair --server <origin> --code <code>`. available false (with reason) when the feed cannot be read or names no leaf-node, as before the first Nightly that ships it. Cached 10 minutes (1 minute after a failure).",
+            async Task<Ok<NodeAgentDownload>> (HttpContext context) => TypedResults.Ok(await release.GetAsync(context.RequestAborted)))
+            .WithResponse(SchemaOf<NodeAgentDownload>());
+
         endpoints.MapGet("/nodes",
             "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform (with chassis when the firmware says), its icon and color from the kernel's node entity (null from an older kernel), hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is not in this release (reason remote_execution_not_available, offline, revoked, not_confirmed or needs_update). Capabilities and providers run on node zero only. legacyNodeId is the node records older than node ids belong to. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
             async Task<Ok<NodeListView>> (HttpContext context) =>

@@ -212,14 +212,7 @@ public sealed class WindowsInstallPlatform(IExecutionHost host) : INodeInstallPl
     {
         using (var run = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey))
             run.SetValue(ValueName, $"\"{executable}\" run");
-        host.Processes.Start(new HostSpawnSpec
-        {
-            FileName = executable,
-            ArgumentList = ["run"],
-            CreateNoWindow = true,
-            Containment = ContainmentMode.None,
-            OwnerLabel = "leaf-node",
-        })?.Dispose();
+        IsolatedInstallPlatform.StartDetached(host, executable);
     }
 
     public void DisableAutostart()
@@ -255,6 +248,77 @@ public sealed class WindowsInstallPlatform(IExecutionHost host) : INodeInstallPl
 }
 
 /// <summary>
+/// An agent that <c>LEAF_NODE_HOME</c> isolates (tests, a second agent for development, an installer
+/// dry run). The Run value, the Uninstall key and the systemd user unit name the user's one real
+/// agent, so this one never writes them: it records the same facts as files in its own home
+/// (<c>registrations/</c>, removed with it) and starts the agent directly.
+/// </summary>
+public sealed class IsolatedInstallPlatform(NodePaths paths, IExecutionHost host, Action<string>? start = null)
+    : INodeInstallPlatform
+{
+    private string Folder => Path.Combine(paths.IsolatedHome!, "registrations");
+    private string AutostartFile => Path.Combine(Folder, "autostart.json");
+    private string AppFile => Path.Combine(Folder, "app.json");
+
+    public void EnableAutostart(string executable, bool keepRunningWhenLoggedOut)
+    {
+        Write(AutostartFile, new JsonObject
+        {
+            ["command"] = new JsonArray(executable, "run"),
+            ["keepRunningWhenLoggedOut"] = keepRunningWhenLoggedOut,
+        });
+        (start ?? (path => StartDetached(host, path)))(executable);
+    }
+
+    public void DisableAutostart() => Delete(AutostartFile);
+
+    public void RegisterApp(string executable, string installLocation, string version) => Write(AppFile, new JsonObject
+    {
+        ["displayName"] = "Leaf node",
+        ["displayVersion"] = version,
+        ["installLocation"] = installLocation,
+        ["uninstallString"] = $"\"{executable}\" uninstall",
+    });
+
+    public void UnregisterApp() => Delete(AppFile);
+
+    public IReadOnlyList<string> Leftovers() => new[] { AutostartFile, AppFile }.Where(File.Exists).ToArray();
+
+    /// <summary>
+    /// Starts <c>leaf-node run</c> in the background, holding none of this process's handles: the
+    /// console or pipe an installer reads <c>install</c>'s output from closes when <c>install</c> exits.
+    /// Windows starts it through the shell (no inherited handles); elsewhere its stdio are fresh pipes.
+    /// </summary>
+    internal static void StartDetached(IExecutionHost host, string executable)
+    {
+        var windows = OperatingSystem.IsWindows();
+        host.Processes.Start(new HostSpawnSpec
+        {
+            FileName = executable,
+            ArgumentList = ["run"],
+            CreateNoWindow = !windows,
+            UseShellExecute = windows,
+            StandardInput = windows ? StdioMode.NotRedirected : StdioMode.Pipe,
+            StandardOutput = windows ? StdioMode.NotRedirected : StdioMode.Pipe,
+            StandardError = windows ? StdioMode.NotRedirected : StdioMode.Pipe,
+            Containment = ContainmentMode.None,
+            OwnerLabel = "leaf-node",
+        })?.Dispose();
+    }
+
+    private void Write(string file, JsonObject value)
+    {
+        host.Files.CreateDirectory(host.Path(Folder));
+        host.Files.ReplaceAtomically(host.Path(file), value.ToJsonString());
+    }
+
+    private void Delete(string file)
+    {
+        if (File.Exists(file)) File.Delete(file);
+    }
+}
+
+/// <summary>
 /// Linux: the user unit <c>~/.config/systemd/user/leaf-node.service</c>, enabled and started with
 /// <c>systemctl --user</c>; linger only on request (a headless box, design 2.2, D2).
 /// </summary>
@@ -264,24 +328,16 @@ public sealed class LinuxInstallPlatform(NodePaths paths, IExecutionHost host, N
 
     private string UnitFile => Path.Combine(paths.SystemdUnits!, UnitName);
 
-    public static string Unit(string executable) => $"""
-        [Unit]
-        Description=Leaf node agent
-        After=network-online.target
-        Wants=network-online.target
-
-        [Service]
-        Type=simple
-        ExecStart={executable} run
-        Restart=on-failure
-        RestartSec=5
-        KillMode=mixed
-        TimeoutStopSec=90
-
-        [Install]
-        WantedBy=default.target
-
-        """.ReplaceLineEndings("\n");
+    /// <summary>The template <c>Install/leaf-node.service</c> (embedded): its comment lines dropped, the shim in ExecStart.</summary>
+    public static string Unit(string executable)
+    {
+        using var stream = typeof(LinuxInstallPlatform).Assembly.GetManifestResourceStream(UnitName)
+                           ?? throw new InvalidOperationException($"The {UnitName} template is not embedded.");
+        using var reader = new StreamReader(stream);
+        var lines = reader.ReadToEnd().ReplaceLineEndings("\n").Split('\n')
+            .Where(line => !line.StartsWith('#'));
+        return string.Join('\n', lines).Replace("@EXECUTABLE@", executable, StringComparison.Ordinal);
+    }
 
     public void EnableAutostart(string executable, bool keepRunningWhenLoggedOut)
     {

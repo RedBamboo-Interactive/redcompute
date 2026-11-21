@@ -39,4 +39,9 @@
     <InternalsVisibleTo Include="RedCompute.Node.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The systemd user unit template (design 2.2); `leaf-node install` renders it on Linux. -->
+    <EmbeddedResource Include="Install\leaf-node.service" LogicalName="leaf-node.service" />
+  </ItemGroup>
+
 </Project>
