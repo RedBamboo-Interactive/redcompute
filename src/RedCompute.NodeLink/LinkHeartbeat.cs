@@ -111,6 +111,25 @@ public sealed class ReconnectBackoff(Random random, TimeSpan? baseDelay = null, 
     public void Reset() => Attempt = 0;
 }
 
+/// <summary>
+/// The wait after a verdict redialling cannot fix (needs update, needs re-pin, a revocation a pinned node could not
+/// authenticate): the first wait, then twice as long each time up to the cap (an hour), each somewhere between half and
+/// all of its step. One stray event costs a minute, not an hour; a lasting one settles at hourly. Reset once the link is up.
+/// </summary>
+public sealed class VerdictBackoff(Random random, TimeSpan first, TimeSpan cap)
+{
+    public int Attempt { get; private set; }
+
+    public TimeSpan Next()
+    {
+        var attempt = Attempt++;
+        var step = Math.Min(cap.Ticks, first.Ticks * Math.Pow(2, Math.Min(attempt, 30)));
+        return TimeSpan.FromTicks((long)(step * (0.5 + random.NextDouble() / 2)));
+    }
+
+    public void Reset() => Attempt = 0;
+}
+
 /// <summary>What the node does after a dial or a link ends (design 4.7).</summary>
 public enum DialAction
 {
@@ -118,7 +137,10 @@ public enum DialAction
     Retry,
     /// <summary>401 assertion_invalid with serverTime: fix the clock offset, retry once at once.</summary>
     RetryNowWithServerTime,
-    /// <summary>403 node_revoked, 404 node_unknown, close 4403: stop, clean up locally.</summary>
+    /// <summary>
+    /// 403 node_revoked, 404 node_unknown, close 4403: stop, clean up locally. A node with E2E acts only on the
+    /// server's sealed, in-band verdict; for it an HTTP status or a bare close code is <see cref="StopUnverified"/>.
+    /// </summary>
     Stop,
     /// <summary>426 or close 4426: "needs update", retry hourly.</summary>
     NeedsUpdate,
@@ -131,6 +153,11 @@ public enum DialAction
     /// pairing. The node keeps its pin, never re-pins by itself, and retries hourly until its owner re-pins it.
     /// </summary>
     NeedsRepin,
+    /// <summary>
+    /// A stop an E2E node cannot authenticate (an HTTP 403/404, or 4403 without the in-band verdict): it deletes
+    /// nothing, says "revoked, unverified" and retries with <see cref="VerdictBackoff"/>.
+    /// </summary>
+    StopUnverified,
 }
 
 /// <summary>A dial the server refused before the WebSocket opened.</summary>

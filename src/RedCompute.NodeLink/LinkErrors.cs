@@ -7,6 +7,8 @@ public static class LinkCloseCodes
     public const int GoingAway = 1001;
     public const int Abnormal = 1006;
     public const int MessageTooBig = 1009;
+    /// <summary>The server failed on its own side (a fault, never a verdict on the node): the node retries.</summary>
+    public const int InternalError = 1011;
     public const int ServiceRestart = 1012;
     /// <summary>A malformed frame, a text message, a hello for another node, a flow-control violation.</summary>
     public const int ProtocolError = 4400;
@@ -23,6 +25,19 @@ public static class LinkCloseCodes
     public const int E2eRequired = 4496;
     /// <summary>E2E: the node's link key is not bound to its paired identity.</summary>
     public const int LinkIdentityInvalid = 4497;
+}
+
+/// <summary>
+/// The server's in-band verdict on a node: <c>link.verdict {code}</c>, a control call it makes before it ends the
+/// node's session for good. On an encrypted link it is sealed like every frame, so a pinned node can tell it from a
+/// close code or an HTTP status, which anything on the path (the kernel's bridge, Cloudflare) could send. Only this
+/// verdict, or the welcome's own refusal, lets a pinned node delete its keys.
+/// </summary>
+public static class LinkVerdicts
+{
+    public const string Method = "link.verdict";
+    public const string Revoked = "node_revoked";
+    public const string Unknown = "node_unknown";
 }
 
 /// <summary>The peer broke the protocol; the link closes with <see cref="CloseCode"/>.</summary>

@@ -15,6 +15,9 @@ public sealed class LinkServerOptions
     public ProtocolRange Protocol { get; init; } = LinkProtocol.Supported;
     public LinkOptions Link { get; init; } = LinkOptions.Default;
 
+    /// <summary>How long a revocation waits for the node to read its in-band verdict before the link closes 4403.</summary>
+    public TimeSpan VerdictTimeout { get; init; } = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// Runs on each connection before the hello, within the handshake timeout, with the node id the
     /// ingress bound, and returns the transport the link runs over: the Noise responder
@@ -204,7 +207,9 @@ public sealed class LinkServer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Ends a node's session at once: its connection closes with 4403, its channels and calls fail,
+    /// Ends a node's session at once: it is told <c>link.verdict {code: node_revoked}</c> in band (sealed on an
+    /// encrypted link; at most <see cref="LinkServerOptions.VerdictTimeout"/>), then its connection closes with 4403,
+    /// its channels and calls fail,
     /// and nothing more is accepted from it, ever: the node is remembered as revoked before this returns
     /// its task (synchronously), so a connection still in its handshake is refused 4403 too.
     /// </summary>
@@ -217,6 +222,9 @@ public sealed class LinkServer : IAsyncDisposable
         {
             if (entry.Session is { } session)
             {
+                // In band first: a pinned node deletes its keys only on a verdict that came sealed (a bare 4403
+                // could come from anything on the path).
+                await session.SendVerdictAsync(LinkVerdicts.Revoked, _options.VerdictTimeout, LinkCloseCodes.Revoked);
                 await session.ResetAsync("node_revoked", LinkCloseCodes.Revoked);
                 Raise(() => SessionEnded?.Invoke(nodeId, session));
             }

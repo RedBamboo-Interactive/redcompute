@@ -74,6 +74,13 @@ public sealed class LinkSession : IAsyncDisposable
     public string? Epoch { get; }
 
     public bool IsAttached { get { lock (_gate) return _transport is not null; } }
+
+    /// <summary>
+    /// The server's <see cref="LinkVerdicts"/> verdict, when it sent one on this session (the node side only):
+    /// in band, so sealed on an encrypted link. The first one counts.
+    /// </summary>
+    public string? PeerVerdict => Volatile.Read(ref _peerVerdict);
+    private string? _peerVerdict;
     public bool IsReset { get { lock (_gate) return _reset; } }
 
     public TimeSpan? Rtt { get { lock (_gate) return _heartbeat?.Rtt; } }
@@ -773,6 +780,45 @@ public sealed class LinkSession : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The server tells the node its verdict in band before it ends the session (<see cref="LinkVerdicts"/>), and
+    /// waits for the answer at most <paramref name="timeout"/>, so the verdict is read before the close. A node that
+    /// does not know the method answers an error, which also proves it read it. False when nothing came back.
+    /// </summary>
+    public async Task<bool> SendVerdictAsync(string code, TimeSpan timeout, int closeCode)
+    {
+        Task<LinkDisconnect>? ended;
+        lock (_gate)
+        {
+            if (_transport is null) return false;
+            // From now on, however this connection ends (an unresponsive node's heartbeat too), it closes closeCode.
+            _detach = (closeCode, code);
+            ended = _pumpDone?.Task;
+        }
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            var call = CallAsync(LinkVerdicts.Method, new JsonObject { ["code"] = code }, cts.Token);
+            if (ended is not null && await Task.WhenAny(call, ended) != call)
+            {
+                cts.Cancel();
+                _ = call.ContinueWith(t => t.Exception, TaskScheduler.Default);
+                return false; // the connection ended first: nobody is left to read it
+            }
+            await call;
+            return true;
+        }
+        catch (LinkRpcException error) when (error.Code != LinkErrorCodes.LinkReset)
+        {
+            return true;
+        }
+        catch (Exception error) when (error is LinkRpcException or LinkClosedException or OperationCanceledException
+                                          or ObjectDisposedException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
     public Task NotifyAsync(string method, JsonNode? parameters = null, CancellationToken ct = default)
         => SendControlAsync(new JsonObject { ["method"] = method, ["params"] = parameters ?? new JsonObject() }, ct).AsTask();
 
@@ -810,6 +856,30 @@ public sealed class LinkSession : IAsyncDisposable
                 else
                 {
                     pending.TrySetResult(root.TryGetProperty("result", out var result) ? result : default);
+                }
+                return;
+            }
+            if (method == LinkVerdicts.Method && session.Role == LinkRole.Node)
+            {
+                // The link's own verdict, never the application's: recorded here, answered here.
+                var code = parameters.ValueKind == JsonValueKind.Object && parameters.TryGetProperty("code", out var c)
+                           && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+                if (code is LinkVerdicts.Revoked or LinkVerdicts.Unknown)
+                    Interlocked.CompareExchange(ref session._peerVerdict, code, null);
+                if (hasId)
+                {
+                    var answer = new JsonObject { ["id"] = idElement.GetInt64(), ["result"] = new JsonObject { ["ok"] = true } };
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await session.SendControlAsync(answer, session._life.Token);
+                        }
+                        catch (Exception)
+                        {
+                            // the session ended; the server closes it anyway
+                        }
+                    }, CancellationToken.None);
                 }
                 return;
             }

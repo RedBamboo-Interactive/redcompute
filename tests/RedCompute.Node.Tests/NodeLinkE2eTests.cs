@@ -290,6 +290,85 @@ public sealed class NodeLinkE2eTests : IDisposable
         }
     }
 
+    // ================================================================= revocation verdicts (the review's blocker)
+
+    public static TheoryData<string> ForgedVerdicts => new() { "close-4403", "http-403", "http-404" };
+
+    /// <summary>
+    /// What anything on the path can send without the server: one close frame with 4403, or an HTTP 403/404 at the
+    /// dial. Against a pinned node it deletes nothing: not the identity key, not the link key, not the spool, not the pin.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ForgedVerdicts))]
+    public async Task A_forged_revocation_deletes_nothing_on_a_pinned_node(string kind)
+    {
+        await PairPinnedAsync();
+        Directory.CreateDirectory(_home.Paths.Spool);
+        var spoolFile = Path.Combine(_home.Paths.Spool, "stream-1.seg");
+        File.WriteAllText(spoolFile, "spooled");
+        var stateBefore = _home.Environment().StateStore.Load();
+        await using var hub = StartHub(NodeSpki);
+
+        ILinkTransport? serverEnd = null;
+        var env = _home.Environment(dial: (pairing, key) => token =>
+        {
+            if (kind != "close-4403")
+                throw new LinkDialException(kind == "http-404" ? 404 : 403, kind == "http-404" ? "node_unknown" : "node_revoked", "forged");
+            var (node, server) = LinkPipe.Create();
+            serverEnd = server;
+            _ = hub.Server.RunAsync(server, pairing.NodeId, CancellationToken.None);
+            return Task.FromResult(node);
+        });
+        var agent = new NodeAgent(env);
+        var stop = new CancellationTokenSource();
+        var running = (agent, agent.RunAsync(stop.Token), stop);
+        try
+        {
+            if (kind == "close-4403")
+            {
+                await Wait.UntilAsync(() => hub.Server.IsOnline(NodeId), "the encrypted link");
+                await serverEnd!.CloseAsync(LinkCloseCodes.Revoked, "node_revoked", CancellationToken.None); // not the server: the path
+            }
+            await Wait.UntilAsync(() => agent.Status()["link"]?["status"]?.GetValue<string>() == "revoked-unverified", "revoked-unverified");
+
+            Assert.True(File.Exists(_home.Paths.KeyFile));
+            Assert.True(File.Exists(_home.Paths.LinkKeyFile));
+            Assert.Equal("spooled", File.ReadAllText(spoolFile));
+            var stateAfter = _home.Environment().StateStore.Load();
+            Assert.Equal(stateBefore, stateAfter);
+            Assert.Null(stateAfter.Ended);
+            Assert.DoesNotContain(env.Audit.Read(), line => line["name"]?.GetValue<string>() == "forget");
+            var text = NodeCommands.DescribeStatus(agent.Status());
+            Assert.Contains("Nothing is deleted", text);
+            Assert.Contains("leaf-node unpair", text);
+        }
+        finally
+        {
+            await StopAsync(running);
+        }
+    }
+
+    [Fact]
+    public async Task The_server_s_sealed_revocation_still_cleans_up_a_pinned_node()
+    {
+        await PairPinnedAsync();
+        await using var hub = StartHub(NodeSpki);
+        var running = StartAgent(hub);
+        try
+        {
+            await Wait.UntilAsync(() => hub.Server.IsOnline(NodeId), "the encrypted link");
+            await hub.Server.RevokeAsync(NodeId);
+            await Wait.UntilAsync(() => _home.Environment().StateStore.Load().Ended is not null, "the node forgotten");
+            Assert.Equal("revoked", _home.Environment().StateStore.Load().Ended!.Reason);
+            Assert.False(File.Exists(_home.Paths.KeyFile));
+            Assert.False(File.Exists(_home.Paths.LinkKeyFile));
+        }
+        finally
+        {
+            await StopAsync(running);
+        }
+    }
+
     // ================================================================= leaf-node repin
 
     [Fact]

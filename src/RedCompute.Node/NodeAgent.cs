@@ -45,9 +45,16 @@ public sealed class NodeEnvironment
 
 /// <summary>
 /// The background agent (<c>leaf-node run</c>, design 2.2): reads <c>node.json</c>, keeps the link while
-/// paired, pushes reports, answers the control channel, and on revocation (close 4403, or 403/404 with
-/// the server's verdict at a dial) runs the kill switch, deletes its key and spool, records why, and
-/// stops dialling (design 3.5). It keeps running unpaired, so a later <c>leaf-node pair</c> reloads it.
+/// paired, pushes reports, answers the control channel, and on revocation runs the kill switch, deletes its
+/// key and spool, records why, and stops dialling (design 3.5). It keeps running unpaired, so a later
+/// <c>leaf-node pair</c> reloads it.
+/// <para>
+/// Which revocation it acts on depends on the pin. A node that pinned the server's link key (E2E) acts only on the
+/// server's sealed, in-band verdict (<c>link.verdict</c>, or the welcome's refusal). A close 4403 or an HTTP 403/404
+/// could come from anything on the path, so for that node they mean "revoked, unverified": nothing is deleted, the
+/// link retries with backoff, and its owner can run <c>leaf-node unpair</c>. A node that never pinned still treats
+/// them as before (design 1b.10, the migration).
+/// </para>
 /// </summary>
 public sealed class NodeAgent : IAsyncDisposable
 {
@@ -243,6 +250,14 @@ public sealed class NodeAgent : IAsyncDisposable
         _ => "The encrypted link could not be set up. Ask the node's owner for a re-pin code: leaf-node repin --code <code>.",
     };
 
+    /// <summary>What the owner reads when a pinned node was told "revoked" by something it cannot authenticate.</summary>
+    internal static string UnverifiedAdvice(string? reason)
+        => (reason?.Contains(LinkVerdicts.Unknown) == true
+               ? "The server says it does not know this node"
+               : "The server says this node was revoked")
+           + ", but not on the encrypted link, so the answer could have come from anything on the path. Nothing is "
+           + "deleted, and it keeps trying with backoff. If its owner did revoke or remove it, run: leaf-node unpair.";
+
     private void OnClientStatus(LinkClient client, LinkClientStatus status, string? reason)
     {
         var text = status switch
@@ -253,10 +268,12 @@ public sealed class NodeAgent : IAsyncDisposable
             LinkClientStatus.Refused => "refused",
             LinkClientStatus.NeedsUpdate => "needs-update",
             LinkClientStatus.NeedsRepin => "needs-repin",
+            LinkClientStatus.RevokedUnverified => "revoked-unverified",
             _ => "stopped",
         };
         if (status == LinkClientStatus.Online) _env.Log.Info($"Link online ({reason}).");
         else if (status == LinkClientStatus.NeedsRepin) _env.Log.Warn($"{RepinAdvice(reason)} ({reason})");
+        else if (status == LinkClientStatus.RevokedUnverified) _env.Log.Warn($"{UnverifiedAdvice(reason)} ({reason})");
         else if (status is LinkClientStatus.Offline or LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate or LinkClientStatus.NeedsRepin)
             _env.Log.Info($"Link {text}{(reason is null ? "" : $": {reason}")}.");
         SetLinkStatus(text, reason);

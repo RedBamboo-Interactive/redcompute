@@ -254,6 +254,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         {
             lines.Add($"Link: {link["status"]}{(link["reason"] is { } reason ? $" ({reason})" : "")}.");
             if (link["status"]?.GetValue<string>() == "needs-repin") lines.Add(NodeAgent.RepinAdvice(link["reason"]?.GetValue<string>()));
+            if (link["status"]?.GetValue<string>() == "revoked-unverified") lines.Add(NodeAgent.UnverifiedAdvice(link["reason"]?.GetValue<string>()));
         }
         lines.Add($"leaf-node {status["agent"]?["version"]}");
         return string.Join(Environment.NewLine, lines);

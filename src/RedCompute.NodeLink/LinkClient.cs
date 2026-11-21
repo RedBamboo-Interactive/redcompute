@@ -21,8 +21,14 @@ public sealed class LinkClientOptions
     public LinkOptions Link { get; init; } = LinkOptions.Default;
     public ReconnectBackoff? Backoff { get; init; }
 
-    /// <summary>How often a node that needs an update tries again (design 4.7: hourly).</summary>
+    /// <summary>
+    /// The longest wait after a verdict redialling cannot fix: needs update, needs re-pin, a revocation a pinned node
+    /// could not authenticate (design 4.7: hourly). The waits grow to it from <see cref="VerdictRetryFirst"/>.
+    /// </summary>
     public TimeSpan NeedsUpdateRetry { get; init; } = TimeSpan.FromHours(1);
+
+    /// <summary>The first wait after such a verdict: one event costs about this, not an hour.</summary>
+    public TimeSpan VerdictRetryFirst { get; init; } = TimeSpan.FromMinutes(1);
 }
 
 public enum LinkClientStatus
@@ -30,8 +36,18 @@ public enum LinkClientStatus
     Connecting,
     Online,
     Offline,
-    /// <summary>The server refused the node (revoked or unknown): the client stopped.</summary>
+    /// <summary>
+    /// The server refused the node (revoked or unknown) with a verdict the client may act on: the client stopped.
+    /// For a node with <see cref="LinkClientOptions.Secure"/> that is only the server's sealed, in-band verdict
+    /// (<see cref="LinkVerdicts"/>, or the welcome's refusal); for a node without it, also 403/404 or close 4403.
+    /// </summary>
     Refused,
+    /// <summary>
+    /// A node with <see cref="LinkClientOptions.Secure"/> was told "revoked" or "unknown" by something it cannot
+    /// authenticate: an HTTP 403/404 at the dial or a bare close 4403. Anything on the path could send that, so it
+    /// deletes nothing and keeps retrying with backoff; its owner can still unpair it locally.
+    /// </summary>
+    RevokedUnverified,
     NeedsUpdate,
     /// <summary>
     /// The encrypted link cannot be set up with the pinned server key (4495), the server requires
@@ -60,7 +76,10 @@ public sealed class LinkClient : IAsyncDisposable
     {
         _options = options;
         _backoff = options.Backoff ?? new ReconnectBackoff(Random.Shared);
+        _verdictBackoff = new VerdictBackoff(Random.Shared, options.VerdictRetryFirst, options.NeedsUpdateRetry);
     }
+
+    private readonly VerdictBackoff _verdictBackoff;
 
     public LinkSession? Session { get { lock (_gate) return _session; } }
     public LinkWelcome? Welcome { get; private set; }
@@ -112,11 +131,15 @@ public sealed class LinkClient : IAsyncDisposable
                         return;
                     case DialAction.NeedsUpdate:
                         SetStatus(LinkClientStatus.NeedsUpdate, StatusReason);
-                        delay = _options.NeedsUpdateRetry;
+                        delay = _verdictBackoff.Next();
                         break;
                     case DialAction.NeedsRepin:
                         SetStatus(LinkClientStatus.NeedsRepin, StatusReason);
-                        delay = _options.NeedsUpdateRetry;
+                        delay = _verdictBackoff.Next();
+                        break;
+                    case DialAction.StopUnverified:
+                        SetStatus(LinkClientStatus.RevokedUnverified, StatusReason);
+                        delay = _verdictBackoff.Next();
                         break;
                     case DialAction.RetryAfter:
                         delay = retryAfter ?? _backoff.Next(closeCode);
@@ -138,7 +161,8 @@ public sealed class LinkClient : IAsyncDisposable
         }
         finally
         {
-            if (Status is not (LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate or LinkClientStatus.NeedsRepin))
+            if (Status is not (LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate or LinkClientStatus.NeedsRepin
+                or LinkClientStatus.RevokedUnverified))
                 SetStatus(LinkClientStatus.Stopped, null);
         }
     }
@@ -190,7 +214,8 @@ public sealed class LinkClient : IAsyncDisposable
                     "node_revoked" => LinkCloseCodes.Revoked,
                     _ => LinkCloseCodes.ProtocolError,
                 };
-                return (DialOutcomes.Classify(null, refusal.Code, code), code, null);
+                // The welcome came through the transport: sealed when the link is encrypted.
+                return (Authenticate(DialOutcomes.Classify(null, refusal.Code, code), authenticated: true), code, null);
             }
 
             var resumed = welcome!.Resumed && current is not null && current.LinkSessionId == welcome.LinkSessionId;
@@ -214,6 +239,7 @@ public sealed class LinkClient : IAsyncDisposable
             Connections++;
             if (resumed) ResumedConnections++;
             var pump = session.RunTransportAsync(transport, resumed ? welcome.Channels : null, ct);
+            _verdictBackoff.Reset();
             SetStatus(LinkClientStatus.Online, resumed ? "resumed" : "new session");
             if (!resumed && SessionStarted is { } started)
                 _ = Task.Run(async () =>
@@ -231,17 +257,24 @@ public sealed class LinkClient : IAsyncDisposable
             var ended = await pump;
             _backoff.OnLinkEnded(ended.UpFor);
             SetStatus(LinkClientStatus.Offline, $"closed {ended.Code}{(ended.Reason is null ? "" : ": " + ended.Reason)}");
-            return (DialOutcomes.Classify(null, null, ended.Code), ended.Code, null);
+            // A 4403 counts as the server's own word only with the in-band verdict that came before it.
+            var action = DialOutcomes.Classify(null, null, ended.Code);
+            if (action == DialAction.Stop && session.PeerVerdict is { } verdict)
+            {
+                StatusReason = verdict;
+                return (action, ended.Code, null);
+            }
+            return (Authenticate(action, authenticated: false), ended.Code, null);
         }
         catch (LinkDialException error)
         {
             StatusReason = error.ErrorCode ?? error.Message;
-            return (DialOutcomes.Classify(error.HttpStatus, error.ErrorCode, null), null, error.RetryAfter);
+            return (Authenticate(DialOutcomes.Classify(error.HttpStatus, error.ErrorCode, null), authenticated: false), null, error.RetryAfter);
         }
         catch (LinkClosedException error)
         {
             StatusReason = error.Message;
-            return (DialOutcomes.Classify(null, null, error.Code), error.Code, null);
+            return (Authenticate(DialOutcomes.Classify(null, null, error.Code), authenticated: false), error.Code, null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -260,6 +293,14 @@ public sealed class LinkClient : IAsyncDisposable
             return (action, code, null);
         }
     }
+
+    /// <summary>
+    /// A stop the node may act on (delete its keys): any for a node without E2E, as before; for a node with
+    /// <see cref="LinkClientOptions.Secure"/> only one that came in band, sealed. Anything else becomes
+    /// <see cref="DialAction.StopUnverified"/>.
+    /// </summary>
+    private DialAction Authenticate(DialAction action, bool authenticated)
+        => action == DialAction.Stop && _options.Secure is not null && !authenticated ? DialAction.StopUnverified : action;
 
     /// <summary>Drops the current connection (the session stays, so the next one resumes it).</summary>
     public Task DropConnectionAsync(int code = LinkCloseCodes.GoingAway, string? reason = "dropped")
