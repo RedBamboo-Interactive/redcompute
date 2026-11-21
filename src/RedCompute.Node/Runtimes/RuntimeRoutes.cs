@@ -12,15 +12,35 @@ public enum BodyRule
     /// <summary>Streamed as it comes, only capped.</summary>
     Any,
 
-    /// <summary><c>/queue</c>: a JSON object whose only member is <c>delete</c>, a list of prompt ids.</summary>
+    /// <summary>
+    /// <c>/queue</c>: a JSON object whose only member is <c>delete</c>, a list of prompt ids the server submitted through
+    /// this node (<see cref="SubmittedPrompts"/>).
+    /// </summary>
     QueueDeleteOnly,
+
+    /// <summary><c>/prompt</c>: a JSON object that does not choose its own <c>prompt_id</c> (ComfyUI assigns it).</summary>
+    PromptSubmit,
+
+    /// <summary>
+    /// <c>/interrupt</c>: exactly <c>{"prompt_id": id}</c> with an id the server submitted through this node. ComfyUI then
+    /// interrupts only if that prompt is the one running; without a <c>prompt_id</c> it would interrupt whatever runs,
+    /// the owner's own work included.
+    /// </summary>
+    InterruptOwnPrompt,
 
     /// <summary><c>/upload/image</c>: multipart with one <c>image</c> file of a safe name, and only safe fields.</summary>
     ImageUpload,
 }
 
-/// <summary>An allowed exchange: the request the node sends the runtime, rebuilt from parsed parts.</summary>
-public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyRule Body);
+/// <summary>
+/// An allowed exchange: the request the node sends the runtime, rebuilt from parsed parts. <paramref name="PromptId"/> is
+/// the prompt a route acts on by its path (<c>/api/jobs/{id}/cancel</c>): one the server must have submitted.
+/// </summary>
+public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyRule Body, string? PromptId = null)
+{
+    /// <summary>Whether the route needs a body (its rule reads one): a body-less request there is refused.</summary>
+    public bool NeedsBody => Body is BodyRule.ImageUpload or BodyRule.QueueDeleteOnly or BodyRule.PromptSubmit or BodyRule.InterruptOwnPrompt;
+}
 
 /// <summary>
 /// The route allowlists, one table per runtime kind, in the agent's code and versioned with it (Phase 4 design 2.4).
@@ -28,6 +48,12 @@ public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyR
 /// parameter rules, then rebuilt: what reaches the runtime is never the server's raw string. Everything else is
 /// refused (<c>route_not_allowed</c>), including <c>/manager/*</c>, <c>/customnode/*</c>, <c>/api/manager/*</c>,
 /// <c>/api/userdata*</c>, <c>/internal/*</c> and <c>/extensions</c>.
+/// <para>
+/// What the owner keeps on the node stays there (review P4-P7, item 4): <c>/view</c> reads only <c>output</c> and
+/// <c>temp</c> (never <c>input</c>, the owner's own images); <c>/object_info</c> is not on the list, since it lists the
+/// owner's input files and models and the server never asks for it; and the routes that stop or dequeue a prompt act only
+/// on prompts the server submitted through this node.
+/// </para>
 /// </summary>
 public static class RuntimeRoutes
 {
@@ -50,16 +76,15 @@ public static class RuntimeRoutes
         {
             ("GET", ["system_stats"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal),
             ("GET", ["queue"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal),
-            ("GET", ["object_info"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal),
-            ("GET", ["object_info", var node]) when IsToken(node, 256) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal),
             ("GET", ["history", var id]) when IsId(id) => Plain(rebuiltPath, pairs, ["max_items"], 0, BodyRule.None, ref refusal),
             ("GET", ["view"]) => View(rebuiltPath, pairs, ref refusal),
-            ("POST", ["prompt"]) => Plain(rebuiltPath, pairs, [], 16 * MiB, BodyRule.Any, ref refusal),
+            ("POST", ["prompt"]) => Plain(rebuiltPath, pairs, [], 16 * MiB, BodyRule.PromptSubmit, ref refusal),
             ("POST", ["upload", "image"]) => Plain(rebuiltPath, pairs, [], 256 * MiB, BodyRule.ImageUpload, ref refusal),
             ("POST", ["queue"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.QueueDeleteOnly, ref refusal),
-            ("POST", ["interrupt"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.Any, ref refusal),
+            ("POST", ["interrupt"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.InterruptOwnPrompt, ref refusal),
             ("POST", ["free"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.Any, ref refusal),
-            ("POST", ["api", "jobs", var id, "cancel"]) when IsId(id) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.Any, ref refusal),
+            ("POST", ["api", "jobs", var id, "cancel"]) when IsId(id)
+                => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.Any, ref refusal) is { } cancel ? cancel with { PromptId = id } : null,
             _ => null,
         };
         if (route is null) refusal ??= $"{method} {path} is not on the {kind} allowlist.";
@@ -110,7 +135,7 @@ public static class RuntimeRoutes
         return new AllowedRoute(path, Query(pairs), maxBody, body);
     }
 
-    /// <summary><c>/view</c>: type output, temp or input; a file name without separators or <c>..</c>; a relative subfolder.</summary>
+    /// <summary><c>/view</c>: type output or temp; a file name without separators or <c>..</c>; a relative subfolder.</summary>
     private static AllowedRoute? View(string path, List<KeyValuePair<string, string>> pairs, ref string? refusal)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -125,7 +150,7 @@ public static class RuntimeRoutes
             {
                 "filename" => IsFileName(value),
                 "subfolder" => IsSubfolder(value),
-                "type" => value is "output" or "temp" or "input",
+                "type" => value is "output" or "temp",
                 "preview" => value.Length <= 32 && value.All(c => char.IsAsciiLetterOrDigit(c) || c is ';' or ','),
                 "channel" => value is "rgb" or "rgba" or "a",
                 _ => false,
@@ -155,7 +180,7 @@ public static class RuntimeRoutes
     public static bool IsSubfolder(string subfolder)
         => subfolder.Length == 0 || (subfolder.Length <= 255 && subfolder.Split('/').All(IsFileName));
 
-    private static bool IsId(string id) => id.Length is > 0 and <= 128 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+    internal static bool IsId(string id) => id.Length is > 0 and <= 128 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     private static bool IsToken(string value, int max)
         => value.Length is > 0 && value.Length <= max && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
@@ -279,20 +304,40 @@ public static class RuntimeRoutes
                               && !h.Key.StartsWith("cf-", StringComparison.OrdinalIgnoreCase)
                               && !h.Key.StartsWith("sec-websocket-", StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>The <c>boundary</c> of a multipart content type, or null.</summary>
+    /// <summary>How many <c>Content-Type</c> headers the server sent (more than one is refused: review P4-P7, item 5).</summary>
+    public static int ContentTypes(IEnumerable<KeyValuePair<string, string>> headers)
+        => headers.Count(h => h.Key.Equals("content-type", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The <c>boundary</c> of the one multipart content type, or null: not exactly one <c>Content-Type</c>, not
+    /// <c>multipart/form-data</c>, no boundary or two, or a boundary outside RFC 2046's characters (1 to 70, digits,
+    /// letters, <c>'()+_,-./:=?</c> and inner spaces). The node then sends the runtime exactly
+    /// <c>multipart/form-data; boundary="…"</c> rebuilt from it (<see cref="UploadContentType"/>), never the server's string.
+    /// </summary>
     public static string? Boundary(IEnumerable<KeyValuePair<string, string>> headers)
     {
-        var type = headers.LastOrDefault(h => h.Key.Equals("content-type", StringComparison.OrdinalIgnoreCase)).Value;
-        if (type is null || !type.TrimStart().StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase)) return null;
-        foreach (var parameter in type.Split(';').Skip(1))
+        var types = headers.Where(h => h.Key.Equals("content-type", StringComparison.OrdinalIgnoreCase)).Select(h => h.Value).ToList();
+        if (types is not [var type]) return null;
+        var parameters = type.Split(';');
+        if (!parameters[0].Trim().Equals("multipart/form-data", StringComparison.OrdinalIgnoreCase)) return null;
+        string? boundary = null;
+        foreach (var parameter in parameters.Skip(1))
         {
             var trimmed = parameter.Trim();
             if (!trimmed.StartsWith("boundary=", StringComparison.OrdinalIgnoreCase)) continue;
-            var boundary = trimmed["boundary=".Length..].Trim('"');
-            return boundary.Length is > 0 and <= 70 && boundary.All(c => c is > ' ' and < '\x7f' or ' ') ? boundary : null;
+            if (boundary is not null) return null;
+            var value = trimmed["boundary=".Length..];
+            if (value.Length >= 2 && value[0] == '"' && value[^1] == '"') value = value[1..^1];
+            boundary = value;
         }
-        return null;
+        return boundary is { Length: > 0 and <= 70 } && boundary[^1] != ' '
+               && boundary.All(c => char.IsAsciiLetterOrDigit(c) || "'()+_,-./:=? ".Contains(c))
+            ? boundary
+            : null;
     }
+
+    /// <summary>The one <c>Content-Type</c> an upload reaches the runtime with.</summary>
+    public static string UploadContentType(string boundary) => $"multipart/form-data; boundary=\"{boundary}\"";
 
     internal static string Latin1(ReadOnlySpan<byte> bytes) => Encoding.Latin1.GetString(bytes);
 

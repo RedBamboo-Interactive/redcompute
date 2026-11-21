@@ -75,7 +75,9 @@ internal abstract class GuardStream(Stream inner) : Stream
 /// <summary>
 /// ComfyUI's <c>/upload/image</c>: <c>multipart/form-data</c> with exactly one file part named <c>image</c> whose file
 /// name has no separator or <c>..</c>, and only the fields <c>overwrite</c> (true/false), <c>type</c> (input or temp)
-/// and <c>subfolder</c> (relative, no <c>..</c>). Headers are at most 16 KiB per part, a field at most 1 KiB.
+/// and <c>subfolder</c> (relative, no <c>..</c>). Headers are at most 16 KiB per part, a field at most 1 KiB. The body
+/// starts with its first boundary (no preamble) and ends with the closing one and at most a CRLF (no epilogue): no bytes
+/// the guard did not read as a part reach the runtime's parser (review P4-P7, item 5).
 /// </summary>
 internal sealed class ImageUploadGuard : GuardStream
 {
@@ -103,10 +105,13 @@ internal sealed class ImageUploadGuard : GuardStream
         Advance();
     }
 
+    private static readonly byte[] Closing = "--\r\n"u8.ToArray();
+
     protected override void End()
     {
         Advance();
-        if (_state != State.Epilogue) throw RuntimeRoutes.NotAllowed("The upload's multipart body ended before its closing boundary.");
+        if (_state != State.Epilogue || _hold.Count is not (2 or 4))
+            throw RuntimeRoutes.NotAllowed("The upload's multipart body ended before its closing boundary.");
         if (_images != 1) throw RuntimeRoutes.NotAllowed("An upload carries exactly one image.");
         Flush(_hold.Count);
     }
@@ -120,13 +125,11 @@ internal sealed class ImageUploadGuard : GuardStream
             {
                 case State.Preamble:
                 {
-                    var at = span.IndexOf(_first);
-                    if (at < 0)
-                    {
-                        if (span.Length > MaxField + _first.Length) throw RuntimeRoutes.NotAllowed("The upload does not start with its boundary.");
-                        return;
-                    }
-                    Flush(at + _first.Length);
+                    var have = Math.Min(span.Length, _first.Length);
+                    if (!span[..have].SequenceEqual(_first.AsSpan(0, have)))
+                        throw RuntimeRoutes.NotAllowed("The upload does not start with its boundary.");
+                    if (span.Length < _first.Length) return;
+                    Flush(_first.Length);
                     _state = State.AfterDelimiter;
                     continue;
                 }
@@ -180,7 +183,9 @@ internal sealed class ImageUploadGuard : GuardStream
                     continue;
                 }
                 case State.Epilogue:
-                    Flush(span.Length);
+                    // "--" and at most a CRLF, held until the body ends.
+                    if (span.Length > Closing.Length || !span.SequenceEqual(Closing.AsSpan(0, span.Length)))
+                        throw RuntimeRoutes.NotAllowed("Nothing may follow an upload's closing boundary.");
                     return;
             }
         }
@@ -266,31 +271,85 @@ internal sealed class ImageUploadGuard : GuardStream
     }
 }
 
-/// <summary>ComfyUI's <c>POST /queue</c> deletes only: <c>{"delete": ["prompt id", …]}</c> and nothing else (no <c>clear</c>).</summary>
-internal sealed class QueueDeleteGuard(Stream inner, long cap) : GuardStream(inner)
+/// <summary>A JSON body, held whole (up to its cap) and checked before a byte of it reaches the runtime.</summary>
+internal abstract class JsonBodyGuard(Stream inner, long cap, string route) : GuardStream(inner)
 {
     private readonly MemoryStream _body = new();
 
     protected override void Take(ReadOnlySpan<byte> data)
     {
-        if (_body.Length + data.Length > cap) throw RuntimeRoutes.NotAllowed($"A /queue body is at most {cap} bytes.");
+        if (_body.Length + data.Length > cap) throw RuntimeRoutes.NotAllowed($"A {route} body is at most {cap} bytes.");
         _body.Write(data);
     }
 
+    /// <summary>Null when the body may go on, else why not.</summary>
+    protected abstract string? Check(JsonNode? body);
+
     protected override void End()
     {
+        string? refusal;
         try
         {
-            if (JsonNode.Parse(_body.ToArray()) is JsonObject { Count: 1 } body && body["delete"] is JsonArray ids
-                && ids.All(id => id is JsonValue v && v.GetValueKind() == JsonValueKind.String))
-            {
-                Release(_body.ToArray());
-                return;
-            }
+            refusal = Check(JsonNode.Parse(_body.ToArray()));
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException)
         {
+            // Not JSON, or a member twice (which the runtime would read as the last one): refused either way.
+            refusal = $"A {route} body is JSON with each member once.";
         }
-        throw RuntimeRoutes.NotAllowed("POST /queue may only delete: {\"delete\": [prompt ids]}.");
+        if (refusal is not null) throw RuntimeRoutes.NotAllowed(refusal);
+        Release(_body.ToArray());
     }
+
+    protected static bool IsString(JsonNode? node, out string value)
+    {
+        var isString = node is JsonValue v && v.GetValueKind() == JsonValueKind.String;
+        value = isString ? node!.GetValue<string>() : "";
+        return isString;
+    }
+}
+
+/// <summary>
+/// ComfyUI's <c>POST /queue</c> deletes only: <c>{"delete": ["prompt id", …]}</c> and nothing else (no <c>clear</c>), and
+/// only prompts the server submitted through this node (<paramref name="submitted"/>).
+/// </summary>
+internal sealed class QueueDeleteGuard(Stream inner, long cap, Func<string, bool> submitted) : JsonBodyGuard(inner, cap, "/queue")
+{
+    protected override string? Check(JsonNode? body)
+    {
+        if (body is not JsonObject { Count: 1 } only || only["delete"] is not JsonArray ids)
+            return "POST /queue may only delete: {\"delete\": [prompt ids]}.";
+        foreach (var id in ids)
+        {
+            if (!IsString(id, out var value)) return "POST /queue may only delete: {\"delete\": [prompt ids]}.";
+            if (!submitted(value)) return $"POST /queue may delete only prompts the server submitted through this node ('{value}' is not one).";
+        }
+        return null;
+    }
+}
+
+/// <summary>
+/// ComfyUI's <c>POST /interrupt</c>: exactly <c>{"prompt_id": id}</c>, an id the server submitted through this node.
+/// ComfyUI interrupts only when that prompt is the one running.
+/// </summary>
+internal sealed class InterruptGuard(Stream inner, long cap, Func<string, bool> submitted) : JsonBodyGuard(inner, cap, "/interrupt")
+{
+    protected override string? Check(JsonNode? body)
+    {
+        if (body is not JsonObject { Count: 1 } only || !IsString(only["prompt_id"], out var id))
+            return "POST /interrupt is exactly {\"prompt_id\": id}: a targeted interrupt, never a global one.";
+        return submitted(id) ? null : $"POST /interrupt stops only a prompt the server submitted through this node ('{id}' is not one).";
+    }
+}
+
+/// <summary>
+/// ComfyUI's <c>POST /prompt</c>: a JSON object that does not choose its <c>prompt_id</c>. The id is ComfyUI's, recorded
+/// from its answer (<see cref="SubmittedPrompts"/>): a chosen one could be an id the owner's own prompt has.
+/// </summary>
+internal sealed class PromptSubmitGuard(Stream inner, long cap) : JsonBodyGuard(inner, cap, "/prompt")
+{
+    protected override string? Check(JsonNode? body)
+        => body is not JsonObject prompt ? "A /prompt body is a JSON object."
+            : prompt.ContainsKey("prompt_id") ? "A /prompt body may not choose its prompt_id: ComfyUI assigns it."
+            : null;
 }

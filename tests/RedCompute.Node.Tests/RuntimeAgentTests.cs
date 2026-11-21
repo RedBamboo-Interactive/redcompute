@@ -255,8 +255,9 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
     public async Task A_prompt_post_streams_its_body_to_the_runtime()
     {
         using var http = Http();
-        var body = new byte[3 * 1024 * 1024 + 17];
-        new Random(5).NextBytes(body);
+        var pad = new byte[3 * 1024 * 1024 + 17];
+        new Random(5).NextBytes(pad);
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { prompt = new { pad = Convert.ToBase64String(pad) }, client_id = "c1" }));
         using var response = await http.PostAsync("/prompt", new ByteArrayContent(body) { Headers = { ContentType = new("application/json") } });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var seen = _comfy.Requests.Last(r => r.Target == "/prompt");
@@ -289,11 +290,81 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         Assert.Equal(1, _comfy.Requests.Count(r => r.Target == "/upload/image" && r.BodyBytes > 0));
     }
 
+    /// <summary>Posts a prompt through the forward and answers the id the runtime assigned.</summary>
+    private static async Task<string> SubmitAsync(HttpClient http)
+    {
+        using var response = await http.PostAsync("/prompt", new StringContent("{\"prompt\":{},\"client_id\":\"c1\"}", Encoding.UTF8, "application/json"));
+        response.EnsureSuccessStatusCode();
+        return JsonNode.Parse(await response.Content.ReadAsStringAsync())!["prompt_id"]!.GetValue<string>();
+    }
+
+    private async Task<string?> PostAsync(HttpClient http, string target, string? json)
+    {
+        var before = _comfy.Requests.Count(r => r.Target == target);
+        try
+        {
+            using var response = await http.PostAsync(target, json is null ? null : new StringContent(json, Encoding.UTF8, "application/json"));
+            Assert.Equal(before + 1, _comfy.Requests.Count(r => r.Target == target));
+            return null;
+        }
+        catch (HttpRequestException error)
+        {
+            await Task.Delay(100);
+            Assert.Equal(before, _comfy.Requests.Count(r => r.Target == target && r.BodyBytes > 0 || r.Target == target && json is null));
+            return FindCode(error);
+        }
+    }
+
+    [Fact]
+    public async Task Interrupt_cancel_and_dequeue_act_only_on_prompts_the_server_submitted_here()
+    {
+        using var http = Http();
+        var mine = await SubmitAsync(http);
+
+        // The id the runtime answered is the one the server may stop: targeted, never global.
+        Assert.Null(await PostAsync(http, "/interrupt", $"{{\"prompt_id\":\"{mine}\"}}"));
+        Assert.Null(await PostAsync(http, $"/api/jobs/{mine}/cancel", "{}"));
+        Assert.Null(await PostAsync(http, "/queue", $"{{\"delete\":[\"{mine}\"]}}"));
+
+        // The owner's prompts (any id this forward never answered), a global interrupt, and no body at all: refused.
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, await PostAsync(http, "/interrupt", "{\"prompt_id\":\"owners-prompt\"}"));
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, await PostAsync(http, "/interrupt", "{}"));
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, await PostAsync(http, "/interrupt", null));
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, await PostAsync(http, "/api/jobs/owners-prompt/cancel", "{}"));
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, await PostAsync(http, "/queue", "{\"delete\":[\"owners-prompt\"]}"));
+        // Nor may a prompt take an id of its choosing (one it read from /queue, say).
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, await PostAsync(http, "/prompt", "{\"prompt\":{},\"prompt_id\":\"owners-prompt\"}"));
+        // An id answered for another runtime is not this one's.
+        Assert.False(_linked.Agent.ForwardTarget.Submitted.Contains(Managed, mine));
+    }
+
+    [Fact]
+    public async Task An_upload_reaches_the_runtime_with_the_one_content_type_the_guard_parsed()
+    {
+        using var http = Http();
+        using var form = new MultipartFormDataContent("leaf-bound.1");
+        form.Add(new ByteArrayContent([1, 2, 3]), "image", "input.png");
+        using var ok = await http.PostAsync("/upload/image", form);
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        var seen = _comfy.Requests.Last(r => r.Target == "/upload/image");
+        Assert.Equal("multipart/form-data; boundary=\"leaf-bound.1\"", seen.Headers["content-type"]);
+
+        // Two Content-Types are refused at OPEN: the runtime never sees which one it would have read.
+        var target = new RuntimeForwardTarget(_linked.Agent.Runtimes);
+        var twice = ForwardOpen.Http(Attached, "POST", "/upload/image", "",
+            [new("content-type", "multipart/form-data; boundary=a"), new("content-type", "multipart/form-data; boundary=b")], 100);
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, target.Decide(twice).RefusalCode);
+        var json = ForwardOpen.Http(Attached, "POST", "/prompt", "", [new("content-type", "application/json"), new("Content-Type", "text/plain")], 2);
+        Assert.Equal(ForwardErrorCodes.RouteNotAllowed, target.Decide(json).RefusalCode);
+    }
+
     [Theory]
     [InlineData("GET", "/manager/queue/start")]
     [InlineData("POST", "/api/manager/reboot")]
     [InlineData("GET", "/api/userdata/comfy.settings.json")]
     [InlineData("GET", "/view?filename=../../models/x.safetensors&type=output")]
+    [InlineData("GET", "/view?filename=owners-photo.png&type=input")]
+    [InlineData("GET", "/object_info")]
     [InlineData("POST", "/customnode/install")]
     [InlineData("GET", "/internal/logs")]
     public async Task Routes_off_the_allowlist_are_refused_and_never_reach_the_runtime(string method, string target)

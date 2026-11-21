@@ -102,6 +102,10 @@ internal sealed class FakeComfy : IAsyncDisposable
                 ctx.Response.Headers["Set-Cookie"] = "session=runtime";
                 await ctx.Response.Body.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PNG:" + request.Query["filename"]));
                 return;
+            case "/prompt":
+                // As ComfyUI answers: the id it assigned (the node records it as one the server submitted).
+                await ctx.Response.WriteAsJsonAsync(new { prompt_id = $"p-{Guid.NewGuid():N}", number = 1, node_errors = new { }, bytes });
+                return;
             default:
                 await ctx.Response.WriteAsJsonAsync(new { bytes });
                 return;

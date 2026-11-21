@@ -16,11 +16,16 @@ namespace RedCompute.Node.Runtimes;
 /// <item>hop-by-hop headers, <c>Authorization</c>, <c>Cookie</c> and every <c>X-Forwarded-*</c>/<c>Cf-*</c> header
 /// dropped (CR/LF were refused at OPEN);</item>
 /// <item>the path and query rebuilt from parsed parts (<see cref="RuntimeRoutes"/>), with the route's body rule.</item>
+/// <item>at most one <c>Content-Type</c>; an upload's is the one the guard parsed, rebuilt.</item>
+/// <item>the prompt routes acting only on the prompts the server submitted here (<see cref="Submitted"/>).</item>
 /// </list>
 /// </summary>
 public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarget
 {
     private sealed record Admitted(RuntimeRegistration Runtime, AllowedRoute Route, string? Boundary);
+
+    /// <summary>The prompt ids each runtime answered to the server's <c>/prompt</c> through this forward.</summary>
+    public SubmittedPrompts Submitted { get; } = new();
 
     private static readonly HttpClient Http = new(new SocketsHttpHandler
     {
@@ -45,9 +50,16 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
             ? RuntimeRoutes.Ws(runtime.Kind, open.Path, open.Query, out refusal)
             : RuntimeRoutes.Http(runtime.Kind, open.Method!, open.Path, open.Query, out refusal);
         if (route is null) return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, refusal ?? "Not on the allowlist.");
+        if (RuntimeRoutes.ContentTypes(open.Headers) > 1)
+            return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, "A request carries one Content-Type.");
+        if (route.NeedsBody && open.BodyBytes == 0)
+            return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, $"{open.Method} {route.Path} needs its body.");
+        if (route.PromptId is { } promptId && !Submitted.Contains(runtime.Id, promptId))
+            return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed,
+                $"{route.Path} acts only on a prompt the server submitted through this node.");
         string? boundary = null;
         if (route.Body == BodyRule.ImageUpload && (boundary = RuntimeRoutes.Boundary(open.Headers)) is null)
-            return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, "An upload is multipart/form-data with a boundary.");
+            return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, "An upload is multipart/form-data with one boundary.");
         return ForwardDecision.Accept(route.MaxBody, new Admitted(runtime, route, boundary));
     }
 
@@ -63,18 +75,27 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
         request.Headers.ConnectionClose = true;
         if (open.BodyBytes != 0 && route.Body != BodyRule.None)
         {
+            Func<string, bool> submitted = id => Submitted.Contains(runtime.Id, id);
             Stream body = route.Body switch
             {
                 BodyRule.ImageUpload => new ImageUploadGuard(requestBody, boundary!),
-                BodyRule.QueueDeleteOnly => new QueueDeleteGuard(requestBody, route.MaxBody),
+                BodyRule.QueueDeleteOnly => new QueueDeleteGuard(requestBody, route.MaxBody, submitted),
+                BodyRule.InterruptOwnPrompt => new InterruptGuard(requestBody, route.MaxBody, submitted),
+                BodyRule.PromptSubmit => new PromptSubmitGuard(requestBody, route.MaxBody),
                 _ => requestBody,
             };
             request.Content = new StreamContent(body, 64 * 1024);
             if (open.BodyBytes > 0) request.Content.Headers.ContentLength = open.BodyBytes;
+            // The upload's one Content-Type is the one its guard parses, rebuilt; the server's string never goes on.
+            if (route.Body == BodyRule.ImageUpload)
+                request.Content.Headers.TryAddWithoutValidation("Content-Type", RuntimeRoutes.UploadContentType(boundary!));
         }
         foreach (var (name, value) in RuntimeRoutes.ForwardedHeaders(open.Headers))
+        {
+            if (route.Body == BodyRule.ImageUpload && name.Equals("content-type", StringComparison.OrdinalIgnoreCase)) continue;
             if (!request.Headers.TryAddWithoutValidation(name, value))
                 request.Content?.Headers.TryAddWithoutValidation(name, value);
+        }
 
         HttpResponseMessage response;
         try
@@ -97,6 +118,8 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
                 if (!value.Any(c => c is '\r' or '\n' or '\0')) headers.Add(new(name.ToLowerInvariant(), value));
         }
         var stream = await response.Content.ReadAsStreamAsync(ct);
+        if (route.Body == BodyRule.PromptSubmit && response.IsSuccessStatusCode)
+            stream = new PromptAnswerRecorder(stream, id => Submitted.Add(runtime.Id, id));
         return new ForwardUpstreamResponse((int)response.StatusCode, headers, stream, response);
     }
 

@@ -16,8 +16,6 @@ public sealed class RuntimeRoutesTests
     [Theory]
     [InlineData("GET", "/system_stats", "", "/system_stats", "")]
     [InlineData("GET", "/queue", "", "/queue", "")]
-    [InlineData("GET", "/object_info", "", "/object_info", "")]
-    [InlineData("GET", "/object_info/KSampler", "", "/object_info/KSampler", "")]
     [InlineData("GET", "/history/3f2a-91", "", "/history/3f2a-91", "")]
     [InlineData("GET", "/history/3f2a-91", "max_items=5", "/history/3f2a-91", "max_items=5")]
     [InlineData("GET", "/view", "filename=ComfyUI_00001_.png&subfolder=&type=output", "/view", "filename=ComfyUI_00001_.png&subfolder=&type=output")]
@@ -69,6 +67,9 @@ public sealed class RuntimeRoutesTests
     [InlineData("GET", "/view", "filename=.hidden&type=output")]
     [InlineData("GET", "/view", "filename=x.png&type=../../")]
     [InlineData("GET", "/view", "filename=x.png&type=models")]
+    [InlineData("GET", "/view", "filename=x.png&type=input")] // the owner's own images (review P4-P7, item 4)
+    [InlineData("GET", "/object_info", "")] // lists the owner's input files and models; the server never asks
+    [InlineData("GET", "/object_info/LoadImage", "")]
     [InlineData("GET", "/view", "filename=x.png&subfolder=../../etc")]
     [InlineData("GET", "/view", "filename=x.png&subfolder=/etc")]
     [InlineData("GET", "/view", "filename=x.png&filename=y.png")]
@@ -86,10 +87,14 @@ public sealed class RuntimeRoutesTests
     public void Each_route_has_its_body_rule_and_cap()
     {
         Assert.Equal((0L, BodyRule.None), Rule("GET", "/system_stats"));
-        Assert.Equal((16 * RuntimeRoutes.MiB, BodyRule.Any), Rule("POST", "/prompt"));
+        Assert.Equal((16 * RuntimeRoutes.MiB, BodyRule.PromptSubmit), Rule("POST", "/prompt"));
         Assert.Equal((256 * RuntimeRoutes.MiB, BodyRule.ImageUpload), Rule("POST", "/upload/image"));
         Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.QueueDeleteOnly), Rule("POST", "/queue"));
-        Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.Any), Rule("POST", "/interrupt"));
+        Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.InterruptOwnPrompt), Rule("POST", "/interrupt"));
+        Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.Any), Rule("POST", "/free"));
+        // The cancel route names its prompt in the path: it must be one the server submitted.
+        Assert.Equal("3f2a-91", RuntimeRoutes.Http(Kind, "POST", "/api/jobs/3f2a-91/cancel", "", out _)!.PromptId);
+        Assert.Null(RuntimeRoutes.Http(Kind, "POST", "/prompt", "", out _)!.PromptId);
 
         static (long, BodyRule) Rule(string method, string path)
         {
@@ -138,6 +143,16 @@ public sealed class RuntimeRoutesTests
         Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data")]));
         Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data; boundary=" + new string('a', 71))]));
         Assert.Null(RuntimeRoutes.Boundary([]));
+        // Exactly one Content-Type, one boundary, RFC 2046 characters only (review P4-P7, item 5).
+        Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data; boundary=abc"), new("Content-Type", "multipart/form-data; boundary=xyz")]));
+        Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data; boundary=abc; boundary=xyz")]));
+        Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data-evil; boundary=abc")]));
+        Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data; boundary=\"a\"b\"")]));
+        Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data; boundary=a\\b")]));
+        Assert.Null(RuntimeRoutes.Boundary([new("content-type", "multipart/form-data; boundary=\"ab \"")]));
+        Assert.Equal("4f1c-'()+_,./:=?", RuntimeRoutes.Boundary([new("content-type", "multipart/form-data; boundary=\"4f1c-'()+_,./:=?\"")]));
+        Assert.Equal("multipart/form-data; boundary=\"a b\"", RuntimeRoutes.UploadContentType("a b"));
+        Assert.Equal(2, RuntimeRoutes.ContentTypes([new("content-type", "a/b"), new("Content-Type", "c/d"), new("x", "y")]));
     }
 
     // ---------------------------------------------------------------- body guards
@@ -215,7 +230,20 @@ public sealed class RuntimeRoutesTests
         { "an extended name that does not decode", Multipart(("Content-Disposition: form-data; name=image; filename*=utf-8''x%2.png", "x")) },
         { "an extended name on another part", Multipart(Image, ("Content-Disposition: form-data; name=type; filename*=utf-8''x.png", "input")) },
         { "headers over 16 KiB", Encoding.UTF8.GetBytes($"--{B}\r\nX-Pad: {new string('p', 17_000)}\r\n\r\n") },
+        // No bytes outside the parts (review P4-P7, item 5): nothing before the first boundary, nothing after the last.
+        { "a preamble", [.. Encoding.UTF8.GetBytes("\r\n"), .. Multipart(Image)] },
+        { "a preamble with a part in it", [.. Encoding.UTF8.GetBytes($"--{B}x\r\n"), .. Multipart(Image)] },
+        { "an epilogue", [.. Multipart(Image), .. Encoding.UTF8.GetBytes("trailing bytes")] },
+        { "an epilogue holding a part", [.. Multipart(Image), .. Encoding.UTF8.GetBytes($"--{B}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\nmodels\r\n--{B}--\r\n")] },
+        { "a closing boundary with something but CRLF", Encoding.UTF8.GetBytes($"--{B}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"x.png\"\r\n\r\nx\r\n--{B}--  ") },
     };
+
+    [Fact]
+    public async Task An_upload_may_end_right_after_its_closing_boundary()
+    {
+        var body = Encoding.UTF8.GetBytes($"--{B}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"x.png\"\r\n\r\nx\r\n--{B}--");
+        Assert.Equal(body, await ReadAll(new ImageUploadGuard(new Trickle(body, 3), B), 16));
+    }
 
     [Theory]
     [MemberData(nameof(BadUploads))]
@@ -254,10 +282,12 @@ public sealed class RuntimeRoutesTests
     [InlineData("[\"a\"]", false)]
     [InlineData("not json", false)]
     [InlineData("", false)]
+    [InlineData("{\"delete\":[\"3f2a\",\"owners-prompt\"]}", false)] // not submitted through this node
+    [InlineData("{\"delete\":[\"3f2a\"],\"delete\":[\"owners-prompt\"]}", false)] // a member twice
     public async Task Queue_posts_only_delete(string json, bool allowed)
     {
         var bytes = Encoding.UTF8.GetBytes(json);
-        var guard = new QueueDeleteGuard(new Trickle(bytes, 3), 64 * 1024);
+        var guard = new QueueDeleteGuard(new Trickle(bytes, 3), 64 * 1024, Submitted);
         if (allowed)
             Assert.Equal(bytes, await ReadAll(guard, 16));
         else
@@ -268,6 +298,60 @@ public sealed class RuntimeRoutesTests
     public async Task A_queue_body_over_its_cap_is_refused_before_it_ends()
     {
         var bytes = Encoding.UTF8.GetBytes("{\"delete\":[\"" + new string('a', 200) + "\"]}");
-        await Assert.ThrowsAsync<ForwardTargetException>(() => ReadAll(new QueueDeleteGuard(new Trickle(bytes, 50), 100), 16));
+        await Assert.ThrowsAsync<ForwardTargetException>(() => ReadAll(new QueueDeleteGuard(new Trickle(bytes, 50), 100, Submitted), 16));
+    }
+
+    /// <summary>The prompts "the server submitted" in these guard tests.</summary>
+    private static bool Submitted(string id) => id is "3f2a" or "91b";
+
+    [Theory]
+    [InlineData("{\"prompt_id\":\"3f2a\"}", true)]
+    [InlineData("{\"prompt_id\":\"owners-prompt\"}", false)] // ComfyUI would interrupt it if it runs
+    [InlineData("{}", false)] // a global interrupt
+    [InlineData("", false)]
+    [InlineData("{\"prompt_id\":\"3f2a\",\"extra\":1}", false)]
+    [InlineData("{\"prompt_id\":3}", false)]
+    [InlineData("{\"prompt_id\":\"3f2a\",\"prompt_id\":\"owners-prompt\"}", false)] // the runtime reads the last
+    [InlineData("[\"3f2a\"]", false)]
+    public async Task Interrupt_is_targeted_at_a_prompt_the_server_submitted(string json, bool allowed)
+    {
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var guard = new InterruptGuard(new Trickle(bytes, 3), 64 * 1024, Submitted);
+        if (allowed)
+            Assert.Equal(bytes, await ReadAll(guard, 16));
+        else
+            Assert.Equal(ForwardErrorCodes.RouteNotAllowed, (await Assert.ThrowsAsync<ForwardTargetException>(() => ReadAll(guard, 16))).Code);
+    }
+
+    [Theory]
+    [InlineData("{\"prompt\":{\"3\":{}},\"client_id\":\"c1\"}", true)]
+    [InlineData("{\"prompt\":{},\"prompt_id\":\"owners-prompt\"}", false)] // the server may not choose the id
+    [InlineData("{\"prompt\":{},\"prompt\":{}}", false)]
+    [InlineData("[]", false)]
+    [InlineData("not json", false)]
+    public async Task A_prompt_may_not_choose_its_id(string json, bool allowed)
+    {
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var guard = new PromptSubmitGuard(new Trickle(bytes, 5), 16 * 1024 * 1024);
+        if (allowed)
+            Assert.Equal(bytes, await ReadAll(guard, 16));
+        else
+            Assert.Equal(ForwardErrorCodes.RouteNotAllowed, (await Assert.ThrowsAsync<ForwardTargetException>(() => ReadAll(guard, 16))).Code);
+    }
+
+    [Fact]
+    public void The_submitted_prompts_are_per_runtime_and_bounded()
+    {
+        var submitted = new SubmittedPrompts();
+        submitted.Add("comfy-a", "first");
+        Assert.True(submitted.Contains("comfy-a", "first"));
+        Assert.False(submitted.Contains("comfy-b", "first"));
+        for (var i = 0; i < SubmittedPrompts.PerRuntime; i++) submitted.Add("comfy-a", $"p{i}");
+        Assert.False(submitted.Contains("comfy-a", "first"));
+        Assert.True(submitted.Contains("comfy-a", $"p{SubmittedPrompts.PerRuntime - 1}"));
+        Assert.Equal("ab-1", SubmittedPrompts.PromptIdOf("{\"prompt_id\":\"ab-1\",\"number\":2}"u8));
+        Assert.Null(SubmittedPrompts.PromptIdOf("{\"prompt_id\":\"a/b\"}"u8));
+        Assert.Null(SubmittedPrompts.PromptIdOf("{\"error\":1}"u8));
+        Assert.Null(SubmittedPrompts.PromptIdOf("nope"u8));
     }
 }

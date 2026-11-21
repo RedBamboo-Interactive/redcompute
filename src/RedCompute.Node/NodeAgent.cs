@@ -89,7 +89,8 @@ public sealed class NodeAgent : IAsyncDisposable
         _env = env;
         _reporter = new NodeReporter(env.Host, env.ProbeRunner ?? new HostProbeRunner(env.Host), env.Time);
         _runtimes = new RuntimeManager(env, env.RuntimeSpec, env.RuntimeProbe);
-        _forward = new ForwardHost(new RuntimeForwardTarget(_runtimes), audit: entry => env.Audit.Record("forward", entry.Path, entry.Outcome,
+        ForwardTarget = new RuntimeForwardTarget(_runtimes);
+        _forward = new ForwardHost(ForwardTarget, audit: entry => env.Audit.Record("forward", entry.Path, entry.Outcome,
             $"{entry.Runtime} {entry.Mode}{(entry.Method is null ? "" : " " + entry.Method)} status {entry.Status?.ToString() ?? "-"}"
             + $" request {entry.RequestBytes} B response {entry.ResponseBytes} B"));
         _runtimes.Changed += OnRuntimeChanged;
@@ -99,6 +100,9 @@ public sealed class NodeAgent : IAsyncDisposable
     public RuntimeManager Runtimes => _runtimes;
 
     public ForwardHost Forward => _forward;
+
+    /// <summary>What the forward reaches: the runtimes' allowlists, and the prompts the server submitted through it.</summary>
+    public RuntimeForwardTarget ForwardTarget { get; }
 
     /// <summary>Every runtime change goes to the server as <c>runtime.changed</c>, so it never polls (design 2.4).</summary>
     private void OnRuntimeChanged(PluginSdk.Hosting.HostRuntime runtime)

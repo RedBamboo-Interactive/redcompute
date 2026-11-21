@@ -82,6 +82,8 @@ public sealed class ComfyRemoteAssetTests : IAsyncLifetime
         var loaded = (string?)prompt["prompt"]!["10"]!["inputs"]!["image"];
         Assert.Matches("^rl_[0-9a-f]{32}\\.png$", loaded);
         Assert.Matches($"filename=\"?{System.Text.RegularExpressions.Regex.Escape(loaded!)}", upload.Text);
+        // The node's audit is really read: it holds the upload's exchange.
+        Assert.Contains("/upload/image", _kit.Node.AuditText());
 
         AssertNodeNeverSawTheReference();
     }

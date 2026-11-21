@@ -41,6 +41,9 @@ internal sealed class FakeComfyUi : IAsyncDisposable
     private readonly ConcurrentDictionary<string, WebSocket> _sockets = new(StringComparer.Ordinal);
     public ConcurrentQueue<Seen> Requests { get; } = new();
     public ConcurrentQueue<JsonObject> Prompts { get; } = new();
+
+    /// <summary>The prompt ids this ComfyUI assigned, in order.</summary>
+    public ConcurrentQueue<string> PromptIds { get; } = new();
     public int Port { get; private set; }
 
     /// <summary>Stream this path's answer without end ("/view", "/history" or "/queue").</summary>
@@ -121,6 +124,7 @@ internal sealed class FakeComfyUi : IAsyncDisposable
                 var prompt = JsonNode.Parse(body.ToArray())!.AsObject();
                 Prompts.Enqueue(prompt);
                 var id = Guid.NewGuid().ToString();
+                PromptIds.Enqueue(id);
                 var clientId = (string?)prompt["client_id"] ?? "";
                 await ctx.Response.WriteAsJsonAsync(new { prompt_id = id, number = 1, node_errors = new { } });
                 _ = Task.Run(async () =>
@@ -226,9 +230,8 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
         return node;
     }
 
-    /// <summary>The node's audit log, as text.</summary>
-    public string AuditText()
-        => File.Exists(Paths.Audit) ? File.ReadAllText(Paths.Audit) : "";
+    /// <summary>The node's audit log (a folder of daily files: Paths.Audit), every record as JSON text.</summary>
+    public string AuditText() => string.Join('\n', Environment.Audit.Read().Select(record => record.ToJsonString()));
 
     /// <summary>The node's log, as text (read while the agent still holds it open).</summary>
     public string LogText()
