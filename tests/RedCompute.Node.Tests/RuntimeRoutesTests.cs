@@ -95,6 +95,8 @@ public sealed class RuntimeRoutesTests
         // The cancel route names its prompt in the path: it must be one the server submitted.
         Assert.Equal("3f2a-91", RuntimeRoutes.Http(Kind, "POST", "/api/jobs/3f2a-91/cancel", "", out _)!.PromptId);
         Assert.Null(RuntimeRoutes.Http(Kind, "POST", "/prompt", "", out _)!.PromptId);
+        // So does /history/{id} (review item 5): only the server's own prompt's history is read.
+        Assert.Equal("3f2a-91", RuntimeRoutes.Http(Kind, "GET", "/history/3f2a-91", "max_items=5", out _)!.PromptId);
 
         static (long, BodyRule) Rule(string method, string path)
         {

@@ -53,8 +53,8 @@ public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyR
 /// <para>
 /// What the owner keeps on the node stays there (review P4-P7, item 4): <c>/view</c> reads only <c>output</c> and
 /// <c>temp</c> (never <c>input</c>, the owner's own images); <c>/object_info</c> is not on the list, since it lists the
-/// owner's input files and models and the server never asks for it; and the routes that stop or dequeue a prompt act only
-/// on prompts the server submitted through this node.
+/// owner's input files and models and the server never asks for it; the routes that stop or dequeue a prompt, and
+/// <c>/history/{id}</c>, act only on prompts the server submitted through this node; and <c>GET /queue</c> is redacted.
 /// </para>
 /// </summary>
 public static class RuntimeRoutes
@@ -80,7 +80,10 @@ public static class RuntimeRoutes
             ("GET", ["queue"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal) is { } queue
                 ? queue with { Response = ResponseRule.QueueRedacted }
                 : null,
-            ("GET", ["history", var id]) when IsId(id) => Plain(rebuiltPath, pairs, ["max_items"], 0, BodyRule.None, ref refusal),
+            // Only a prompt the server submitted through this node (review item 5): never the owner's history, and never
+            // the whole history (GET /history with no id is not on the list).
+            ("GET", ["history", var id]) when IsId(id)
+                => Plain(rebuiltPath, pairs, ["max_items"], 0, BodyRule.None, ref refusal) is { } history ? history with { PromptId = id } : null,
             ("GET", ["view"]) => View(rebuiltPath, pairs, ref refusal),
             ("POST", ["prompt"]) => Plain(rebuiltPath, pairs, [], 16 * MiB, BodyRule.PromptSubmit, ref refusal),
             ("POST", ["upload", "image"]) => Plain(rebuiltPath, pairs, [], 256 * MiB, BodyRule.ImageUpload, ref refusal),

@@ -31,6 +31,14 @@ public sealed class ComfyRemoteOwnerDataTests : IAsyncLifetime
         BaseAddress = new Uri($"http://127.0.0.1:{_kit.Runtime.Ports[0]}/"),
     };
 
+    /// <summary>The forward's refusal code in an exception's chain.</summary>
+    private static string? CodeOf(Exception error)
+    {
+        for (Exception? e = error; e is not null; e = e.InnerException)
+            if (e is RedCompute.NodeLink.Forward.ForwardException forward) return forward.Code;
+        return null;
+    }
+
     /// <summary>A job of the server's own, run end to end: its prompt id.</summary>
     private async Task<string> ServerJobAsync(ComfyUIProvider provider)
     {
@@ -71,6 +79,26 @@ public sealed class ComfyRemoteOwnerDataTests : IAsyncLifetime
         Assert.Equal(["queue_running", "queue_pending"], queue.Select(member => member.Key));
         Assert.Equal("""[[7,"other"]]""", queue["queue_running"]!.ToJsonString());
         Assert.Equal($$"""[[8,"{{mine}}"],[9,"other"]]""", queue["queue_pending"]!.ToJsonString());
+    }
+
+    // ================================================================= GET /history/{id}
+
+    [Fact]
+    public async Task History_is_read_only_for_the_servers_own_prompts()
+    {
+        await using var provider = Provider();
+        var mine = await ServerJobAsync(provider); // its output came from /history/{mine}: the server's own job works
+        Assert.Contains(_kit.Comfy.Requests, request => request.Target == $"/history/{mine}");
+
+        using var http = Forward();
+        Assert.True((await http.GetAsync($"/history/{mine}")).IsSuccessStatusCode);
+        foreach (var target in new[] { "/history/owner-run-1", "/history", "/history?max_items=100" })
+        {
+            var before = _kit.Comfy.Requests.Count(request => request.Target.StartsWith("/history", StringComparison.Ordinal));
+            var refused = await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.GetAsync(target));
+            Assert.Equal("route_not_allowed", CodeOf(refused));
+            Assert.Equal(before, _kit.Comfy.Requests.Count(request => request.Target.StartsWith("/history", StringComparison.Ordinal)));
+        }
     }
 
     [Fact]
