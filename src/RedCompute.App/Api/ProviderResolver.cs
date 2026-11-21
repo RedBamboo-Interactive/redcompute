@@ -3,8 +3,10 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Nodes;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
 
@@ -63,8 +65,13 @@ public static class ProviderResolver
         if (requestedProvider is not null)
         {
             if (onNode.FirstOrDefault(pair => pair.Key.Provider == requestedProvider).Value is { } named) return (named, null);
-            // A name no node has is the same 404 as on node zero.
-            if (!entry.Providers.ContainsKey(requestedProvider) && entry.NodeProviders.Keys.All(key => key.Provider != requestedProvider))
+            // A name no node the caller may see has is the same 404 as on node zero (review P4-P7, item 7): whether it
+            // is 404 or 422 is decided on node zero's providers, this node's, and those of the nodes the caller may see,
+            // so the answer never tells that a node the caller may not see has it.
+            var seen = nodes?.Nodes.Where(node => node.Kind == NodeKind.Remote && NodeAccess.Allows(caller, node, NodeUse.See))
+                .Select(node => node.Id).ToHashSet(StringComparer.Ordinal) ?? [];
+            if (!entry.Providers.ContainsKey(requestedProvider)
+                && !entry.NodeProviders.Keys.Any(key => key.Provider == requestedProvider && (key.NodeId == nodeId || seen.Contains(key.NodeId))))
                 return (null, Results.Json(new ErrorResponse
                 {
                     Error = "provider_not_found",

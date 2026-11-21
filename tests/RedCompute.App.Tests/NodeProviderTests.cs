@@ -318,6 +318,25 @@ public sealed class NodeProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_name_only_a_node_the_caller_may_not_see_has_is_404_like_a_name_no_node_has()
+    {
+        // Review P4-P7, item 7: "only-on-others" exists on someone else's node alone (not on node zero, not on the
+        // caller's). 404 or 422 is decided on the nodes the caller may see, so the owner learns nothing about it.
+        var entry = _registry.Get("image-gen")!;
+        entry.NodeProviders[new NodeProviderKey("only-on-others", Others)] = new ZeroProvider("only-on-others");
+
+        var owner = await GenerateAsync(User(Owner), Own, provider: "only-on-others");
+        var zero = await GenerateAsync(User(Owner), "local", provider: "only-on-others");
+        Assert.Equal((404, "provider_not_found"), (owner.Status, owner.Code));
+        Assert.Equal(zero.Body, owner.Body);
+
+        // An admin, who may see that node, gets the 422 that says where it is.
+        var admin = await GenerateAsync(User(Admin, "admin"), Own, provider: "only-on-others");
+        Assert.Equal((422, "provider_unavailable_on_node"), (admin.Status, admin.Code));
+        Assert.Empty(_ownAgent.Runtime.Opens);
+    }
+
+    [Fact]
     public async Task Someone_elses_node_and_the_kernel_reach_no_provider_and_an_admin_may_name_it()
     {
         var others = await GenerateAsync(User(Owner), Others);
