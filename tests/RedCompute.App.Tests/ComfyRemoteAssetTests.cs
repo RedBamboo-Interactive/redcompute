@@ -158,6 +158,25 @@ public sealed class ComfyRemoteAssetTests : IAsyncLifetime
     }
 
     /// <summary>The kernel's asset store, on the server's loopback: <c>/api/assets/{id}[/content]</c>.</summary>
+    [Fact]
+    public async Task A_job_cancelled_while_its_asset_is_fetched_reports_cancellation_not_a_fetch_failure()
+    {
+        // Review follow-up 4: the asset fetch is under way on the server when the job is cancelled.
+        _kernel.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var provider = Provider();
+        using var cancel = new CancellationTokenSource();
+        var running = provider.ExecuteAsync(ComfyNodeKit.Request(Reference("id")), cancel.Token);
+        await NodeTestKit.WaitAsync(() => !_kernel.Requests.IsEmpty, "the server's asset fetch");
+
+        cancel.Cancel();
+
+        var cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal(cancel.Token, cancelled.CancellationToken);
+        lock (_log) Assert.DoesNotContain(_log, line => line.Contains("Asset upload error", StringComparison.Ordinal));
+        Assert.DoesNotContain(_kit.Comfy.Requests, request => request.Target is "/upload/image" or "/prompt");
+        _kernel.Hold.TrySetResult();
+    }
+
     private sealed class FakeKernelAssets : IAsyncDisposable
     {
         private readonly WebApplication _app;
@@ -165,6 +184,9 @@ public sealed class ComfyRemoteAssetTests : IAsyncLifetime
         public string BaseUrl { get; private set; } = "";
         public bool Missing { get; set; }
         public byte[] Body { get; set; } = AssetBytes;
+
+        /// <summary>When set, the asset answer waits for it (or for the client to go away).</summary>
+        public TaskCompletionSource? Hold { get; set; }
 
         private FakeKernelAssets(WebApplication app) => _app = app;
 
@@ -183,6 +205,7 @@ public sealed class ComfyRemoteAssetTests : IAsyncLifetime
                     ctx.Response.StatusCode = 404;
                     return;
                 }
+                if (fake.Hold is { } hold) await hold.Task.WaitAsync(ctx.RequestAborted);
                 ctx.Response.ContentType = "image/png";
                 await ctx.Response.Body.WriteAsync(fake.Body);
             });

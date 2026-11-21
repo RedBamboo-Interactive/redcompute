@@ -1149,6 +1149,10 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             _log($"[ComfyUI] Uploaded asset '{name}' to the node ({bytes.Length / 1024}KB, {contentType})");
             return name;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // the job was cancelled: it reports that, not "could not be fetched on the server"
+        }
         catch (Exception ex)
         {
             _log($"[ComfyUI] Asset upload error: {ex.Message}");
