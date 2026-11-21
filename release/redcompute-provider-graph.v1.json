@@ -75,7 +75,7 @@
           "requirement": "optionalCapability",
           "versionConstraint": "unresolved",
           "interface": "configured Python main.py process; lifecycle only, no installation",
-          "sourceMarkers": ["BuildComfyArguments", "\"main.py\"", "ServerPath not configured"]
+          "sourceMarkers": ["RuntimeRecipes.ComfyUi(", "ServerPath not configured"]
         },
         {
           "id": "python-runtime",
@@ -83,7 +83,7 @@
           "requirement": "conditional",
           "versionConstraint": "unresolved",
           "interface": "configured virtualenv Python or python executable used to launch ComfyUI",
-          "sourceMarkers": ["FileName = pythonExe", "Scripts\", \"python.exe"]
+          "sourceMarkers": ["RuntimeRecipes.ComfyUiNativePython("]
         },
         {
           "id": "windows-subsystem-for-linux",
@@ -171,7 +171,7 @@
           "requirement": "required",
           "versionConstraint": "unresolved",
           "interface": "configured python3 server.py HTTP service with health endpoint",
-          "sourceMarkers": ["python3 server.py", "HealthEndpoint"]
+          "sourceMarkers": ["RuntimeRecipes.LocalWsl(", "HealthEndpoint"]
         },
         {
           "id": "python3-runtime",
@@ -179,7 +179,7 @@
           "requirement": "conditional",
           "versionConstraint": "unresolved",
           "interface": "python3 executable used when RedCompute launches the configured local service",
-          "sourceMarkers": ["python3 server.py", "FileName = \"cmd.exe\""]
+          "sourceMarkers": ["RuntimeRecipes.LocalWslBackendCommand(", "RuntimeRecipes.LocalWsl("]
         },
         {
           "id": "windows-subsystem-for-linux",
