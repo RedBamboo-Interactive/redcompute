@@ -15,7 +15,7 @@
           "requirement": "required",
           "versionConstraint": "unresolved",
           "interface": "claude CLI stream-json process protocol",
-          "sourceMarkers": ["Could not find 'claude' CLI", "claude-agent-sdk-win32-x64"]
+          "sourceMarkers": ["Could not find 'claude' CLI", "CliLocators.Claude"]
         },
         {
           "id": "docker-cli",
