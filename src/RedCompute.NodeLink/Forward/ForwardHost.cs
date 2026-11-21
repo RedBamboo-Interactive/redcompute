@@ -78,6 +78,7 @@ public sealed class ForwardHost
     private readonly IForwardTarget _target;
     private readonly Action<ForwardAudit>? _audit;
     private readonly ConcurrentDictionary<string, int> _perRuntime = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Exchange, LinkChannelHandle> _live = new();
     private int _open;
 
     public ForwardHost(IForwardTarget target, ForwardLimits? limits = null, Action<ForwardAudit>? audit = null)
@@ -93,6 +94,19 @@ public sealed class ForwardHost
     public int OpenExchanges => Volatile.Read(ref _open);
 
     public static bool IsForwardClass(string @class) => @class == ChannelClasses.Port.Name || @class == ChannelClasses.PortWs.Name;
+
+    /// <summary>
+    /// Resets every open exchange with <paramref name="code"/> (the owner's kill-all, a revoke): its upstream is
+    /// cancelled, the server's caller fails with that code, and both tables free its slot. Returns how many it reset.
+    /// </summary>
+    public int ResetAll(string code, string message)
+    {
+        var reset = 0;
+        foreach (var (exchange, channel) in _live.ToArray())
+            if (exchange.ResetByHost(channel, code, message))
+                reset++;
+        return reset;
+    }
 
     /// <summary>
     /// Accepts a forward OPEN, or throws <see cref="LinkChannelResetException"/> with the refusal's code. For
@@ -198,6 +212,7 @@ public sealed class ForwardHost
                 if ((after & 3) == 3 || bit == 4) after |= 4;
             } while (Interlocked.CompareExchange(ref _state, after, before) != before);
             if ((after & 4) == 0) return;
+            Host._live.TryRemove(this, out _);
             Host.Release(Open.Runtime);
             try
             {
@@ -208,6 +223,28 @@ public sealed class ForwardHost
             }
             Host.Audit(new ForwardAudit(Open.Runtime, Open.Mode, Open.Method, Open.Path, Interlocked.Read(ref RequestBytes), Status,
                 Interlocked.Read(ref ResponseBytes), outcome, message));
+        }
+
+        /// <summary>The channel is open: the exchange is live until it is released (see <see cref="ResetAll"/>).</summary>
+        protected void Attached(LinkChannelHandle channel)
+        {
+            Host._live[this] = channel;
+            if ((Volatile.Read(ref _state) & 4) != 0) Host._live.TryRemove(this, out _);
+        }
+
+        public bool ResetByHost(LinkChannelHandle channel, string code, string message)
+        {
+            if ((Volatile.Read(ref _state) & 4) != 0) return false;
+            try
+            {
+                Cancel.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            OnResetCore();
+            Failed(channel, code, message);
+            return true;
         }
 
         protected void LocalClosed() => Mark(1, "ok");
@@ -246,7 +283,11 @@ public sealed class ForwardHost
         private readonly ChunkPipe _request = new();
         private readonly IncrementalHash _requestSha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        public void OnOpened(LinkChannelHandle channel) => _ = Task.Run(() => RunAsync(channel));
+        public void OnOpened(LinkChannelHandle channel)
+        {
+            Attached(channel);
+            _ = Task.Run(() => RunAsync(channel));
+        }
 
         private async Task RunAsync(LinkChannelHandle channel)
         {
@@ -369,7 +410,11 @@ public sealed class ForwardHost
         private readonly TaskCompletionSource<WebSocket> _upstream = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private volatile WebSocket? _socket;
 
-        public void OnOpened(LinkChannelHandle channel) => _ = Task.Run(() => RunAsync(channel));
+        public void OnOpened(LinkChannelHandle channel)
+        {
+            Attached(channel);
+            _ = Task.Run(() => RunAsync(channel));
+        }
 
         private async Task RunAsync(LinkChannelHandle channel)
         {

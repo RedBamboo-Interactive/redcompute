@@ -3,7 +3,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using RedCompute.Node.Credentials;
 using RedCompute.Node.Reports;
+using RedCompute.Node.Runtimes;
 using RedCompute.NodeLink;
+using RedCompute.PluginSdk.Hosting;
 using Xunit;
 
 namespace RedCompute.Node.Tests;
@@ -179,7 +181,16 @@ internal sealed class LinkedAgent : IAsyncDisposable
     public int Dials => _dials();
     public LinkSession ServerSession => LinkServer.FindSession(NodeAgentLinkTests.NodeId)!;
 
-    public static async Task<LinkedAgent> StartAsync(NodeHome home, IProbeRunner probes, CancellationToken ct, TimeSpan? hardwareReport = null)
+    /// <summary>The Phase 3 server's features; <see cref="Phase4Features"/> adds the runtimes and the forwards.</summary>
+    public static readonly IReadOnlyList<string> Phase3Features =
+        [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho];
+
+    public static readonly IReadOnlyList<string> Phase4Features =
+        [.. Phase3Features, LinkFeatures.RuntimeV1, LinkFeatures.ForwardHttpV1, LinkFeatures.ForwardWsV1];
+
+    public static async Task<LinkedAgent> StartAsync(NodeHome home, IProbeRunner probes, CancellationToken ct, TimeSpan? hardwareReport = null,
+        IReadOnlyList<string>? serverFeatures = null, Func<RuntimeRegistration, HostSpawnSpec>? runtimeSpec = null,
+        Func<RuntimeRegistration, CancellationToken, Task<bool>>? runtimeProbe = null)
     {
         await PairLocallyAsync(home);
         var side = new ServerSide();
@@ -187,10 +198,11 @@ internal sealed class LinkedAgent : IAsyncDisposable
         {
             ServerEpoch = "epoch-1",
             HandlerFactory = _ => side,
-            Features = [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho],
+            Features = serverFeatures ?? Phase3Features,
         });
         var dials = 0;
-        var env = home.Environment(probes: probes, hardwareReport: hardwareReport, dial: (pairing, key) => token =>
+        var env = home.Environment(probes: probes, hardwareReport: hardwareReport, runtimeSpec: runtimeSpec, runtimeProbe: runtimeProbe,
+            dial: (pairing, key) => token =>
         {
             Interlocked.Increment(ref dials);
             using (key()) { } // the agent can open its key
@@ -246,6 +258,9 @@ internal sealed class ServerSide : LinkHandler
     public ConcurrentQueue<string> Notifications { get; } = new();
     public ConcurrentQueue<JsonObject> Reports { get; } = new();
 
+    /// <summary>Every <c>runtime.changed</c> the node pushed (Phase 4 design 2.4).</summary>
+    public ConcurrentQueue<JsonObject> RuntimeChanges { get; } = new();
+
     public override ValueTask<JsonNode?> OnRequestAsync(LinkSession session, string method, JsonElement parameters, CancellationToken ct)
     {
         Notifications.Enqueue(method);
@@ -258,6 +273,7 @@ internal sealed class ServerSide : LinkHandler
     {
         Notifications.Enqueue(method);
         if (method == "node.report") Reports.Enqueue(JsonNode.Parse(parameters.GetRawText())!.AsObject());
+        if (method == "runtime.changed") RuntimeChanges.Enqueue(JsonNode.Parse(parameters.GetRawText())!.AsObject());
         return ValueTask.CompletedTask;
     }
 }

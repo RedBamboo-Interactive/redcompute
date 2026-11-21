@@ -16,11 +16,13 @@ public static class AgentIdentity
     public static AgentInfo Info => new(Version, Os, Arch);
 
     /// <summary>
-    /// What this agent answers (design 4.8, 4.9). <c>spool.disk</c> is not listed: the disk spool exists
-    /// in the protocol library, but no Phase 3 stream uses it.
+    /// What this agent answers (design 4.8, 4.9; Phase 4 design 2.1). <c>spool.disk</c> is not listed: the disk spool
+    /// exists in the protocol library, but no stream uses it. The Phase 4 features only take effect with a server that
+    /// lists them too.
     /// </summary>
     public static IReadOnlyList<string> Features { get; } =
-        [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho];
+        [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho,
+         LinkFeatures.RuntimeV1, LinkFeatures.ForwardHttpV1, LinkFeatures.ForwardWsV1];
 
     private static string ReadVersion()
     {

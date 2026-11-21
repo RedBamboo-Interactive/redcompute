@@ -3,7 +3,9 @@ using System.Security.Cryptography;
 using RedCompute.Node.Credentials;
 using RedCompute.Node.Pairing;
 using RedCompute.Node.Reports;
+using RedCompute.Node.Runtimes;
 using RedCompute.NodeLink;
+using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Node.Tests;
@@ -41,7 +43,8 @@ internal sealed class NodeHome : IDisposable
 
     public NodeEnvironment Environment(Func<NodeServerClient>? server = null, IProbeRunner? probes = null,
         Func<NodePairing, Func<ECDsa>, Func<CancellationToken, Task<ILinkTransport>>>? dial = null, LinkOptions? link = null,
-        TimeSpan? hardwareReport = null)
+        TimeSpan? hardwareReport = null, Func<RuntimeRegistration, HostSpawnSpec>? runtimeSpec = null,
+        Func<RuntimeRegistration, CancellationToken, Task<bool>>? runtimeProbe = null, TimeSpan? runtimeProbeInterval = null)
         => new()
         {
             Paths = Paths,
@@ -55,6 +58,9 @@ internal sealed class NodeHome : IDisposable
             Backoff = new ReconnectBackoff(new Random(7), TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(100)),
             HardwareReportInterval = hardwareReport ?? TimeSpan.FromHours(1),
             SweepContainmentAtStart = false,
+            RuntimeSpec = runtimeSpec,
+            RuntimeProbe = runtimeProbe,
+            RuntimeProbeInterval = runtimeProbeInterval ?? TimeSpan.FromMilliseconds(100),
         };
 
     public void Dispose()

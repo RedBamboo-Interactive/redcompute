@@ -2,6 +2,8 @@ using System.Text.Json.Nodes;
 using RedCompute.Node.Control;
 using RedCompute.Node.Install;
 using RedCompute.Node.Pairing;
+using RedCompute.Node.Runtimes;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Node;
 
@@ -24,6 +26,14 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
           leaf-node uninstall
           leaf-node run              (the background agent; started by install)
           leaf-node stop | kill-all | logs [--lines N] | version
+
+        Runtimes the server may start, stop and reach (only you add them, on this machine):
+          leaf-node runtime add comfyui --path <ComfyUI folder> [--venv <venv>] [--wsl <distro>] [--port 8188]
+                [--gpu cuda:0|cpu] [--models-dir <folder>] [--extra-args="<args>"] [--id <id>] [--label <label>]
+                --accept-graphs-run-installed-nodes
+          leaf-node runtime add comfyui --attach http://127.0.0.1:8188 [--id <id>] [--label <label>] [--gpu …]
+                --accept-graphs-run-installed-nodes
+          leaf-node runtime list | test <id> | enable <id> | disable <id> | remove <id> | start <id> | stop <id>
         """;
 
     public async Task<int> RunAsync(string[] args, CancellationToken ct)
@@ -34,9 +44,11 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
             return args.Length == 0 ? NodeExitCodes.Usage : NodeExitCodes.Ok;
         }
         var verb = args[0];
-        var options = ParseOptions(args.Skip(1).ToArray());
+        var runtimeVerb = verb == "runtime";
+        Dictionary<string, string?> options = [];
         try
         {
+            if (!runtimeVerb) options = ParseOptions(args.Skip(1).ToArray());
             if (verb is not ("version" or "--version") && !OperatingSystem.IsWindows() && Environment.IsPrivilegedProcess)
                 throw new NodeCommandException("root", "leaf-node runs as your own user, not as root. Run it without sudo.",
                     NodeExitCodes.Refused);
@@ -50,6 +62,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                 "status" => await StatusAsync(options, ct),
                 "stop" => await SimpleAsync("stop", "Stopped.", ct),
                 "kill-all" => await KillAllAsync(ct),
+                "runtime" => await RuntimeAsync(args.Skip(1).ToArray(), ct),
                 "logs" => await LogsAsync(options, ct),
                 "install" => await InstallAsync(options, ct),
                 "uninstall" => await UninstallAsync(ct),
@@ -112,7 +125,34 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                 }, CancellationToken.None);
                 return new JsonObject { ["ok"] = true };
             case "kill-all":
-                return new JsonObject { ["ok"] = true, ["killed"] = agent.KillAll() };
+            {
+                var (channels, runtimes) = await agent.KillAllAsync();
+                return new JsonObject { ["ok"] = true, ["killed"] = channels, ["runtimes"] = runtimes };
+            }
+            case "runtimes":
+                await agent.Runtimes.ReloadAsync();
+                return new JsonObject { ["ok"] = true };
+            case "runtime-start":
+            case "runtime-stop":
+            case "runtime-test":
+            {
+                var id = request["id"]?.GetValue<string>() ?? "";
+                try
+                {
+                    if (verb == "runtime-test")
+                    {
+                        var seconds = request["timeoutSeconds"]?.GetValue<int>() ?? 120;
+                        var (passed, tested) = await agent.Runtimes.TestAsync(id, TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 900)), ct);
+                        return new JsonObject { ["ok"] = true, ["passed"] = passed, ["runtime"] = RuntimeManager.Json(tested) };
+                    }
+                    var runtime = verb == "runtime-start" ? await agent.Runtimes.StartAsync(id, ct) : await agent.Runtimes.StopAsync(id, null, ct);
+                    return new JsonObject { ["ok"] = true, ["runtime"] = RuntimeManager.Json(runtime) };
+                }
+                catch (HostRuntimeException error)
+                {
+                    return new JsonObject { ["ok"] = false, ["error"] = error.Code, ["message"] = error.Message };
+                }
+            }
             default:
                 throw new NodeCommandException("unknown_verb", $"Unknown control request '{verb}'.");
         }
@@ -274,7 +314,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         var answer = await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "kill-all" }, ct: ct)
                      ?? throw new NodeCommandException("not_running", "leaf-node is not running.", NodeExitCodes.NotRunning);
         ThrowIfFailed(answer);
-        output.WriteLine($"Stopped everything the server started here ({answer["killed"]} channel(s)).");
+        output.WriteLine($"Stopped everything the server started here ({answer["killed"]} channel(s), {answer["runtimes"]} runtime(s)).");
         return NodeExitCodes.Ok;
     }
 
@@ -283,6 +323,198 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         var lines = options.TryGetValue("lines", out var text) && int.TryParse(text, out var count) && count > 0 ? count : 50;
         foreach (var line in new NodeLog(env.Paths.LogFile).Tail(lines)) output.WriteLine(line);
         return Task.FromResult(NodeExitCodes.Ok);
+    }
+
+    // ---- runtimes ----------------------------------------------------------------------------------
+
+    /// <summary>
+    /// <c>leaf-node runtime …</c> (Phase 4 design 2.4): the owner registers, lists, enables, disables, removes, starts
+    /// and stops the runtimes of this machine. The server can only start, stop and reach what is registered here.
+    /// </summary>
+    private async Task<int> RuntimeAsync(string[] args, CancellationToken ct)
+    {
+        if (args.Length == 0) throw new NodeCommandException("usage", Usage, NodeExitCodes.Usage);
+        var sub = args[0];
+        var positional = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : null;
+        var options = ParseOptions(args.Skip(positional is null ? 1 : 2).ToArray());
+        var registry = new RuntimeRegistry(env.Host, env.Paths);
+        switch (sub)
+        {
+            case "add":
+            {
+                var kind = positional ?? throw new NodeCommandException("usage", "Which kind? leaf-node runtime add comfyui …", NodeExitCodes.Usage);
+                var runtime = registry.Add(RuntimeToAdd(kind, options, registry));
+                var attach = runtime.Managed == HostRuntimeManagement.Attach;
+                env.Audit.Record("local", "runtime-add", runtime.Id, $"{runtime.Kind} {(attach ? "attach" : "spawn")} port {runtime.Port}");
+                output.WriteLine($"Registered {runtime.Kind} runtime '{runtime.Id}' at 127.0.0.1:{runtime.Port}.");
+                output.WriteLine(attach
+                    ? "You run it; the server can reach it on the ComfyUI allowlist (no Manager, install or user-data routes), never start or stop it."
+                    : "The server can start and stop it, as you, with what you set here (never a program, argument or folder of its own), "
+                      + "and reach it on the ComfyUI allowlist (no Manager, install or user-data routes).");
+                output.WriteLine("A workflow runs every node type installed in it. leaf-node runtime disable "
+                    + runtime.Id + " stops the server using it; kill-all, a revoke and an uninstall stop what leaf-node started.");
+                await NotifyAgentAsync(ct);
+                return NodeExitCodes.Ok;
+            }
+            case "test":
+            {
+                var id = positional ?? throw new NodeCommandException("usage", "Which runtime? leaf-node runtime test <id>", NodeExitCodes.Usage);
+                var seconds = int.TryParse(options.GetValueOrDefault("timeout"), out var t) ? t : 120;
+                var answer = await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "runtime-test", ["id"] = id, ["timeoutSeconds"] = seconds },
+                    TimeSpan.FromSeconds(seconds + 30), ct);
+                bool passed;
+                string? status, detail;
+                if (answer is null)
+                {
+                    // No agent: test here, with what an earlier agent may have left adopted.
+                    await using var runtimes = new RuntimeManager(env, env.RuntimeSpec, env.RuntimeProbe);
+                    runtimes.Load();
+                    try
+                    {
+                        var (ok, runtime) = await runtimes.TestAsync(id, TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 900)), ct);
+                        (passed, status, detail) = (ok, runtime.Status.ToString().ToLowerInvariant(), runtime.StatusDetail);
+                    }
+                    catch (HostRuntimeException error)
+                    {
+                        throw new NodeCommandException(error.Code, error.Message);
+                    }
+                }
+                else
+                {
+                    ThrowIfFailed(answer);
+                    passed = answer["passed"]?.GetValue<bool>() == true;
+                    status = answer["runtime"]?["status"]?.GetValue<string>();
+                    detail = answer["runtime"]?["statusDetail"]?.GetValue<string>();
+                }
+                output.WriteLine(passed
+                    ? $"'{id}' answered GET /system_stats."
+                    : $"'{id}' did not answer GET /system_stats ({status}{(detail is null ? "" : ": " + detail)}). leaf-node logs and its log file say more.");
+                return passed ? NodeExitCodes.Ok : NodeExitCodes.Failed;
+            }
+            case "list":
+            {
+                var status = await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "status" }, ct: ct);
+                var live = (status?["runtimes"] as JsonArray)?.OfType<JsonObject>().ToDictionary(r => r["id"]!.GetValue<string>()) ?? [];
+                var all = registry.Load();
+                if (all.Count == 0) output.WriteLine("No runtimes registered. Add one: leaf-node runtime add comfyui …");
+                foreach (var runtime in all)
+                {
+                    var state = live.TryGetValue(runtime.Id, out var entry) ? entry["status"]?.GetValue<string>() : status is null ? "agent not running" : "?";
+                    output.WriteLine($"{runtime.Id}  {runtime.Kind}  {(runtime.Managed == HostRuntimeManagement.Spawn ? "spawn" : "attach")}  "
+                        + $"127.0.0.1:{runtime.Port}  {(runtime.Enabled ? "enabled" : "disabled")}  {state}");
+                }
+                return NodeExitCodes.Ok;
+            }
+            case "remove" or "enable" or "disable":
+            {
+                var id = positional ?? throw new NodeCommandException("usage", $"Which runtime? leaf-node runtime {sub} <id>", NodeExitCodes.Usage);
+                if (sub == "remove")
+                {
+                    if (!registry.Remove(id)) throw new NodeCommandException("runtime_unknown", $"No runtime '{id}' is registered here.");
+                }
+                else
+                {
+                    registry.SetEnabled(id, sub == "enable");
+                }
+                env.Audit.Record("local", "runtime-" + sub, id, null);
+                output.WriteLine(sub switch
+                {
+                    "remove" => $"Removed '{id}'. If leaf-node had started it, it is stopped.",
+                    "enable" => $"Enabled '{id}'.",
+                    _ => $"Disabled '{id}': the server can no longer start or reach it. If leaf-node had started it, it is stopped.",
+                });
+                await NotifyAgentAsync(ct);
+                return NodeExitCodes.Ok;
+            }
+            case "start" or "stop":
+            {
+                var id = positional ?? throw new NodeCommandException("usage", $"Which runtime? leaf-node runtime {sub} <id>", NodeExitCodes.Usage);
+                var answer = await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "runtime-" + sub, ["id"] = id }, ct: ct)
+                             ?? throw new NodeCommandException("not_running", "leaf-node is not running.", NodeExitCodes.NotRunning);
+                ThrowIfFailed(answer);
+                output.WriteLine($"'{id}' is {answer["runtime"]?["status"]}.");
+                return NodeExitCodes.Ok;
+            }
+            default:
+                throw new NodeCommandException("usage", $"Unknown runtime command '{sub}'.\n\n{Usage}", NodeExitCodes.Usage);
+        }
+    }
+
+    /// <summary>
+    /// The registration <c>runtime add</c> asks for, checked here on the owner's machine (design 4): a spawned ComfyUI's
+    /// folder holds <c>main.py</c> (inside WSL it is the distribution's path, checked when it starts) and its port is
+    /// free; an attached one is a loopback URL. The design's flag names, and the earlier ones as aliases.
+    /// </summary>
+    private RuntimeRegistration RuntimeToAdd(string kind, IReadOnlyDictionary<string, string?> options, RuntimeRegistry registry)
+    {
+        string? Option(params string[] names) => names.Select(options.GetValueOrDefault).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+        var attachUrl = options.TryGetValue("attach", out var url) ? url : null;
+        var attach = options.ContainsKey("attach");
+        int port;
+        if (attach && attachUrl is not null)
+        {
+            if (!Uri.TryCreate(attachUrl, UriKind.Absolute, out var uri) || uri.Scheme != "http"
+                || !(uri.Host is "127.0.0.1" or "localhost" or "[::1]") || uri.AbsolutePath != "/" || uri.Query.Length > 0)
+                throw new NodeCommandException("usage", "--attach takes this machine's runtime, http://127.0.0.1:<port>.", NodeExitCodes.Usage);
+            port = uri.Port;
+        }
+        else if (Option("port") is { } text)
+        {
+            if (!int.TryParse(text, out port)) throw new NodeCommandException("usage", "--port is a number.", NodeExitCodes.Usage);
+        }
+        else
+        {
+            port = 8188;
+        }
+        var wsl = Option("wsl", "wsl-distro");
+        var path = Option("path", "server-path");
+        if (!attach && path is not null && wsl is null)
+        {
+            if (!File.Exists(Path.Combine(path, "main.py")))
+                throw new NodeCommandException("bad_runtime", $"{path} has no main.py: --path is the ComfyUI folder.", NodeExitCodes.Usage);
+            if (!PortFree(port))
+                throw new NodeCommandException("port_taken", $"Something already listens on 127.0.0.1:{port}. Pick another --port, or --attach to it.",
+                    NodeExitCodes.Usage);
+        }
+        var existing = registry.Load();
+        var id = Option("id") ?? Enumerable.Range(1, 99).Select(n => $"{kind}-{n}").First(candidate => existing.All(r => r.Id != candidate));
+        return new RuntimeRegistration
+        {
+            Id = id,
+            Kind = kind,
+            Label = Option("label"),
+            Managed = attach ? HostRuntimeManagement.Attach : HostRuntimeManagement.Spawn,
+            Port = port,
+            Accelerator = Option("gpu", "accelerator") ?? "cpu",
+            ServerPath = attach ? null : path,
+            VenvPath = attach ? null : Option("venv"),
+            WslDistro = attach ? null : wsl,
+            ServerArgs = attach ? null : Option("extra-args", "server-args"),
+            ModelsDirectory = attach ? null : Option("models-dir"),
+            AcceptedGraphsRunInstalledNodes = options.ContainsKey("accept-graphs-run-installed-nodes"),
+            AddedAt = env.Time.GetUtcNow(),
+        };
+    }
+
+    private static bool PortFree(int port)
+    {
+        try
+        {
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return true;
+        }
+        catch (System.Net.Sockets.SocketException)
+        {
+            return false;
+        }
+    }
+
+    private async Task NotifyAgentAsync(CancellationToken ct)
+    {
+        if (await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "runtimes" }, ct: ct) is null)
+            output.WriteLine("The agent is not running: it reads the change when it starts.");
     }
 
     // ---- install / uninstall -----------------------------------------------------------------------
@@ -306,9 +538,20 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
 
     private async Task<int> UninstallAsync(CancellationToken ct)
     {
-        // Stop the agent (it may hold the key open), then unpair and delete the key, then remove the rest.
-        if (await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "stop" }, ct: ct) is not null)
+        // Stop the runtimes the agent started and the agent (it may hold the key open), then unpair and delete the
+        // key, then remove the rest. Without a running agent, what an earlier one started is adopted and stopped here.
+        if (await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "kill-all" }, ct: ct) is not null)
+        {
+            await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "stop" }, ct: ct);
             await WaitForStopAsync(ct);
+        }
+        else
+        {
+            await using var runtimes = new RuntimeManager(env, env.RuntimeSpec, env.RuntimeProbe);
+            runtimes.Load();
+            var stopped = await runtimes.StopAllManagedAsync("uninstall");
+            if (stopped > 0) output.WriteLine($"Stopped {stopped} runtime(s) leaf-node had started.");
+        }
         if (env.StateStore.Load().Pairing is { } pairing)
         {
             var confirmed = await NodeLifecycle.ForgetAsync(env, pairing, "unpaired", callServer: true, ct);

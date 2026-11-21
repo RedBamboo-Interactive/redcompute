@@ -243,6 +243,36 @@ public sealed class ControlAndCommandTests : IDisposable
             Directory.Exists(_home.Root) ? Directory.EnumerateFileSystemEntries(_home.Root, "*", SearchOption.AllDirectories) : []));
     }
 
+    [Fact]
+    public async Task Uninstall_stops_the_runtimes_leaf_node_started()
+    {
+        var platform = new FakeInstallPlatform();
+        new NodeInstaller(_home.Paths, _home.Host, platform, NodeLog.None).Install(FakeBuild("0.1.0"), "0.1.0", false);
+        await LinkedAgent.PairLocallyAsync(_home);
+        var env = _home.Environment(server: () => new NodeServerClient(new StubHttp((_, _) => new HttpResponseMessage(HttpStatusCode.NoContent))),
+            runtimeSpec: RuntimeAgentTests.Sleeper, runtimeProbe: (_, _) => Task.FromResult(true));
+        new Runtimes.RuntimeRegistry(_home.Host, _home.Paths).Add(new Runtimes.RuntimeRegistration
+        {
+            Id = "comfy-m", Kind = Runtimes.RuntimeKinds.ComfyUi, Managed = PluginSdk.Hosting.HostRuntimeManagement.Spawn,
+            Port = RuntimeAgentTests.FreePort(), ServerPath = _home.Root, AcceptedGraphsRunInstalledNodes = true,
+        });
+        int pid;
+        await using (var agentBefore = new Runtimes.RuntimeManager(env, env.RuntimeSpec, env.RuntimeProbe))
+        {
+            agentBefore.Load();
+            await agentBefore.StartAsync("comfy-m");
+            pid = RuntimeAgentTests.PidOf(_home, "comfy-m");
+        }
+        Assert.True(RuntimeAgentTests.Alive(pid), "kept after the agent stopped");
+        var output = new StringWriter();
+
+        Assert.Equal(0, await new NodeCommands(env, output, () => platform).RunAsync(["uninstall"], CancellationToken.None));
+
+        Assert.Contains("Stopped 1 runtime(s) leaf-node had started.", output.ToString());
+        await Wait.UntilAsync(() => !RuntimeAgentTests.Alive(pid), "the runtime gone");
+        Assert.False(Directory.Exists(_home.Root));
+    }
+
     private string FakeBuild(string version)
     {
         var folder = Path.Combine(_home.Root, "build-" + Guid.NewGuid().ToString("N")[..8], version);

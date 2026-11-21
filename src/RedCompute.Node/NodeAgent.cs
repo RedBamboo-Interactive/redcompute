@@ -4,7 +4,9 @@ using RedCompute.Node.Credentials;
 using RedCompute.Node.Link;
 using RedCompute.Node.Pairing;
 using RedCompute.Node.Reports;
+using RedCompute.Node.Runtimes;
 using RedCompute.NodeLink;
+using RedCompute.NodeLink.Forward;
 using RedCompute.NodeLink.Noise;
 using RedCompute.PluginSdk.Hosting;
 
@@ -36,6 +38,15 @@ public sealed class NodeEnvironment
     /// </summary>
     public bool SweepContainmentAtStart { get; init; } = true;
 
+    /// <summary>How often the agent probes its runtimes' health (Phase 4 design 2.4).</summary>
+    public TimeSpan RuntimeProbeInterval { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>Tests: what a managed runtime launches, instead of the shared recipe.</summary>
+    public Func<RuntimeRegistration, PluginSdk.Hosting.HostSpawnSpec>? RuntimeSpec { get; init; }
+
+    /// <summary>Tests: the runtimes' health probe, instead of GET /system_stats.</summary>
+    public Func<RuntimeRegistration, CancellationToken, Task<bool>>? RuntimeProbe { get; init; }
+
     public NodeStateStore StateStore => _state ??= new NodeStateStore(Host, Paths);
     private NodeStateStore? _state;
 
@@ -60,6 +71,8 @@ public sealed class NodeAgent : IAsyncDisposable
 {
     private readonly NodeEnvironment _env;
     private readonly NodeReporter _reporter;
+    private readonly RuntimeManager _runtimes;
+    private readonly ForwardHost _forward;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private CancellationTokenSource? _linkRun;
@@ -75,6 +88,34 @@ public sealed class NodeAgent : IAsyncDisposable
     {
         _env = env;
         _reporter = new NodeReporter(env.Host, env.ProbeRunner ?? new HostProbeRunner(env.Host), env.Time);
+        _runtimes = new RuntimeManager(env, env.RuntimeSpec, env.RuntimeProbe);
+        _forward = new ForwardHost(new RuntimeForwardTarget(_runtimes), audit: entry => env.Audit.Record("forward", entry.Path, entry.Outcome,
+            $"{entry.Runtime} {entry.Mode}{(entry.Method is null ? "" : " " + entry.Method)} status {entry.Status?.ToString() ?? "-"}"
+            + $" request {entry.RequestBytes} B response {entry.ResponseBytes} B"));
+        _runtimes.Changed += OnRuntimeChanged;
+    }
+
+    /// <summary>The runtimes the owner registered here, and what the agent started from them.</summary>
+    public RuntimeManager Runtimes => _runtimes;
+
+    public ForwardHost Forward => _forward;
+
+    /// <summary>Every runtime change goes to the server as <c>runtime.changed</c>, so it never polls (design 2.4).</summary>
+    private void OnRuntimeChanged(PluginSdk.Hosting.HostRuntime runtime)
+    {
+        if (Client?.Session is not { IsAttached: true } session || !session.HasFeature(LinkFeatures.RuntimeV1)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await session.NotifyAsync(RuntimeRpc.Changed, RuntimeManager.Json(runtime));
+            }
+            catch (Exception error) when (error is LinkRpcException or LinkClosedException or ObjectDisposedException
+                                              or InvalidOperationException or LinkChannelResetException)
+            {
+                // the server lists the runtimes again when the link comes back
+            }
+        });
     }
 
     public LinkClient? Client { get { lock (_gate) return _client; } }
@@ -99,6 +140,16 @@ public sealed class NodeAgent : IAsyncDisposable
                 _env.Log.Warn($"Containment sweep: {error.Message}");
             }
         }
+        try
+        {
+            // What an earlier agent started keeps running across a restart: adopt it, never start a second one.
+            _runtimes.Load();
+        }
+        catch (NodeCommandException error)
+        {
+            _env.Log.Error(error.Message);
+        }
+        _runtimes.StartHealthLoop(_env.RuntimeProbeInterval);
 
         while (!ct.IsCancellationRequested)
         {
@@ -165,7 +216,7 @@ public sealed class NodeAgent : IAsyncDisposable
 
         var dial = _env.Dial?.Invoke(pairing, OpenKey) ?? new NodeDialer(pairing, OpenKey, _env.Time).DialAsync;
         var handler = new NodeLinkHandler(pairing.NodeId, _reporter, _env.Audit, _env.Log, () => pairing.CredentialStore,
-            (session, clis) => PushAsync(session, new JsonObject { ["clis"] = clis }));
+            (session, clis) => PushAsync(session, new JsonObject { ["clis"] = clis }), _runtimes, _forward);
         var client = new LinkClient(new LinkClientOptions
         {
             NodeId = pairing.NodeId,
@@ -219,6 +270,7 @@ public sealed class NodeAgent : IAsyncDisposable
             // Revoked or forgotten by the server (design 3.5 step 4).
             var reason = client.StatusReason is "node_unknown" ? "unknown" : "revoked";
             handler.KillAll();
+            await _runtimes.StopAllManagedAsync(reason);
             await ForgetAsync(pairing, reason, callServer: false, CancellationToken.None);
             _env.Log.Warn(reason == "revoked"
                 ? $"The server revoked this node ({client.StatusReason}). Its key and spool are deleted; pair again to reconnect."
@@ -365,6 +417,7 @@ public sealed class NodeAgent : IAsyncDisposable
             pairing = state.Pairing ?? throw new NodeCommandException("not_paired", "This node is not paired.");
             await SayByeAsync("unpair");
             lock (_gate) _linkRun?.Cancel();
+            await _runtimes.StopAllManagedAsync("unpaired");
             confirmed = await NodeLifecycle.ForgetAsync(_env, pairing, "unpaired", callServer: true, ct);
         }
         finally
@@ -391,7 +444,16 @@ public sealed class NodeAgent : IAsyncDisposable
         }
     }
 
-    public int KillAll() => Handler?.KillAll() ?? 0;
+    public int KillAll() => Handler?.KillAll() ?? _forward.ResetAll("killed_by_owner", "The node's owner ran kill-all.");
+
+    /// <summary>The kill switch: every channel and forward ends, and every runtime the agent started stops.</summary>
+    public async Task<(int Channels, int Runtimes)> KillAllAsync()
+    {
+        var channels = KillAll();
+        var runtimes = await _runtimes.StopAllManagedAsync("kill-all");
+        _env.Audit.Record("local", "kill-all-runtimes", "done", $"{runtimes} runtime(s)");
+        return (channels, runtimes);
+    }
 
     /// <summary>The <c>status</c> verb's answer.</summary>
     public JsonObject Status()
@@ -412,6 +474,7 @@ public sealed class NodeAgent : IAsyncDisposable
         answer["ok"] = true;
         answer["running"] = true;
         answer["pid"] = Environment.ProcessId;
+        answer["runtimes"] = new JsonArray(_runtimes.List().Select(r => (JsonNode)RuntimeManager.Json(r)).ToArray());
         answer["link"] = new JsonObject
         {
             ["status"] = status,
@@ -430,6 +493,7 @@ public sealed class NodeAgent : IAsyncDisposable
     {
         lock (_gate) _linkRun?.Cancel();
         if (Client is { } client) await client.DisposeAsync();
+        await _runtimes.DisposeAsync();
         _reporter.Dispose();
     }
 }

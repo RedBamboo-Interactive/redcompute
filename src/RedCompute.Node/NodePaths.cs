@@ -46,6 +46,15 @@ public sealed record NodePaths
     /// <summary>The link key beside <see cref="KeyFile"/>, for a node whose identity key is in a file.</summary>
     public string LinkKeyFile => Path.Combine(Data, "link-key.p8");
     public string LogFile => Path.Combine(Logs, "leaf-node.log");
+
+    /// <summary>The runtimes the owner registered (Phase 4 design 2.4).</summary>
+    public string RuntimesFile => Path.Combine(Data, "runtimes.json");
+
+    /// <summary>What the agent started: one state file and one containment ledger per managed runtime.</summary>
+    public string RuntimeState => Path.Combine(Data, "runtimes");
+
+    /// <summary>A managed runtime's stdout and stderr.</summary>
+    public string RuntimeLog(string id) => Path.Combine(Logs, $"runtime-{id}.log");
     public string ControlSocket => Path.Combine(Runtime, "leaf-node.sock");
     public string LockFile => Path.Combine(Runtime, "leaf-node.lock");
 
