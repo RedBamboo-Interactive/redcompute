@@ -61,6 +61,13 @@ public sealed record NodeDescriptor(
     /// <summary>The node's icon (a curated Phosphor name) as the kernel's node entity has it; null from an older kernel.</summary>
     public string? Icon { get; init; }
 
+    /// <summary>
+    /// The node's link must be end-to-end encrypted (Phase 4 P0.5): it pinned RedCompute's link key at
+    /// pairing (the kernel's <c>linkE2e: required</c>) or has linked encrypted before. Plaintext from it is
+    /// refused. Always false for node zero, which has no link.
+    /// </summary>
+    public bool E2eRequired { get; init; }
+
     /// <summary>The node's colour (a palette token) as the kernel's node entity has it; null from an older kernel.</summary>
     public string? Color { get; init; }
 }
@@ -76,7 +83,8 @@ public sealed record NodeLinkState(
     IReadOnlyList<string> Features,
     string? AgentVersion,
     bool UpdateAvailable,
-    string? CredentialStore);
+    string? CredentialStore,
+    bool Encrypted = false);
 
 /// <summary>One CLI as the node's fixed probe found it: never its output, auth files or tokens.</summary>
 public sealed record NodeCliReport(string Name, bool Installed, string? Version, bool SignedIn, string? AuthMethod, string? Path);

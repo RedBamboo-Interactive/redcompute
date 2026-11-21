@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Net.WebSockets;
 using System.Security.Claims;
@@ -14,6 +15,7 @@ using RedBamboo.AppHost.Auth;
 using RedCompute.Core.Hardware;
 using RedCompute.Core.Nodes;
 using RedCompute.NodeLink;
+using RedCompute.NodeLink.Noise;
 
 namespace RedCompute.App.Services.Nodes;
 
@@ -53,6 +55,13 @@ public sealed class NodeHubOptions
     /// pairing); false, a failure or no resync at all is a 503 the node retries.
     /// </summary>
     public Func<CancellationToken, Task<bool>>? Resync { get; init; }
+
+    /// <summary>
+    /// RedCompute's static link key (Phase 4 P0.5). With it, NodeHub answers a node's Noise handshake and
+    /// refuses plaintext from a node whose link must be encrypted; a node that has never pinned the key
+    /// still links in plaintext, as before. Null: every link is plaintext (no handshake is answered).
+    /// </summary>
+    public NodeLinkKeyStore? LinkKeys { get; init; }
 }
 
 /// <summary>
@@ -109,6 +118,7 @@ public sealed partial class NodeHub : IAsyncDisposable
     private readonly Action<string> _log;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _seenExecutions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _byeReasons = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, bool> _lastConnectionEncrypted = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _life = new();
 
     public NodeHub(NodeRegistry registry, Action<string> log, NodeHubOptions? options = null)
@@ -124,6 +134,7 @@ public sealed partial class NodeHub : IAsyncDisposable
             Features = Features,
             AgentPolicy = _options.AgentPolicy,
             Link = _options.Link,
+            Secure = _options.LinkKeys is null ? null : SecureAsync,
         });
         Server.Connected += OnConnected;
         Server.Disconnected += OnDisconnected;
@@ -190,6 +201,74 @@ public sealed partial class NodeHub : IAsyncDisposable
     }
 
     private static NodeHubRefusal Unknown() => new(StatusCodes.Status404NotFound, "node_unknown", "No paired node has this id.");
+
+    // ================================================================= end-to-end encryption (P0.5)
+
+    /// <summary>
+    /// The link's first message, before the hello (design 1b.7). A Noise handshake is answered with RedCompute's
+    /// link key once the node's identity binding verifies against the SPKI the kernel lists for it (4497 when it
+    /// does not; 1012 while the kernel has not listed one, so the node retries). Plaintext is accepted only from a
+    /// node that never pinned the key and never linked encrypted (else 4496). A handshake for a key RedCompute does
+    /// not hold is 4495.
+    /// </summary>
+    private async Task<ILinkTransport> SecureAsync(ILinkTransport transport, string nodeId, CancellationToken ct)
+    {
+        var security = _registry.LinkSecurity(nodeId);
+        IReadOnlyList<NoiseKeyPair> keys;
+        try
+        {
+            keys = _options.LinkKeys!.Keys();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // Never a new key in its place (that would orphan every pinned node): handshakes get 4495 until it opens.
+            _log($"[NodeHub] The node link key in {_options.LinkKeys!.Directory} does not open: {error.Message}");
+            keys = [];
+        }
+        var result = await NoiseLink.AcceptAsync(transport, new NoiseResponderOptions
+        {
+            NodeId = nodeId,
+            LocalStatics = keys,
+            AllowPlaintext = _ => ValueTask.FromResult(security is not { E2eRequired: true }),
+            Verify = (binding, payload, _) => security?.IdentitySpki is { } spki
+                ? ValueTask.FromResult(NoiseBinding.Verify(spki, binding, payload))
+                : throw new LinkProtocolException(LinkCloseCodes.ServiceRestart,
+                    "link_identity_unavailable: the kernel has not listed this node's identity key yet."),
+        }, ct);
+        _lastConnectionEncrypted[nodeId] = result.Encrypted;
+        if (result.Encrypted)
+        {
+            _registry.MarkSeenEncrypted(nodeId);
+            if (result.Accepted!.ServerKeyIndex > 0)
+                _log($"[NodeHub] {nodeId} linked with the previous link key; it needs the current one before the grace ends.");
+        }
+        return result.Transport;
+    }
+
+    /// <summary>
+    /// <c>GET /nodes/link-key</c>: the current link key for the kernel to hand a pairing node (K0). Kernel only
+    /// (<c>service:redleaf</c>), hidden from <c>/discover</c>. 503 <c>link_key_unavailable</c> when the key file does not open.
+    /// </summary>
+    public const string LinkKeyRoute = "/nodes/link-key";
+
+    public static IEndpointConventionBuilder MapLinkKeyRoute(IEndpointRouteBuilder app, NodeLinkKeyStore keys)
+        => app.MapGet(LinkKeyRoute, (HttpContext context) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            if (!Api.Endpoints.SettingsEndpoints.IsRedLeafService(context.User))
+                return Results.Json(new { error = "service_only", message = "Only the kernel reads the node link key." },
+                    statusCode: StatusCodes.Status403Forbidden);
+            try
+            {
+                return Results.Json(keys.Describe(), Json);
+            }
+            catch (Exception error) when (error is System.Security.Cryptography.CryptographicException or IOException
+                                              or JsonException or FormatException or UnauthorizedAccessException)
+            {
+                return Results.Json(new { error = "link_key_unavailable", message = "RedCompute's node link key does not open." },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        }).ExcludeFromDescription();
 
     /// <summary>Only a direct loopback peer, with nothing describing another client in front of it.</summary>
     internal static NodeHubRefusal? RefusePeer(HttpContext context)
@@ -343,7 +422,8 @@ public sealed partial class NodeHub : IAsyncDisposable
     {
         var now = _options.Time.GetUtcNow();
         _registry.LinkUp(nodeId, new NodeLinkState(session.LinkSessionId, now, now, session.Rtt?.TotalMilliseconds,
-            session.ClockOffset?.TotalMilliseconds, LinkProtocol.Current, session.Features, null, false, null));
+            session.ClockOffset?.TotalMilliseconds, LinkProtocol.Current, session.Features, null, false, null,
+            _lastConnectionEncrypted.TryGetValue(nodeId, out var encrypted) && encrypted));
         _ = Task.Run(() => LearnAsync(nodeId, session));
     }
 

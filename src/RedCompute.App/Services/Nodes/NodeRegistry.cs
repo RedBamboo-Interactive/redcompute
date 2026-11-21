@@ -237,6 +237,13 @@ public sealed class NodeRegistry : INodeRegistry
                 // The kernel owns the look: an older kernel has none, and the dashboard falls back.
                 node.Icon = kernel.Icon;
                 node.Color = kernel.Color;
+                // E2E (P0.5): the identity key the link binding is checked against, and "required", which only
+                // ever turns on here (a kernel that stops saying it, or an older one, never reopens plaintext).
+                var spkiBefore = node.IdentitySpki;
+                var requiredBefore = node.E2eRequired;
+                node.IdentitySpki = kernel.PublicKeySpki ?? node.IdentitySpki;
+                node.E2eRequired |= kernel.LinkE2eRequired;
+                var securityChanged = !SameBytes(spkiBefore, node.IdentitySpki) || requiredBefore != node.E2eRequired;
                 // The node's own describe is fresher than the kernel's copy while the link is up.
                 if (node.Link is null)
                 {
@@ -259,6 +266,10 @@ public sealed class NodeRegistry : INodeRegistry
                 if (isNew || node.IdentityKey() != identityBefore)
                 {
                     updated.Add(node.Id);
+                    SaveCache(node);
+                }
+                else if (securityChanged)
+                {
                     SaveCache(node);
                 }
             }
@@ -297,6 +308,33 @@ public sealed class NodeRegistry : INodeRegistry
     }
 
     // ================================================================= the live link (NodeHub)
+
+    /// <summary>
+    /// What NodeHub needs to set up a node's encrypted link (Phase 4 P0.5): the identity key to verify the
+    /// binding against (null until the kernel lists it, K0), and whether plaintext is refused. Null for an
+    /// unknown node.
+    /// </summary>
+    public NodeLinkSecurity? LinkSecurity(string nodeId)
+    {
+        lock (_gate)
+            return _remote.TryGetValue(nodeId, out var node)
+                ? new NodeLinkSecurity(node.IdentitySpki, node.E2eRequired || node.SeenEncrypted)
+                : null;
+    }
+
+    /// <summary>The node linked encrypted: from now on plaintext from it is refused (kept in its cache file).</summary>
+    public void MarkSeenEncrypted(string nodeId)
+    {
+        lock (_gate)
+        {
+            if (!_remote.TryGetValue(nodeId, out var node) || node.SeenEncrypted) return;
+            node.SeenEncrypted = true;
+            SaveCache(node);
+        }
+    }
+
+    private static bool SameBytes(byte[]? a, byte[]? b)
+        => a is null ? b is null : b is not null && a.AsSpan().SequenceEqual(b);
 
     /// <summary>A link for the node completed its handshake.</summary>
     public void LinkUp(string nodeId, NodeLinkState link)
@@ -452,6 +490,7 @@ public sealed class NodeRegistry : INodeRegistry
             Chassis = node.Chassis,
             Icon = node.Icon,
             Color = node.Color,
+            E2eRequired = node.E2eRequired || node.SeenEncrypted,
         };
     }
 
@@ -574,15 +613,19 @@ public sealed class NodeRegistry : INodeRegistry
         public string? Color { get; set; }
         public bool CacheDue { get; set; }
         public DateTimeOffset? CachedHardwareAt { get; set; }
+        public byte[]? IdentitySpki { get; set; }
+        public bool E2eRequired { get; set; }
+        public bool SeenEncrypted { get; set; }
 
         /// <summary>The fields whose change is a <c>node.updated</c> (identity and platform; not liveness).</summary>
         public string IdentityKey()
             => string.Join('\u001f', Name, OwnerUserId, Confirmed, PairedAt, Os, Arch, OsDescription, MachineName, Processor,
-                AgentVersion, Link?.CredentialStore, Link?.Protocol, Link?.UpdateAvailable, Chassis, Icon, Color);
+                AgentVersion, Link?.CredentialStore, Link?.Protocol, Link?.UpdateAvailable, Link?.Encrypted, Chassis, Icon, Color,
+                E2eRequired || SeenEncrypted);
 
         public CachedRemoteNode ToCache(DateTimeOffset? lastSeen) => new(Id, Name, OwnerUserId, Confirmed, PairedAt, Os, Arch,
             OsDescription, MachineName, Processor, AgentVersion, Revoked, RevokedReason, KernelStatus, lastSeen, Report,
-            Chassis, Icon, Color);
+            Chassis, Icon, Color, IdentitySpki is null ? null : Convert.ToBase64String(IdentitySpki), E2eRequired, SeenEncrypted);
 
         /// <summary>A cached record, with what an older or hand-edited file may lack filled in.</summary>
         public static RemoteNode FromCache(CachedRemoteNode cached) => new(cached.Id)
@@ -606,15 +649,29 @@ public sealed class NodeRegistry : INodeRegistry
             Chassis = KernelNode.Token(cached.Chassis),
             Icon = KernelNode.Token(cached.Icon),
             Color = KernelNode.Token(cached.Color),
+            IdentitySpki = SpkiOrNull(cached.IdentitySpki),
+            E2eRequired = cached.E2eRequired,
+            SeenEncrypted = cached.SeenEncrypted,
         };
+
+        private static byte[]? SpkiOrNull(string? base64)
+        {
+            if (base64 is null) return null;
+            try { return Convert.FromBase64String(base64); }
+            catch (FormatException) { return null; }
+        }
     }
 
     /// <summary>The shape of <c>nodes/&lt;id&gt;.json</c>.</summary>
     internal sealed record CachedRemoteNode(string Id, string Name, string? OwnerUserId, bool Confirmed, DateTimeOffset? PairedAt,
         string? Os, string? Arch, string? OsDescription, string? MachineName, string? Processor, string? AgentVersion,
         bool Revoked, string? RevokedReason, string? KernelStatus, DateTimeOffset? LastSeenAt, NodeReport? Report,
-        string? Chassis = null, string? Icon = null, string? Color = null);
+        string? Chassis = null, string? Icon = null, string? Color = null,
+        string? IdentitySpki = null, bool E2eRequired = false, bool SeenEncrypted = false);
 }
+
+/// <summary>A remote node's link security: its identity key (null until the kernel lists it) and whether plaintext is refused.</summary>
+public sealed record NodeLinkSecurity(byte[]? IdentitySpki, bool E2eRequired);
 
 /// <summary>What a node's <c>node.describe</c> said about itself.</summary>
 public sealed record NodeDescribe(string? Os, string? Arch, string? OsDescription, string? MachineName, string? Processor,

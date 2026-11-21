@@ -171,7 +171,8 @@ internal sealed class PipedNode : IAsyncDisposable
     private readonly CancellationTokenSource _run = new();
     private readonly Task _loop;
 
-    public PipedNode(NodeHub hub, string nodeId, FakeNodeHandler? handler = null, string? boundNodeId = null, string agentVersion = "0.1.0")
+    public PipedNode(NodeHub hub, string nodeId, FakeNodeHandler? handler = null, string? boundNodeId = null, string agentVersion = "0.1.0",
+        Func<ILinkTransport, CancellationToken, Task<ILinkTransport>>? secure = null)
     {
         Handler = handler ?? new FakeNodeHandler { AgentVersion = agentVersion };
         Client = new LinkClient(new LinkClientOptions
@@ -187,6 +188,7 @@ internal sealed class PipedNode : IAsyncDisposable
                 return Task.FromResult(node);
             },
             Backoff = new ReconnectBackoff(new Random(7), TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(200)),
+            Secure = secure,
         });
         _loop = Task.Run(() => Client.RunAsync(_run.Token));
     }

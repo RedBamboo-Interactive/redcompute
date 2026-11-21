@@ -55,7 +55,8 @@ public sealed record NodeView(
     IReadOnlyList<NodeCliView> Clis,
     NodePlacementView Placement,
     string? Icon = null,
-    string? Color = null);
+    string? Color = null,
+    string? Encryption = null);
 
 /// <param name="Chassis">What kind of machine its firmware says it is (desktop, all-in-one, laptop, tablet, mini, server), when it says.</param>
 public sealed record NodePlatformView(string Os, string OsDescription, string Architecture, string MachineName,
@@ -83,7 +84,8 @@ public sealed record NodeLinkView(
     IReadOnlyList<string> Features,
     string? AgentVersion,
     bool UpdateAvailable,
-    string? CredentialStore);
+    string? CredentialStore,
+    bool Encrypted = false);
 
 /// <summary>One CLI on a remote node: installed, version, signed in and how (never a token or an auth file).</summary>
 public sealed record NodeCliView(string Name, bool Installed, string? Version, bool SignedIn, string? AuthMethod);
@@ -301,12 +303,13 @@ public static class NodeEndpoints
             node.PairedAt,
             node.Link is { } link
                 ? new NodeLinkView(link.ConnectedAt, link.LastHeartbeatAt, link.RttMs, link.ClockOffsetMs, link.Protocol, link.Features,
-                    link.AgentVersion, link.UpdateAvailable, link.CredentialStore)
+                    link.AgentVersion, link.UpdateAvailable, link.CredentialStore, link.Encrypted)
                 : null,
             node.Report?.Clis.Select(cli => new NodeCliView(cli.Name, cli.Installed, cli.Version, cli.SignedIn, cli.AuthMethod)).ToList() ?? [],
             new NodePlacementView(placement.Eligible, placement.Reason),
             node.Icon,
-            node.Color);
+            node.Color,
+            node.Kind == NodeKind.Local ? null : node.E2eRequired ? "required" : "none");
     }
 
     private static NodeHardwareView Hardware(HardwareSnapshot? snapshot) => snapshot is null

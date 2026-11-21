@@ -53,6 +53,9 @@ public sealed class ExecutionHostGuardTests
         ("server state: the data root resolver (asks the OS for the default folder)", [
             "RedCompute.Core.Storage.ComputeStorage",
         ]),
+        ("server state: RedCompute's node link key, a DPAPI-protected (Windows) or 0600 (Linux) file in a 0700 folder under its data root, created without overwrite (the host's file API sets no Unix mode)", [
+            "RedCompute.App.Services.Nodes.NodeLinkKeyStore",
+        ]),
         ("server state: the stored-path rebasers rewrite RedCompute's own files and databases under its data root at startup, before any node exists", [
             "RedCompute.App.Rebase.ConfigRebaser",
             "RedCompute.App.Rebase.LongLivedProcessesRebaser",

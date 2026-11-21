@@ -33,7 +33,9 @@ public sealed partial record KernelNode(
     DateTimeOffset? PairedAt,
     string? Icon = null,
     string? Color = null,
-    string? Chassis = null)
+    string? Chassis = null,
+    byte[]? PublicKeySpki = null,
+    bool LinkE2eRequired = false)
 {
     public const string LocalKind = "local";
     public const string RemoteKind = "remote";
@@ -80,7 +82,29 @@ public sealed partial record KernelNode(
             Date(node, "pairedAt"),
             Token(Text(node, "icon")),
             Token(Text(node, "color")),
-            Token(Text(platform, "chassis")));
+            Token(Text(platform, "chassis")),
+            Spki(Text(node, "publicKeySpki")),
+            Text(node, "linkE2e") == "required");
+    }
+
+    /// <summary>
+    /// The node's identity public key (K0: the service view lists <c>publicKeySpki</c>, base64 or base64url DER), or
+    /// null when absent or not a P-256 key: NodeHub verifies the encrypted link's identity binding against it.
+    /// </summary>
+    private static byte[]? Spki(string? text)
+    {
+        if (text is null || text.Length > 400) return null;
+        try
+        {
+            var bytes = RedCompute.NodeLink.Noise.NodeLinkKeyInfo.FromBase64Url(text);
+            using var key = System.Security.Cryptography.ECDsa.Create();
+            key.ImportSubjectPublicKeyInfo(bytes, out var read);
+            return read == bytes.Length && key.KeySize == 256 ? bytes : null;
+        }
+        catch (Exception error) when (error is FormatException or System.Security.Cryptography.CryptographicException)
+        {
+            return null;
+        }
     }
 
     private static string? Text(JsonObject? node, string key)

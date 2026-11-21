@@ -545,10 +545,12 @@ public class RelayServer
     private void MapNodes(EndpointRegistry registry, NodeRegistry nodes, JwtService jwt, WebSocketBroadcaster broadcaster)
     {
         var sync = _nodeSync = new KernelNodeSync(nodes, new KernelNodeClient(_config.RedLeafUrl, jwt), message => _log(message, null));
+        var linkKeys = new NodeLinkKeyStore(ComputeStorage.Current.NodeLinkKey, message => _log(message, null));
         var hub = _nodeHub = new NodeHub(nodes, message => _log(message, null),
-            new NodeHubOptions { Resync = sync.RefreshAsync });
+            new NodeHubOptions { Resync = sync.RefreshAsync, LinkKeys = linkKeys });
         NodeEndpoints.Map(registry, nodes, _registry, _hardwareMonitor, hub, sync);
         NodeHub.MapRoute(_app!, hub);
+        NodeHub.MapLinkKeyRoute(_app!, linkKeys);
 
         broadcaster.RegisterEvent(new WsEventSchema(NodeEvents.StatusEvent,
             "A node's status changed (online, offline, revoked, needs-update, pending-confirmation); transitions only, never per heartbeat",
