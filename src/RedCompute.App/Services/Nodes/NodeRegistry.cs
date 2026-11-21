@@ -59,6 +59,32 @@ public sealed class NodeRegistry : INodeRegistry
     private readonly Action<string> _log;
     private readonly object _gate = new();
     private readonly Dictionary<string, RemoteNode> _remote = new(StringComparer.Ordinal);
+
+    // Cache file writes (review P4-P7, item 8). Every write and delete is serialized under _cacheIo, which is taken
+    // inside _gate or alone, never the other way round. A runtime change's write is deferred: snapshotted under _gate,
+    // written by one drainer outside it, the latest per node only. A write older than one already done (a revoke written
+    // at once after a deferred snapshot) or for a forgotten node is skipped.
+    private readonly object _cacheIo = new();
+    private readonly object _cacheQueue = new();
+    private readonly Dictionary<string, CacheSnapshot> _cachePending = new(StringComparer.Ordinal);
+    private bool _cacheDraining;
+    private int _cacheWrites;
+
+    private sealed record CacheSnapshot(RemoteNode Node, long Version, string Path, CachedRemoteNode Cache);
+
+    /// <summary>Tests: how many cache files were written.</summary>
+    internal int CacheWrites => Volatile.Read(ref _cacheWrites);
+
+    /// <summary>Tests: waits until every deferred cache write is done.</summary>
+    internal async Task FlushCacheAsync()
+    {
+        while (true)
+        {
+            lock (_cacheQueue)
+                if (!_cacheDraining && _cachePending.Count == 0) return;
+            await Task.Delay(10);
+        }
+    }
     // Node zero's look, from its kernel entity (node.json has none): null until the kernel lists it.
     private string? _localIcon;
     private string? _localColor;
@@ -238,19 +264,30 @@ public sealed class NodeRegistry : INodeRegistry
     }
 
     /// <summary>One <c>runtime.changed</c>: that runtime's entry, added when it is new. True when anything changed.</summary>
-    public bool ApplyRuntime(string nodeId, HostRuntime runtime)
+    public bool ApplyRuntime(string nodeId, HostRuntime runtime) => ApplyRuntimeChanges(nodeId, [runtime]);
+
+    /// <summary>
+    /// A batch of <c>runtime.changed</c> (NodeHub coalesces them per node, the latest per runtime): each runtime's entry,
+    /// added when new. One update and one deferred cache write for the batch. True when anything changed.
+    /// </summary>
+    public bool ApplyRuntimeChanges(string nodeId, IReadOnlyList<HostRuntime> runtimes)
     {
         var changed = false;
         Mutate(nodeId, node =>
         {
-            if (node.Runtimes.Count >= RemoteRuntimeReport.MaxRuntimes && node.Runtimes.All(known => known.Id != runtime.Id)) return false;
-            var next = node.Runtimes.Where(known => known.Id != runtime.Id).Append(runtime)
-                .OrderBy(known => known.Id, StringComparer.Ordinal).ToList();
+            var next = node.Runtimes.ToList();
+            foreach (var runtime in runtimes)
+            {
+                var at = next.FindIndex(known => known.Id == runtime.Id);
+                if (at >= 0) next[at] = runtime;
+                else if (next.Count < RemoteRuntimeReport.MaxRuntimes) next.Add(runtime);
+            }
+            next = next.OrderBy(known => known.Id, StringComparer.Ordinal).ToList();
             changed = RuntimesKey(node.Runtimes) != RuntimesKey(next);
             node.Runtimes = next;
             if (changed) node.CacheDue = true;
             return changed;
-        });
+        }, deferCache: true);
         return changed;
     }
 
@@ -352,7 +389,7 @@ public sealed class NodeRegistry : INodeRegistry
             foreach (var gone in _remote.Keys.Where(id => !listed.Contains(id)).ToList())
             {
                 // Forgotten, not revoked: if the kernel lists it again, it comes back (NodeHub re-attaches a live link).
-                _remote.Remove(gone);
+                if (_remote.Remove(gone, out var forgotten)) forgotten.Forgotten = true;
                 DeleteCache(gone);
                 updated.Add(gone);
             }
@@ -495,10 +532,14 @@ public sealed class NodeRegistry : INodeRegistry
         });
     }
 
-    /// <summary>Applies <paramref name="change"/> to a known, non-revoked remote node; raises the events it caused.</summary>
-    private void Mutate(string nodeId, Func<RemoteNode, bool> change)
+    /// <summary>
+    /// Applies <paramref name="change"/> to a known, non-revoked remote node; raises the events it caused. With
+    /// <paramref name="deferCache"/> its cache write is snapshotted here and written outside the lock (runtime changes).
+    /// </summary>
+    private void Mutate(string nodeId, Func<RemoteNode, bool> change, bool deferCache = false)
     {
         NodeStatusChange? statusChange = null;
+        CacheSnapshot? deferred = null;
         var updated = false;
         lock (_gate)
         {
@@ -513,8 +554,13 @@ public sealed class NodeRegistry : INodeRegistry
                 updated = true;
             }
             if (Key(node) != identityBefore) updated = true;
-            if (updated || node.CacheDue) SaveCache(node);
+            if (updated || node.CacheDue)
+            {
+                if (deferCache) deferred = Snapshot(node);
+                else SaveCache(node);
+            }
         }
+        if (deferred is not null) QueueCacheWrite(deferred);
         Raise(statusChange is null ? [] : [statusChange], updated ? [nodeId] : []);
     }
 
@@ -643,33 +689,96 @@ public sealed class NodeRegistry : INodeRegistry
         }
     }
 
+    /// <summary>Writes the node's cache now (under the gate): revokes, kernel identity, the link and reports.</summary>
     private void SaveCache(RemoteNode node)
     {
+        if (Snapshot(node) is { } snapshot) WriteCache(snapshot);
+    }
+
+    /// <summary>The node's cache as it is now, with a version later than every earlier snapshot. Under the gate.</summary>
+    private CacheSnapshot? Snapshot(RemoteNode node)
+    {
         node.CacheDue = false;
-        if (CachePath(node.Id) is not { } path) return;
-        try
+        if (CachePath(node.Id) is not { } path) return null;
+        if (node.Report?.Hardware is not null) node.CachedHardwareAt = _clock();
+        return new CacheSnapshot(node, ++node.CacheVersion, path, node.ToCache(Max(node.LastLinkSeen, node.KernelLastSeen)));
+    }
+
+    private void WriteCache(CacheSnapshot snapshot)
+    {
+        lock (_cacheIo)
         {
-            LocalHost.Files.CreateDirectory(LocalHost.Path(_cacheDirectory!));
-            LocalHost.Files.ReplaceAtomically(LocalHost.Path(path), JsonSerializer.Serialize(node.ToCache(Max(node.LastLinkSeen, node.KernelLastSeen)), CacheJson));
-            if (node.Report?.Hardware is not null) node.CachedHardwareAt = _clock();
+            var node = snapshot.Node;
+            if (node.Forgotten || snapshot.Version <= node.WrittenVersion) return;
+            node.WrittenVersion = snapshot.Version;
+            try
+            {
+                LocalHost.Files.CreateDirectory(LocalHost.Path(_cacheDirectory!));
+                LocalHost.Files.ReplaceAtomically(LocalHost.Path(snapshot.Path), JsonSerializer.Serialize(snapshot.Cache, CacheJson));
+                Interlocked.Increment(ref _cacheWrites);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                _log($"[Nodes] Could not cache node {node.Id}: {error.Message}");
+            }
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+    }
+
+    /// <summary>A deferred write: the latest snapshot per node waits; one drainer at a time writes them, off the gate.</summary>
+    private void QueueCacheWrite(CacheSnapshot snapshot)
+    {
+        lock (_cacheQueue)
         {
-            _log($"[Nodes] Could not cache node {node.Id}: {error.Message}");
+            _cachePending[snapshot.Node.Id] = snapshot;
+            if (_cacheDraining) return;
+            _cacheDraining = true;
+        }
+        ThreadPool.QueueUserWorkItem(_ => DrainCacheWrites());
+    }
+
+    private void DrainCacheWrites()
+    {
+        while (true)
+        {
+            List<CacheSnapshot> batch;
+            lock (_cacheQueue)
+            {
+                if (_cachePending.Count == 0)
+                {
+                    _cacheDraining = false;
+                    return;
+                }
+                batch = [.. _cachePending.Values];
+                _cachePending.Clear();
+            }
+            foreach (var snapshot in batch)
+            {
+                try
+                {
+                    WriteCache(snapshot);
+                }
+                catch (Exception error)
+                {
+                    _log($"[Nodes] Could not cache node {snapshot.Node.Id}: {error.Message}");
+                }
+            }
         }
     }
 
     private void DeleteCache(string nodeId)
     {
         if (CachePath(nodeId) is not { } path) return;
-        try
+        lock (_cacheIo)
         {
-            var file = LocalHost.Path(path);
-            if (LocalHost.Files.FileExists(file)) LocalHost.Files.DeleteFile(file);
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            _log($"[Nodes] Could not delete the cache of node {nodeId}: {error.Message}");
+            try
+            {
+                var file = LocalHost.Path(path);
+                if (LocalHost.Files.FileExists(file)) LocalHost.Files.DeleteFile(file);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                _log($"[Nodes] Could not delete the cache of node {nodeId}: {error.Message}");
+            }
         }
     }
 
@@ -702,6 +811,13 @@ public sealed class NodeRegistry : INodeRegistry
         public IReadOnlyList<HostRuntime> Runtimes { get; set; } = [];
         public bool CacheDue { get; set; }
         public DateTimeOffset? CachedHardwareAt { get; set; }
+
+        /// <summary>The last cache snapshot taken (under the gate) and the last written (under the cache lock).</summary>
+        public long CacheVersion { get; set; }
+        public long WrittenVersion { get; set; }
+
+        /// <summary>Set under the gate when the kernel's list drops the node: no deferred write brings its file back.</summary>
+        public volatile bool Forgotten;
 
         /// <summary>The fields whose change is a <c>node.updated</c> (identity and platform; not liveness).</summary>
         public string IdentityKey()

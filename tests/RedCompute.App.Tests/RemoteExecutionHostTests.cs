@@ -311,9 +311,9 @@ public sealed class RemoteExecutionHostTests : IAsyncLifetime
     {
         var host = await LinkAsync();
         var changed = new List<HostRuntime>();
-        host.Runtimes.Changed += changed.Add;
+        host.Runtimes.Changed += runtime => { lock (changed) changed.Add(runtime); };
         var updated = new List<string>();
-        _registry.Updated += updated.Add;
+        _registry.Updated += id => { lock (changed) updated.Add(id); };
 
         var started = await host.Runtimes.StartAsync("comfyui-1");
 
@@ -322,9 +322,14 @@ public sealed class RemoteExecutionHostTests : IAsyncLifetime
         Assert.Equal(("runtime.start", """{"id":"comfyui-1"}"""), (method, parameters));
 
         await _piped!.Client.Session!.NotifyAsync("runtime.changed", RuntimeNodeHandler.ComfyUi(status: "running"));
+        // The observers hear it after the registry has it (and after NodeHub's gathering window): wait for both.
         await WaitAsync(() => host.Runtimes.Status("comfyui-1")?.Status == BackendStatus.Running, "the push");
-        Assert.Equal(BackendStatus.Running, Assert.Single(changed).Status);
-        Assert.Contains(_node, updated);
+        await WaitAsync(() => { lock (changed) return changed.Count > 0 && updated.Contains(_node); }, "the observers");
+        lock (changed)
+        {
+            Assert.Equal(BackendStatus.Running, Assert.Single(changed).Status);
+            Assert.Contains(_node, updated);
+        }
     }
 
     [Fact]

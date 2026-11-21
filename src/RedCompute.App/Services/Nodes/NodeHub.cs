@@ -161,11 +161,98 @@ public sealed partial class NodeHub : IAsyncDisposable
             new RemoteHostRuntimes(id, _registry, Current));
     });
 
-    /// <summary>A node reported runtimes: the registry keeps them, and its host's observers hear each one.</summary>
+    /// <summary>
+    /// How long a node's <c>runtime.changed</c> pushes are gathered before they are applied (review P4-P7, item 8): a node
+    /// that floods them costs one registry update, one <c>node.updated</c> and one deferred cache write per node per
+    /// window, the latest state of each runtime winning.
+    /// </summary>
+    internal TimeSpan RuntimeChangeWindow { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    private readonly ConcurrentDictionary<string, RuntimeChanges> _runtimeChanges = new(StringComparer.Ordinal);
+
+    /// <summary>One node's pending <c>runtime.changed</c>: the latest per runtime id, applied once per window.</summary>
+    private sealed class RuntimeChanges(NodeHub hub, string nodeId)
+    {
+        private readonly object _gate = new();
+        private Dictionary<string, PluginSdk.Hosting.HostRuntime> _pending = new(StringComparer.Ordinal);
+        private bool _scheduled;
+
+        public void Add(PluginSdk.Hosting.HostRuntime runtime)
+        {
+            lock (_gate)
+            {
+                // Bounded as the registry is: a node reports at most MaxRuntimes runtimes.
+                if (_pending.Count >= RemoteRuntimeReport.MaxRuntimes && !_pending.ContainsKey(runtime.Id)) return;
+                _pending[runtime.Id] = runtime;
+                if (_scheduled) return;
+                _scheduled = true;
+            }
+            _ = ApplyLaterAsync();
+        }
+
+        /// <summary>What is pending, now (a whole list is about to replace it, and must come after it).</summary>
+        public IReadOnlyList<PluginSdk.Hosting.HostRuntime> Take()
+        {
+            lock (_gate)
+            {
+                var taken = _pending.Values.ToList();
+                _pending = new(StringComparer.Ordinal);
+                return taken;
+            }
+        }
+
+        private async Task ApplyLaterAsync()
+        {
+            try
+            {
+                await Task.Delay(hub.RuntimeChangeWindow, hub._life.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return; // RedCompute is stopping: the node reports its runtimes again at the next link-up
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+            IReadOnlyList<PluginSdk.Hosting.HostRuntime> batch;
+            lock (_gate)
+            {
+                batch = _pending.Values.ToList();
+                _pending = new(StringComparer.Ordinal);
+                _scheduled = false;
+            }
+            if (batch.Count == 0) return;
+            try
+            {
+                hub.ApplyRuntimesNow(nodeId, batch, whole: false);
+            }
+            catch (Exception error)
+            {
+                hub._log($"[NodeHub] Applying {nodeId}'s runtime changes failed: {error.Message}");
+            }
+        }
+    }
+
+    /// <summary>A node reported runtimes: a whole list at once, single changes gathered per node (see <see cref="RuntimeChangeWindow"/>).</summary>
     private void ApplyRuntimes(string nodeId, IReadOnlyList<PluginSdk.Hosting.HostRuntime> runtimes, bool whole)
     {
+        var changes = _runtimeChanges.GetOrAdd(nodeId, id => new RuntimeChanges(this, id));
+        if (!whole)
+        {
+            foreach (var runtime in runtimes) changes.Add(runtime);
+            return;
+        }
+        // What was pushed before the list answer is older than it: applied first, then replaced by the list.
+        if (changes.Take() is { Count: > 0 } earlier) ApplyRuntimesNow(nodeId, earlier, whole: false);
+        ApplyRuntimesNow(nodeId, runtimes, whole: true);
+    }
+
+    /// <summary>The registry keeps them, and the node's host's observers hear each one.</summary>
+    private void ApplyRuntimesNow(string nodeId, IReadOnlyList<PluginSdk.Hosting.HostRuntime> runtimes, bool whole)
+    {
         if (whole) _registry.ApplyRuntimes(nodeId, runtimes);
-        else foreach (var runtime in runtimes) _registry.ApplyRuntime(nodeId, runtime);
+        else _registry.ApplyRuntimeChanges(nodeId, runtimes);
         if (!_hosts.TryGetValue(nodeId, out var host)) return;
         foreach (var runtime in runtimes)
             if (_registry.RuntimesOf(nodeId).FirstOrDefault(known => known.Id == runtime.Id) is { } kept)
