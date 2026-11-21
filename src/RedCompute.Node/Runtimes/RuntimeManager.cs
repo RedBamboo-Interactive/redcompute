@@ -44,6 +44,8 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         public int Pid { get; set; }
         public long Created { get; set; }
         public bool Stopping { get; set; }
+        /// <summary>A stop killed it but it outlived the grace: its exit, whenever it comes, is the stop's, not a crash.</summary>
+        public bool StopOverdue { get; set; }
         public bool Adopted { get; set; }
         /// <summary>The runtime's output file, rolled as the agent's own log is (5 MB, five files).</summary>
         public NodeLog? Log { get; set; }
@@ -274,6 +276,7 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         entry.Pid = process.Id;
         entry.Created = process.CreatedUtcTicks;
         entry.Stopping = false;
+        entry.StopOverdue = false;
         entry.Adopted = false;
         entry.Status = BackendStatus.Starting;
         entry.Detail = null;
@@ -322,7 +325,7 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
             catch
             {
             }
-            var expected = entry.Stopping;
+            var expected = entry.Stopping || entry.StopOverdue;
             // Written before the reap closes the runtime's log file.
             Remember(entry, $"[leaf-node] exited{(code is null ? "" : $" with code {code}")}");
             ReapAndForget(entry);
@@ -375,11 +378,23 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
             await Task.Delay(50);
         }
         HostRuntime view;
+        var survived = false;
         lock (_gate)
         {
             var same = entry.Alive && ReferenceEquals(entry.Process, process) && entry.Pid == pid && entry.Created == created;
             if (same && (process is null ? !IdentityAlive(pid, created) : Exited(process)))
                 ReapAndForget(entry);
+            else if (same)
+            {
+                // The kill did not take within the grace (review follow-up 2): the stop is over, so Stopping is cleared
+                // (a later start is no longer refused as runtime_stopping) and the runtime is in error, still tracked,
+                // so a later stop tries again and an exit is still seen.
+                survived = true;
+                entry.Stopping = false;
+                entry.StopOverdue = true;
+                entry.Status = BackendStatus.Error;
+                entry.Detail = $"It did not stop within {wait.TotalSeconds:0} s.";
+            }
             if (!entry.Alive)
             {
                 entry.Status = BackendStatus.Stopped;
@@ -387,8 +402,9 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
             }
             view = View(entry);
         }
-        _env.Audit.Record("runtime", id, "stopped", why);
-        _env.Log.Info($"Runtime {id} stopped ({why}).");
+        _env.Audit.Record("runtime", id, survived ? "stop-failed" : "stopped", why);
+        if (survived) _env.Log.Warn($"Runtime {id} did not stop within {wait.TotalSeconds:0} s ({why}).");
+        else _env.Log.Info($"Runtime {id} stopped ({why}).");
         Raise(view);
     }
 
@@ -453,6 +469,7 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         entry.StartedAt = null;
         entry.Adopted = false;
         entry.Stopping = false;
+        entry.StopOverdue = false;
         entry.Log?.Dispose();
         entry.Log = null;
         DeleteState(entry.Registration.Id);
@@ -563,7 +580,8 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
                     entry.Status = healthy ? BackendStatus.Running : BackendStatus.Stopped;
                     entry.Detail = healthy ? null : $"Nothing answers at 127.0.0.1:{registration.Port}.";
                 }
-                else if (entry.Alive && !entry.Stopping && !adoptedGone)
+                // A process a stop could not end stays in error ("did not stop") even while it still answers.
+                else if (entry.Alive && !entry.Stopping && !entry.StopOverdue && !adoptedGone)
                 {
                     if (healthy)
                     {

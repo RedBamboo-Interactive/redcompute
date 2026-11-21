@@ -99,6 +99,35 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
         await Wait.UntilAsync(() => !RuntimeAgentTests.Alive(second.Id), "the second process stopped");
     }
 
+    [Fact]
+    public async Task A_stop_whose_kill_does_not_take_ends_in_error_and_never_leaves_the_runtime_stopping()
+    {
+        // Review follow-up 2: the process outlives the grace. The stop ends, Stopping is cleared, the runtime reads
+        // Error "did not stop", and a later start is not refused as runtime_stopping; a later stop tries again.
+        await _manager.StartAsync(Id);
+        var first = Assert.Single(_host.Started);
+        first.HoldKill = true;
+
+        var view = await _manager.StopAsync(Id, TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(BackendStatus.Error, view.Status);
+        Assert.Contains("did not stop", view.StatusDetail);
+        Assert.True(RuntimeAgentTests.Alive(first.Id));
+        Assert.Contains(_home.Environment().Audit.Read(), record => (string?)record["outcome"] == "stop-failed");
+
+        // Not runtime_stopping: the live process is still the runtime, so nothing new is spawned.
+        var started = await _manager.StartAsync(Id);
+        Assert.Equal(BackendStatus.Error, started.Status);
+        Assert.Single(_host.Started);
+        Assert.Equal(first.Id, RuntimeAgentTests.PidOf(_home, Id));
+
+        // A later stop, whose kill now takes, stops it.
+        first.ReleaseKill();
+        first.HoldKill = false;
+        Assert.Equal(BackendStatus.Stopped, (await _manager.StopAsync(Id, TimeSpan.FromSeconds(10)).WaitAsync(TimeSpan.FromSeconds(30))).Status);
+        await Wait.UntilAsync(() => !RuntimeAgentTests.Alive(first.Id), "the process stopped");
+    }
+
     /// <summary>
     /// The node's real host, with every started process wrapped in a <see cref="GatedProcess"/>, and no containment
     /// (Keep returns null, as a platform without it does): the stop then goes through the process's own kill.
