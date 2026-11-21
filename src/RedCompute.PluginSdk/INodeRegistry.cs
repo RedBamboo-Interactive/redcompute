@@ -49,10 +49,12 @@ public interface INodeRegistry
 
     /// <summary>
     /// The execution host of a node: null, the legacy id, the local id and <see cref="LocalAlias"/>
-    /// are the local host. A known node that cannot run work throws
-    /// <see cref="Core.Nodes.NodeUnavailableException"/> with its reason (in Phase 3, every remote
-    /// node: <c>remote_execution_not_available</c>, <c>offline</c>, <c>revoked</c>, <c>not_confirmed</c>
-    /// or <c>needs_update</c>). An unknown id throws <see cref="KeyNotFoundException"/>.
+    /// are the local host. An eligible remote node (Phase 4) gets its remote host, which offers only
+    /// the runtimes its owner registered there and the forward to them; everything else on it throws
+    /// <see cref="Hosting.RemoteOperationNotAllowedException"/>. A known node that cannot run work throws
+    /// <see cref="Core.Nodes.NodeUnavailableException"/> with its reason (<c>revoked</c>, <c>not_confirmed</c>,
+    /// <c>needs_update</c>, <c>offline</c> or <c>remote_execution_not_available</c>). An unknown id throws
+    /// <see cref="KeyNotFoundException"/>.
     /// </summary>
     IExecutionHost HostFor(string? nodeId);
 }

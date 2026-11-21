@@ -93,7 +93,8 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
         Assert.Equal(200, status);
         var node = json.RootElement;
         Assert.Equal("online", node.GetProperty("status").GetString());
-        Assert.Equal("remote_execution_not_available", node.GetProperty("placement").GetProperty("reason").GetString());
+        // Its agent speaks neither runtime.v1 nor forward.http.v1: linked, and needs an update to run work.
+        Assert.Equal("needs_update", node.GetProperty("placement").GetProperty("reason").GetString());
         var link = node.GetProperty("link");
         Assert.Equal((18.25, true, "cng"), (link.GetProperty("rttMs").GetDouble(), link.GetProperty("updateAvailable").GetBoolean(),
             link.GetProperty("credentialStore").GetString()));
@@ -296,7 +297,8 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
         var unknown = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(9), null, null, null), _nodes, User(Owner), out _);
         var local = PlacementParser.ResolveNode(new PlacementRequest("local", null, null, null), _nodes, User(Owner), out var localId);
 
-        Assert.Equal((409, "node_not_eligible", "remote_execution_not_available"), (online!.Status, online.Code, online.Reason));
+        // Linked without the Phase 4 features: needs an update (design 7, skew rules).
+        Assert.Equal((409, "node_not_eligible", "needs_update"), (online!.Status, online.Code, online.Reason));
         Assert.Null(onlineId);
         Assert.Equal((409, "node_not_eligible", "not_confirmed"), (offline!.Status, offline.Code, offline.Reason));
         Assert.Equal((409, "node_not_eligible", "revoked"), (revoked!.Status, revoked.Code, revoked.Reason));

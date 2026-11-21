@@ -50,12 +50,16 @@ public sealed class NodeRegistryRemoteTests : IDisposable
     public void Every_remote_host_is_unavailable_with_its_reason_and_unknown_ids_stay_unknown()
     {
         var registry = Registry();
-        registry.ApplyKernelNodes([Kernel(RemoteId(1)), Kernel(RemoteId(2), confirmed: false), Kernel(RemoteId(3)), Kernel(RemoteId(4), status: "needs-update")]);
+        registry.ApplyKernelNodes([Kernel(RemoteId(1)), Kernel(RemoteId(2), confirmed: false), Kernel(RemoteId(3)), Kernel(RemoteId(4), status: "needs-update"),
+            Kernel(RemoteId(5))]);
         registry.LinkUp(RemoteId(1), Link());
         registry.LinkUp(RemoteId(2), Link("s2"));
+        registry.LinkUp(RemoteId(5), Link("s5") with { Features = ["describe.v1", "runtime.v1", "forward.http.v1", "forward.ws.v1"] });
         INodeRegistry nodes = registry;
 
-        Assert.Equal(NodeUnavailableReasons.RemoteExecutionNotAvailable, Reason(() => nodes.HostFor(RemoteId(1))));
+        // A Phase 3 agent needs an update to run work; a Phase 4 one is eligible, but this registry has no NodeHub.
+        Assert.Equal(NodeUnavailableReasons.NeedsUpdate, Reason(() => nodes.HostFor(RemoteId(1))));
+        Assert.Equal(NodeUnavailableReasons.RemoteExecutionNotAvailable, Reason(() => nodes.HostFor(RemoteId(5))));
         Assert.Equal(NodeUnavailableReasons.NotConfirmed, Reason(() => nodes.HostFor(RemoteId(2))));
         Assert.Equal(NodeUnavailableReasons.Offline, Reason(() => nodes.HostFor(RemoteId(3))));
         Assert.Equal(NodeUnavailableReasons.NeedsUpdate, Reason(() => nodes.HostFor(RemoteId(4))));

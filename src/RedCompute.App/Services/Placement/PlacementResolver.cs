@@ -55,7 +55,11 @@ public sealed class PlacementResolver
     {
         if (PlacementParser.ResolveNode(placement, _nodes, caller, out var requested) is { } nodeError)
             return new(null, nodeError);
-        // Automatic: no remote node runs work yet, so every caller is routed to node zero.
+        // Sessions and execute run on node zero only in Phase 4: a remote node has no provider for them (design 1.2's 422).
+        if (PlacementParser.IsRemote(requested, _nodes))
+            return Resolution<ResolvedPlacement>.Fail(StatusCodes.Status422UnprocessableEntity, "provider_unavailable_on_node",
+                $"'{Api.Endpoints.UnifiedSessionEndpoints.SessionCapability}' has no provider on node '{requested}'");
+        // Automatic: node zero first, and it can always take a session, so every caller is routed to node zero.
         var nodeId = requested
             ?? (_nodes is null ? INodeRegistry.LocalAlias : NodeAccess.RouteAutomatic(caller, _nodes, node => NodeAccess.HostAvailable(_nodes, node)));
         IExecutionHost host;

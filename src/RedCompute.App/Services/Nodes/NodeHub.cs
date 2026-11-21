@@ -91,9 +91,13 @@ public sealed partial class NodeHub : IAsyncDisposable
     /// <summary>What a 503 <c>node_registry_unavailable</c> asks the node to wait before dialling again.</summary>
     public static readonly TimeSpan RegistryRetryAfter = TimeSpan.FromSeconds(5);
 
-    /// <summary>The features this server speaks in Phase 3 (design 4.9).</summary>
+    /// <summary>
+    /// The features this server speaks: Phase 3's (design 4.9), and Phase 4's runtime methods and forwards (design 2.1).
+    /// A link speaks what both sides list, so an older agent simply lacks the Phase 4 ones (and is not eligible).
+    /// </summary>
     public static readonly IReadOnlyList<string> Features =
-        [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho];
+        [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho,
+         LinkFeatures.RuntimeV1, LinkFeatures.ForwardHttpV1, LinkFeatures.ForwardWsV1];
 
     public const string DescribeMethod = "node.describe";
     public const string HardwareMethod = "node.hardware";
@@ -119,6 +123,7 @@ public sealed partial class NodeHub : IAsyncDisposable
     private readonly ConcurrentDictionary<string, DateTimeOffset> _seenExecutions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _byeReasons = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, bool> _lastConnectionEncrypted = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RemoteExecutionHost> _hosts = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _life = new();
 
     public NodeHub(NodeRegistry registry, Action<string> log, NodeHubOptions? options = null)
@@ -139,6 +144,32 @@ public sealed partial class NodeHub : IAsyncDisposable
         Server.Connected += OnConnected;
         Server.Disconnected += OnDisconnected;
         _registry.StatusChanged += OnStatusChanged;
+        _registry.AttachRemoteHosts(RemoteHost);
+    }
+
+    // ================================================================= remote execution hosts (P6)
+
+    /// <summary>
+    /// A remote node's execution host (design 2.4): one per node for the life of this run, its forward and runtime calls
+    /// always on the node's current link session (none while it is offline). The registry gives it out only for an
+    /// eligible node (<see cref="NodeRegistry.HostFor"/>).
+    /// </summary>
+    public RemoteExecutionHost RemoteHost(string nodeId) => _hosts.GetOrAdd(nodeId, id =>
+    {
+        LinkSession? Current() => Server.FindSession(id) is { IsAttached: true } session ? session : null;
+        return new RemoteExecutionHost(id, () => _registry.Find(id), new NodeLink.Forward.ForwardClient(Current),
+            new RemoteHostRuntimes(id, _registry, Current));
+    });
+
+    /// <summary>A node reported runtimes: the registry keeps them, and its host's observers hear each one.</summary>
+    private void ApplyRuntimes(string nodeId, IReadOnlyList<PluginSdk.Hosting.HostRuntime> runtimes, bool whole)
+    {
+        if (whole) _registry.ApplyRuntimes(nodeId, runtimes);
+        else foreach (var runtime in runtimes) _registry.ApplyRuntime(nodeId, runtime);
+        if (!_hosts.TryGetValue(nodeId, out var host)) return;
+        foreach (var runtime in runtimes)
+            if (_registry.RuntimesOf(nodeId).FirstOrDefault(known => known.Id == runtime.Id) is { } kept)
+                ((RemoteHostRuntimes)host.Runtimes).Raise(kept);
     }
 
     /// <summary>This run's epoch: a node tells a RedCompute restart (its session is gone) from a network drop by it.</summary>
@@ -514,6 +545,9 @@ public sealed partial class NodeHub : IAsyncDisposable
             if (session.HasFeature(LinkFeatures.HardwareV1))
                 hardware = ParseHardware(nodeId, await session.CallAsync(HardwareMethod, null, ct));
             _registry.ApplyReport(nodeId, clis, hardware, session.Rtt?.TotalMilliseconds, session.ClockOffset?.TotalMilliseconds);
+            // The node pushes every change after this (runtime.changed): the server never polls.
+            if (session.HasFeature(LinkFeatures.RuntimeV1))
+                ApplyRuntimes(nodeId, RemoteRuntimeReport.ParseList(await session.CallAsync(RemoteHostRuntimes.ListMethod, null, ct)), whole: true);
         }
         catch (Exception error) when (error is LinkRpcException or LinkClosedException or OperationCanceledException
                                           or InvalidOperationException or ObjectDisposedException or JsonException)
@@ -585,7 +619,10 @@ public sealed partial class NodeHub : IAsyncDisposable
         _ => "agent_closed",
     };
 
-    /// <summary>The server's half of a node's link in Phase 3: reports in, a goodbye, nothing else.</summary>
+    /// <summary>
+    /// The server's half of a node's link: reports and runtime changes in, a goodbye, nothing else. The node opens no
+    /// channel to the server (the base refuses every one): forwards run server to node only.
+    /// </summary>
     private sealed class HubLinkHandler(NodeHub hub, string nodeId) : LinkHandler
     {
         public override ValueTask<JsonNode?> OnRequestAsync(LinkSession session, string method, JsonElement parameters, CancellationToken ct)
@@ -599,6 +636,15 @@ public sealed partial class NodeHub : IAsyncDisposable
 
         public override ValueTask OnNotificationAsync(LinkSession session, string method, JsonElement parameters, CancellationToken ct)
         {
+            if (method == RemoteHostRuntimes.ChangedMethod && session.HasFeature(LinkFeatures.RuntimeV1))
+            {
+                if (parameters.ValueKind == JsonValueKind.Object && parameters.GetRawText().Length <= RemoteRuntimeReport.MaxEntryBytes
+                    && RemoteRuntimeReport.Parse(parameters) is { } runtime)
+                    hub.ApplyRuntimes(nodeId, [runtime], whole: false);
+                else
+                    hub._log($"[NodeHub] Dropped a malformed or oversized runtime.changed from {nodeId}");
+                return ValueTask.CompletedTask;
+            }
             if (method != ReportMethod || parameters.ValueKind != JsonValueKind.Object) return ValueTask.CompletedTask;
             if (parameters.GetRawText().Length > MaxReportBytes)
             {

@@ -3,7 +3,7 @@ namespace RedCompute.Core.Nodes;
 /// <summary>Why a known node cannot run work right now (<see cref="NodeUnavailableException.Reason"/>).</summary>
 public static class NodeUnavailableReasons
 {
-    /// <summary>The node is linked and confirmed, but this RedCompute cannot run work on a remote node yet (Phase 3).</summary>
+    /// <summary>The node is linked, confirmed and up to date, but this RedCompute has no NodeHub to reach it.</summary>
     public const string RemoteExecutionNotAvailable = "remote_execution_not_available";
 
     /// <summary>The node's link is down. Retryable.</summary>
@@ -15,7 +15,7 @@ public static class NodeUnavailableReasons
     /// <summary>The node's owner has not confirmed "This is my node".</summary>
     public const string NotConfirmed = "not_confirmed";
 
-    /// <summary>The node's agent is older than the server accepts.</summary>
+    /// <summary>The node's agent is older than the server accepts, or does not speak the runtime methods and forward (Phase 4).</summary>
     public const string NeedsUpdate = "needs_update";
 }
 

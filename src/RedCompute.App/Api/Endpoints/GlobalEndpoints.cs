@@ -510,9 +510,10 @@ public static class GlobalEndpoints
 
         endpoints.MapPost("/control/start/{slug}", "Start a capability's active provider", async (string slug, HttpContext ctx) =>
         {
-            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
+            if (ControlNode(ctx, nodes, out var remoteNode) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+            if (remoteNode is not null) return await RemoteNodeControl.RunAsync(start: true, slug, null, entry, remoteNode, nodes!, ctx);
             if (entry.ActiveProvider == null) return Results.BadRequest(new { error = "no_provider", message = "No active provider configured" });
 
             entry.IsManuallyDisabled = false;
@@ -531,9 +532,10 @@ public static class GlobalEndpoints
 
         endpoints.MapPost("/control/stop/{slug}", "Stop a capability's active provider", async (string slug, HttpContext ctx) =>
         {
-            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
+            if (ControlNode(ctx, nodes, out var remoteNode) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
+            if (remoteNode is not null) return await RemoteNodeControl.RunAsync(start: false, slug, null, entry, remoteNode, nodes!, ctx);
             if (entry.ActiveProvider == null) return Results.Ok(new { slug, status = "Stopped" });
 
             entry.IsManuallyDisabled = true;
@@ -562,12 +564,13 @@ public static class GlobalEndpoints
 
         endpoints.MapPost("/control/start/{slug}/{providerName}", "Start a specific provider for a capability", async (string slug, string providerName, HttpContext ctx) =>
         {
-            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
+            if (ControlNode(ctx, nodes, out var remoteNode) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null)
                 return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
             if (!entry.Providers.TryGetValue(providerName, out var provider))
                 return Results.NotFound(new { error = "provider_not_found", message = $"Provider '{providerName}' not found for '{slug}'. Available: {string.Join(", ", entry.Providers.Keys)}" });
+            if (remoteNode is not null) return await RemoteNodeControl.RunAsync(start: true, slug, providerName, entry, remoteNode, nodes!, ctx);
 
             var success = await provider.StartAsync();
             if (success)
@@ -578,12 +581,13 @@ public static class GlobalEndpoints
 
         endpoints.MapPost("/control/stop/{slug}/{providerName}", "Stop a specific provider for a capability", async (string slug, string providerName, HttpContext ctx) =>
         {
-            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
+            if (ControlNode(ctx, nodes, out var remoteNode) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null)
                 return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
             if (!entry.Providers.TryGetValue(providerName, out var provider))
                 return Results.NotFound(new { error = "provider_not_found", message = $"Provider '{providerName}' not found for '{slug}'. Available: {string.Join(", ", entry.Providers.Keys)}" });
+            if (remoteNode is not null) return await RemoteNodeControl.RunAsync(start: false, slug, providerName, entry, remoteNode, nodes!, ctx);
 
             await provider.StopAsync();
             return Results.Ok(new { slug, provider = providerName, status = "Stopped" });
@@ -999,16 +1003,31 @@ public static class GlobalEndpoints
     internal const string ControlNodeDescription =
         "The node the capability runs on: a /nodes id or 'local'. Omitted, it is this node (node zero), as before. "
         + "A node the caller may not use is 404 node_not_found, the same answer as an unknown id; a remote node the caller "
-        + "may use cannot run capabilities in this release (409 node_not_eligible or node_offline).";
+        + "may use but that cannot run work is 409 node_offline or node_not_eligible (with its reason). On an eligible remote "
+        + "node the call starts or stops the runtime its owner registered there for the capability (runtime.start/stop, by "
+        + "id only; node zero's provider is untouched) and answers {slug, provider, nodeId, runtime, status}; 422 "
+        + "provider_unavailable_on_node with availableOn when no runtime there serves it, 409 runtime_not_managed for one "
+        + "its owner runs (attach mode), 409 runtime_disabled when its owner disabled it.";
 
     /// <summary>
     /// The node a control call names in <c>?nodeId=</c>, checked as placement is (<see cref="NodeAccess"/>):
     /// null when it is node zero or absent, else the answer to return.
     /// </summary>
-    internal static IResult? ControlNode(HttpContext ctx, INodeRegistry? nodes)
+    internal static IResult? ControlNode(HttpContext ctx, INodeRegistry? nodes) => ControlNode(ctx, nodes, out _);
+
+    /// <summary>
+    /// The same, and the remote node it names: <paramref name="remoteNodeId"/> is null for node zero (its id, its legacy
+    /// id or <c>local</c>) and for no node, so every node-zero call runs exactly as before.
+    /// </summary>
+    internal static IResult? ControlNode(HttpContext ctx, INodeRegistry? nodes, out string? remoteNodeId)
     {
+        remoteNodeId = null;
         var requested = ctx.Request.Query["nodeId"].FirstOrDefault();
         if (string.IsNullOrEmpty(requested)) return null;
-        return PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), nodes, ctx.User, out _)?.ToResult();
+        if (PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), nodes, ctx.User, out var resolved) is { } error)
+            return error.ToResult();
+        if (nodes is not null && resolved is not null && resolved != INodeRegistry.LocalAlias && resolved != nodes.LocalNodeId)
+            remoteNodeId = resolved;
+        return null;
     }
 }

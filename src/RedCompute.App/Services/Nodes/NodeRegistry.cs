@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using RedCompute.Core.Hardware;
 using RedCompute.Core.Nodes;
+using RedCompute.NodeLink;
 using RedCompute.PluginSdk;
 using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
@@ -39,8 +40,9 @@ public sealed record NodePlacement(bool Eligible, string? Reason);
 /// <item>their live state, from NodeHub (<see cref="LinkUp"/>, <see cref="LinkDown"/>, <see cref="ApplyReport"/>).</item>
 /// </list>
 /// The last state of each remote node is cached in <c>&lt;data root&gt;/nodes/&lt;id&gt;.json</c> through node
-/// zero's host, so an offline node still shows its last report after a restart. No remote node runs work in
-/// Phase 3: <see cref="HostFor"/> throws <see cref="NodeUnavailableException"/> for every one.
+/// zero's host, so an offline node still shows its last report (its runtimes included) after a restart. Since Phase 4
+/// P6 <see cref="HostFor"/> gives an eligible remote node's <see cref="RemoteExecutionHost"/> (from NodeHub, which
+/// <see cref="AttachRemoteHosts"/> connects) and throws <see cref="NodeUnavailableException"/> for any other.
 /// </summary>
 public sealed class NodeRegistry : INodeRegistry
 {
@@ -164,24 +166,99 @@ public sealed class NodeRegistry : INodeRegistry
             || string.Equals(nodeId, LocalNodeId, StringComparison.Ordinal))
             return LocalHost;
         var node = Find(nodeId) ?? throw new KeyNotFoundException($"No node '{nodeId}' is known");
-        // Phase 3: a remote node never runs work; RemoteExecutionHost arrives behind this same call in Phase 4.
-        throw new NodeUnavailableException(node.Id, UnavailableReason(node)!);
+        if (UnavailableReason(node) is { } reason) throw new NodeUnavailableException(node.Id, reason);
+        return _remoteHosts?.Invoke(node.Id)
+               ?? throw new NodeUnavailableException(node.Id, NodeUnavailableReasons.RemoteExecutionNotAvailable);
     }
 
-    /// <summary>Whether placement may choose <paramref name="node"/> (node zero: always).</summary>
+    // NodeHub's remote hosts (P6): null while no NodeHub runs, and then no remote node is eligible.
+    private Func<string, IExecutionHost?>? _remoteHosts;
+
+    /// <summary>NodeHub connects its remote hosts: from then on <see cref="HostFor"/> gives an eligible node's host.</summary>
+    public void AttachRemoteHosts(Func<string, IExecutionHost?> hosts) => _remoteHosts = hosts;
+
+    /// <summary>
+    /// Whether placement may choose <paramref name="node"/> on this server: <see cref="PlacementOf"/>, and a remote node
+    /// only while NodeHub runs (<c>remote_execution_not_available</c> otherwise).
+    /// </summary>
+    public NodePlacement Placement(NodeDescriptor node)
+    {
+        var placement = PlacementOf(node);
+        return placement.Eligible && node.Kind == NodeKind.Remote && _remoteHosts is null
+            ? new(false, NodeUnavailableReasons.RemoteExecutionNotAvailable)
+            : placement;
+    }
+
+    /// <summary>Whether placement may choose <paramref name="node"/> by its own state (node zero: always).</summary>
     public static NodePlacement PlacementOf(NodeDescriptor node)
         => UnavailableReason(node) is { } reason ? new(false, reason) : new(true, null);
 
-    /// <summary>Why a node cannot run work, in the order that tells its owner most; null for node zero.</summary>
+    /// <summary>
+    /// What a remote node's link must speak to run work (design 3.1): the runtime methods and the HTTP forward. An agent
+    /// without them is <c>needs_update</c> (design 7, skew rules).
+    /// </summary>
+    public static readonly IReadOnlyList<string> RequiredFeatures = [LinkFeatures.RuntimeV1, LinkFeatures.ForwardHttpV1];
+
+    /// <summary>
+    /// Why a node cannot run work, the first failing check in the order that tells its owner most; null for node zero
+    /// and for an eligible remote node: confirmed, not revoked, online, its agent speaking <see cref="RequiredFeatures"/>.
+    /// </summary>
     public static string? UnavailableReason(NodeDescriptor node)
     {
         if (node.Kind == NodeKind.Local) return null;
         if (node.Status == NodeStatus.Revoked) return NodeUnavailableReasons.Revoked;
         if (!node.Confirmed) return NodeUnavailableReasons.NotConfirmed;
         if (node.Status == NodeStatus.NeedsUpdate) return NodeUnavailableReasons.NeedsUpdate;
-        if (node.Status == NodeStatus.Offline) return NodeUnavailableReasons.Offline;
-        return NodeUnavailableReasons.RemoteExecutionNotAvailable;
+        if (node.Status == NodeStatus.Offline || node.Link is null) return NodeUnavailableReasons.Offline;
+        if (!RequiredFeatures.All(node.Link.Features.Contains)) return NodeUnavailableReasons.NeedsUpdate;
+        return null;
     }
+
+    // ================================================================= the runtimes remote nodes report (P6)
+
+    /// <summary>The runtimes a remote node last reported, by id; empty for node zero and an unknown id.</summary>
+    public IReadOnlyList<HostRuntime> RuntimesOf(string nodeId)
+    {
+        lock (_gate) return _remote.TryGetValue(nodeId, out var node) ? node.Runtimes : [];
+    }
+
+    /// <summary>A node's whole <c>runtime.list</c>: replaces what it reported before. True when anything changed.</summary>
+    public bool ApplyRuntimes(string nodeId, IReadOnlyList<HostRuntime> runtimes)
+    {
+        var changed = false;
+        Mutate(nodeId, node =>
+        {
+            var next = runtimes.OrderBy(runtime => runtime.Id, StringComparer.Ordinal).ToList();
+            changed = RuntimesKey(node.Runtimes) != RuntimesKey(next);
+            node.Runtimes = next;
+            if (changed) node.CacheDue = true;
+            return changed;
+        });
+        return changed;
+    }
+
+    /// <summary>One <c>runtime.changed</c>: that runtime's entry, added when it is new. True when anything changed.</summary>
+    public bool ApplyRuntime(string nodeId, HostRuntime runtime)
+    {
+        var changed = false;
+        Mutate(nodeId, node =>
+        {
+            if (node.Runtimes.Count >= RemoteRuntimeReport.MaxRuntimes && node.Runtimes.All(known => known.Id != runtime.Id)) return false;
+            var next = node.Runtimes.Where(known => known.Id != runtime.Id).Append(runtime)
+                .OrderBy(known => known.Id, StringComparer.Ordinal).ToList();
+            changed = RuntimesKey(node.Runtimes) != RuntimesKey(next);
+            node.Runtimes = next;
+            if (changed) node.CacheDue = true;
+            return changed;
+        });
+        return changed;
+    }
+
+    /// <summary>What makes a runtime change a <c>node.updated</c>: everything but when it started.</summary>
+    internal static string RuntimesKey(IReadOnlyList<HostRuntime> runtimes)
+        => string.Join('\u001e', runtimes.Select(runtime => string.Join('\u001f', runtime.Id, runtime.Kind, runtime.Label,
+            runtime.Managed, runtime.Enabled, runtime.Status, runtime.StatusDetail, runtime.Accelerator, runtime.Version,
+            string.Join(',', runtime.Capabilities), string.Join(',', runtime.Ports))));
 
     /// <summary>
     /// Whether NodeHub may accept a link for <paramref name="nodeId"/>: null when it may, else
@@ -622,6 +699,7 @@ public sealed class NodeRegistry : INodeRegistry
         public string? Chassis { get; set; }
         public string? Icon { get; set; }
         public string? Color { get; set; }
+        public IReadOnlyList<HostRuntime> Runtimes { get; set; } = [];
         public bool CacheDue { get; set; }
         public DateTimeOffset? CachedHardwareAt { get; set; }
 
@@ -632,7 +710,7 @@ public sealed class NodeRegistry : INodeRegistry
 
         public CachedRemoteNode ToCache(DateTimeOffset? lastSeen) => new(Id, Name, OwnerUserId, Confirmed, PairedAt, Os, Arch,
             OsDescription, MachineName, Processor, AgentVersion, Revoked, RevokedReason, KernelStatus, lastSeen, Report,
-            Chassis, Icon, Color);
+            Chassis, Icon, Color, Runtimes.Count == 0 ? null : Runtimes.Select(CachedRuntime.From).ToList());
 
         /// <summary>A cached record, with what an older or hand-edited file may lack filled in.</summary>
         public static RemoteNode FromCache(CachedRemoteNode cached) => new(cached.Id)
@@ -656,6 +734,11 @@ public sealed class NodeRegistry : INodeRegistry
             Chassis = KernelNode.Token(cached.Chassis),
             Icon = KernelNode.Token(cached.Icon),
             Color = KernelNode.Token(cached.Color),
+            // Read back through the parser a live report goes through: a hand-edited cache gains nothing.
+            Runtimes = cached.Runtimes is { } runtimes
+                ? RemoteRuntimeReport.ParseList(JsonSerializer.SerializeToElement(
+                    runtimes.Where(runtime => runtime is not null).Select(runtime => runtime.ToJson()).ToList()))
+                : [],
         };
     }
 
@@ -663,7 +746,25 @@ public sealed class NodeRegistry : INodeRegistry
     internal sealed record CachedRemoteNode(string Id, string Name, string? OwnerUserId, bool Confirmed, DateTimeOffset? PairedAt,
         string? Os, string? Arch, string? OsDescription, string? MachineName, string? Processor, string? AgentVersion,
         bool Revoked, string? RevokedReason, string? KernelStatus, DateTimeOffset? LastSeenAt, NodeReport? Report,
-        string? Chassis = null, string? Icon = null, string? Color = null);
+        string? Chassis = null, string? Icon = null, string? Color = null, IReadOnlyList<CachedRuntime>? Runtimes = null);
+
+    /// <summary>A runtime as the cache keeps it: the node's own wire shape, so it is read back by the same parser.</summary>
+    internal sealed record CachedRuntime(string Id, string Kind, string Label, string Managed, bool Enabled, string Status,
+        string? StatusDetail, string? Version, string? Accelerator, IReadOnlyList<string>? Capabilities, IReadOnlyList<int>? Ports,
+        DateTimeOffset? StartedAt)
+    {
+        public static CachedRuntime From(HostRuntime runtime) => new(runtime.Id, runtime.Kind, runtime.Label,
+            runtime.Managed == HostRuntimeManagement.Spawn ? "spawn" : "attach", runtime.Enabled,
+            runtime.Status.ToString().ToLowerInvariant(), runtime.StatusDetail, runtime.Version, runtime.Accelerator,
+            runtime.Capabilities, runtime.Ports, runtime.StartedAt);
+
+        public Dictionary<string, object?> ToJson() => new()
+        {
+            ["id"] = Id, ["kind"] = Kind, ["label"] = Label, ["managed"] = Managed, ["enabled"] = Enabled, ["status"] = Status,
+            ["statusDetail"] = StatusDetail, ["version"] = Version, ["accelerator"] = Accelerator,
+            ["capabilities"] = Capabilities ?? [], ["ports"] = Ports ?? [], ["startedAt"] = StartedAt?.ToString("O"),
+        };
+    }
 }
 
 /// <summary>

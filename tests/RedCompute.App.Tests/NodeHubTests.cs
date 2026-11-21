@@ -328,7 +328,8 @@ public sealed class NodeHubTests : IAsyncLifetime
         Assert.Equal(8, linked.Report.Hardware!.Cpu.CoreCount);
         Assert.Equal(_node, linked.Report.Hardware.NodeId);
         Assert.Contains(_node, updated);
-        Assert.Equal(new NodePlacement(false, NodeUnavailableReasons.RemoteExecutionNotAvailable), NodeRegistry.PlacementOf(linked));
+        // A Phase 3 agent (no runtime.v1, no forward.http.v1) is linked but needs an update to run work (design 7, skew rules).
+        Assert.Equal(new NodePlacement(false, NodeUnavailableReasons.NeedsUpdate), NodeRegistry.PlacementOf(linked));
     }
 
     [Fact]

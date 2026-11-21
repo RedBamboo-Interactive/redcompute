@@ -172,15 +172,16 @@ internal sealed class PipedNode : IAsyncDisposable
     private readonly Task _loop;
 
     public PipedNode(NodeHub hub, string nodeId, FakeNodeHandler? handler = null, string? boundNodeId = null, string agentVersion = "0.1.0",
-        Func<ILinkTransport, CancellationToken, Task<ILinkTransport>>? secure = null)
+        Func<ILinkTransport, CancellationToken, Task<ILinkTransport>>? secure = null, LinkHandler? nodeHandler = null,
+        IReadOnlyList<string>? features = null)
     {
         Handler = handler ?? new FakeNodeHandler { AgentVersion = agentVersion };
         Client = new LinkClient(new LinkClientOptions
         {
             NodeId = nodeId,
             Agent = new AgentInfo(agentVersion, "linux", "x64"),
-            Handler = Handler,
-            Features = [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho],
+            Handler = nodeHandler ?? Handler,
+            Features = features ?? [LinkFeatures.DescribeV1, LinkFeatures.HardwareV1, LinkFeatures.CliV1, LinkFeatures.DiagEcho],
             Dial = ct =>
             {
                 var (node, server) = LinkPipe.Create();

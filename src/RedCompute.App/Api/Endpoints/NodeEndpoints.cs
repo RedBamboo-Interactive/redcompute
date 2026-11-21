@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using RedBamboo.AppHost.Auth;
@@ -95,9 +96,22 @@ public sealed record NodeLinkView(
 /// <summary>One CLI on a remote node: installed, version, signed in and how (never a token or an auth file).</summary>
 public sealed record NodeCliView(string Name, bool Installed, string? Version, bool SignedIn, string? AuthMethod);
 
-/// <param name="Reason">Null when eligible; else <c>remote_execution_not_available</c>, <c>offline</c>, <c>revoked</c>, <c>not_confirmed</c> or <c>needs_update</c>.</param>
+/// <param name="Reason">
+/// Null when eligible; else the first failing check: <c>revoked</c>, <c>not_confirmed</c>, <c>needs_update</c> (an agent
+/// without <c>runtime.v1</c> and <c>forward.http.v1</c>), <c>offline</c>, or <c>remote_execution_not_available</c> (no NodeHub).
+/// </param>
 public sealed record NodePlacementView(bool Eligible, string? Reason);
 
+/// <summary>
+/// A capability on a node. Node zero's are its configured capabilities with their providers. A remote node's
+/// (Phase 4, design 5.1) come from the runtimes its owner registered there, one per runtime and capability, with
+/// <paramref name="Provider"/>, <paramref name="Available"/>, <paramref name="Reason"/>, <paramref name="Accelerator"/>
+/// and <paramref name="Runtime"/>; those members are omitted for node zero.
+/// </summary>
+/// <param name="Provider">The provider name that serves it there (node zero's name for that kind, so it means the same everywhere).</param>
+/// <param name="Available">Whether work can go there now: the node is eligible and the runtime enabled.</param>
+/// <param name="Reason">Why not: <c>node_offline</c>, <c>node_not_eligible</c> or <c>runtime_disabled</c>.</param>
+/// <param name="Accelerator">What the runtime runs on: <c>cuda:0</c>, <c>cpu</c>, …</param>
 public sealed record NodeCapabilityView(
     string Slug,
     string DisplayName,
@@ -108,7 +122,27 @@ public sealed record NodeCapabilityView(
     string ExecutionMode,
     bool Sleeping,
     bool Disabled,
-    IReadOnlyList<NodeProviderView> Providers);
+    IReadOnlyList<NodeProviderView> Providers)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Provider { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Available { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Accelerator { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NodeRuntimeView? Runtime { get; init; }
+}
+
+/// <summary>The runtime behind a remote node's capability: never a path or an argument.</summary>
+/// <param name="Managed"><c>spawn</c> (leaf-node starts and stops it) or <c>attach</c> (its owner runs it; it is only reached).</param>
+public sealed record NodeRuntimeView(string Id, string Label, string? Version, string Managed);
 
 public sealed record NodeProviderView(string Name, string? Type, string Status, string? StatusDetail, bool IsDefault);
 
@@ -146,7 +180,7 @@ public static class NodeEndpoints
             .WithResponse(SchemaOf<NodeAgentDownload>());
 
         endpoints.MapGet("/nodes",
-            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform (with chassis when the firmware says), its icon and color from the kernel's node entity (null from an older kernel), hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is not in this release (reason remote_execution_not_available, offline, revoked, not_confirmed or needs_update). Capabilities and providers run on node zero only. legacyNodeId is the node records older than node ids belong to. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
+            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform (with chassis when the firmware says), its icon and color from the kernel's node entity (null from an older kernel), hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is eligible when it is confirmed, not revoked, online, and its agent speaks runtime.v1 and forward.http.v1 (else the first failing reason: revoked, not_confirmed, needs_update, offline, remote_execution_not_available). capabilities: node zero's configured capabilities and providers; a remote node's come from the runtimes its owner registered there, each {slug, displayName, provider, status, available, reason (node_offline|node_not_eligible|runtime_disabled), accelerator, runtime {id, label, version, managed spawn|attach}}, the last report kept while it is offline. legacyNodeId is the node records older than node ids belong to. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
             async Task<Ok<NodeListView>> (HttpContext context) =>
             {
                 var views = new List<NodeView>();
@@ -308,7 +342,7 @@ public static class NodeEndpoints
         CapabilityRegistry registry, HardwareSnapshot? snapshot)
     {
         var isLocal = node.Id == nodes.LocalNodeId;
-        var placement = NodeRegistry.PlacementOf(node);
+        var placement = nodes.Placement(node);
         return new NodeView(
             node.Id,
             node.Name,
@@ -321,8 +355,7 @@ public static class NodeEndpoints
             node.LastSeenAt,
             isLocal ? new NodeIdentityView(nodes.Identity.Persisted, nodes.Identity.Problem) : new NodeIdentityView(true, null),
             Hardware(snapshot),
-            // Phase 3: every capability runs on node zero.
-            isLocal ? await CapabilitiesAsync(registry) : [],
+            isLocal ? await CapabilitiesAsync(registry) : RemoteCapabilities(nodes, node, registry, placement),
             node.OwnerUserId,
             node.Confirmed,
             node.StatusReason,
@@ -348,6 +381,60 @@ public static class NodeEndpoints
             new NodeRamView(snapshot.Ram.TotalBytes, snapshot.Ram.UsedBytes),
             snapshot.Gpus.Select(gpu => new NodeGpuView(gpu.Index, gpu.Name, gpu.Memory.TotalBytes, gpu.Memory.UsedBytes))
                 .ToList());
+
+    /// <summary>
+    /// A remote node's capabilities (design 5.1): one per reported runtime and capability it serves (the server's own
+    /// kind table decides that), by display name then runtime id.
+    /// </summary>
+    internal static IReadOnlyList<NodeCapabilityView> RemoteCapabilities(NodeRegistry nodes, NodeDescriptor node,
+        CapabilityRegistry registry, NodePlacement placement)
+        => nodes.RuntimesOf(node.Id)
+            .SelectMany(runtime => runtime.Capabilities.Select(slug => (Runtime: runtime, Slug: slug)))
+            .Select(item =>
+            {
+                var (runtime, slug) = item;
+                var entry = registry.Get(slug);
+                var reason = !placement.Eligible
+                    ? placement.Reason == NodeUnavailableReasons.Offline ? "node_offline" : "node_not_eligible"
+                    : !runtime.Enabled ? "runtime_disabled" : null;
+                return new NodeCapabilityView(
+                    slug,
+                    entry?.Definition.DisplayName ?? slug,
+                    entry?.Definition.Icon,
+                    entry?.Definition.Color,
+                    entry?.Definition.Category,
+                    // An offline node's runtimes read Stopped: unavailable, not an error (design 3.1).
+                    (placement.Reason == NodeUnavailableReasons.Offline ? BackendStatus.Stopped : runtime.Status).ToString(),
+                    entry?.Definition.ExecutionMode.ToString().ToLowerInvariant() ?? "async",
+                    false,
+                    false,
+                    [])
+                {
+                    Provider = RemoteProviderName(entry, runtime.Kind),
+                    Available = reason is null,
+                    Reason = reason,
+                    Accelerator = runtime.Accelerator,
+                    Runtime = new NodeRuntimeView(runtime.Id, runtime.Label, runtime.Version,
+                        runtime.Managed == RedCompute.PluginSdk.Hosting.HostRuntimeManagement.Spawn ? "spawn" : "attach"),
+                };
+            })
+            .OrderBy(view => view.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(view => view.Runtime!.Id, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// The provider name a runtime kind serves under (design 3.1): node zero's provider of that kind's type for the
+    /// capability, so a caller's <c>provider</c> means the same on every node; the kind itself when node zero has none.
+    /// </summary>
+    internal static string RemoteProviderName(CapabilityEntry? entry, string kind)
+    {
+        var type = RemoteRuntimeKinds.ProviderType(kind);
+        if (entry is not null && type is not null)
+            foreach (var (name, config) in entry.Config.Providers.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                if (string.Equals(config.Type, type, StringComparison.OrdinalIgnoreCase) && entry.Providers.ContainsKey(name))
+                    return name;
+        return kind;
+    }
 
     /// <summary>The same status rules as <c>/status</c>: each provider is asked once, concurrently.</summary>
     private static async Task<IReadOnlyList<NodeCapabilityView>> CapabilitiesAsync(CapabilityRegistry registry)

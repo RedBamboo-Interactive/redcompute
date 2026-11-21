@@ -25,8 +25,7 @@ public static class ProviderResolver
     /// <param name="placement">
     /// The node <c>/{slug}/generate</c> resolved, or null for node zero. Node zero's providers are
     /// <see cref="CapabilityEntry.Providers"/>. A remote node has no provider instance yet (design 3.1,
-    /// P7), so it is 422 <c>provider_unavailable_on_node</c>; it cannot be reached while
-    /// <c>INodeRegistry.HostFor</c> refuses every remote node.
+    /// P7), so an eligible one is 422 <c>provider_unavailable_on_node</c>.
     /// </param>
     public static (IBackendProvider? provider, IResult? error) Resolve(
         CapabilityEntry entry, string? requestedProvider, string capabilityName, PlacementResolution? placement = null)

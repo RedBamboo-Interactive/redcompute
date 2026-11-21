@@ -3289,13 +3289,23 @@ public static class UnifiedSessionEndpoints
     {
         if (!PlacementParser.TryParse(body, route, conversationOnly, out placement, out var error))
             return error!.ToResult();
-        if (placement is not null && PlacementParser.ResolveNode(placement, nodes, caller, out _) is { } nodeError)
+        string? nodeId = null;
+        if (placement is not null && PlacementParser.ResolveNode(placement, nodes, caller, out nodeId) is { } nodeError)
         {
             placement = null;
             return nodeError.ToResult();
         }
+        if (placement is not null && PlacementParser.IsRemote(nodeId, nodes))
+        {
+            // Phase 4 runs AI sessions on node zero only: an eligible remote node has no ai-session provider (design 1.2's 422).
+            placement = null;
+            return RemoteNodeControl.UnavailableOnNode(SessionCapability, nodeId!, [nodes!.LocalNodeId]);
+        }
         return null;
     }
+
+    /// <summary>The capability these routes serve, as a 422 <c>provider_unavailable_on_node</c> names it.</summary>
+    internal const string SessionCapability = "ai-session";
 
     /// <summary>Discovery text for <c>placement</c> on the session and execute routes.</summary>
     internal const string PlacementDescription =

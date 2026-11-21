@@ -208,7 +208,8 @@ public static class PlacementParser
     /// <c>local</c>, its own id or the legacy id; 404 <c>node_not_found</c> for an unknown id and, with exactly
     /// the same answer, for a node the caller may not place on (<see cref="NodeAccess"/>), so an answer never
     /// tells which ids exist; 409 <c>node_offline</c> / <c>node_not_eligible</c> for a node the caller may use that
-    /// cannot run work (every remote node in this release). Without a registry (hosts and tests with no node
+    /// cannot run work (<c>NodeRegistry.UnavailableReason</c>). An eligible remote node resolves; whether a provider
+    /// serves the work there is the route's next check (422). Without a registry (hosts and tests with no node
     /// identity) only <c>local</c> is known. A null node id is routed later (<see cref="NodeAccess.RouteAutomatic"/>)
     /// and resolves to null here.
     /// </summary>
@@ -248,6 +249,11 @@ public static class PlacementParser
         }
         return NodeNotFound(requested);
     }
+
+    /// <summary>True when <paramref name="resolvedNodeId"/> (what <see cref="ResolveNode"/> found) is a remote node, not node zero.</summary>
+    public static bool IsRemote(string? resolvedNodeId, INodeRegistry? nodes)
+        => nodes is not null && resolvedNodeId is not null && resolvedNodeId != INodeRegistry.LocalAlias
+           && resolvedNodeId != nodes.LocalNodeId;
 
     /// <summary>
     /// Where a request with <c>placement</c> runs, from the node <see cref="ResolveNode"/> found (null:
