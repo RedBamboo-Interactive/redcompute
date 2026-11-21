@@ -791,10 +791,17 @@ public class RelayServer
         }
         await _docker.StopAllAsync();
 
-        // Remote providers are retired, never runtime.stop: a node's runtime is its owner's.
+        // Remote providers are retired, never runtime.stop: a node's runtime is its owner's. Their running jobs are
+        // cancelled first; bounded, and a failure never keeps the rest of the shutdown from running.
         if (_nodeProviders is not null)
         {
-            await _nodeProviders.DisposeAsync();
+            try
+            {
+                var dispose = _nodeProviders.DisposeAsync().AsTask();
+                if (await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(15))) != dispose)
+                    _log("[Nodes] Shutdown: remote providers did not finish disposing within 15 s; going on", null);
+            }
+            catch (Exception error) { _log($"[Nodes] Shutdown: {error.Message}", null); }
             _nodeProviders = null;
         }
         // Links close with 1012 (service restart): nodes redial and find a fresh session.

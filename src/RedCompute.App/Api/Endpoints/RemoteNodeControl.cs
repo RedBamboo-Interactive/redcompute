@@ -66,6 +66,12 @@ internal static class RemoteNodeControl
         {
             return PlacementError.Unavailable(error).ToResult();
         }
+        catch (Exception error) when (error is ObjectDisposedException
+                                      || error is InvalidOperationException and not RemoteOperationNotAllowedException)
+        {
+            // A session torn down under the call (shutdown, a dropped link): the typed node_offline, never a 500.
+            return PlacementError.Unavailable(new NodeUnavailableException(nodeId, NodeUnavailableReasons.Offline)).ToResult();
+        }
         catch (TimeoutException error)
         {
             return Results.Json(new { error = "node_timeout", message = error.Message, nodeId }, statusCode: StatusCodes.Status504GatewayTimeout);

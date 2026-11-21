@@ -239,7 +239,15 @@ public sealed class RemoteHostRuntimes : IHostRuntimes
 
     private async Task<JsonElement> CallAsync(string method, JsonObject parameters, TimeSpan timeout, CancellationToken ct)
     {
-        var session = _session();
+        LinkSession? session;
+        try
+        {
+            session = _session();
+        }
+        catch (Exception error) when (error is ObjectDisposedException or InvalidOperationException)
+        {
+            session = null; // the hub's link server is gone (shutdown)
+        }
         if (session is null || session.IsReset)
             throw new NodeUnavailableException(_nodeId, NodeUnavailableReasons.Offline);
         if (!session.HasFeature(LinkFeatures.RuntimeV1))
@@ -261,6 +269,11 @@ public sealed class RemoteHostRuntimes : IHostRuntimes
         }
         catch (LinkClosedException)
         {
+            throw new NodeUnavailableException(_nodeId, NodeUnavailableReasons.Offline);
+        }
+        catch (Exception error) when (error is ObjectDisposedException or InvalidOperationException)
+        {
+            // A session torn down under the call (RedCompute stopping, the link dropping): the node is offline.
             throw new NodeUnavailableException(_nodeId, NodeUnavailableReasons.Offline);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)

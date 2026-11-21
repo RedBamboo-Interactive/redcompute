@@ -20,6 +20,7 @@ using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Hardware;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Nodes;
 using RedCompute.Core.Providers;
 using RedCompute.Plugin.ComfyUI;
 using RedCompute.PluginSdk;
@@ -536,6 +537,108 @@ public sealed class NodeProviderTests : IAsyncLifetime
     // ================================================================= shutdown
 
     [Fact]
+    public async Task Shutdown_cancels_a_running_remote_job_before_it_disposes_the_provider()
+    {
+        // Review P4-P7, item 9: never disposed mid-job without cancelling that job first.
+        var inner = (ForwardingProvider)NodeProvider(Own).Inner;
+        inner.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var running = NodeProvider(Own).ExecuteAsync(new JobRequest { CapabilitySlug = "image-gen", Parameters = new() { ["prompt"] = "x" } });
+        await WaitAsync(() => inner.Requests.Count == 1, "the job to start");
+
+        await _manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(0, inner.DisposedWhenCancelled); // cancelled while not yet disposed
+        Assert.Equal(1, inner.Disposed);
+        Assert.DoesNotContain(_ownAgent.Calls, call => call.Method == "runtime.stop");
+    }
+
+    [Fact]
+    public async Task A_job_that_ignores_its_cancellation_holds_shutdown_only_for_the_grace()
+    {
+        var inner = (ForwardingProvider)NodeProvider(Own).Inner;
+        inner.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        inner.IgnoreCancellation = true;
+        var running = NodeProvider(Own).ExecuteAsync(new JobRequest { CapabilitySlug = "image-gen", Parameters = new() { ["prompt"] = "x" } });
+        await WaitAsync(() => inner.Requests.Count == 1, "the job to start");
+        _manager.ShutdownGrace = TimeSpan.FromMilliseconds(300);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        await _manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.InRange(watch.Elapsed, TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(5));
+        Assert.Equal(0, inner.DisposedWhenCancelled); // the cancellation still came first
+        Assert.Equal(1, inner.Disposed);
+        inner.Hold.SetResult();
+        await running;
+    }
+
+    [Fact]
+    public async Task A_torn_down_session_is_node_offline_for_start_stop_and_control_never_a_crash()
+    {
+        // Review P4-P7, item 9: RedCompute stopping or a link dropping under a call disposes what the call holds.
+        foreach (Exception torn in new Exception[] { new ObjectDisposedException("LinkServer"), new InvalidOperationException("torn down") })
+        {
+            var runtimes = new RemoteHostRuntimes(Own, _nodes, () => throw torn);
+            var offline = await Assert.ThrowsAsync<NodeUnavailableException>(() => runtimes.StartAsync("comfyui-1"));
+            Assert.Equal(NodeUnavailableReasons.Offline, offline.Reason);
+            await Assert.ThrowsAsync<NodeUnavailableException>(() => runtimes.StopAsync("comfyui-1"));
+
+            var host = new RemoteExecutionHost(Own, () => _nodes.Find(Own), new RedCompute.NodeLink.Forward.ForwardClient(() => null), runtimes);
+            await using var provider = new RemoteNodeProvider(new ZeroProvider("comfyui"), Own, _nodes.RuntimesOf(Own).Single(), _nodes, host);
+            Assert.False(await provider.StartAsync());
+            await provider.StopAsync();
+
+            // /control/start?nodeId= on a host whose runtimes throw the torn-down session's own exception.
+            var control = await RemoteNodeControl.RunAsync(true, "image-gen", null, _registry.Get("image-gen")!, Own,
+                new TornRegistry(_nodes, new TornHost(_nodes.LocalHost, new ThrowingRuntimes(_nodes.RuntimesOf(Own), torn))),
+                new DefaultHttpContext { RequestServices = _app.Services });
+            var context = new DefaultHttpContext { RequestServices = _app.Services };
+            context.Response.Body = new MemoryStream();
+            await control.ExecuteAsync(context);
+            Assert.Equal(409, context.Response.StatusCode);
+            context.Response.Body.Position = 0;
+            Assert.Contains("node_offline", new StreamReader(context.Response.Body).ReadToEnd());
+        }
+    }
+
+    /// <summary>The node registry, with one host whose runtimes are those of a torn-down session.</summary>
+    private sealed class TornRegistry(NodeRegistry inner, IExecutionHost host) : INodeRegistry
+    {
+        public string LocalNodeId => inner.LocalNodeId;
+        public string LegacyNodeId => inner.LegacyNodeId;
+        public NodeDescriptor Local => inner.Local;
+        public IReadOnlyList<NodeDescriptor> Nodes => inner.Nodes;
+        public NodeDescriptor? Find(string nodeId) => inner.Find(nodeId);
+        public string? StampNodeId => inner.StampNodeId;
+        public IExecutionHost HostFor(string? nodeId) => host;
+    }
+
+    private sealed class ThrowingRuntimes(IReadOnlyList<HostRuntime> reported, Exception torn) : IHostRuntimes
+    {
+        public IReadOnlyList<HostRuntime> List() => reported;
+        public HostRuntime? Status(string id) => reported.FirstOrDefault(runtime => runtime.Id == id);
+        public Task<HostRuntime> StartAsync(string id, CancellationToken ct = default) => throw torn;
+        public Task<HostRuntime> StopAsync(string id, TimeSpan? grace = null, CancellationToken ct = default) => throw torn;
+        public event Action<HostRuntime>? Changed { add { } remove { } }
+    }
+
+    private sealed class TornHost(IExecutionHost inner, IHostRuntimes runtimes) : IExecutionHost
+    {
+        public string NodeId => "torn";
+        public HostPath Path(string value) => inner.Path(value);
+        public IHostPathRules PathRules => inner.PathRules;
+        public IHostProcesses Processes => inner.Processes;
+        public IHostContainment Containment => inner.Containment;
+        public IHostFileSystem Files => inner.Files;
+        public IHostNetwork Network => inner.Network;
+        public IHostPlatform Platform => inner.Platform;
+        public IHostHardware Hardware => inner.Hardware;
+        public IHostQueries Queries => inner.Queries;
+        public IHostRuntimes Runtimes => runtimes;
+    }
+
+    [Fact]
     public async Task Stopping_redcompute_never_stops_a_nodes_runtime()
     {
         await _registry.StopAll();
@@ -642,6 +745,12 @@ public sealed class NodeProviderTests : IAsyncLifetime
         public TaskCompletionSource? Hold { get; set; }
         public int Disposed;
 
+        /// <summary>Hold the job even once it is cancelled (a provider that ignores its token).</summary>
+        public bool IgnoreCancellation { get; set; }
+
+        /// <summary>How many times it had been disposed when its job's token was cancelled (null: never cancelled).</summary>
+        public int? DisposedWhenCancelled;
+
         public string Name => "ComfyUI";
         public string CapabilitySlug => slug;
         public string DisplayName => "ComfyUI";
@@ -665,7 +774,17 @@ public sealed class NodeProviderTests : IAsyncLifetime
         public async Task<JobResult?> ExecuteAsync(JobRequest request, CancellationToken ct = default)
         {
             lock (Requests) Requests.Add(request);
-            if (Hold is { } hold) await hold.Task;
+            // Recorded once, either way: by the registration (a job that ignores its token), or as the wait throws.
+            using var seen = ct.Register(() => DisposedWhenCancelled ??= Volatile.Read(ref Disposed));
+            try
+            {
+                if (Hold is { } hold) await (IgnoreCancellation ? hold.Task : hold.Task.WaitAsync(ct));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                DisposedWhenCancelled ??= Volatile.Read(ref Disposed);
+                throw;
+            }
             if (request.JobId is null) return new JobResult { Success = true, ResultJson = "{}" };
             await using var lease = Admission is null ? null : await Admission.AcquireAsync(new AcceleratorWorkload("cuda:0", "comfyui", "test"), ct);
             using var client = new HttpClient(Host.Network.CreateServiceHandler(new Uri("http://127.0.0.1:8188/")));

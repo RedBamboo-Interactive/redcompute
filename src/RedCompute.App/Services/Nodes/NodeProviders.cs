@@ -137,6 +137,17 @@ public sealed class NodeProviderManager : IAsyncDisposable
         return new RemoteNodeProvider(inner, nodeId, runtime, _nodes, host);
     }
 
+    /// <summary>
+    /// How long RedCompute's shutdown waits for the remote jobs it cancelled to end before it disposes their providers
+    /// anyway (review P4-P7, item 9); the whole dispose is bounded by twice this.
+    /// </summary>
+    internal TimeSpan ShutdownGrace { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// RedCompute is stopping: every remote provider leaves the capabilities, its running jobs are cancelled, and it is
+    /// disposed once they ended (or after <see cref="ShutdownGrace"/>). Never runtime.stop: the runtime is the node
+    /// owner's. Bounded, and a provider that fails to stop does not stop the others.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         List<RemoteNodeProvider> all;
@@ -153,7 +164,20 @@ public sealed class NodeProviderManager : IAsyncDisposable
                         all.Add(remote);
         }
         // Never runtime.stop: the runtime is the node owner's, and RedCompute stopping does not stop it.
-        foreach (var provider in all) await provider.RetireAsync();
+        var shutdowns = all.Select(async provider =>
+        {
+            try
+            {
+                await provider.ShutdownAsync(ShutdownGrace);
+            }
+            catch (Exception error)
+            {
+                _log($"[Nodes] Shutting down {provider.Name} on {provider.NodeId}: {error.Message}");
+            }
+        }).ToList();
+        var all_ = Task.WhenAll(shutdowns);
+        if (await Task.WhenAny(all_, Task.Delay(ShutdownGrace * 2)) != all_)
+            _log($"[Nodes] Shutdown: remote providers still disposing after {(ShutdownGrace * 2).TotalSeconds:0} s; going on");
     }
 }
 
@@ -169,6 +193,8 @@ public sealed class RemoteNodeProvider : IPluginProvider
     private readonly NodeRegistry _nodes;
     private readonly RemoteExecutionHost _host;
     private readonly object _gate = new();
+    private readonly CancellationTokenSource _shutdown = new();
+    private TaskCompletionSource? _idle;
     private int _active;
     private bool _retired;
     private Task? _disposed;
@@ -255,8 +281,10 @@ public sealed class RemoteNodeProvider : IPluginProvider
             return runtime.Status is BackendStatus.Running or BackendStatus.Starting;
         }
         catch (Exception error) when (error is HostRuntimeException or NodeUnavailableException or TimeoutException
-                                          or RedCompute.NodeLink.LinkRpcException)
+                                          or RedCompute.NodeLink.LinkRpcException or ObjectDisposedException
+                                          || error is InvalidOperationException and not RemoteOperationNotAllowedException)
         {
+            // A torn-down session (shutdown, a dropped link) is the node being offline, never a crash.
             return false;
         }
     }
@@ -268,7 +296,8 @@ public sealed class RemoteNodeProvider : IPluginProvider
             await _host.Runtimes.StopAsync(RuntimeId, ct: ct);
         }
         catch (Exception error) when (error is HostRuntimeException or NodeUnavailableException or TimeoutException
-                                          or RedCompute.NodeLink.LinkRpcException)
+                                          or RedCompute.NodeLink.LinkRpcException or ObjectDisposedException
+                                          || error is InvalidOperationException and not RemoteOperationNotAllowedException)
         {
         }
     }
@@ -280,16 +309,49 @@ public sealed class RemoteNodeProvider : IPluginProvider
             if (_retired) return Gone();
             _active++;
         }
+        // RedCompute's shutdown cancels the job before its provider is disposed (ShutdownAsync).
+        using var job = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
         try
         {
-            return await _inner.ExecuteAsync(request, ct);
+            return await _inner.ExecuteAsync(request, job.Token);
         }
         finally
         {
             bool dispose;
-            lock (_gate) dispose = --_active == 0 && _retired;
+            TaskCompletionSource? idle = null;
+            lock (_gate)
+            {
+                dispose = --_active == 0 && _retired;
+                if (_active == 0) (idle, _idle) = (_idle, null);
+            }
+            idle?.TrySetResult();
             if (dispose) _ = RetireAsync();
         }
+    }
+
+    /// <summary>
+    /// RedCompute is stopping (review P4-P7, item 9): no new job starts, the running ones are cancelled, and the
+    /// plugin's provider is disposed once they ended, or after <paramref name="grace"/> for a job that ignores its
+    /// cancellation. Never disposed under a job that was not cancelled first.
+    /// </summary>
+    internal async Task ShutdownAsync(TimeSpan grace)
+    {
+        Task idle;
+        lock (_gate)
+        {
+            _retired = true;
+            idle = _active == 0 ? Task.CompletedTask : (_idle ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+        }
+        try
+        {
+            _shutdown.Cancel();
+        }
+        catch (AggregateException)
+        {
+            // a job's own cancellation callback threw: it is cancelled all the same
+        }
+        await Task.WhenAny(idle, Task.Delay(grace));
+        await RetireAsync();
     }
 
     private JobResult Gone() => new()
