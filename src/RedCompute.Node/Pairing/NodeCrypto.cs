@@ -43,11 +43,18 @@ public static class NodeCrypto
     /// line (<c>\n</c>), in UTF-8. The kernel checks the fingerprint is RedCompute's current one: an active
     /// interceptor that swapped the key in the pair response cannot also forge this.
     /// </summary>
-    public static string LinkPinMessage(string nodeId, string code, string fingerprint)
-        => string.Join('\n', "leaf-node-link-pin.v1", nodeId, code.Replace("-", ""), fingerprint);
+    /// <summary>
+    /// What the pin proof signs (review item 5: the whole key, not its 64-bit fingerprint):
+    /// <c>leaf-node-link-pin.v2 \n nodeId \n CODE (no hyphen) \n SHA-256 of the 65-byte server link key, 64 hex digits</c>.
+    /// </summary>
+    public static string LinkPinMessage(string nodeId, string code, byte[] serverLinkKey)
+        => string.Join('\n', "leaf-node-link-pin.v2", nodeId, code.Replace("-", ""), LinkKeyHash(serverLinkKey));
 
-    public static string LinkPinProof(ECDsa key, string nodeId, string code, string fingerprint)
-        => Base64Url(key.SignData(Encoding.UTF8.GetBytes(LinkPinMessage(nodeId, code, fingerprint)),
+    /// <summary>The full SHA-256 of a link public key, upper-case hex: what the pin proof and the pin request name.</summary>
+    public static string LinkKeyHash(byte[] publicKey) => Convert.ToHexString(SHA256.HashData(publicKey));
+
+    public static string LinkPinProof(ECDsa key, string nodeId, string code, byte[] serverLinkKey)
+        => Base64Url(key.SignData(Encoding.UTF8.GetBytes(LinkPinMessage(nodeId, code, serverLinkKey)),
             HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
 
     /// <summary>

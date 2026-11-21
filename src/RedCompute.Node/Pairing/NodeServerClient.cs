@@ -129,7 +129,7 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
                     var info = ReadLinkKey(origin, linkKey);
                     store.CreateLinkKey(key.KeyRef, origin, nodeId!).Dispose();
                     await PinAsync(origin, nodeId!, key.Key, code, info, now, ct);
-                    pin = new NodeLinkPin(info.PublicKey, info.Fingerprint, info.KeyId, now);
+                    pin = new NodeLinkPin(info.PublicKey, info.Fingerprint, info.KeyId, now, info.Protocol);
                 }
                 return new NodePairing
                 {
@@ -208,13 +208,17 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
     /// node would not know why.
     /// </summary>
     public async Task PinAsync(string origin, string nodeId, ECDsa key, string code, NodeLinkKeyInfo info, DateTimeOffset now, CancellationToken ct)
-        => await SignedPostAsync(origin, PinPath, nodeId, key, new JsonObject
+    {
+        var serverKey = info.PublicKeyBytes() ?? throw new NodeCommandException("bad_response", "The server's link key is not a P-256 point.");
+        await SignedPostAsync(origin, PinPath, nodeId, key, new JsonObject
         {
             ["code"] = code,
             ["fingerprint"] = info.Fingerprint,
             ["keyId"] = info.KeyId,
-            ["proof"] = NodeCrypto.LinkPinProof(key, nodeId, code, info.Fingerprint),
+            ["publicKeySha256"] = NodeCrypto.LinkKeyHash(serverKey),
+            ["proof"] = NodeCrypto.LinkPinProof(key, nodeId, code, serverKey),
         }, now, ct, "pin");
+    }
 
     private async Task<JsonObject?> SignedPostAsync(string origin, string path, string nodeId, ECDsa key, JsonObject body,
         DateTimeOffset now, CancellationToken ct, string what)

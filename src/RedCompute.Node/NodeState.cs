@@ -38,7 +38,13 @@ public sealed record NodePairing
 }
 
 /// <summary>A pinned server link key: the SEC1 point (base64url), its fingerprint and key id, when it was pinned.</summary>
-public sealed record NodeLinkPin(string PublicKey, string Fingerprint, string KeyId, DateTimeOffset PinnedAt)
+/// <param name="Protocol">
+/// The handshake the pin is for (review item 10). A node never dials a pinned server with any other, older or plaintext:
+/// a pin for a protocol this agent does not speak means "update leaf-node", never a fallback. A node.json from before
+/// this field reads as the only protocol there is.
+/// </param>
+public sealed record NodeLinkPin(string PublicKey, string Fingerprint, string KeyId, DateTimeOffset PinnedAt,
+    string Protocol = RedCompute.NodeLink.Noise.NoiseProtocol.Name)
 {
     public byte[] PublicKeyBytes()
         => new RedCompute.NodeLink.Noise.NodeLinkKeyInfo(RedCompute.NodeLink.Noise.NoiseProtocol.Name, PublicKey, Fingerprint, KeyId).PublicKeyBytes()

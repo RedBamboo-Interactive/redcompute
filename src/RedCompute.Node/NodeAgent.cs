@@ -158,6 +158,9 @@ public sealed class NodeAgent : IAsyncDisposable
             : store.OpenLinkKey(pairing.KeyRef, pairing.ServerOrigin)
               ?? throw new NodeCommandException("link_key_missing",
                   "This node's link key is gone. Ask its owner for a re-pin code, then run: leaf-node repin --code <code>.");
+        if (pairing.LinkPin is { Protocol: var pinned } && pinned != NoiseProtocol.Name)
+            throw new NodeCommandException("link_protocol_unsupported",
+                $"This node's link is pinned to {pinned}, which leaf-node {AgentIdentity.Version} does not speak. Update leaf-node; it never falls back.");
         var secure = pairing.LinkPin is { } pin ? Secure(pairing, pin.PublicKeyBytes(), linkKey!, OpenKey) : null;
 
         var dial = _env.Dial?.Invoke(pairing, OpenKey) ?? new NodeDialer(pairing, OpenKey, _env.Time).DialAsync;

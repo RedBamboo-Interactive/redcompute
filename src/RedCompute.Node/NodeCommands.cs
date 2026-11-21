@@ -171,7 +171,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
             env.Log.Info($"Re-pin: the server's link key is still {info.Fingerprint}.");
         store.CreateLinkKey(pairing.KeyRef, pairing.ServerOrigin, pairing.NodeId).Dispose();
         await server.PinAsync(pairing.ServerOrigin, pairing.NodeId, identity, code, info, now, ct);
-        env.StateStore.Save(state with { Pairing = pairing with { LinkPin = new NodeLinkPin(info.PublicKey, info.Fingerprint, info.KeyId, now) } });
+        env.StateStore.Save(state with { Pairing = pairing with { LinkPin = new NodeLinkPin(info.PublicKey, info.Fingerprint, info.KeyId, now, info.Protocol) } });
         env.Audit.Record("local", "repin", info.Fingerprint, pairing.NodeId);
         env.Log.Info($"Pinned the server link key {info.Fingerprint} ({info.KeyId}).");
         output.WriteLine($"Pinned the server's link key {info.Fingerprint}. The link is end-to-end encrypted from now on.");

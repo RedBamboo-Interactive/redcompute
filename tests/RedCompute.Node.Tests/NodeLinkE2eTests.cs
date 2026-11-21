@@ -92,14 +92,21 @@ public sealed class NodeLinkE2eTests : IDisposable
         var pin = JsonNode.Parse(body)!;
         Assert.Equal(info.Fingerprint, pin["fingerprint"]!.GetValue<string>());
         Assert.Equal("ABCD-EFGH", pin["code"]!.GetValue<string>());
+        // Review item 5: the proof covers the server key's full SHA-256, not its 64-bit fingerprint.
+        var keyHash = Convert.ToHexString(SHA256.HashData(_serverKey.PublicKey));
+        Assert.Equal(keyHash, pin["publicKeySha256"]!.GetValue<string>());
         using var identity = store.Open(pairing.KeyRef, Origin)!;
         var spki = identity.ExportSubjectPublicKeyInfo();
         using (var verifier = ECDsa.Create())
         {
             verifier.ImportSubjectPublicKeyInfo(spki, out _);
-            Assert.True(verifier.VerifyData(Encoding.UTF8.GetBytes($"leaf-node-link-pin.v1\n{NodeId}\nABCDEFGH\n{info.Fingerprint}"),
-                NodeCrypto.FromBase64Url(pin["proof"]!.GetValue<string>()), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
+            var proof = NodeCrypto.FromBase64Url(pin["proof"]!.GetValue<string>());
+            Assert.True(verifier.VerifyData(Encoding.UTF8.GetBytes($"leaf-node-link-pin.v2\n{NodeId}\nABCDEFGH\n{keyHash}"),
+                proof, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
+            Assert.False(verifier.VerifyData(Encoding.UTF8.GetBytes($"leaf-node-link-pin.v1\n{NodeId}\nABCDEFGH\n{info.Fingerprint}"),
+                proof, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
         }
+        Assert.Equal(NoiseProtocol.Name, pairing.LinkPin!.Protocol);
         // Assertion-authenticated, for exactly that route.
         Assert.Equal("LeafNode", request.Headers.Authorization!.Scheme);
         var claims = NodeCrypto.VerifyAssertion(request.Headers.Authorization.Parameter!, spki)!;
@@ -269,6 +276,36 @@ public sealed class NodeLinkE2eTests : IDisposable
         {
             await StopAsync(running);
         }
+    }
+
+    [Fact]
+    public async Task A_pin_for_a_protocol_this_agent_does_not_speak_means_update_and_it_never_dials()
+    {
+        await PairPinnedAsync();
+        var env = _home.Environment();
+        var state = env.StateStore.Load();
+        env.StateStore.Save(state with { Pairing = state.Pairing! with { LinkPin = state.Pairing.LinkPin! with { Protocol = "Noise_IK_P256_AESGCM_SHA256.v2" } } });
+        await using var hub = StartHub(NodeSpki);
+        var running = StartAgent(hub);
+        try
+        {
+            await Wait.UntilAsync(() => running.Agent.Status()["link"]?["status"]?.GetValue<string>() == "error", "the error");
+            Assert.Contains("Update leaf-node", running.Agent.Status()["link"]!["reason"]!.GetValue<string>());
+            Assert.Empty(hub.FirstBytes);
+        }
+        finally
+        {
+            await StopAsync(running);
+        }
+    }
+
+    [Fact]
+    public void A_node_json_from_before_the_protocol_field_reads_as_the_only_protocol()
+    {
+        var pin = System.Text.Json.JsonSerializer.Deserialize<NodeLinkPin>(
+            """{"publicKey":"x","fingerprint":"AAAA-BBBB-CCCC-DDDD","keyId":"lk_000000000000","pinnedAt":"2026-11-21T12:00:00+00:00"}""",
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!;
+        Assert.Equal(NoiseProtocol.Name, pin.Protocol);
     }
 
     [Fact]
