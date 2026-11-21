@@ -106,6 +106,12 @@ public sealed class LinkServer : IAsyncDisposable
             await transport.CloseAsync(token.IsCancellationRequested ? LinkCloseCodes.GoingAway : LinkCloseCodes.Timeout, "no hello", CancellationToken.None);
             return null;
         }
+        catch (Exception)
+        {
+            // The server's own fault (the Secure hook, a lookup): never a verdict on the node, which retries.
+            await transport.CloseAsync(LinkCloseCodes.InternalError, "internal_error", CancellationToken.None);
+            return null;
+        }
 
         if (!string.Equals(hello.NodeId, boundNodeId, StringComparison.Ordinal))
             return await RefuseAsync(transport, LinkCloseCodes.ProtocolError, new LinkHandshakeError("node_mismatch",

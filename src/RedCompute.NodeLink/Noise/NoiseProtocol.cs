@@ -123,7 +123,10 @@ public sealed class NoiseKeyPair : IDisposable
     public void Dispose() => _key.Dispose();
 }
 
-/// <summary>Noise CipherState with AESGCM: a key and a 64-bit nonce counter (spec 5.1, 12).</summary>
+/// <summary>
+/// Noise CipherState with AESGCM: a key and a 64-bit nonce counter (spec 5.1, 12). It keeps its own copy of the key
+/// and zeroes it when the key is replaced (rekey) or the state is disposed; the caller zeroes what it passed in.
+/// </summary>
 public sealed class NoiseCipherState : IDisposable
 {
     private byte[]? _key;
@@ -137,8 +140,9 @@ public sealed class NoiseCipherState : IDisposable
     public void InitializeKey(byte[]? key)
     {
         _aes?.Dispose();
-        _key = key;
-        _aes = key is null ? null : new AesGcm(key, NoiseProtocol.TagLength);
+        if (_key is not null) CryptographicOperations.ZeroMemory(_key);
+        _key = key?.ToArray();
+        _aes = _key is null ? null : new AesGcm(_key, NoiseProtocol.TagLength);
         Nonce = 0;
     }
 
@@ -169,7 +173,10 @@ public sealed class NoiseCipherState : IDisposable
         var output = new byte[32 + NoiseProtocol.TagLength];
         Encrypt(_aes, ulong.MaxValue, [], new byte[32], output);
         var nonce = Nonce;
-        InitializeKey(output[..32]);
+        var next = output[..32];
+        InitializeKey(next);
+        CryptographicOperations.ZeroMemory(next);
+        CryptographicOperations.ZeroMemory(output);
         Nonce = nonce;
     }
 
@@ -190,10 +197,20 @@ public sealed class NoiseCipherState : IDisposable
         return bytes;
     }
 
-    public void Dispose() => _aes?.Dispose();
+    public void Dispose()
+    {
+        _aes?.Dispose();
+        _aes = null;
+        if (_key is not null) CryptographicOperations.ZeroMemory(_key);
+        _key = null;
+    }
 }
 
-/// <summary>Noise SymmetricState with SHA-256 (spec 5.2).</summary>
+/// <summary>
+/// Noise SymmetricState with SHA-256 (spec 5.2). The chaining key, each derived key and each DH output are zeroed
+/// as soon as they are replaced or used, and on dispose (as far as .NET lets: the BCL's own copies inside AesGcm and
+/// the key handles are its to clear).
+/// </summary>
 public sealed class NoiseSymmetricState : IDisposable
 {
     private byte[] _ck;
@@ -213,8 +230,24 @@ public sealed class NoiseSymmetricState : IDisposable
     public void MixKey(ReadOnlySpan<byte> inputKeyMaterial)
     {
         var (ck, key) = Hkdf2(_ck, inputKeyMaterial);
+        CryptographicOperations.ZeroMemory(_ck);
         _ck = ck;
         Cipher.InitializeKey(key);
+        CryptographicOperations.ZeroMemory(key);
+    }
+
+    /// <summary>MixKey(DH(<paramref name="local"/>, <paramref name="remote"/>)), the DH output zeroed after.</summary>
+    public void MixDh(NoiseKeyPair local, ReadOnlySpan<byte> remote)
+    {
+        var dh = local.Dh(remote);
+        try
+        {
+            MixKey(dh);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(dh);
+        }
     }
 
     public void MixHash(ReadOnlySpan<byte> data) => H = SHA256.HashData([.. H, .. data]);
@@ -241,9 +274,16 @@ public sealed class NoiseSymmetricState : IDisposable
     {
         var temp = HMACSHA256.HashData(chainingKey, inputKeyMaterial);
         var first = HMACSHA256.HashData(temp, new byte[] { 0x01 });
-        var second = HMACSHA256.HashData(temp, (byte[])[.. first, 0x02]);
+        byte[] input = [.. first, 0x02];
+        var second = HMACSHA256.HashData(temp, input);
+        CryptographicOperations.ZeroMemory(temp);
+        CryptographicOperations.ZeroMemory(input);
         return (first, second);
     }
 
-    public void Dispose() => Cipher.Dispose();
+    public void Dispose()
+    {
+        Cipher.Dispose();
+        CryptographicOperations.ZeroMemory(_ck);
+    }
 }

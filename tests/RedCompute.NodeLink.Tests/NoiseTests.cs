@@ -178,6 +178,221 @@ public sealed class NoiseTests
 
     private const string PinnedVector = "F35F72AF275C8D57003AB462F084E83A28A3D70D9D8A4A7D0EF48F4DF42F2CE8";
 
+    // The three messages as the P0.5a crypto review's independent implementation (Python, pyca/cryptography on
+    // OpenSSL) produced them, byte for byte: Vectors/noise_ik_p256.py prints them (python -I noise_ik_p256.py).
+    private const string ReviewMessage1 =
+        "10047D7B6BF7668908BB617046AD0A2C8FC604BD97FB684913F19B423D4C279CBA4B076C97DB8278A0EC0B05F0A56617E840D604B95A6FB27060F37C46"
+        + "3287098979129A6D0ABA8F7C44CC38E0F409CC43B1058DE927AFC5E31C4AAAABE11F3487A50CBD8B02F52710D23D3547BCD9039E16D8E7983DEF885982"
+        + "6875DE117655E225DD3193F38C683E1C4A6B2E3FDA6618D8E46F7886D10D2C476006C0C75F0A6DAF263D445814819A4D";
+    private const string ReviewMessage2 =
+        "110433EB981AC8539C1AD426DFB119B0F790B725BA068908E94DA1422B3D90FBDBF983B8F6CE156D2561FDDA704088EA0DBC78EDCBB5F995A1D9D15C3707"
+        + "10439A3C243A476072AEB07226C0ABCEEF4EA28B";
+    private const string ReviewRecord = "12AEB85EE4583E9C67C65FA72B95D848AB393460B8F8";
+
+    [Fact]
+    public async Task The_handshake_bytes_are_the_independent_implementation_s_byte_for_byte()
+    {
+        var transcript = await FixedHandshakeAsync();
+        Assert.Equal(ReviewMessage1, Convert.ToHexString(transcript.Message1));
+        Assert.Equal(ReviewMessage2, Convert.ToHexString(transcript.Message2));
+        Assert.Equal(ReviewRecord, Convert.ToHexString(transcript.Record));
+        Assert.Equal(PinnedVector, Convert.ToHexString(SHA256.HashData(Convert.FromHexString(ReviewMessage1 + ReviewMessage2 + ReviewRecord))));
+    }
+
+    /// <summary>RFC 5903 section 8.1 (ECDH on P-256): the DH output is the shared point's x-coordinate, both ways.</summary>
+    [Fact]
+    public void The_dh_is_rfc5903_section_8_1()
+    {
+        static NoiseKeyPair FromScalar(string hex)
+        {
+            using var key = ECDiffieHellman.Create(new ECParameters { Curve = ECCurve.NamedCurves.nistP256, D = Convert.FromHexString(hex) });
+            return NoiseKeyPair.FromPkcs8(key.ExportPkcs8PrivateKey());
+        }
+        using var i = FromScalar("C88F01F510D9AC3F70A292DAA2316DE544E9AAB8AFE84049C62A9C57862D1433");
+        using var r = FromScalar("C6EF9C5D78AE012A011164ACB397CE2088685D8F06BF9BE0B283AB46476BEE53");
+        Assert.Equal("04DAD0B65394221CF9B051E1FECA5787D098DFE637FC90B9EF945D0C37725811805271A0461CDB8252D61F1C456FA3E59AB1F45B33ACCF5F58389E0577B8990BB3",
+            Convert.ToHexString(i.PublicKey));
+        Assert.Equal("04D12DFB5289C8D4F81208B70270398C342296970A0BCCB74C736FC7554494BF6356FBF3CA366CC23E8157854C13C58D6AAC23F046ADA30F8353E74F33039872AB",
+            Convert.ToHexString(r.PublicKey));
+        const string girx = "D6840F6B42F6EDAFD13116E0E12565202FEF8E9ECE7DCE03812464D04B9442DE";
+        Assert.Equal(girx, Convert.ToHexString(i.Dh(r.PublicKey)));
+        Assert.Equal(girx, Convert.ToHexString(r.Dh(i.PublicKey)));
+    }
+
+    /// <summary>
+    /// A first message whose encrypted static key opens (the AEAD is right) but is not a point on P-256: refused at the
+    /// curve check, before the <c>ss</c> DH and before the binding, as an unknown key, never as a crash.
+    /// </summary>
+    [Fact]
+    public async Task A_well_encrypted_static_key_that_is_off_the_curve_is_refused_before_any_binding_check()
+    {
+        using var keys = new E2eKeys();
+        var offCurve = keys.NodeLink.PublicKey.ToArray();
+        offCurve[64] ^= 1;
+        Assert.False(NoiseKeyPair.IsValidPublicKey(offCurve));
+
+        using var e = NoiseKeyPair.Generate();
+        using var state = new NoiseSymmetricState(NoiseProtocol.Name);
+        state.MixHash(NoiseLink.Prologue(NodeId));
+        state.MixHash(keys.ServerStatic.PublicKey);
+        state.MixHash(e.PublicKey);
+        state.MixDh(e, keys.ServerStatic.PublicKey);
+        var encryptedStatic = state.EncryptAndHash(offCurve);
+        var encryptedPayload = state.EncryptAndHash(new byte[64]); // ss cannot be computed with an off-curve s
+        byte[] message = [NoiseLink.InitiatorHandshake, .. e.PublicKey, .. encryptedStatic, .. encryptedPayload];
+
+        var (a, b) = LinkPipe.Create();
+        await a.SendAsync(message, CancellationToken.None);
+        var verified = 0;
+        var options = keys.ResponderOptions(NodeId);
+        var error = await Assert.ThrowsAsync<LinkProtocolException>(() => NoiseLink.AcceptAsync(b, new NoiseResponderOptions
+        {
+            NodeId = NodeId, LocalStatics = options.LocalStatics, AllowPlaintext = options.AllowPlaintext,
+            Verify = (x, y, ct) => { Interlocked.Increment(ref verified); return options.Verify(x, y, ct); },
+        }, CancellationToken.None));
+        Assert.Equal(LinkCloseCodes.LinkKeyUnknown, error.CloseCode);
+        Assert.Equal(0, verified);
+
+        // The same message with the node's real (on-curve) key is the control: it gets as far as the payload.
+        using var control = new NoiseSymmetricState(NoiseProtocol.Name);
+        control.MixHash(NoiseLink.Prologue(NodeId));
+        control.MixHash(keys.ServerStatic.PublicKey);
+        control.MixHash(e.PublicKey);
+        control.MixDh(e, keys.ServerStatic.PublicKey);
+        var realStatic = control.EncryptAndHash(keys.NodeLink.PublicKey);
+        control.MixDh(keys.NodeLink, keys.ServerStatic.PublicKey);
+        var payload = control.EncryptAndHash(new byte[64]);
+        (a, b) = LinkPipe.Create();
+        await a.SendAsync((byte[])[NoiseLink.InitiatorHandshake, .. e.PublicKey, .. realStatic, .. payload], CancellationToken.None);
+        Assert.Equal(LinkCloseCodes.LinkIdentityInvalid, (await Assert.ThrowsAsync<LinkProtocolException>(() =>
+            NoiseLink.AcceptAsync(b, keys.ResponderOptions(NodeId), CancellationToken.None))).CloseCode);
+    }
+
+    private static async Task<LinkProtocolException> AnswerAsync(E2eKeys keys, Func<byte[], byte[]> answer)
+    {
+        var (initiate, accept, mid1, mid2) = Start(keys);
+        await mid2.SendAsync(await mid1.ReceiveAsync(CancellationToken.None), CancellationToken.None);
+        var genuine = await mid2.ReceiveAsync(CancellationToken.None);
+        _ = accept.ContinueWith(_ => { });
+        await mid1.SendAsync(answer(genuine), CancellationToken.None);
+        return await Assert.ThrowsAsync<LinkProtocolException>(() => initiate);
+    }
+
+    /// <summary>
+    /// A server that holds the key and answers correctly, but with a payload in message 2: it authenticates, so only
+    /// the rule "message 2 is exactly e and the tag" refuses it. The empty payload is the control.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(16)]
+    public async Task The_answer_is_exactly_e_and_the_tag_even_when_a_longer_one_would_authenticate(int payloadLength)
+    {
+        using var keys = new E2eKeys();
+        Assert.Equal(82, NoiseLink.ResponderHandshakeLength);
+        var (node, peer) = LinkPipe.Create();
+        var attempt = NoiseLink.InitiateAsync(node, new NoiseInitiatorOptions
+        {
+            NodeId = NodeId, LocalStatic = keys.NodeLink, ServerStatic = keys.ServerStatic.PublicKey, Binding = _ => new byte[64],
+        }, CancellationToken.None);
+        var message1 = await peer.ReceiveAsync(CancellationToken.None);
+
+        using var state = new NoiseSymmetricState(NoiseProtocol.Name);
+        state.MixHash(NoiseLink.Prologue(NodeId));
+        state.MixHash(keys.ServerStatic.PublicKey);
+        var re = message1[1..66];
+        state.MixHash(re);
+        state.MixDh(keys.ServerStatic, re);
+        var rs = state.DecryptAndHash(message1.AsSpan(66, 81));
+        state.MixDh(keys.ServerStatic, rs);
+        state.DecryptAndHash(message1.AsSpan(147));
+        using var e = NoiseKeyPair.Generate();
+        state.MixHash(e.PublicKey);
+        state.MixDh(e, re);
+        state.MixDh(e, rs);
+        await peer.SendAsync((byte[])[NoiseLink.ResponderHandshake, .. e.PublicKey, .. state.EncryptAndHash(new byte[payloadLength])], CancellationToken.None);
+
+        if (payloadLength == 0)
+        {
+            Assert.Equal(state.H, (await attempt).HandshakeHash);
+            return;
+        }
+        Assert.Equal(LinkCloseCodes.LinkKeyUnknown, (await Assert.ThrowsAsync<LinkProtocolException>(() => attempt)).CloseCode);
+    }
+
+    [Fact]
+    public async Task A_pinned_node_answered_in_plaintext_never_falls_back()
+    {
+        using var keys = new E2eKeys();
+        var welcome = LinkHandshake.WelcomeFrame(new LinkWelcome(1, "s1", false, "epoch", [], 20, new LinkLimits(FrameCodec.MaxPayload, 64), null, null));
+        Assert.Equal(FrameCodec.Format, welcome[0]);
+        var error = await AnswerAsync(keys, _ => welcome);
+        Assert.Equal(LinkCloseCodes.LinkKeyUnknown, error.CloseCode);
+        Assert.Contains(NoiseLink.KeyMismatch, error.Message);
+    }
+
+    [Theory]
+    [InlineData(0x13)]
+    [InlineData(0x1F)]
+    public async Task A_newer_handshake_answer_means_update_never_plaintext_or_an_older_handshake(byte type)
+    {
+        using var keys = new E2eKeys();
+        var error = await AnswerAsync(keys, genuine => [type, .. genuine[1..]]);
+        Assert.Equal(LinkCloseCodes.UpgradeRequired, error.CloseCode);
+        Assert.Contains(NoiseLink.ServerNewer, error.Message);
+        Assert.Equal(DialAction.NeedsUpdate, DialOutcomes.Classify(null, null, error.CloseCode));
+    }
+
+    public static TheoryData<string> VerifyFaults => new() { "crypto", "fault", "protocol" };
+
+    /// <summary>A Verify that throws: a binding that does not parse is 4497; a fault of the server's is 1011 (retry); the caller's own code passes.</summary>
+    [Theory]
+    [MemberData(nameof(VerifyFaults))]
+    public async Task A_verify_that_throws_is_typed_never_untyped(string kind)
+    {
+        using var keys = new E2eKeys();
+        var options = keys.ResponderOptions(NodeId);
+        var (initiate, _, mid1, _) = Start(keys);
+        var message1 = await mid1.ReceiveAsync(CancellationToken.None);
+        _ = initiate.ContinueWith(_ => { });
+        var (a, b) = LinkPipe.Create();
+        await a.SendAsync(message1, CancellationToken.None);
+        var error = await Assert.ThrowsAsync<LinkProtocolException>(() => NoiseLink.AcceptAsync(b, new NoiseResponderOptions
+        {
+            NodeId = NodeId, LocalStatics = options.LocalStatics, AllowPlaintext = options.AllowPlaintext,
+            Verify = (_, _, _) => kind switch
+            {
+                "crypto" => throw new CryptographicException("ASN1 corrupted data."),
+                "fault" => throw new InvalidOperationException("the registry is not ready"),
+                _ => throw new LinkProtocolException(LinkCloseCodes.ServiceRestart, "link_identity_unavailable: later"),
+            },
+        }, CancellationToken.None));
+        Assert.Equal(kind switch { "crypto" => LinkCloseCodes.LinkIdentityInvalid, "fault" => LinkCloseCodes.InternalError, _ => LinkCloseCodes.ServiceRestart },
+            error.CloseCode);
+        if (kind == "fault") Assert.Contains(NoiseLink.IdentityUnverifiable, error.Message);
+        // Only a binding that is really bad sends the node to re-pin; a fault of the server's is retried with backoff.
+        Assert.Equal(kind == "crypto" ? DialAction.NeedsRepin : DialAction.Retry, DialOutcomes.Classify(null, null, error.CloseCode));
+    }
+
+    [Fact]
+    public async Task A_secure_hook_that_throws_closes_1011_and_the_server_carries_on()
+    {
+        var calls = 0;
+        await using var server = new LinkServer(new LinkServerOptions
+        {
+            ServerEpoch = "e", HandlerFactory = _ => new TestLinkHandler(), Link = LinkPair.FastOptions,
+            Secure = (_, _, _) => Interlocked.Increment(ref calls) == 1 ? throw new InvalidOperationException("boom") : throw new IOException("disk"),
+        });
+        for (var i = 0; i < 2; i++)
+        {
+            var (node, end) = LinkPipe.Create();
+            Assert.Null(await server.RunAsync(end, NodeId, CancellationToken.None));
+            var closed = await Assert.ThrowsAsync<LinkClosedException>(async () => await node.ReceiveAsync(CancellationToken.None));
+            Assert.Equal(LinkCloseCodes.InternalError, closed.Code);
+            Assert.Equal(DialAction.Retry, DialOutcomes.Classify(null, null, closed.Code));
+        }
+    }
+
     private static (Task<NoiseLinkTransport> Initiate, Task<NoiseAcceptResult> Accept, ILinkTransport Mid1, ILinkTransport Mid2) Start(
         E2eKeys keys, string serverNodeId = NodeId, Func<NoiseBindingContext, byte[]>? binding = null, long? nodeRekey = null)
     {
@@ -249,6 +464,13 @@ public sealed class NoiseTests
             await peer.ReceiveAsync(CancellationToken.None);
             await peer.SendAsync(flipped, CancellationToken.None);
             var error = await Assert.ThrowsAsync<LinkProtocolException>(() => attempt);
+            if (NoiseLink.IsFutureHandshake(flipped[0]))
+            {
+                // A type byte flipped into the range of a later handshake version (0x13, 0x19): fail closed as "update".
+                Assert.Equal(LinkCloseCodes.UpgradeRequired, error.CloseCode);
+                Assert.Contains(NoiseLink.ServerNewer, error.Message);
+                continue;
+            }
             Assert.Equal(LinkCloseCodes.LinkKeyUnknown, error.CloseCode);
             Assert.Contains(NoiseLink.KeyMismatch, error.Message);
         }

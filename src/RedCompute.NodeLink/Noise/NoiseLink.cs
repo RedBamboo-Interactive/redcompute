@@ -41,6 +41,17 @@ public static class NoiseLink
     public const string E2eRequired = "e2e_required";
     public const string IdentityInvalid = "link_identity_invalid";
     public const string ServerUnsupported = "server_e2e_unsupported";
+    public const string ServerNewer = "server_e2e_newer";
+    public const string IdentityUnverifiable = "link_identity_unverifiable";
+
+    /// <summary>
+    /// The handshake message types a later version of this protocol may use (0x13-0x1F). A node never answers one by
+    /// falling back: it fails closed with 4426 (update leaf-node), and the encrypted link is never replaced by plaintext.
+    /// </summary>
+    public static bool IsFutureHandshake(byte type) => type is >= 0x13 and <= 0x1F;
+
+    /// <summary>The only valid answer: the type, the server's ephemeral key and the tag over an empty payload.</summary>
+    public const int ResponderHandshakeLength = 1 + NoiseProtocol.PublicKeyLength + NoiseProtocol.TagLength;
 
     /// <summary>The prologue both sides mix in: the protocol label and the node id the link is for.</summary>
     public static byte[] Prologue(string nodeId) => Encoding.UTF8.GetBytes("leaf-node-link.v1\n" + nodeId);
@@ -74,9 +85,9 @@ public static class NoiseLink
             state.MixHash(options.ServerStatic);
 
             state.MixHash(e.PublicKey);
-            state.MixKey(e.Dh(options.ServerStatic));
+            state.MixDh(e, options.ServerStatic);
             var encryptedStatic = state.EncryptAndHash(options.LocalStatic.PublicKey);
-            state.MixKey(options.LocalStatic.Dh(options.ServerStatic));
+            state.MixDh(options.LocalStatic, options.ServerStatic);
             var payload = options.Binding(new NoiseBindingContext(options.NodeId, options.LocalStatic.PublicKey, options.ServerStatic, state.H.ToArray()));
             var encryptedPayload = state.EncryptAndHash(payload);
             message = [InitiatorHandshake, .. e.PublicKey, .. encryptedStatic, .. encryptedPayload];
@@ -106,15 +117,21 @@ public static class NoiseLink
             throw;
         }
 
+        if (answer.Length > 0 && IsFutureHandshake(answer[0]))
+        {
+            state.Dispose();
+            throw new LinkProtocolException(LinkCloseCodes.UpgradeRequired,
+                $"{ServerNewer}: the server answered with a newer encrypted handshake (0x{answer[0]:X2}); update leaf-node.");
+        }
         try
         {
-            if (answer.Length < 1 + NoiseProtocol.PublicKeyLength + NoiseProtocol.TagLength || answer[0] != ResponderHandshake
-                || answer.Length > MaxHandshakeMessage)
+            // Exactly e and the tag over an empty payload: anything longer or shorter is not this protocol's answer.
+            if (answer.Length != ResponderHandshakeLength || answer[0] != ResponderHandshake)
                 throw new CryptographicException("Not a handshake answer.");
             var re = answer.AsSpan(1, NoiseProtocol.PublicKeyLength);
             state.MixHash(re);
-            state.MixKey(e.Dh(re));
-            state.MixKey(options.LocalStatic.Dh(re));
+            state.MixDh(e, re);
+            state.MixDh(options.LocalStatic, re);
             state.DecryptAndHash(answer.AsSpan(1 + NoiseProtocol.PublicKeyLength));
         }
         catch (CryptographicException)
@@ -127,7 +144,15 @@ public static class NoiseLink
         var (send, receive) = state.Split();
         var hash = state.H.ToArray();
         state.Dispose();
-        return new NoiseLinkTransport(inner, send, receive, hash, options.ServerStatic, options.RekeyEvery);
+        try
+        {
+            return new NoiseLinkTransport(inner, send, receive, hash, options.ServerStatic, options.RekeyEvery);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(send);
+            CryptographicOperations.ZeroMemory(receive);
+        }
     }
 
     /// <summary>
@@ -172,9 +197,9 @@ public static class NoiseLink
                 state.MixHash(Prologue(options.NodeId));
                 state.MixHash(local.PublicKey);
                 state.MixHash(re);
-                state.MixKey(local.Dh(re));
+                state.MixDh(local, re);
                 rs = state.DecryptAndHash(encryptedStatic);
-                state.MixKey(local.Dh(rs));
+                state.MixDh(local, rs);
                 h = state.H.ToArray();
                 payload = state.DecryptAndHash(encryptedPayload);
             }
@@ -187,19 +212,42 @@ public static class NoiseLink
             try
             {
                 var binding = new NoiseBindingContext(options.NodeId, rs, local.PublicKey, h);
-                if (!await options.Verify(binding, payload, ct))
+                bool verified;
+                try
+                {
+                    verified = await options.Verify(binding, payload, ct);
+                }
+                catch (Exception error) when (error is not (LinkProtocolException or OperationCanceledException))
+                {
+                    // A binding that does not parse is a bad binding (4497); anything else is the server's own fault
+                    // (a lookup that failed), never a verdict on the node: 1011, and the node retries.
+                    if (error is not CryptographicException)
+                        throw new LinkProtocolException(LinkCloseCodes.InternalError,
+                            $"{IdentityUnverifiable}: the server could not check the node's identity binding ({error.GetType().Name}).");
+                    verified = false;
+                }
+                if (!verified)
                     throw new LinkProtocolException(LinkCloseCodes.LinkIdentityInvalid,
                         $"{IdentityInvalid}: the node's link key is not bound to its paired identity.");
 
                 using var e = options.Ephemeral?.Invoke() ?? NoiseKeyPair.Generate();
                 state.MixHash(e.PublicKey);
-                state.MixKey(e.Dh(re));
-                state.MixKey(e.Dh(rs));
+                state.MixDh(e, re);
+                state.MixDh(e, rs);
                 var encrypted = state.EncryptAndHash([]);
                 await inner.SendAsync((byte[])[ResponderHandshake, .. e.PublicKey, .. encrypted], ct);
                 var (initiatorToResponder, responderToInitiator) = state.Split();
-                var transport = new NoiseLinkTransport(inner, responderToInitiator, initiatorToResponder, state.H.ToArray(), rs, options.RekeyEvery);
-                return new NoiseAcceptResult(transport, new NoiseAccepted(rs, index, payload));
+                try
+                {
+                    var transport = new NoiseLinkTransport(inner, responderToInitiator, initiatorToResponder, state.H.ToArray(), rs,
+                        options.RekeyEvery);
+                    return new NoiseAcceptResult(transport, new NoiseAccepted(rs, index, payload));
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(initiatorToResponder);
+                    CryptographicOperations.ZeroMemory(responderToInitiator);
+                }
             }
             finally
             {
