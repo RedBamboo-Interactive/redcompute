@@ -75,10 +75,22 @@ internal static class JobApiResponse
     internal static string? NodeId(JobRecord job, INodeRegistry? nodes)
         => nodes is null ? job.NodeId : nodes.Resolve(job.NodeId);
 
-    private static Dictionary<string, object?> Common(JobRecord job, string? outputDirectory, INodeRegistry? nodes) => new()
+    private static Dictionary<string, object?> Common(JobRecord job, string? outputDirectory, INodeRegistry? nodes)
     {
-        ["terminal"] = JobTrackingService.IsTerminal(job.Status),
-        ["nodeId"] = NodeId(job, nodes),
+        var response = new Dictionary<string, object?>
+        {
+            ["terminal"] = JobTrackingService.IsTerminal(job.Status),
+            ["nodeId"] = NodeId(job, nodes),
+        };
+        // Only a job whose request carried placement has it, so every other job reads as before.
+        if (job.PlacementWhy is { } why)
+            response["placement"] = new { resolved = new { nodeId = NodeId(job, nodes), why } };
+        foreach (var (key, value) in Rest(job, outputDirectory)) response[key] = value;
+        return response;
+    }
+
+    private static Dictionary<string, object?> Rest(JobRecord job, string? outputDirectory) => new()
+    {
         ["stage"] = Stage(job),
         ["result"] = ParseResultObject(job.ResultJson),
         ["outputs"] = Outputs(job, outputDirectory ?? OutputDirectory),
@@ -149,6 +161,24 @@ internal static class JobApiResponse
             ["resultJson"] = Field("string", "Compatibility raw result JSON string; nullable."),
             ["terminal"] = Field("boolean", "True for Completed, Failed, Cancelled, Skipped, or TimedOut."),
             ["nodeId"] = Field("string", "The node (computer) that executes the job; see GET /nodes. Jobs older than node ids report the local node."),
+            ["placement"] = new
+            {
+                type = "object",
+                description = "Present only when the request carried placement: where the job was placed and why. Display only.",
+                properties = new
+                {
+                    resolved = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            nodeId = Field("string", "The executing node, as nodeId."),
+                            why = new { type = "string", description = "explicit: the caller named the node; default: the capability's default node; local: Automatic chose node zero; gpu: Automatic chose a node with a GPU.",
+                                @enum = new[] { "explicit", "default", "local", "gpu" } },
+                        },
+                    },
+                },
+            },
             ["stage"] = new { type = "string", description = StageDescription,
                 @enum = new[] { "admitted", "waiting", "executing", "completed", "failed", "cancelled", "skipped", "timed_out" } },
             ["result"] = Field("object", "resultJson parsed only when it is a JSON object; otherwise null."),

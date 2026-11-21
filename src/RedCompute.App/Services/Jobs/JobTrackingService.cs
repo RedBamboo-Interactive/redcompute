@@ -42,6 +42,7 @@ public class JobTrackingService : IJobTracker
         LeaseOwner = j.LeaseOwner,
         LeaseExpiresAt = j.LeaseExpiresAt,
         NodeId = j.NodeId,
+        PlacementWhy = j.PlacementWhy,
         InputJson = "{}",
     };
     private readonly object _lock = new();
@@ -147,7 +148,10 @@ public class JobTrackingService : IJobTracker
                         ? parentJobId : null,
                     Status = JobStatus.Queued,
                     QueuedAt = _clock(),
-                    NodeId = StampNodeId,
+                    // The executing node. Node zero keeps its stamp (NULL while its identity is not
+                    // persisted), whether or not the caller named it.
+                    NodeId = submission.Placement is { IsLocal: false } placement ? placement.NodeId : StampNodeId,
+                    PlacementWhy = submission.Placement?.Why,
                 };
 
                 db.Jobs.Add(result);

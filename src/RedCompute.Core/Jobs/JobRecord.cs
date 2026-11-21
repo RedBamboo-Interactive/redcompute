@@ -78,6 +78,14 @@ public class JobRecord
     /// </summary>
     public string? NodeId { get; set; }
 
+    /// <summary>
+    /// Why the job runs on <see cref="NodeId"/> (<see cref="PlacementResolution.Why"/>), recorded only
+    /// when the request carried <c>placement</c>; display only. Null on every other job, and never
+    /// written as JSON then, so a job created without <c>placement</c> serialises as it always did.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PlacementWhy { get; set; }
+
     public long? DurationMs => CompletedAt.HasValue && StartedAt.HasValue
         ? (long)(CompletedAt.Value - StartedAt.Value).TotalMilliseconds
         : null;

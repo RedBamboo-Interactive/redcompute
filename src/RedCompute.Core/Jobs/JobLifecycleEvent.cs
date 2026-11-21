@@ -95,7 +95,25 @@ public sealed record JobSubmission(
     string? Rationale = null,
     bool ExternalExecution = false,
     string? IdempotencyScope = null,
-    bool Confidential = false);
+    bool Confidential = false,
+    PlacementResolution? Placement = null);
+
+/// <summary>
+/// Where <c>/{slug}/generate</c> placed a job (Phase 4, design 3.3), when the request carried
+/// <c>placement</c>. <paramref name="NodeId"/> is the executing node; <paramref name="IsLocal"/> says
+/// it is node zero, whose jobs keep the stamp they always had (<c>JobTrackingService.StampNodeId</c>).
+/// </summary>
+/// <param name="Why">
+/// <c>explicit</c> (the caller named the node), <c>default</c> (the capability's default node),
+/// <c>local</c> (Automatic chose node zero) or <c>gpu</c> (Automatic chose a remote GPU node).
+/// </param>
+public sealed record PlacementResolution(string NodeId, bool IsLocal, string Why)
+{
+    public const string Explicit = "explicit";
+    public const string Default = "default";
+    public const string Local = "local";
+    public const string Gpu = "gpu";
+}
 
 public sealed record ExternalJobLease(
     Guid JobId,

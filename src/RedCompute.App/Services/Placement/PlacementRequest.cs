@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Discovery;
+using RedCompute.Core.Jobs;
 using RedCompute.Core.Nodes;
 using RedCompute.PluginSdk;
 
@@ -246,6 +247,18 @@ public static class PlacementParser
             return null;
         }
         return NodeNotFound(requested);
+    }
+
+    /// <summary>
+    /// Where a request with <c>placement</c> runs, from the node <see cref="ResolveNode"/> found (null:
+    /// no <c>nodeId</c>, so Automatic, which is node zero while no remote node runs work).
+    /// </summary>
+    public static PlacementResolution Resolution(string? resolvedNodeId, INodeRegistry? nodes)
+    {
+        var local = nodes?.LocalNodeId ?? INodeRegistry.LocalAlias;
+        if (resolvedNodeId is null) return new PlacementResolution(local, IsLocal: true, PlacementResolution.Local);
+        var isLocal = resolvedNodeId == INodeRegistry.LocalAlias || resolvedNodeId == nodes?.LocalNodeId;
+        return new PlacementResolution(isLocal ? local : resolvedNodeId, isLocal, PlacementResolution.Explicit);
     }
 
     /// <summary>The one answer for an unknown node and for a node the caller may not use.</summary>

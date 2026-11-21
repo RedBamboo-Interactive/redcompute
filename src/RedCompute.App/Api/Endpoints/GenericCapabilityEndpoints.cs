@@ -59,18 +59,23 @@ public static class GenericCapabilityEndpoints
                 // nodeId only, validated and checked against the registry and against what the caller may
                 // use (NodeAccess). Taken out of the body so the provider, its schema validation and the job
                 // input see exactly what they did. With no nodeId the work runs on node zero, which is where
-                // Automatic routes every caller while no remote node runs work.
+                // Automatic routes every caller while no remote node runs work. The resolved node goes to
+                // the provider resolver and the job (placement.resolved); a request without placement
+                // records nothing new.
+                PlacementResolution? resolved = null;
                 if (body.Remove(PlacementRequest.Member, out var placementValue) && placementValue is JsonElement placementElement)
                 {
                     if (!PlacementParser.TryParseValue(placementElement, PlacementRoute.Generate, conversationOnly: false,
                             out var placement, out var placementError))
                         return placementError!.ToResult();
-                    if (placement is not null && PlacementParser.ResolveNode(placement, nodes, ctx.User, out _) is { } nodeError)
+                    string? nodeId = null;
+                    if (placement is not null && PlacementParser.ResolveNode(placement, nodes, ctx.User, out nodeId) is { } nodeError)
                         return nodeError.ToResult();
+                    resolved = PlacementParser.Resolution(nodeId, nodes);
                 }
 
                 var requestedProvider = ProviderResolver.GetRequestedProvider(ctx, body);
-                var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, slug);
+                var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, slug, resolved);
                 if (providerError != null) return providerError;
                 if (provider == null)
                     return Error(503, "provider_not_configured", $"No provider configured for '{slug}'");
@@ -122,7 +127,7 @@ public static class GenericCapabilityEndpoints
                 {
                     job = jobTracker.CreateJob(new JobSubmission(
                         slug, provider.Name, JsonSerializer.Serialize(body), provenance,
-                        idempotencyKey, jobName, jobRationale));
+                        idempotencyKey, jobName, jobRationale, Placement: resolved));
                 }
                 catch (IdempotencyConflictException ex)
                 {
@@ -303,7 +308,7 @@ public static class GenericCapabilityEndpoints
                 .WithParam("X-Job-Name", "string", description: "Human-readable job name (body 'name' takes precedence)", location: ParamLocation.Header)
                 .WithParam("X-Job-Rationale", "string", description: "Why the job was queued (body 'rationale' takes precedence)", location: ParamLocation.Header)
                 .WithParam("X-Provider", "string", description: "Provider to use for this request (body 'provider' takes precedence)", location: ParamLocation.Header)
-                .WithParam("placement", "object", description: "Where the job runs: {nodeId}, a /nodes id or 'local' (null or absent: this node). Only nodeId is accepted on this route; any other member is 422 placement_member_not_supported, an unknown node 404 node_not_found. It is not passed to the provider and not part of the job input.", location: ParamLocation.Body);
+                .WithParam("placement", "object", description: "Where the job runs: {nodeId}, a /nodes id or 'local' (null or absent: this node). Only nodeId is accepted on this route; any other member is 422 placement_member_not_supported, an unknown node 404 node_not_found. It is not passed to the provider and not part of the job input; the job records where it ran as placement.resolved {nodeId, why: explicit|default|local|gpu} (GET /jobs/{id}).", location: ParamLocation.Body);
 
 
             if (capability.ActiveProvider is IPluginProvider structured &&
