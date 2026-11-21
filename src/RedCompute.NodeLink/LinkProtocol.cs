@@ -51,6 +51,15 @@ public static class LinkFeatures
     public const string CliV1 = "cli.v1";
     public const string DiagEcho = "diag.echo";
     public const string SpoolDisk = "spool.disk";
+
+    /// <summary>Phase 4: control methods over the runtimes the node's owner registered (design 2.4).</summary>
+    public const string RuntimeV1 = "runtime.v1";
+
+    /// <summary>Phase 4: one HTTP exchange per <c>port</c> channel, to a registered runtime (design 2.2).</summary>
+    public const string ForwardHttpV1 = "forward.http.v1";
+
+    /// <summary>Phase 4: one WebSocket per <c>port.ws</c> channel, to a registered runtime (design 2.2).</summary>
+    public const string ForwardWsV1 = "forward.ws.v1";
 }
 
 public sealed record AgentInfo(string Version, string Os, string Arch);

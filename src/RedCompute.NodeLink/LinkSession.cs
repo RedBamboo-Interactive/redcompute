@@ -245,6 +245,7 @@ public sealed class LinkSession : IAsyncDisposable
             {
                 var now = Now;
                 foreach (var channel in _channels.Values) channel.OnTimer(now);
+                if (_options.AutoTune) AutoTuneLocked(now);
                 if (_heartbeat is { } heartbeat)
                 {
                     if (heartbeat.IsDead()) throw new TimeoutException("No frame from the peer within the heartbeat window.");
@@ -254,6 +255,34 @@ public sealed class LinkSession : IAsyncDisposable
                 }
             }
             Signal();
+        }
+    }
+
+    /// <summary>
+    /// Window autotune (Phase 4 2.3): each AutoTune channel whose interval (2 x RTT, bounded) passed gets the window
+    /// <see cref="WindowTuner.Next"/> picks from the bytes its consumer committed since the last sample.
+    /// </summary>
+    private void AutoTuneLocked(long now)
+    {
+        var rtt = _heartbeat?.Rtt is { } measured && measured > TimeSpan.Zero ? measured : _options.AutoTuneDefaultRtt;
+        var interval = TimeSpan.FromTicks(Math.Clamp(rtt.Ticks * 2, _options.AutoTuneMinInterval.Ticks, _options.AutoTuneMaxInterval.Ticks));
+        long total = 0;
+        foreach (var channel in _channels.Values)
+            if (channel.Class.AutoTune) total += channel.LocalWindow;
+        foreach (var channel in _channels.Values)
+        {
+            if (!channel.Class.AutoTune || channel.Phase != ChannelPhase.Open) continue;
+            var elapsed = _options.Time.GetElapsedTime(channel.TuneAt, now);
+            if (elapsed < interval) continue;
+            var rate = (channel.CommittedBytes - channel.TuneBytes) / elapsed.TotalSeconds;
+            channel.TuneAt = now;
+            channel.TuneBytes = channel.CommittedBytes;
+            var current = channel.LocalWindow;
+            var next = WindowTuner.Next(current, channel.Class.Window, _options.AutoTuneChannelCap,
+                _options.AutoTuneLinkCap - (total - current), rate, rtt);
+            if (next == current) continue;
+            channel.SetLocalWindow(next);
+            total += next - current;
         }
     }
 
@@ -479,6 +508,11 @@ public sealed class LinkSession : IAsyncDisposable
         {
             acceptance = _handler.AcceptChannel(this, info);
         }
+        catch (LinkChannelResetException refusal)
+        {
+            RefuseOpen(id, refusal.Code, refusal.Message);
+            return;
+        }
         catch (Exception error)
         {
             RefuseOpen(id, LinkErrorCodes.Internal, error.Message);
@@ -505,8 +539,15 @@ public sealed class LinkSession : IAsyncDisposable
         var channel = new LinkChannel(id, @class, local: false, _options, priority, streamKey, info.Meta, window, peerWindow, 0, receiveBase)
         {
             OpenDue = true,
+            TuneAt = Now,
         };
         AddChannel(channel, acceptance.Handler);
+        if (acceptance.Handler is IChannelOpenedHandler opened)
+        {
+            var handle = channel.Handle!;
+            after ??= [];
+            after.Add(() => opened.OnOpened(handle));
+        }
     }
 
     private void RefuseOpen(uint id, string code, string message)
@@ -569,7 +610,11 @@ public sealed class LinkSession : IAsyncDisposable
                 if (channel.Phase == ChannelPhase.Retired) return;
                 try
                 {
-                    if (delivery.IsClose) await channel.Handler!.OnRemoteCloseAsync(channel.Handle!, ct);
+                    if (delivery.IsClose)
+                    {
+                        channel.Handle!.RemoteClosePayload = delivery.Payload;
+                        await channel.Handler!.OnRemoteCloseAsync(channel.Handle!, ct);
+                    }
                     else await channel.Handler!.OnDataAsync(channel.Handle!, new ChannelData(delivery.Seq, delivery.Payload, delivery.Fin), ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -679,6 +724,7 @@ public sealed class LinkSession : IAsyncDisposable
                 Writer = writer,
                 Opened = opened,
                 OpenDue = true,
+                TuneAt = Now,
             };
             var body = new JsonObject { ["class"] = @class.Name, ["priority"] = priority, ["window"] = window };
             if (request.StreamKey is not null) body["streamKey"] = request.StreamKey;
@@ -728,14 +774,19 @@ public sealed class LinkSession : IAsyncDisposable
         Signal();
     }
 
-    internal void CloseChannel(LinkChannel channel)
+    internal void CloseChannel(LinkChannel channel, byte[]? payload)
     {
         lock (_gate)
         {
             if (channel.Phase == ChannelPhase.Retired || channel.Writer is not null) return;
-            channel.EnqueueClose();
+            channel.EnqueueClose(payload);
         }
         Signal();
+    }
+
+    internal long ReceiveWindowOf(LinkChannel channel)
+    {
+        lock (_gate) return channel.LocalWindow;
     }
 
     internal void ResetChannel(LinkChannel channel, string code, string message)

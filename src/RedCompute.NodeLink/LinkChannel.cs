@@ -80,6 +80,7 @@ internal sealed class LinkChannel
         StreamKey = streamKey;
         Meta = meta;
         LocalWindow = localWindow;
+        MaxAdvertisedWindow = localWindow;
         PeerWindow = peerWindow;
         SendBase = sendBase;
         _nextSeq = sendBase + 1;
@@ -102,6 +103,19 @@ internal sealed class LinkChannel
     public JsonObject? Meta { get; }
     public ChannelPhase Phase { get; set; }
     public long LocalWindow { get; private set; }
+
+    /// <summary>
+    /// The largest window we ever advertised. A peer may have sent up to it before our smaller one reached it, so the
+    /// overrun check and the reorder buffer use this, never the current one: a shrink is never a false 4400.
+    /// </summary>
+    public long MaxAdvertisedWindow { get; private set; }
+
+    /// <summary>Every payload byte the consumer committed (autotune's rate).</summary>
+    public long CommittedBytes { get; private set; }
+
+    /// <summary>Autotune's last sample: when, and <see cref="CommittedBytes"/> then.</summary>
+    public long TuneAt { get; set; }
+    public long TuneBytes { get; set; }
     public long PeerWindow { get; set; }
     public ulong SendBase { get; }
     public ulong AckedThrough { get; private set; }
@@ -174,11 +188,12 @@ internal sealed class LinkChannel
     /// <summary>Why the channel is gone, once reset.</summary>
     public Exception? ResetError { get; set; }
 
-    public void EnqueueClose()
+    /// <summary>Our half-close; <paramref name="payload"/> is what the peer's handler reads as the close's payload.</summary>
+    public void EnqueueClose(byte[]? payload = null)
     {
         if (_closeSeq != 0) return;
         _closeSeq = _nextSeq;
-        Enqueue(FrameKind.Close, FrameFlags.Fin, []);
+        Enqueue(FrameKind.Close, FrameFlags.Fin, payload ?? []);
     }
 
     private void Enqueue(FrameKind kind, FrameFlags flags, byte[] payload)
@@ -384,7 +399,7 @@ internal sealed class LinkChannel
         }
         if (frame.Seq != _received + 1)
         {
-            if (!_reorder.ContainsKey(frame.Seq) && _reorderBytes + frame.Payload.Length <= LocalWindow)
+            if (!_reorder.ContainsKey(frame.Seq) && _reorderBytes + frame.Payload.Length <= MaxAdvertisedWindow)
             {
                 _reorder[frame.Seq] = frame with { Payload = frame.Payload.ToArray() };
                 _reorderBytes += frame.Payload.Length;
@@ -406,14 +421,14 @@ internal sealed class LinkChannel
         _received = frame.Seq;
         _uncommitted.Enqueue((frame.Seq, frame.Payload.Length));
         _uncommittedBytes += frame.Payload.Length;
-        if (_uncommittedBytes + _reorderBytes > LocalWindow + 2L * FrameCodec.MaxFrame)
-            throw new LinkProtocolException(LinkCloseCodes.ProtocolError, $"Channel {Id}: the peer overran the {LocalWindow}-byte window.");
+        if (_uncommittedBytes + _reorderBytes > MaxAdvertisedWindow + 2L * FrameCodec.MaxFrame)
+            throw new LinkProtocolException(LinkCloseCodes.ProtocolError, $"Channel {Id}: the peer overran the {MaxAdvertisedWindow}-byte window.");
 
         if (frame.Kind == FrameKind.Close)
         {
             RemoteCloseReceived = true;
             _deliveryPoints.Enqueue(frame.Seq);
-            deliveries.Add(new Delivery(frame.Seq, [], true, true));
+            deliveries.Add(new Delivery(frame.Seq, frame.Payload.ToArray(), true, true));
             return true;
         }
         if (Class.Messages && !Durable)
@@ -454,6 +469,7 @@ internal sealed class LinkChannel
         {
             var (_, bytes) = _uncommitted.Dequeue();
             _uncommittedBytes -= bytes;
+            CommittedBytes += bytes;
             _ackFrames++;
             _ackBytes += bytes;
         }
@@ -484,6 +500,7 @@ internal sealed class LinkChannel
     public void SetLocalWindow(long window)
     {
         LocalWindow = window;
+        if (window > MaxAdvertisedWindow) MaxAdvertisedWindow = window;
         WindowDue = true;
     }
 

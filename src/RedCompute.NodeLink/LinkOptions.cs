@@ -35,6 +35,23 @@ public sealed class LinkOptions
     /// <summary>Retired channel ids remembered, to re-ack or re-reset late duplicates.</summary>
     public int Tombstones { get; init; } = 1024;
 
+    /// <summary>
+    /// Window autotune (Phase 4 2.3): the receiver of an <see cref="ChannelClass.AutoTune"/> channel grows its window
+    /// toward 2 x measured rate x RTT, up to <see cref="AutoTuneChannelCap"/> per channel and
+    /// <see cref="AutoTuneLinkCap"/> for all such windows of the link together, and shrinks it back (never below the
+    /// class's window) when the consumer slows down.
+    /// </summary>
+    public bool AutoTune { get; init; } = true;
+    public long AutoTuneChannelCap { get; init; } = 8L * 1024 * 1024;
+    public long AutoTuneLinkCap { get; init; } = 32L * 1024 * 1024;
+
+    /// <summary>The RTT autotune assumes before the heartbeat measured one.</summary>
+    public TimeSpan AutoTuneDefaultRtt { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>The tuner's interval is 2 x RTT, kept between these bounds.</summary>
+    public TimeSpan AutoTuneMinInterval { get; init; } = TimeSpan.FromMilliseconds(50);
+    public TimeSpan AutoTuneMaxInterval { get; init; } = TimeSpan.FromSeconds(1);
+
     public TimeProvider Time { get; init; } = TimeProvider.System;
 
     public TimeSpan DeadAfter => HeartbeatInterval * MissedHeartbeats;
@@ -50,6 +67,9 @@ public sealed class LinkOptions
 public sealed record ChannelClass(string Name, int Priority, int Window, bool MayBeDurable, bool Messages, int ReassemblyCap)
 {
     public const int MaxPriority = 3;
+
+    /// <summary>The receiver tunes this class's window to the measured rate (<see cref="LinkOptions.AutoTune"/>).</summary>
+    public bool AutoTune { get; init; }
 }
 
 public static class ChannelClasses
@@ -60,7 +80,11 @@ public static class ChannelClasses
     public static ChannelClass Control { get; } = new("control", 0, 256 * KiB, false, true, 1 * MiB);
     public static ChannelClass DiagEcho { get; } = new("diag.echo", 3, 256 * KiB, true, false, 0);
     public static ChannelClass Stdio { get; } = new("stdio", 1, 1 * MiB, true, false, 0);
-    public static ChannelClass Port { get; } = new("port", 2, 256 * KiB, false, false, 0);
+    /// <summary>One forwarded HTTP exchange (<see cref="LinkFeatures.ForwardHttpV1"/>).</summary>
+    public static ChannelClass Port { get; } = new("port", 2, 256 * KiB, false, false, 0) { AutoTune = true };
+
+    /// <summary>One forwarded WebSocket (<see cref="LinkFeatures.ForwardWsV1"/>): a link message per WS message.</summary>
+    public static ChannelClass PortWs { get; } = new("port.ws", 2, 256 * KiB, false, true, 16 * MiB) { AutoTune = true };
     public static ChannelClass File { get; } = new("file", 2, 256 * KiB, false, true, 4 * MiB);
     public static ChannelClass Blob { get; } = new("blob", 3, 4 * MiB, false, false, 0);
 
@@ -68,7 +92,7 @@ public static class ChannelClasses
     public static ChannelClass TestStream { get; } = new("test.stream", 3, 256 * KiB, true, true, 1 * MiB);
 
     public static IReadOnlyDictionary<string, ChannelClass> All { get; } =
-        new[] { Control, DiagEcho, Stdio, Port, File, Blob, TestStream }.ToDictionary(c => c.Name, StringComparer.Ordinal);
+        new[] { Control, DiagEcho, Stdio, Port, PortWs, File, Blob, TestStream }.ToDictionary(c => c.Name, StringComparer.Ordinal);
 
     public static ChannelClass? Find(string? name) => name is not null && All.TryGetValue(name, out var found) ? found : null;
 }

@@ -35,11 +35,23 @@ public interface IChannelHandler
 {
     ValueTask OnDataAsync(LinkChannelHandle channel, ChannelData data, CancellationToken ct);
 
-    /// <summary>The peer half-closed: nothing more will arrive.</summary>
+    /// <summary>
+    /// The peer half-closed: nothing more will arrive. What it sent with its CLOSE (a forward's trailer) is
+    /// <see cref="LinkChannelHandle.RemoteClosePayload"/>.
+    /// </summary>
     ValueTask OnRemoteCloseAsync(LinkChannelHandle channel, CancellationToken ct);
 
     /// <summary>The channel is gone: reset by either side, or its link session was lost (<c>link_reset</c>).</summary>
     void OnReset(LinkChannelHandle channel, string code, string message);
+}
+
+/// <summary>
+/// A channel handler that wants to act as soon as the channel it accepted is open (a forward that must start its
+/// exchange before the peer sends anything). Called once, outside the session's lock, after the accept is queued.
+/// </summary>
+public interface IChannelOpenedHandler
+{
+    void OnOpened(LinkChannelHandle channel);
 }
 
 /// <summary>
@@ -48,7 +60,10 @@ public interface IChannelHandler
 /// </summary>
 public interface ILinkHandler
 {
-    /// <summary>A handler for the peer's channel, or null to refuse it (<c>class_not_supported</c>).</summary>
+    /// <summary>
+    /// A handler for the peer's channel, or null to refuse it (<c>class_not_supported</c>). Throw
+    /// <see cref="LinkChannelResetException"/> to refuse it with that exception's code.
+    /// </summary>
     ChannelAcceptance? AcceptChannel(LinkSession session, ChannelOpenInfo info);
 
     /// <summary>A control call. Throw <see cref="LinkRpcException"/> to answer an error.</summary>
@@ -100,7 +115,24 @@ public sealed class LinkChannelHandle
     public ValueTask SendAsync(ReadOnlyMemory<byte> message, CancellationToken ct = default) => _session.SendAsync(_channel, message, ct);
 
     /// <summary>Half-closes our direction once everything queued before it is sent.</summary>
-    public void Close() => _session.CloseChannel(_channel);
+    public void Close() => _session.CloseChannel(_channel, null);
+
+    /// <summary>
+    /// Half-closes with <paramref name="payload"/> on the CLOSE frame (at most <see cref="FrameCodec.MaxSendPayload"/>
+    /// bytes): a forward's trailer. Not for durable streams.
+    /// </summary>
+    public void Close(ReadOnlyMemory<byte> payload)
+    {
+        if (payload.Length > FrameCodec.MaxSendPayload)
+            throw new ArgumentException($"A close payload is at most {FrameCodec.MaxSendPayload} bytes.", nameof(payload));
+        _session.CloseChannel(_channel, payload.ToArray());
+    }
+
+    /// <summary>The payload of the peer's CLOSE, once it arrived (empty when it sent none).</summary>
+    public ReadOnlyMemory<byte> RemoteClosePayload { get; internal set; }
+
+    /// <summary>Our current receive window (autotune moves it on <see cref="ChannelClass.AutoTune"/> classes).</summary>
+    public long ReceiveWindow => _session.ReceiveWindowOf(_channel);
 
     public void Reset(string code, string message) => _session.ResetChannel(_channel, code, message);
 

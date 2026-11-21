@@ -121,9 +121,10 @@ internal sealed class LinkPair : IAsyncDisposable
         string nodeId = NodeId, IReadOnlyList<string>? nodeFeatures = null,
         Func<ILinkTransport, CancellationToken, Task<ILinkTransport>>? clientSecure = null,
         Func<ILinkTransport, string, CancellationToken, Task<ILinkTransport>>? serverSecure = null,
-        TimeSpan? needsUpdateRetry = null)
+        TimeSpan? needsUpdateRetry = null, IReadOnlyList<string>? serverFeatures = null)
     {
         _serverSecure = serverSecure;
+        _serverFeatures = serverFeatures ?? [LinkFeatures.DescribeV1, LinkFeatures.DiagEcho];
         Options = options ?? FastOptions;
         NodeHandler = nodeHandler ?? new TestLinkHandler();
         ServerHandler = serverHandler ?? new TestLinkHandler();
@@ -144,6 +145,7 @@ internal sealed class LinkPair : IAsyncDisposable
     }
 
     private readonly AgentPolicy? _policy;
+    private readonly IReadOnlyList<string> _serverFeatures;
     private readonly Func<ILinkTransport, string, CancellationToken, Task<ILinkTransport>>? _serverSecure;
     private int _epoch;
 
@@ -151,7 +153,7 @@ internal sealed class LinkPair : IAsyncDisposable
     {
         ServerEpoch = "epoch-" + Interlocked.Increment(ref _epoch),
         HandlerFactory = _ => ServerHandler,
-        Features = [LinkFeatures.DescribeV1, LinkFeatures.DiagEcho],
+        Features = _serverFeatures,
         AgentPolicy = _policy,
         Link = Options,
         Secure = _serverSecure,
