@@ -30,6 +30,12 @@ public enum BodyRule
 
     /// <summary><c>/upload/image</c>: multipart with one <c>image</c> file of a safe name, and only safe fields.</summary>
     ImageUpload,
+
+    /// <summary>
+    /// <c>/free</c>: a JSON object whose only members are <c>unload_models</c> and <c>free_memory</c>, each a boolean
+    /// (review item 5). The node also refuses it with <c>runtime_busy</c> while the owner's own prompts run or wait.
+    /// </summary>
+    FreeOnly,
 }
 
 /// <summary>
@@ -41,7 +47,8 @@ public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyR
     ResponseRule Response = ResponseRule.Pass)
 {
     /// <summary>Whether the route needs a body (its rule reads one): a body-less request there is refused.</summary>
-    public bool NeedsBody => Body is BodyRule.ImageUpload or BodyRule.QueueDeleteOnly or BodyRule.PromptSubmit or BodyRule.InterruptOwnPrompt;
+    public bool NeedsBody => Body is BodyRule.ImageUpload or BodyRule.QueueDeleteOnly or BodyRule.PromptSubmit or BodyRule.InterruptOwnPrompt
+        or BodyRule.FreeOnly;
 }
 
 /// <summary>
@@ -89,7 +96,7 @@ public static class RuntimeRoutes
             ("POST", ["upload", "image"]) => Plain(rebuiltPath, pairs, [], 256 * MiB, BodyRule.ImageUpload, ref refusal),
             ("POST", ["queue"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.QueueDeleteOnly, ref refusal),
             ("POST", ["interrupt"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.InterruptOwnPrompt, ref refusal),
-            ("POST", ["free"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.Any, ref refusal),
+            ("POST", ["free"]) => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.FreeOnly, ref refusal),
             ("POST", ["api", "jobs", var id, "cancel"]) when IsId(id)
                 => Plain(rebuiltPath, pairs, [], 64 * KiB, BodyRule.Any, ref refusal) is { } cancel ? cancel with { PromptId = id } : null,
             _ => null,

@@ -101,6 +101,58 @@ public sealed class ComfyRemoteOwnerDataTests : IAsyncLifetime
         }
     }
 
+    // ================================================================= POST /free
+
+    private static StringContent Json(string body) => new(body, System.Text.Encoding.UTF8, "application/json");
+
+    [Fact]
+    public async Task Free_is_refused_as_runtime_busy_while_the_owners_prompts_run_and_passes_once_they_end()
+    {
+        await using var provider = Provider();
+        var mine = await ServerJobAsync(provider);
+        using var http = Forward();
+        const string body = """{"unload_models":true,"free_memory":true}""";
+
+        // The owner's prompt runs: the node refuses, whatever the server's own check said.
+        _kit.Comfy.QueueJson = OwnerQueue(mine);
+        Assert.Equal("runtime_busy", CodeOf(await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.PostAsync("/free", Json(body)))));
+        Assert.Equal(0, _kit.Comfy.Frees);
+
+        // Only the server's own prompt is left: /free goes on.
+        _kit.Comfy.QueueJson = $$"""{"queue_running":[[8,"{{mine}}",{},{},[]]],"queue_pending":[]}""";
+        Assert.True((await http.PostAsync("/free", Json(body))).IsSuccessStatusCode);
+        Assert.Equal(1, _kit.Comfy.Frees);
+
+        // A queue the node cannot read cannot show the owner idle.
+        _kit.Comfy.QueueJson = "not json";
+        Assert.Equal("runtime_busy", CodeOf(await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.PostAsync("/free", Json(body)))));
+
+        // The provider's own cache release, end to end, on an idle runtime.
+        _kit.Comfy.QueueJson = """{"queue_running":[],"queue_pending":[]}""";
+        var release = await provider.ReleaseCachedModelsAsync(CancellationToken.None);
+        Assert.True(release.Success, release.Detail);
+        Assert.Equal(2, _kit.Comfy.Frees);
+    }
+
+    [Theory]
+    [InlineData("""{"unload_models":true,"free_memory":true,"extra":1}""")]
+    [InlineData("""{"unload_models":"yes"}""")]
+    [InlineData("""{"free_memory":1}""")]
+    [InlineData("""{"unload_models":true,"unload_models":false}""")]
+    [InlineData("""[true]""")]
+    [InlineData("""not json""")]
+    [InlineData("")]
+    public async Task Free_takes_only_its_two_booleans(string body)
+    {
+        using var http = Forward();
+        Assert.Equal("route_not_allowed", CodeOf(await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.PostAsync("/free", Json(body)))));
+        Assert.Equal(0, _kit.Comfy.Frees);
+        // Either member may be left out.
+        Assert.True((await http.PostAsync("/free", Json("{}"))).IsSuccessStatusCode);
+        Assert.True((await http.PostAsync("/free", Json("""{"free_memory":false}"""))).IsSuccessStatusCode);
+        Assert.Equal(2, _kit.Comfy.Frees);
+    }
+
     [Fact]
     public async Task The_provider_still_reads_the_redacted_queue_for_its_busy_check_and_its_cancel()
     {

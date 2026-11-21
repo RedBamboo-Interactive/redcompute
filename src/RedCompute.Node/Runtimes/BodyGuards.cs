@@ -343,6 +343,26 @@ internal sealed class InterruptGuard(Stream inner, long cap, Func<string, bool> 
 }
 
 /// <summary>
+/// ComfyUI's <c>POST /free</c> (review item 5): a JSON object whose only members are <c>unload_models</c> and
+/// <c>free_memory</c>, each a boolean, and nothing else.
+/// </summary>
+internal sealed class FreeGuard(Stream inner, long cap) : JsonBodyGuard(inner, cap, "/free")
+{
+    protected override string? Check(JsonNode? body)
+    {
+        if (body is not JsonObject members) return "A /free body is {\"unload_models\"?: bool, \"free_memory\"?: bool}.";
+        foreach (var (name, value) in members)
+        {
+            if (name is not ("unload_models" or "free_memory"))
+                return $"A /free body takes only unload_models and free_memory (not '{name}').";
+            if (value is not JsonValue flag || flag.GetValueKind() is not (JsonValueKind.True or JsonValueKind.False))
+                return $"In a /free body, {name} is a boolean.";
+        }
+        return null;
+    }
+}
+
+/// <summary>
 /// ComfyUI's <c>POST /prompt</c>: a JSON object that does not choose its <c>prompt_id</c>. The id is ComfyUI's, recorded
 /// from its answer (<see cref="SubmittedPrompts"/>): a chosen one could be an id the owner's own prompt has.
 /// </summary>

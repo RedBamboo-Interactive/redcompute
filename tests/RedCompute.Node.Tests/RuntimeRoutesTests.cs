@@ -91,7 +91,8 @@ public sealed class RuntimeRoutesTests
         Assert.Equal((256 * RuntimeRoutes.MiB, BodyRule.ImageUpload), Rule("POST", "/upload/image"));
         Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.QueueDeleteOnly), Rule("POST", "/queue"));
         Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.InterruptOwnPrompt), Rule("POST", "/interrupt"));
-        Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.Any), Rule("POST", "/free"));
+        Assert.Equal((64 * RuntimeRoutes.KiB, BodyRule.FreeOnly), Rule("POST", "/free"));
+        Assert.True(RuntimeRoutes.Http(Kind, "POST", "/free", "", out _)!.NeedsBody);
         // The cancel route names its prompt in the path: it must be one the server submitted.
         Assert.Equal("3f2a-91", RuntimeRoutes.Http(Kind, "POST", "/api/jobs/3f2a-91/cancel", "", out _)!.PromptId);
         Assert.Null(RuntimeRoutes.Http(Kind, "POST", "/prompt", "", out _)!.PromptId);
@@ -125,6 +126,17 @@ public sealed class RuntimeRoutesTests
         foreach (var bad in new[] { "[]", "nope", "" })
             Assert.Equal(ForwardErrorCodes.UpstreamFailed,
                 Assert.Throws<ForwardTargetException>(() => RuntimeAnswers.RedactQueue(Encoding.UTF8.GetBytes(bad), _ => true)).Code);
+    }
+
+    [Fact]
+    public void The_owners_prompts_are_counted_from_the_runtimes_own_queue()
+    {
+        var queue = """{"queue_running":[[1,"mine",{}]],"queue_pending":[[2,"owners",{}],[3],"junk",[4,"mine-2"]]}"""u8;
+        Assert.Equal(3, RuntimeAnswers.OwnerPrompts(queue, id => id.StartsWith("mine", StringComparison.Ordinal)));
+        Assert.Equal(0, RuntimeAnswers.OwnerPrompts("""{"queue_running":[[1,"mine"]],"queue_pending":[]}"""u8, _ => true));
+        // Not ComfyUI's queue: it cannot show the runtime idle.
+        foreach (var bad in new[] { """{"queue_running":[]}""", """{"queue_running":[],"queue_pending":{}}""", "[]", "nope" })
+            Assert.Null(RuntimeAnswers.OwnerPrompts(Encoding.UTF8.GetBytes(bad), _ => true));
     }
 
     [Fact]

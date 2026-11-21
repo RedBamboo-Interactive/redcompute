@@ -71,6 +71,37 @@ internal static class RuntimeAnswers
         return JsonSerializer.SerializeToUtf8Bytes(redacted);
     }
 
+    /// <summary>
+    /// How many prompts in a <c>/queue</c> answer the server did not submit (the owner's own, running or waiting), or
+    /// null when the answer is not ComfyUI's queue (it then cannot show the runtime idle). An item without a readable id
+    /// counts as the owner's.
+    /// </summary>
+    public static int? OwnerPrompts(ReadOnlySpan<byte> answer, Func<string, bool> submitted)
+    {
+        JsonNode? parsed;
+        try
+        {
+            parsed = JsonNode.Parse(answer.ToArray());
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (parsed is not JsonObject queue) return null;
+        var owners = 0;
+        foreach (var name in Queues)
+        {
+            if (queue[name] is not JsonArray items) return null;
+            foreach (var item in items)
+            {
+                var ours = item is JsonArray { Count: > 1 } entry && entry[1] is JsonValue id
+                           && id.GetValueKind() == JsonValueKind.String && submitted(id.GetValue<string>());
+                if (!ours) owners++;
+            }
+        }
+        return owners;
+    }
+
     /// <summary>A whole answer, at most <paramref name="cap"/> bytes, or <c>upstream_failed</c> past it.</summary>
     public static async Task<byte[]> ReadCappedAsync(Stream body, long cap, string route, CancellationToken ct)
     {

@@ -42,6 +42,12 @@ public static class ForwardErrorCodes
 
     /// <summary>No link session to the node right now.</summary>
     public const string NodeOffline = "node_offline";
+
+    /// <summary>
+    /// The runtime is doing the node owner's own work, so a request that would disturb it (ComfyUI's <c>/free</c>) is
+    /// refused until that work ends.
+    /// </summary>
+    public const string RuntimeBusy = "runtime_busy";
 }
 
 /// <summary>The forward's caps (design 2.3). Both sides use the same defaults.</summary>

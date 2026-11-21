@@ -57,6 +57,9 @@ internal sealed class FakeComfyUi : IAsyncDisposable
     /// <summary>What <c>GET /queue</c> answers: ComfyUI's own shape, the owner's prompts and the server's.</summary>
     public string QueueJson { get; set; } = """{"queue_running":[],"queue_pending":[]}""";
 
+    /// <summary>How many <c>POST /free</c> reached it.</summary>
+    public int Frees;
+
     private FakeComfyUi(WebApplication app) => _app = app;
 
     public static async Task<FakeComfyUi> StartAsync()
@@ -151,6 +154,10 @@ internal sealed class FakeComfyUi : IAsyncDisposable
             case "/view":
                 ctx.Response.ContentType = "image/png";
                 await ctx.Response.Body.WriteAsync(Output);
+                return;
+            case "/free":
+                Interlocked.Increment(ref Frees);
+                await ctx.Response.WriteAsync("{}");
                 return;
             case "/queue" when request.Method == "GET":
                 ctx.Response.ContentType = "application/json";

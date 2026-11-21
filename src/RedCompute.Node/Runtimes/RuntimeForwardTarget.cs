@@ -84,6 +84,7 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
                 BodyRule.QueueDeleteOnly => new QueueDeleteGuard(requestBody, route.MaxBody, submitted),
                 BodyRule.InterruptOwnPrompt => new InterruptGuard(requestBody, route.MaxBody, submitted),
                 BodyRule.PromptSubmit => new PromptSubmitGuard(requestBody, route.MaxBody),
+                BodyRule.FreeOnly => new FreeGuard(requestBody, route.MaxBody),
                 _ => requestBody,
             };
             request.Content = new StreamContent(body, 64 * 1024);
@@ -99,6 +100,9 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
             if (!request.Headers.TryAddWithoutValidation(name, value))
                 request.Content?.Headers.TryAddWithoutValidation(name, value);
         }
+
+        // /free unloads the runtime's models: never while the owner's own prompts run or wait (review item 5).
+        if (route.Body == BodyRule.FreeOnly) await RefuseWhileOwnerBusyAsync(runtime, ct);
 
         HttpResponseMessage response;
         try
@@ -147,6 +151,38 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes) : IForwardTarg
                 [new("content-type", "application/json"), new("content-length", redacted.Length.ToString(System.Globalization.CultureInfo.InvariantCulture))],
                 new MemoryStream(redacted));
         }
+    }
+
+    /// <summary>
+    /// <c>runtime_busy</c> unless the runtime's own queue shows no prompt the server did not submit: the node asks the
+    /// runtime itself. A queue it cannot read is refused too, since it cannot show the owner idle.
+    /// </summary>
+    private async Task RefuseWhileOwnerBusyAsync(RuntimeRegistration runtime, CancellationToken ct)
+    {
+        int? owners;
+        try
+        {
+            using var check = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{runtime.Port}/queue")
+            {
+                Version = HttpVersion.Version11,
+                VersionPolicy = HttpVersionPolicy.RequestVersionExact,
+            };
+            check.Headers.ConnectionClose = true;
+            using var answer = await Http.SendAsync(check, HttpCompletionOption.ResponseHeadersRead, ct);
+            owners = answer.IsSuccessStatusCode && answer.Content.Headers.ContentEncoding.Count == 0
+                ? RuntimeAnswers.OwnerPrompts(await RuntimeAnswers.ReadCappedAsync(await answer.Content.ReadAsStreamAsync(ct),
+                    RuntimeAnswers.MaxQueueBytes, "/queue", ct), id => Submitted.Contains(runtime.Id, id))
+                : null;
+        }
+        catch (Exception error) when (error is HttpRequestException or ForwardTargetException)
+        {
+            owners = null;
+        }
+        if (owners is null)
+            throw new ForwardTargetException(ForwardErrorCodes.RuntimeBusy, $"{runtime.Id}'s queue could not be read, so /free is not sent.");
+        if (owners > 0)
+            throw new ForwardTargetException(ForwardErrorCodes.RuntimeBusy,
+                $"The node's owner has {owners} prompt(s) running or queued on {runtime.Id}; /free waits until they end.");
     }
 
     public async Task<WebSocket> ConnectAsync(ForwardOpen open, ForwardDecision decision, CancellationToken ct)
