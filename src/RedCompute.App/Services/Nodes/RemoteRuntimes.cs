@@ -237,17 +237,28 @@ public sealed class RemoteHostRuntimes : IHostRuntimes
         return status is { } answered ? current with { Status = answered } : current;
     }
 
-    private async Task<JsonElement> CallAsync(string method, JsonObject parameters, TimeSpan timeout, CancellationToken ct)
+    /// <summary>The node's current session; none once the hub's link server is disposed (RedCompute stopping).</summary>
+    private LinkSession? CurrentSession()
     {
-        LinkSession? session;
         try
         {
-            session = _session();
+            return _session();
         }
-        catch (Exception error) when (error is ObjectDisposedException or InvalidOperationException)
+        catch (ObjectDisposedException)
         {
-            session = null; // the hub's link server is gone (shutdown)
+            return null;
         }
+    }
+
+    private bool TornDown(LinkSession session) => TornDown(session, CurrentSession());
+
+    /// <summary>The call's session is gone: reset, detached, or no longer the node's current session.</summary>
+    internal static bool TornDown(LinkSession session, LinkSession? current)
+        => session.IsReset || !session.IsAttached || !ReferenceEquals(current, session);
+
+    private async Task<JsonElement> CallAsync(string method, JsonObject parameters, TimeSpan timeout, CancellationToken ct)
+    {
+        var session = CurrentSession();
         if (session is null || session.IsReset)
             throw new NodeUnavailableException(_nodeId, NodeUnavailableReasons.Offline);
         if (!session.HasFeature(LinkFeatures.RuntimeV1))
@@ -271,9 +282,11 @@ public sealed class RemoteHostRuntimes : IHostRuntimes
         {
             throw new NodeUnavailableException(_nodeId, NodeUnavailableReasons.Offline);
         }
-        catch (Exception error) when (error is ObjectDisposedException or InvalidOperationException)
+        catch (InvalidOperationException) when (TornDown(session))
         {
-            // A session torn down under the call (RedCompute stopping, the link dropping): the node is offline.
+            // ObjectDisposedException included. Only a session torn down under the call (RedCompute stopping, the link
+            // dropping) is the node being offline; on a live session it is a real fault and surfaces as one (review
+            // follow-up 3).
             throw new NodeUnavailableException(_nodeId, NodeUnavailableReasons.Offline);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)

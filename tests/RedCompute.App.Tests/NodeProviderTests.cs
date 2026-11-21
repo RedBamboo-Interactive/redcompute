@@ -640,30 +640,68 @@ public sealed class NodeProviderTests : IAsyncLifetime
     [Fact]
     public async Task A_torn_down_session_is_node_offline_for_start_stop_and_control_never_a_crash()
     {
-        // Review P4-P7, item 9: RedCompute stopping or a link dropping under a call disposes what the call holds.
-        foreach (Exception torn in new Exception[] { new ObjectDisposedException("LinkServer"), new InvalidOperationException("torn down") })
+        // Review P4-P7, item 9: RedCompute stopping disposes the hub's link server under a call.
+        var runtimes = new RemoteHostRuntimes(Own, _nodes, () => throw new ObjectDisposedException("LinkServer"));
+        var offline = await Assert.ThrowsAsync<NodeUnavailableException>(() => runtimes.StartAsync("comfyui-1"));
+        Assert.Equal(NodeUnavailableReasons.Offline, offline.Reason);
+        await Assert.ThrowsAsync<NodeUnavailableException>(() => runtimes.StopAsync("comfyui-1"));
+
+        var host = new RemoteExecutionHost(Own, () => _nodes.Find(Own), new RedCompute.NodeLink.Forward.ForwardClient(() => null), runtimes);
+        await using var provider = new RemoteNodeProvider(new ZeroProvider("comfyui"), Own, _nodes.RuntimesOf(Own).Single(), _nodes, host);
+        Assert.False(await provider.StartAsync());
+        await provider.StopAsync();
+
+        // /control/start?nodeId= on that host: the typed 409 node_offline, never a 500.
+        var answer = await ControlAsync(new TornRegistry(_nodes, host));
+        Assert.Equal(409, answer.Status);
+        Assert.Contains("node_offline", answer.Body);
+    }
+
+    [Fact]
+    public async Task A_real_invalid_operation_is_an_error_never_hidden_as_node_offline()
+    {
+        // Review follow-up 3: only a torn-down session is the node being offline. Anything else surfaces.
+        var bug = new InvalidOperationException("a real bug");
+        var runtimes = new RemoteHostRuntimes(Own, _nodes, () => throw bug);
+        Assert.Same(bug, await Assert.ThrowsAsync<InvalidOperationException>(() => runtimes.StartAsync("comfyui-1")));
+        Assert.Same(bug, await Assert.ThrowsAsync<InvalidOperationException>(() => runtimes.StopAsync("comfyui-1")));
+
+        var host = new RemoteExecutionHost(Own, () => _nodes.Find(Own), new RedCompute.NodeLink.Forward.ForwardClient(() => null), runtimes);
+        await using var provider = new RemoteNodeProvider(new ZeroProvider("comfyui"), Own, _nodes.RuntimesOf(Own).Single(), _nodes, host);
+        Assert.Same(bug, await Assert.ThrowsAsync<InvalidOperationException>(() => provider.StartAsync()));
+        Assert.Same(bug, await Assert.ThrowsAsync<InvalidOperationException>(() => provider.StopAsync()));
+
+        // Control on a host whose runtimes throw it (or an ObjectDisposedException not from the session): it surfaces.
+        foreach (Exception raw in new Exception[] { bug, new ObjectDisposedException("something else") })
         {
-            var runtimes = new RemoteHostRuntimes(Own, _nodes, () => throw torn);
-            var offline = await Assert.ThrowsAsync<NodeUnavailableException>(() => runtimes.StartAsync("comfyui-1"));
-            Assert.Equal(NodeUnavailableReasons.Offline, offline.Reason);
-            await Assert.ThrowsAsync<NodeUnavailableException>(() => runtimes.StopAsync("comfyui-1"));
-
-            var host = new RemoteExecutionHost(Own, () => _nodes.Find(Own), new RedCompute.NodeLink.Forward.ForwardClient(() => null), runtimes);
-            await using var provider = new RemoteNodeProvider(new ZeroProvider("comfyui"), Own, _nodes.RuntimesOf(Own).Single(), _nodes, host);
-            Assert.False(await provider.StartAsync());
-            await provider.StopAsync();
-
-            // /control/start?nodeId= on a host whose runtimes throw the torn-down session's own exception.
-            var control = await RemoteNodeControl.RunAsync(true, "image-gen", null, _registry.Get("image-gen")!, Own,
-                new TornRegistry(_nodes, new TornHost(_nodes.LocalHost, new ThrowingRuntimes(_nodes.RuntimesOf(Own), torn))),
-                new DefaultHttpContext { RequestServices = _app.Services });
-            var context = new DefaultHttpContext { RequestServices = _app.Services };
-            context.Response.Body = new MemoryStream();
-            await control.ExecuteAsync(context);
-            Assert.Equal(409, context.Response.StatusCode);
-            context.Response.Body.Position = 0;
-            Assert.Contains("node_offline", new StreamReader(context.Response.Body).ReadToEnd());
+            var registry = new TornRegistry(_nodes, new TornHost(_nodes.LocalHost, new ThrowingRuntimes(_nodes.RuntimesOf(Own), raw)));
+            Assert.Same(raw, await Assert.ThrowsAnyAsync<InvalidOperationException>(() => ControlAsync(registry)));
         }
+    }
+
+    [Fact]
+    public async Task A_session_is_torn_down_once_it_is_reset_detached_or_no_longer_the_nodes()
+    {
+        var live = _hub.Server.FindSession(Own)!;
+        Assert.False(RemoteHostRuntimes.TornDown(live, live));
+        Assert.True(RemoteHostRuntimes.TornDown(live, null));
+        Assert.True(RemoteHostRuntimes.TornDown(live, _hub.Server.FindSession(Others)));
+
+        await _piped[0].DisposeAsync();
+        _piped.RemoveAt(0);
+        await WaitAsync(() => !live.IsAttached || live.IsReset, "the link to drop");
+        Assert.True(RemoteHostRuntimes.TornDown(live, live));
+    }
+
+    private async Task<Answer> ControlAsync(INodeRegistry registry)
+    {
+        var control = await RemoteNodeControl.RunAsync(true, "image-gen", null, _registry.Get("image-gen")!, Own, registry,
+            new DefaultHttpContext { RequestServices = _app.Services });
+        var context = new DefaultHttpContext { RequestServices = _app.Services };
+        context.Response.Body = new MemoryStream();
+        await control.ExecuteAsync(context);
+        context.Response.Body.Position = 0;
+        return new Answer(context.Response.StatusCode, null, await new StreamReader(context.Response.Body).ReadToEndAsync());
     }
 
     /// <summary>The node registry, with one host whose runtimes are those of a torn-down session.</summary>

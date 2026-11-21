@@ -281,10 +281,10 @@ public sealed class RemoteNodeProvider : IPluginProvider
             return runtime.Status is BackendStatus.Running or BackendStatus.Starting;
         }
         catch (Exception error) when (error is HostRuntimeException or NodeUnavailableException or TimeoutException
-                                          or RedCompute.NodeLink.LinkRpcException or ObjectDisposedException
-                                          || error is InvalidOperationException and not RemoteOperationNotAllowedException)
+                                          or RedCompute.NodeLink.LinkRpcException)
         {
-            // A torn-down session (shutdown, a dropped link) is the node being offline, never a crash.
+            // A torn-down session (shutdown, a dropped link) arrives as NodeUnavailableException (RemoteHostRuntimes);
+            // any other exception is a real fault and surfaces.
             return false;
         }
     }
@@ -296,8 +296,7 @@ public sealed class RemoteNodeProvider : IPluginProvider
             await _host.Runtimes.StopAsync(RuntimeId, ct: ct);
         }
         catch (Exception error) when (error is HostRuntimeException or NodeUnavailableException or TimeoutException
-                                          or RedCompute.NodeLink.LinkRpcException or ObjectDisposedException
-                                          || error is InvalidOperationException and not RemoteOperationNotAllowedException)
+                                          or RedCompute.NodeLink.LinkRpcException)
         {
         }
     }
