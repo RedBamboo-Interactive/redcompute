@@ -41,6 +41,7 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.LocalWslRecipe))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.RemoteOperationNotAllowedException))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.RuntimeRecipes))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.ServiceResponseTooLargeException))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.SqliteReadOptions))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.StdioMode))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.PlatformSupport))]

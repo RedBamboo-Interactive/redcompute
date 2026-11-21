@@ -30,6 +30,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     // Both over the host's handler (design 2.2): built in the constructor, once the host is known.
     private readonly HttpClient _http;
     private readonly HttpClient _healthClient;
+    /// <summary>For <c>/view</c>: node zero's <see cref="_http"/>; on a remote node a client capped at <see cref="MaxOutputBytes"/>.</summary>
+    private readonly HttpClient _download;
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly IDisposable? _acceleratorRegistration;
     private readonly IDisposable? _runtimeRegistration;
@@ -55,6 +57,14 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     internal TimeSpan PromptSubmitTimeout { get; init; } = TimeSpan.FromSeconds(60);
     internal TimeSpan PromptCancelTimeout { get; init; } = TimeSpan.FromSeconds(20);
     internal TimeSpan PromptCancelPollInterval { get; init; } = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// On a remote node (a host that is not node zero's), the most this provider buffers from one answer: <c>/view</c>
+    /// at the design's 1 GiB output cap, every other answer (<c>/history</c>, <c>/queue</c>, <c>/prompt</c>…) at
+    /// 16 MiB. Over it the exchange is aborted and the job fails saying so. Node zero's ComfyUI is uncapped, as before.
+    /// </summary>
+    internal long MaxOutputBytes { get; init; } = 1L << 30;
+    internal long MaxJsonBytes { get; init; } = 16L << 20;
 
     public string Name => "ComfyUI";
     public string CapabilitySlug => _capabilitySlug;
@@ -103,8 +113,19 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         _host = ProviderHelpers.GetExtra(config, "Host", "127.0.0.1");
         _port = config.BackendPort ?? 8188;
         _baseUrl = _executionHost.Network.ResolveServiceBaseUrl($"http://{_host}:{_port}");
-        _http = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30));
-        _healthClient = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromSeconds(5));
+        if (_executionHost.Runtimes is LocalHostRuntimes)
+        {
+            _http = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30));
+            _healthClient = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromSeconds(5));
+            _download = _http;
+        }
+        else
+        {
+            // A remote node's runtime answers over the forward: what it sends is bounded here, on the server.
+            _http = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30), () => MaxJsonBytes);
+            _healthClient = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromSeconds(5), () => MaxJsonBytes);
+            _download = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30), () => MaxOutputBytes);
+        }
         _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
         _acceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0");
         _acceleratorAdmission = acceleratorAdmission;
@@ -395,6 +416,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         await StopAsync();
         _http.Dispose();
         _healthClient.Dispose();
+        if (!ReferenceEquals(_download, _http)) _download.Dispose();
     }
 
     // --- Private methods ---
@@ -921,7 +943,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     {
         try
         {
-            var resp = await _http.GetAsync($"{BaseUrl}/history/{promptId}", ct);
+            using var resp = await _http.GetAsync($"{BaseUrl}/history/{promptId}", ct);
             if (!resp.IsSuccessStatusCode)
             {
                 _log($"[ComfyUI] /history error {(int)resp.StatusCode}");
@@ -995,7 +1017,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         try
         {
             var url = $"{BaseUrl}/view?filename={Uri.EscapeDataString(filename)}&subfolder={Uri.EscapeDataString(subfolder)}&type={Uri.EscapeDataString(type)}";
-            var resp = await _http.GetAsync(url, ct);
+            using var resp = await _download.GetAsync(url, ct);
             if (!resp.IsSuccessStatusCode) return null;
 
             var ms = new MemoryStream();
@@ -1003,7 +1025,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             ms.Position = 0;
             return ms;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not ServiceResponseTooLargeException)
         {
             _log($"[ComfyUI] Download error: {ex.Message}");
             return null;
