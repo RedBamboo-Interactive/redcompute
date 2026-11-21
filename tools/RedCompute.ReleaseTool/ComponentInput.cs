@@ -88,12 +88,6 @@ public sealed record RuntimeDependencyInput
     public required IReadOnlyList<string> SourceMarkers { get; init; }
 }
 
-public sealed record SourceDependencyFile
-{
-    public required int SchemaVersion { get; init; }
-    public required IReadOnlyList<SourceInput> Dependencies { get; init; }
-}
-
 public sealed record ProviderGraphFile
 {
     public required int SchemaVersion { get; init; }

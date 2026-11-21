@@ -1,6 +1,6 @@
 # RedCompute Release-mode component input
 
-RedCompute produces deterministic component bytes and an unsigned generic RedLeaf candidate for central release assembly. The candidate and signature-input bytes come from one exact pinned copy of RedLeaf's authoritative `ReleaseTool`; RedCompute never copies that contract or signs it. Central RedLeaf alone signs and publishes Stable/Nightly metadata.
+RedCompute produces deterministic component bytes and an unsigned generic RedLeaf candidate for central release assembly. The candidate and signature-input bytes come from RedLeaf's authoritative `ReleaseTool` at the RedLeaf commit the build resolved; RedCompute never copies that contract or signs it. Central RedLeaf alone signs and publishes Stable/Nightly metadata.
 
 ## Output boundary
 
@@ -20,7 +20,7 @@ The embedded evidence contains only:
 
 - the RedCompute repository URL, exact commit, and repository source path;
 - the in-repository `RedCompute.PluginSdk` source path tied to that same repository and commit;
-- the RedBamboo AppHost repository URL, exact pinned commit, and source path;
+- the RedBamboo AppHost repository URL, the exact commit the build used (`--redbamboo-commit`, checked against the `--redbamboo` checkout's HEAD), and source path;
 - the path and SHA-256 of every real `packages.lock.json` used by the locked restores and build;
 - the pinned .NET SDK, self-contained .NET runtime, MSBuild, and NuGet versions; and
 - the version, configuration, RID, deterministic/self-contained flags, and no-web-shell fact needed to cross-check the artifact contract.
@@ -31,7 +31,7 @@ There are no repository-tree or source-tree identities, source-to-lock mappings,
 
 ## Reproduction and safety
 
-The workflow pins every GitHub Action by full commit SHA, checks out and verifies RedCompute at the called workflow's own `github.workflow_sha`, records its repository as exactly `https://github.com/RedBamboo-Interactive/redcompute`, checks out AppHost only at its committed dependency SHA, and checks out RedLeaf only at the committed ReleaseTool input SHA. It uses .NET SDK 9.0.303 and runtime 9.0.7 with roll-forward disabled, runs locked NuGet restores, runs the complete test solution with one MSBuild node, and publishes with deterministic CI properties. Compiler path mapping gives the RedCompute and AppHost roots stable virtual names, so source checkout locations do not leak into source-built DLL/PDB bytes. Both release tools are locked-restored and explicitly built once into runner-temporary locations. Dispatch values enter PowerShell only through environment variables and are validated as data before use.
+The workflow pins every GitHub Action by full commit SHA, checks out and verifies RedCompute at the called workflow's own `github.workflow_sha`, records its repository as exactly `https://github.com/RedBamboo-Interactive/redcompute`, checks out redbamboo-packages (AppHost) and RedLeaf (the ReleaseTool) at `main` once, at dispatch, and records both resolved commits in the step summary; RedCompute commits neither. It uses .NET SDK 9.0.303 and runtime 9.0.7 with roll-forward disabled, runs locked NuGet restores, runs the complete test solution with one MSBuild node, and publishes with deterministic CI properties. Compiler path mapping gives the RedCompute and AppHost roots stable virtual names, so source checkout locations do not leak into source-built DLL/PDB bytes. Both release tools are locked-restored and explicitly built once into runner-temporary locations. Dispatch values enter PowerShell only through environment variables and are validated as data before use.
 
 The workflow produces the publish tree twice at the release boundary: deterministic archive creation is repeated and byte-compared, and the component descriptor, generic candidate, and signature input are each repeated and byte-compared. CI uploads unsigned inputs only. It has no key, sign command, signing job, registry, or server. Production signing remains fail-closed in RedLeaf.
 
@@ -51,7 +51,7 @@ The Linux preview (`LeafTargetOs=linux`) has its own graph: each project keeps a
 
 ## RedLeaf acquisition boundary
 
-`release/redleaf-release-tool-input.v1.json` is the smallest producer-owned pin and filename contract. Its committed `commit` is the audited central RedLeaf source `4604a11ea2cb299a45fb0da8aa86dd0726164d50`, whose `ReleaseTool` accepts this compact descriptor without SBOM, rich provenance, or suite-release inputs and derives `compute/redcompute/<version>` itself. `release/Resolve-RedLeafReleaseToolInput.ps1` rejects any unresolved or malformed value before SDK setup, dependency restore, or build.
+`release/redleaf-release-tool-input.v1.json` is the smallest producer-owned filename contract: the RedLeaf repository and the central artifact filename template. It commits no RedLeaf commit. The builder supplies the ReleaseTool: Release Manager builds it at the RedLeaf commit it resolved for the Nightly, and the fallback workflow at RedLeaf `main` at dispatch. That `ReleaseTool` accepts this compact descriptor without SBOM, rich provenance, or suite-release inputs and derives `compute/redcompute/<version>` itself. `release/Resolve-RedLeafReleaseToolInput.ps1` rejects a malformed input, or one that commits a `commit`, before SDK setup, dependency restore, or build.
 
 After the build job, the isolated bridge job has only `actions: read` and `contents: write`. It retains the per-run Actions artifact, verifies exactly one ZIP against the unsigned candidate's size and SHA-256, and appends these two raw assets to the `redcompute-unsigned-candidates` prerelease:
 
@@ -65,7 +65,7 @@ https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute
 https://github.com/RedBamboo-Interactive/redcompute/releases/download/redcompute-unsigned-candidates/redcompute-win-x64-<artifact-sha256>.zip
 ```
 
-These producer assets remain unsigned and convey no trust. The producer is pinned to the audited RedLeaf commit above; central RedLeaf alone checks the reviewed source URLs and hashes and signs metadata that continues to reference the exact RedCompute bytes. It does not copy the ZIP into a RedLeaf release. No SBOM, CycloneDX input, provenance graph, package registry, or live service is part of this boundary.
+These producer assets remain unsigned and convey no trust. Central RedLeaf alone checks the reviewed source URLs and hashes and signs metadata that continues to reference the exact RedCompute bytes. It does not copy the ZIP into a RedLeaf release. No SBOM, CycloneDX input, provenance graph, package registry, or live service is part of this boundary.
 
 ## leaf-node artifacts (Phase 3 R7)
 

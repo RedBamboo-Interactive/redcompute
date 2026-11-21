@@ -26,7 +26,7 @@ on:
         type: string
     secrets:
       CROSS_REPO_TOKEN:
-        description: Optional token with read access to the pinned RedBamboo dependency commit.
+        description: Optional token that can read RedBamboo and RedLeaf.
         required: false
   workflow_dispatch:
     inputs:
@@ -67,44 +67,43 @@ jobs:
           path: redcompute
           persist-credentials: false
 
-      - name: Resolve required audited RedLeaf ReleaseTool input before build
+      - name: Validate the RedLeaf ReleaseTool input before build
         id: redleaf-tool
         working-directory: redcompute
         shell: pwsh
         run: ./release/Resolve-RedLeafReleaseToolInput.ps1 -InputPath release/redleaf-release-tool-input.v1.json -GitHubOutput $env:GITHUB_OUTPUT
 
-      - name: Read pinned AppHost source input
-        id: apphost
-        working-directory: redcompute
-        shell: pwsh
-        run: |
-          $source = Get-Content -LiteralPath 'release/redcompute-source-dependencies.v1.json' -Raw | ConvertFrom-Json
-          if ($source.schemaVersion -ne 1 -or @($source.dependencies).Count -ne 1) {
-            throw 'The source input must contain exactly one version-1 dependency.'
-          }
-          $dependency = @($source.dependencies)[0]
-          if ($dependency.id -ne 'redbamboo-apphost' -or $dependency.commit -notmatch '^[a-f0-9]{40}$') {
-            throw 'The AppHost dependency must use one exact commit.'
-          }
-          "commit=$($dependency.commit)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Checkout exact RedBamboo AppHost source commit
+      # Dependency commits are build inputs, never committed in RedCompute: this build resolves RedBamboo
+      # (AppHost) and RedLeaf (the ReleaseTool) main once, at dispatch, and records exactly those commits.
+      - name: Checkout RedBamboo main at dispatch for AppHost
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: RedBamboo-Interactive/redbamboo-packages
-          ref: ${{ steps.apphost.outputs.commit }}
+          ref: main
           path: redbamboo-packages
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false
 
-      - name: Checkout exact pinned RedLeaf ReleaseTool source commit
+      - name: Checkout RedLeaf main at dispatch for the release tool
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: RedBamboo-Interactive/redleaf
-          ref: ${{ steps.redleaf-tool.outputs.commit }}
+          ref: main
           path: redleaf-release-tool-source
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           persist-credentials: false
+
+      - name: Record the resolved dependency commits
+        id: dependencies
+        shell: pwsh
+        run: |
+          $redleaf = (git -C redleaf-release-tool-source rev-parse HEAD).Trim()
+          $redbamboo = (git -C redbamboo-packages rev-parse HEAD).Trim()
+          if ($redleaf -notmatch '^[a-f0-9]{40}$') { throw 'RedLeaf main did not resolve to one exact commit.' }
+          if ($redbamboo -notmatch '^[a-f0-9]{40}$') { throw 'RedBamboo main did not resolve to one exact commit.' }
+          "redleaf=$redleaf" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "redbamboo=$redbamboo" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "Built against RedLeaf ReleaseTool $redleaf and redbamboo-packages $redbamboo (main at dispatch)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: Set up exact .NET SDK
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
@@ -126,6 +125,7 @@ jobs:
           REQUIRES_KERNEL_API: ${{ inputs.requires_kernel_api }}
           PROVIDES_COMPUTE_API: ${{ inputs.provides_compute_api }}
           REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}
+          REDLEAF_SHA: ${{ steps.dependencies.outputs.redleaf }}
         run: |
           $semver = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
           foreach ($value in @($env:COMPONENT_VERSION, $env:PROVIDES_COMPUTE_API)) {
@@ -142,11 +142,7 @@ jobs:
             if (-not ($runtimes -match "^$([regex]::Escape($runtime)) 9\.0\.7 \[")) { throw "Unexpected $runtime version." }
           }
           if ((git rev-parse HEAD).Trim() -ne $env:REDCOMPUTE_SHA) { throw 'RedCompute checkout does not match github.workflow_sha.' }
-          $source = Get-Content -LiteralPath 'release/redcompute-source-dependencies.v1.json' -Raw | ConvertFrom-Json
-          $dependency = @($source.dependencies)[0]
-          if ((git -C ../redbamboo-packages rev-parse HEAD).Trim() -ne $dependency.commit) { throw 'AppHost checkout commit mismatch.' }
-          $toolInput = Get-Content -LiteralPath 'release/redleaf-release-tool-input.v1.json' -Raw | ConvertFrom-Json
-          if ((git -C ../redleaf-release-tool-source rev-parse HEAD).Trim() -ne $toolInput.commit) { throw 'RedLeaf ReleaseTool checkout commit mismatch.' }
+          if ((git -C ../redleaf-release-tool-source rev-parse HEAD).Trim() -ne $env:REDLEAF_SHA) { throw 'RedLeaf ReleaseTool checkout commit mismatch.' }
 
       - name: Restore exact NuGet inputs in locked mode
         working-directory: redcompute
@@ -174,7 +170,7 @@ jobs:
             throw 'The explicitly built Release producer DLL is missing.'
           }
 
-      - name: Restore and build the exact pinned RedLeaf ReleaseTool once
+      - name: Restore and build the resolved RedLeaf ReleaseTool once
         working-directory: redcompute
         shell: pwsh
         run: |
@@ -188,7 +184,7 @@ jobs:
             -p:ContinuousIntegrationBuild=true `
             -p:Deterministic=true
           if (-not (Test-Path -LiteralPath $env:REDLEAF_RELEASE_TOOL_DLL -PathType Leaf)) {
-            throw 'The exact pinned RedLeaf ReleaseTool DLL is missing.'
+            throw 'The resolved RedLeaf ReleaseTool DLL is missing.'
           }
 
       - name: Assert frontend is not part of this runtime
@@ -209,6 +205,7 @@ jobs:
         shell: pwsh
         env:
           COMPONENT_VERSION: ${{ inputs.version }}
+          REDBAMBOO_COMMIT: ${{ steps.dependencies.outputs.redbamboo }}
           REDCOMPUTE_REPOSITORY: https://github.com/RedBamboo-Interactive/redcompute
           REDCOMPUTE_SHA: ${{ inputs.source_commit || github.workflow_sha }}
         run: |
@@ -240,7 +237,8 @@ jobs:
               --version "$env:COMPONENT_VERSION" `
               --repository-url "$env:REDCOMPUTE_REPOSITORY" `
               --source-commit "$env:REDCOMPUTE_SHA" `
-              --source-dependencies release/redcompute-source-dependencies.v1.json `
+              --redbamboo ../redbamboo-packages `
+              --redbamboo-commit "$env:REDBAMBOO_COMMIT" `
               --provider-graph release/redcompute-provider-graph.v1.json `
               --dotnet-sdk 9.0.303 `
               --dotnet-runtime 9.0.7 `
@@ -346,7 +344,6 @@ jobs:
         working-directory: redcompute
         shell: pwsh
         run: |
-          Copy-Item release/redcompute-source-dependencies.v1.json artifacts/
           Copy-Item release/redleaf-release-tool-input.v1.json artifacts/
           Copy-Item schemas/redcompute-component-input.v1.schema.json artifacts/
           Copy-Item schemas/redleaf-release-tool-input.v1.schema.json artifacts/

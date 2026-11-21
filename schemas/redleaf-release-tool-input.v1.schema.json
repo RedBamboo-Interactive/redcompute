@@ -7,7 +7,6 @@
   "required": [
     "schemaVersion",
     "repositoryUrl",
-    "commit",
     "centralArtifactFileNameTemplate"
   ],
   "properties": {
@@ -16,10 +15,6 @@
     },
     "repositoryUrl": {
       "const": "https://github.com/RedBamboo-Interactive/redleaf"
-    },
-    "commit": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{40}$"
     },
     "centralArtifactFileNameTemplate": {
       "const": "redcompute-win-x64-{artifactSha256}.zip"

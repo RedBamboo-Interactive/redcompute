@@ -44,9 +44,16 @@ public static class ReleaseToolProgram
         return 0;
     }
 
+    private const string RedBambooRepositoryUrl = "https://github.com/RedBamboo-Interactive/redbamboo-packages";
+
     private static int BuildEvidence(Arguments options)
     {
-        options.EnsureOnly("repository-root", "publish-root", "output", "version", "repository-url", "source-commit", "source-dependencies", "provider-graph", "dotnet-sdk", "dotnet-runtime", "msbuild", "nuget", "target-rid");
+        options.EnsureOnly("repository-root", "publish-root", "output", "version", "repository-url", "source-commit", "redbamboo", "redbamboo-commit", "provider-graph", "dotnet-sdk", "dotnet-runtime", "msbuild", "nuget", "target-rid");
+        // The redbamboo-packages commit is a build input the builder supplies (Release Manager resolves origin/main
+        // once per Nightly; the fallback workflow resolves main at dispatch). RedCompute commits none: the tool
+        // checks it against the AppHost checkout the build used and records it.
+        var appHostCommit = CheckoutCommit(options.Required("redbamboo"), options.Required("redbamboo-commit"),
+            "--redbamboo", "--redbamboo-commit");
         // win-x64 unless --target-rid names the linux-x64 build.
         var rid = options.Optional("target-rid") ?? "win-x64";
         var lockFileName = RedComputeRuntime.LockFileName(rid);
@@ -69,11 +76,8 @@ public static class ReleaseToolProgram
         if (locks.Length == 0) throw new InvalidDataException($"No committed {lockFileName} files were found.");
         var commit = options.Required("source-commit");
         var repositoryUrl = options.Required("repository-url");
-        var sourceSet = ComponentJson.Deserialize<SourceDependencyFile>(File.ReadAllText(options.Required("source-dependencies")));
-        if (sourceSet.SchemaVersion != 1 || sourceSet.Dependencies.Count != 1 || sourceSet.Dependencies[0].Id != "redbamboo-apphost")
-            throw new InvalidDataException("Source dependency input must contain exactly RedBamboo.AppHost.");
         if (!locks.Any(x => x.Path == $"release/locks/redbamboo-apphost/{lockFileName}"))
-            throw new InvalidDataException("The pinned RedBamboo.AppHost NuGet lock is missing.");
+            throw new InvalidDataException("The RedBamboo.AppHost NuGet lock is missing.");
 
         var graph = ComponentJson.Deserialize<ProviderGraphFile>(File.ReadAllText(options.Required("provider-graph")));
         if (graph.SchemaVersion != 1 || graph.Providers.Count == 0) throw new InvalidDataException("Invalid provider graph input.");
@@ -121,7 +125,11 @@ public static class ReleaseToolProgram
                 Id = "redcompute-plugin-sdk", RepositoryUrl = repositoryUrl, Commit = commit,
                 SourcePath = "src/RedCompute.PluginSdk",
             },
-            AppHost = sourceSet.Dependencies[0],
+            AppHost = new SourceInput
+            {
+                Id = "redbamboo-apphost", RepositoryUrl = RedBambooRepositoryUrl, Commit = appHostCommit,
+                SourcePath = "dotnet/RedBamboo.AppHost",
+            },
             Toolchain = new ToolchainInput
             {
                 DotnetSdk = options.Required("dotnet-sdk"), Msbuild = options.Required("msbuild"),
@@ -287,6 +295,33 @@ public static class ReleaseToolProgram
 
     private static string Relative(string root, string path) => Path.GetRelativePath(root, path).Replace('\\', '/');
     private static void EnsureInside(string root, string path, string name) { if (!path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException($"{name} must be inside the publish root."); }
+    /// <summary>
+    /// The builder-supplied <paramref name="commit"/> once it is one full lowercase SHA and the HEAD of
+    /// <paramref name="checkout"/>; otherwise the build refuses, naming both.
+    /// </summary>
+    private static string CheckoutCommit(string checkout, string commit, string checkoutOption, string commitOption)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(commit, "^[a-f0-9]{40}$"))
+            throw new ArgumentException($"{commitOption} must be one full lowercase commit SHA.");
+        var root = Path.GetFullPath(checkout);
+        if (!Directory.Exists(root)) throw new ArgumentException($"{checkoutOption} '{root}' does not exist.");
+        var start = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+        };
+        foreach (var argument in new[] { "-C", root, "rev-parse", "--verify", "HEAD^{commit}" }) start.ArgumentList.Add(argument);
+        using var git = System.Diagnostics.Process.Start(start)
+            ?? throw new InvalidOperationException("Could not start git to read the checkout HEAD.");
+        var stderr = git.StandardError.ReadToEndAsync();
+        var head = git.StandardOutput.ReadToEnd().Trim();
+        git.WaitForExit();
+        if (git.ExitCode != 0)
+            throw new InvalidDataException($"{checkoutOption} '{root}' is not a git checkout: {stderr.Result.Trim()}");
+        if (!string.Equals(head, commit, StringComparison.Ordinal))
+            throw new InvalidDataException($"{checkoutOption} '{root}' is at {head}, not {commitOption} {commit}.");
+        return commit;
+    }
+
     private static void WriteUtf8(string path, string content) { var full = Path.GetFullPath(path); Directory.CreateDirectory(Path.GetDirectoryName(full)!); File.WriteAllBytes(full, new UTF8Encoding(false).GetBytes(content)); }
 
     private static int Usage()

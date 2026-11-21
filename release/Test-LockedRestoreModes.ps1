@@ -20,7 +20,7 @@ $RedBambooPackagesRoot = [System.IO.Path]::GetFullPath($RedBambooPackagesRoot)
 
 $appHostProject = Join-Path $RedBambooPackagesRoot 'dotnet\RedBamboo.AppHost\RedBamboo.AppHost.csproj'
 if (-not (Test-Path -LiteralPath $appHostProject -PathType Leaf)) {
-    throw "Pinned AppHost source project was not found at '$appHostProject'."
+    throw "AppHost source project was not found at '$appHostProject'."
 }
 
 function Get-LockSnapshot {

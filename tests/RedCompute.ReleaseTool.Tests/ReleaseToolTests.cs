@@ -189,44 +189,100 @@ public sealed class ReleaseToolTests
     }
 
     [PowerShellFact("runs the release-input resolver script")]
-    public void ProducerAcquisitionContract_IsMinimalPinnedAndFailClosed()
+    public void ProducerAcquisitionContract_CommitsNoDependencyCommitAndFailsClosed()
     {
         var root = RepositoryRoot();
+        // RedLeaf (the ReleaseTool) and redbamboo-packages (AppHost) are build inputs the builder supplies.
+        Assert.False(File.Exists(Path.Combine(root, "release", "redcompute-source-dependencies.v1.json")));
         var inputPath = Path.Combine(root, "release", "redleaf-release-tool-input.v1.json");
         using var document = JsonDocument.Parse(File.ReadAllText(inputPath));
         var input = document.RootElement;
-        Assert.True(input.EnumerateObject().Count() == 4);
+        Assert.Equal(["schemaVersion", "repositoryUrl", "centralArtifactFileNameTemplate"],
+            input.EnumerateObject().Select(property => property.Name));
         Assert.Equal(1, input.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("https://github.com/RedBamboo-Interactive/redleaf", input.GetProperty("repositoryUrl").GetString());
-        const string exactCommit = "21e6fd393196fbe2179293ff3f05cb3501ebeaed";
-        Assert.Equal(exactCommit, input.GetProperty("commit").GetString());
         Assert.Equal("redcompute-win-x64-{artifactSha256}.zip", input.GetProperty("centralArtifactFileNameTemplate").GetString());
-
-        using var dependenciesDocument = JsonDocument.Parse(File.ReadAllText(Path.Combine(
-            root, "release", "redcompute-source-dependencies.v1.json")));
-        var appHost = Assert.Single(dependenciesDocument.RootElement.GetProperty("dependencies").EnumerateArray());
-        Assert.Equal("redbamboo-apphost", appHost.GetProperty("id").GetString());
-        Assert.Equal("fb1201af47275b4fbfc4aab2c2600459ba6127d6", appHost.GetProperty("commit").GetString());
 
         var schemaPath = Path.Combine(root, "schemas", "redleaf-release-tool-input.v1.schema.json");
         using var schemaDocument = JsonDocument.Parse(File.ReadAllText(schemaPath));
         var schema = schemaDocument.RootElement;
         Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
-        Assert.Equal("^[a-f0-9]{40}$", schema.GetProperty("properties").GetProperty("commit").GetProperty("pattern").GetString());
+        Assert.False(schema.GetProperty("properties").TryGetProperty("commit", out _));
+        Assert.DoesNotContain("commit", schema.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
 
         var resolved = RunPowerShell(root,
             "./release/Resolve-RedLeafReleaseToolInput.ps1", "-InputPath", "release/redleaf-release-tool-input.v1.json");
         Assert.Equal(0, resolved.ExitCode);
-        Assert.Equal(exactCommit, resolved.StandardOutput.Trim());
+        Assert.Equal("redcompute-win-x64-{artifactSha256}.zip", resolved.StandardOutput.Trim());
 
         using var temp = new TemporaryDirectory();
-        var unresolvedInput = Path.Combine(temp.Path, "redleaf-release-tool-input.v1.json");
-        File.WriteAllText(unresolvedInput, File.ReadAllText(inputPath).Replace(
-            exactCommit, "UNRESOLVED", StringComparison.Ordinal));
+        var pinnedInput = Path.Combine(temp.Path, "redleaf-release-tool-input.v1.json");
+        File.WriteAllText(pinnedInput, File.ReadAllText(inputPath).Replace(
+            "\"schemaVersion\": 1,", $"\"schemaVersion\": 1,\n  \"commit\": \"{new string('a', 40)}\",", StringComparison.Ordinal));
         var rejected = RunPowerShell(root,
-            "./release/Resolve-RedLeafReleaseToolInput.ps1", "-InputPath", unresolvedInput);
+            "./release/Resolve-RedLeafReleaseToolInput.ps1", "-InputPath", pinnedInput);
         Assert.NotEqual(0, rejected.ExitCode);
-        Assert.Contains("audited RedLeaf ReleaseTool commit is unresolved", rejected.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("must not commit a RedLeaf commit", rejected.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EvidenceBuild_TakesTheAppHostCommitOnlyWhenItIsTheCheckoutHead()
+    {
+        using var temp = new TemporaryDirectory();
+        var redbamboo = Directory.CreateDirectory(Path.Combine(temp.Path, "redbamboo-packages")).FullName;
+        Git(redbamboo, "init", "-q");
+        File.WriteAllText(Path.Combine(redbamboo, "README.md"), "fixture");
+        Git(redbamboo, "add", ".");
+        Git(redbamboo, "-c", "user.name=Release Test", "-c", "user.email=release@example.test", "commit", "-q", "-m", "fixture");
+        var head = Git(redbamboo, "rev-parse", "HEAD").Trim();
+        string[] Evidence(params string[] dependency) =>
+        [
+            "evidence", "build", "--repository-root", RepositoryRoot(), "--publish-root", Path.Combine(temp.Path, "publish"),
+            "--output", Path.Combine(temp.Path, "publish", "evidence.json"), "--version", "0.1.0",
+            "--repository-url", "https://github.com/RedBamboo-Interactive/redcompute", "--source-commit", new string('c', 40),
+            "--provider-graph", Path.Combine(RepositoryRoot(), "release", "redcompute-provider-graph.v1.json"),
+            "--dotnet-sdk", "9.0.303", "--dotnet-runtime", "9.0.7", "--msbuild", "17.14.13.31314", "--nuget", "6.14.0.116",
+            .. dependency,
+        ];
+
+        var other = new string('9', 40);
+        var stale = RunTool(Evidence("--redbamboo", redbamboo, "--redbamboo-commit", other));
+        Assert.Equal(1, stale.ExitCode);
+        Assert.Contains($"is at {head}, not --redbamboo-commit {other}", stale.StandardError, StringComparison.Ordinal);
+        var abbreviated = RunTool(Evidence("--redbamboo", redbamboo, "--redbamboo-commit", head[..12]));
+        Assert.Contains("--redbamboo-commit must be one full lowercase commit SHA", abbreviated.StandardError, StringComparison.Ordinal);
+        var pinned = RunTool(Evidence("--source-dependencies", Path.Combine(temp.Path, "redcompute-source-dependencies.v1.json")));
+        Assert.Contains("Unknown option(s)", pinned.StandardError, StringComparison.Ordinal);
+        Assert.Contains("--source-dependencies", pinned.StandardError, StringComparison.Ordinal);
+        // The matching commit passes the dependency check; this fixture then fails on its missing publish root.
+        var matching = RunTool(Evidence("--redbamboo", redbamboo, "--redbamboo-commit", head));
+        Assert.Equal(1, matching.ExitCode);
+        Assert.DoesNotContain("redbamboo", matching.StandardError, StringComparison.Ordinal);
+    }
+
+    private static (int ExitCode, string StandardError) RunTool(string[] arguments)
+    {
+        var previous = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        try { return (ReleaseToolProgram.Run(arguments), error.ToString()); }
+        finally { Console.SetError(previous); }
+    }
+
+    private static string Git(string directory, params string[] arguments)
+    {
+        var start = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = directory, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, $"git {string.Join(' ', arguments)} failed: {error}");
+        return output;
     }
 
     [Fact]
@@ -234,12 +290,22 @@ public sealed class ReleaseToolTests
     {
         var root = RepositoryRoot();
         var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "release-redcompute-component.yml"));
-        var resolve = workflow.IndexOf("Resolve required audited RedLeaf ReleaseTool input before build", StringComparison.Ordinal);
+        var resolve = workflow.IndexOf("Validate the RedLeaf ReleaseTool input before build", StringComparison.Ordinal);
         var setup = workflow.IndexOf("Set up exact .NET SDK", StringComparison.Ordinal);
         var firstBuild = workflow.IndexOf("dotnet build", StringComparison.Ordinal);
-        Assert.True(resolve >= 0 && resolve < setup && resolve < firstBuild, "The unresolved durable pin must fail before setup or build.");
-        Assert.Contains("repository: RedBamboo-Interactive/redleaf", workflow, StringComparison.Ordinal);
-        Assert.Contains("ref: ${{ steps.redleaf-tool.outputs.commit }}", workflow, StringComparison.Ordinal);
+        Assert.True(resolve >= 0 && resolve < setup && resolve < firstBuild, "A malformed or pinned input must fail before setup or build.");
+        // Dependency commits are resolved at dispatch, recorded, and handed to the tools; none is committed.
+        var lf = workflow.Replace("\r\n", "\n", StringComparison.Ordinal);
+        Assert.DoesNotContain("redcompute-source-dependencies", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("--source-dependencies", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("steps.redleaf-tool.outputs.commit", workflow, StringComparison.Ordinal);
+        Assert.Contains("repository: RedBamboo-Interactive/redleaf\n          ref: main\n", lf, StringComparison.Ordinal);
+        Assert.Contains("repository: RedBamboo-Interactive/redbamboo-packages\n          ref: main\n", lf, StringComparison.Ordinal);
+        Assert.Contains("(main at dispatch).\" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY", workflow, StringComparison.Ordinal);
+        Assert.Contains("REDBAMBOO_COMMIT: ${{ steps.dependencies.outputs.redbamboo }}", workflow, StringComparison.Ordinal);
+        Assert.Contains("REDLEAF_SHA: ${{ steps.dependencies.outputs.redleaf }}", workflow, StringComparison.Ordinal);
+        Assert.Contains("--redbamboo ../redbamboo-packages `", workflow, StringComparison.Ordinal);
+        Assert.Contains("--redbamboo-commit \"$env:REDBAMBOO_COMMIT\" `", workflow, StringComparison.Ordinal);
         Assert.Contains("git -C ../redleaf-release-tool-source rev-parse HEAD", workflow, StringComparison.Ordinal);
         Assert.Contains("candidate ingest-redcompute", workflow, StringComparison.Ordinal);
         Assert.Single(Regex.Matches(workflow, Regex.Escape("candidate ingest-redcompute")).Cast<Match>());
@@ -530,6 +596,12 @@ public sealed class ReleaseToolTests
     {
         public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"redcompute-release-{Guid.NewGuid():N}");
         public TemporaryDirectory() => Directory.CreateDirectory(Path);
-        public void Dispose() { if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true); }
+        public void Dispose()
+        {
+            if (!Directory.Exists(Path)) return;
+            // git writes its objects read-only.
+            foreach (var file in Directory.EnumerateFiles(Path, "*", SearchOption.AllDirectories)) File.SetAttributes(file, FileAttributes.Normal);
+            Directory.Delete(Path, recursive: true);
+        }
     }
 }
