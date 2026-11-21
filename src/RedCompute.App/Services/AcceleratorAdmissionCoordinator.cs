@@ -34,9 +34,13 @@ public sealed class AcceleratorAdmissionCoordinator : IAcceleratorAdmissionCoord
         _nodeId = string.IsNullOrWhiteSpace(nodeId) ? INodeRegistry.LocalAlias : nodeId;
     }
 
-    /// <summary>The gate key of an accelerator id: an id that names no node is on this node.</summary>
-    internal string Qualify(string acceleratorId)
-        => acceleratorId.Contains('/') ? acceleratorId : $"{_nodeId}/{acceleratorId}";
+    /// <summary>
+    /// The gate key of an accelerator id: an id that names its node is kept; otherwise it is on
+    /// <paramref name="nodeId"/> (a remote node's, design 3.2) or, with none, on this node.
+    /// </summary>
+    internal string Qualify(string acceleratorId, string? nodeId = null)
+        => acceleratorId.Contains('/') ? acceleratorId
+            : $"{(string.IsNullOrWhiteSpace(nodeId) ? _nodeId : nodeId)}/{acceleratorId}";
 
     public IDisposable RegisterPreemptibleResident(AcceleratorResidentRegistration registration)
     {
@@ -45,7 +49,7 @@ public sealed class AcceleratorAdmissionCoordinator : IAcceleratorAdmissionCoord
         ArgumentException.ThrowIfNullOrWhiteSpace(registration.ParticipantId);
         ArgumentNullException.ThrowIfNull(registration.ReleaseAsync);
 
-        var state = StateFor(registration.AcceleratorId);
+        var state = StateFor(registration.AcceleratorId, registration.NodeId);
         var token = Guid.NewGuid();
         lock (state.Sync)
             state.Registrations[token] = registration;
@@ -64,7 +68,7 @@ public sealed class AcceleratorAdmissionCoordinator : IAcceleratorAdmissionCoord
         ArgumentException.ThrowIfNullOrWhiteSpace(workload.ResidencyClass);
         ArgumentException.ThrowIfNullOrWhiteSpace(workload.WorkloadName);
 
-        var state = StateFor(workload.AcceleratorId);
+        var state = StateFor(workload.AcceleratorId, workload.NodeId);
         await state.Gate.WaitAsync(cancellationToken);
         try
         {
@@ -109,8 +113,8 @@ public sealed class AcceleratorAdmissionCoordinator : IAcceleratorAdmissionCoord
         }
     }
 
-    private AcceleratorState StateFor(string acceleratorId)
-        => _accelerators.GetOrAdd(Qualify(acceleratorId), _ => new AcceleratorState());
+    private AcceleratorState StateFor(string acceleratorId, string? nodeId)
+        => _accelerators.GetOrAdd(Qualify(acceleratorId, nodeId), _ => new AcceleratorState());
 
     private sealed class Lease(SemaphoreSlim gate) : IAsyncDisposable
     {

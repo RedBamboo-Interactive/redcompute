@@ -1,9 +1,12 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api;
 
@@ -24,20 +27,17 @@ public static class ProviderResolver
 
     /// <param name="placement">
     /// The node <c>/{slug}/generate</c> resolved, or null for node zero. Node zero's providers are
-    /// <see cref="CapabilityEntry.Providers"/>. A remote node has no provider instance yet (design 3.1,
-    /// P7), so an eligible one is 422 <c>provider_unavailable_on_node</c>.
+    /// <see cref="CapabilityEntry.Providers"/>, resolved exactly as before. A remote node's are
+    /// <see cref="CapabilityEntry.NodeProviders"/> (design 3.1, 3.3): the requested provider there, or the
+    /// active provider's name, or the only one; none is 422 <c>provider_unavailable_on_node</c> with the nodes the
+    /// caller may see that have one (<paramref name="nodes"/>, <paramref name="caller"/>).
     /// </param>
     public static (IBackendProvider? provider, IResult? error) Resolve(
-        CapabilityEntry entry, string? requestedProvider, string capabilityName, PlacementResolution? placement = null)
+        CapabilityEntry entry, string? requestedProvider, string capabilityName, PlacementResolution? placement = null,
+        INodeRegistry? nodes = null, ClaimsPrincipal? caller = null)
     {
         if (placement is { IsLocal: false })
-            return (null, Results.Json(new
-            {
-                error = "provider_unavailable_on_node",
-                message = $"'{capabilityName}' has no provider on node '{placement.NodeId}'",
-                nodeId = placement.NodeId,
-                availableOn = Array.Empty<string>(),
-            }, statusCode: 422));
+            return ResolveOnNode(entry, requestedProvider, capabilityName, placement.NodeId, nodes, caller);
 
         if (requestedProvider != null && !entry.Providers.ContainsKey(requestedProvider))
         {
@@ -51,6 +51,34 @@ public static class ProviderResolver
 
         var provider = entry.ResolveProvider(requestedProvider);
         return (provider, null);
+    }
+
+    private static (IBackendProvider? provider, IResult? error) ResolveOnNode(CapabilityEntry entry, string? requestedProvider,
+        string capabilityName, string nodeId, INodeRegistry? nodes, ClaimsPrincipal? caller)
+    {
+        var onNode = entry.NodeProviders
+            .Where(pair => pair.Key.NodeId == nodeId)
+            .OrderBy(pair => pair.Key.Provider, StringComparer.Ordinal)
+            .ToList();
+        if (requestedProvider is not null)
+        {
+            if (onNode.FirstOrDefault(pair => pair.Key.Provider == requestedProvider).Value is { } named) return (named, null);
+            // A name no node has is the same 404 as on node zero.
+            if (!entry.Providers.ContainsKey(requestedProvider) && entry.NodeProviders.Keys.All(key => key.Provider != requestedProvider))
+                return (null, Results.Json(new ErrorResponse
+                {
+                    Error = "provider_not_found",
+                    Message = $"Provider '{requestedProvider}' not found for {capabilityName}. Available: {string.Join(", ", entry.Providers.Keys)}"
+                }, statusCode: 404));
+        }
+        else
+        {
+            if (entry.DefaultProviderName is { } active && onNode.FirstOrDefault(pair => pair.Key.Provider == active).Value is { } activeOnNode)
+                return (activeOnNode, null);
+            if (onNode.Count > 0) return (onNode[0].Value, null);
+        }
+        return (null, RemoteNodeControl.UnavailableOnNode(capabilityName, nodeId,
+            nodes is null ? [] : RemoteNodeControl.AvailableOn(capabilityName, entry, nodes, caller)));
     }
 
     public static void StripProviderFromBody(Dictionary<string, object?> body)

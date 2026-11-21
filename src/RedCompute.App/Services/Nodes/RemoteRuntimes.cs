@@ -32,6 +32,39 @@ public static class RemoteRuntimeKinds
         ComfyUi => "ComfyUI",
         _ => null,
     };
+
+    public const string NodeOffline = "node_offline";
+    public const string NodeNotEligible = "node_not_eligible";
+    public const string RuntimeDisabled = "runtime_disabled";
+    public const string RuntimeUnknown = "runtime_unknown";
+
+    /// <summary>
+    /// The provider name a runtime kind serves under (design 3.1): node zero's provider of that kind's type for the
+    /// capability, so a caller's <c>provider</c> means the same on every node; the kind itself when node zero has none.
+    /// </summary>
+    public static string ProviderName(CapabilityEntry? entry, string kind)
+    {
+        var type = ProviderType(kind);
+        if (entry is not null && type is not null)
+            foreach (var (name, config) in entry.Config.Providers.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                if (string.Equals(config.Type, type, StringComparison.OrdinalIgnoreCase) && entry.Providers.ContainsKey(name))
+                    return name;
+        return kind;
+    }
+
+    /// <summary>
+    /// A remote runtime's status and availability (design 3.1): the reported status while the node is eligible and the
+    /// runtime enabled. An offline node's runtimes read Stopped (unavailable, not an error) with <c>node_offline</c>;
+    /// an ineligible node's keep their status with <c>node_not_eligible</c>; a disabled runtime is <c>runtime_disabled</c>.
+    /// </summary>
+    public static (BackendStatus Status, string? Reason) Availability(NodePlacement placement, HostRuntime runtime)
+    {
+        if (!placement.Eligible)
+            return placement.Reason == NodeUnavailableReasons.Offline
+                ? (BackendStatus.Stopped, NodeOffline)
+                : (runtime.Status, NodeNotEligible);
+        return runtime.Enabled ? (runtime.Status, null) : (runtime.Status, RuntimeDisabled);
+    }
 }
 
 /// <summary>

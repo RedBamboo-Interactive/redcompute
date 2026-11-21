@@ -56,8 +56,9 @@ public static class NodeAccess
     }
 
     /// <summary>
-    /// Where Automatic sends the work: the first candidate that can serve it, else node zero. In this release
-    /// no remote node can run work, so the answer is always node zero.
+    /// Where Automatic sends the work: the first candidate that can serve it, else node zero. Node zero comes first
+    /// and always serves, so the answer is node zero: the GPU preference (design 3.3, step 3: the person's own node
+    /// with a running GPU runtime) is not in this release, and a remote node runs work only when it is named.
     /// </summary>
     public static string RouteAutomatic(ClaimsPrincipal? caller, INodeRegistry nodes, Func<NodeDescriptor, bool> canServe)
         => AutomaticCandidates(caller, nodes).FirstOrDefault(canServe)?.Id ?? nodes.LocalNodeId;

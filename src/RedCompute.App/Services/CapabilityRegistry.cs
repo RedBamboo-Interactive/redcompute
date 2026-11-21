@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
@@ -10,7 +12,15 @@ public class CapabilityEntry
 {
     public required CapabilityDefinition Definition { get; init; }
     public required CapabilityConfig Config { get; init; }
+    /// <summary>Node zero's providers, by name. Unchanged by remote nodes.</summary>
     public Dictionary<string, IBackendProvider> Providers { get; init; } = new();
+
+    /// <summary>
+    /// The providers on remote nodes (Phase 4 P7, design 3.1), by node zero's provider name and the node: kept by
+    /// <see cref="NodeProviderManager"/> from what each node's runtimes report. Empty with node zero only. Nothing
+    /// that walks <see cref="Providers"/> (status, start-up, shutdown) sees them.
+    /// </summary>
+    public ConcurrentDictionary<NodeProviderKey, IBackendProvider> NodeProviders { get; } = new();
     public string? DefaultProviderName { get; set; }
     public bool IsSleeping { get; set; }
     public bool IsManuallyDisabled { get; set; }

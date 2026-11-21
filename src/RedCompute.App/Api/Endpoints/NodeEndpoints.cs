@@ -394,9 +394,7 @@ public static class NodeEndpoints
             {
                 var (runtime, slug) = item;
                 var entry = registry.Get(slug);
-                var reason = !placement.Eligible
-                    ? placement.Reason == NodeUnavailableReasons.Offline ? "node_offline" : "node_not_eligible"
-                    : !runtime.Enabled ? "runtime_disabled" : null;
+                var (status, reason) = RemoteRuntimeKinds.Availability(placement, runtime);
                 return new NodeCapabilityView(
                     slug,
                     entry?.Definition.DisplayName ?? slug,
@@ -404,13 +402,13 @@ public static class NodeEndpoints
                     entry?.Definition.Color,
                     entry?.Definition.Category,
                     // An offline node's runtimes read Stopped: unavailable, not an error (design 3.1).
-                    (placement.Reason == NodeUnavailableReasons.Offline ? BackendStatus.Stopped : runtime.Status).ToString(),
+                    status.ToString(),
                     entry?.Definition.ExecutionMode.ToString().ToLowerInvariant() ?? "async",
                     false,
                     false,
                     [])
                 {
-                    Provider = RemoteProviderName(entry, runtime.Kind),
+                    Provider = RemoteRuntimeKinds.ProviderName(entry, runtime.Kind),
                     Available = reason is null,
                     Reason = reason,
                     Accelerator = runtime.Accelerator,
@@ -422,19 +420,6 @@ public static class NodeEndpoints
             .ThenBy(view => view.Runtime!.Id, StringComparer.Ordinal)
             .ToList();
 
-    /// <summary>
-    /// The provider name a runtime kind serves under (design 3.1): node zero's provider of that kind's type for the
-    /// capability, so a caller's <c>provider</c> means the same on every node; the kind itself when node zero has none.
-    /// </summary>
-    internal static string RemoteProviderName(CapabilityEntry? entry, string kind)
-    {
-        var type = RemoteRuntimeKinds.ProviderType(kind);
-        if (entry is not null && type is not null)
-            foreach (var (name, config) in entry.Config.Providers.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-                if (string.Equals(config.Type, type, StringComparison.OrdinalIgnoreCase) && entry.Providers.ContainsKey(name))
-                    return name;
-        return kind;
-    }
 
     /// <summary>The same status rules as <c>/status</c>: each provider is asked once, concurrently.</summary>
     private static async Task<IReadOnlyList<NodeCapabilityView>> CapabilitiesAsync(CapabilityRegistry registry)

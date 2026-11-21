@@ -76,11 +76,15 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         RoutePrefix: "/nodes",
         Summary: "The computers RedCompute runs work on: node zero (this machine, kind local) and the machines paired with "
             + "Leaf that run the leaf-node agent (kind remote). Each node reports its platform, a hardware summary, its status, "
-            + "and placement {eligible, reason}; node zero also lists the capabilities and providers it runs. Remote nodes do not "
-            + "run work yet (placement reason remote_execution_not_available). A remote node is its owner's and admins' (an Agent "
-            + "counts as its person): only they see it here and may name it in placement.nodeId or ?nodeId= on /control; for "
-            + "anyone else it is 404 node_not_found, as an unknown id. Automatic placement uses node zero or the person's own "
-            + "nodes, never another's. Pairing, confirming, renaming and revoking are "
+            + "and placement {eligible, reason}; node zero lists the capabilities and providers it runs, a remote node the "
+            + "capabilities its runtimes serve (image-gen through ComfyUI). A remote node is eligible when it is confirmed, online "
+            + "and its agent speaks runtime.v1 and forward.http.v1 (else needs_update, node_offline...). It is its owner's and "
+            + "admins' (an Agent counts as its person): only they see it here and may name it in placement.nodeId on "
+            + "/{slug}/generate or ?nodeId= on /control/start|stop/{slug}; for anyone else it is 404 node_not_found, as an "
+            + "unknown id. Work runs on a remote node only when it is named (422 provider_unavailable_on_node with availableOn "
+            + "when no provider there serves the capability, 503 provider_not_running with nodeId when its runtime is not "
+            + "running; nothing starts by itself). Automatic placement always uses node zero. GET /status lists each capability's "
+            + "providers on remote nodes in nodes[]. Pairing, confirming, renaming and revoking are "
             + "the kernel's /api/nodes routes. Use 'local' as the id of this machine. GET /nodes/agent says where the Nightly "
             + "published the leaf-node agent (archives, hashes, one install command per OS).",
         Concepts:
@@ -100,9 +104,16 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
                     new DiscoveryField("placement", "object", Required: true, Description: "{eligible, reason}: whether work may be placed on the node"),
                     new DiscoveryField("link", "object", Description: "A remote node's live link: connectedAt, rttMs, protocol, features, agentVersion, updateAvailable"),
                     new DiscoveryField("clis", "array", Description: "CLIs a remote node found: name, installed, version, signedIn, authMethod"),
-                    new DiscoveryField("capabilities", "array", Description: "Capabilities on this node, each with its providers and their status"),
+                    new DiscoveryField("capabilities", "array", Description: "Capabilities on this node, each with its providers and their status; on a remote node {slug, provider, status, available, reason, accelerator, runtime {id, label, version, managed}}"),
                 ]),
+            new DiscoveryConcept("feature", PlacementNodesFeature,
+                "This RedCompute runs work on a remote node named in placement.nodeId (Phase 4): each capability has a provider "
+                + "per node whose runtimes serve it, under node zero's provider name. Send a remote nodeId only to a RedCompute "
+                + "that lists this feature; an older one cannot run work there."),
         ]);
+
+    /// <summary>The feature callers check before they send a remote <c>placement.nodeId</c> (design 7, skew rules).</summary>
+    public const string PlacementNodesFeature = "placement.nodes.v1";
 
     public override Task<object?> GetHealthExtrasAsync()
     {

@@ -7,6 +7,7 @@ using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Hardware;
 using RedCompute.App.Services.Jobs;
+using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.Placement;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
@@ -58,9 +59,10 @@ public static class GenericCapabilityEndpoints
                     return Error(400, "invalid_json", bodyError);
                 // nodeId only, validated and checked against the registry and against what the caller may
                 // use (NodeAccess). Taken out of the body so the provider, its schema validation and the job
-                // input see exactly what they did. With no nodeId the work runs on node zero, which is where
-                // Automatic routes every caller while no remote node runs work. The resolved node goes to
-                // the provider resolver and the job (placement.resolved); a request without placement
+                // input see exactly what they did. With no nodeId the work runs on node zero: Automatic routes
+                // every caller there (design 3.3 without the GPU preference, so a remote node runs work only
+                // when it is named). The resolved node goes to the provider resolver, which gives that node's
+                // provider (design 3.1), and to the job (placement.resolved); a request without placement
                 // records nothing new.
                 PlacementResolution? resolved = null;
                 if (body.Remove(PlacementRequest.Member, out var placementValue) && placementValue is JsonElement placementElement)
@@ -75,7 +77,7 @@ public static class GenericCapabilityEndpoints
                 }
 
                 var requestedProvider = ProviderResolver.GetRequestedProvider(ctx, body);
-                var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, slug, resolved);
+                var (provider, providerError) = ProviderResolver.Resolve(entry, requestedProvider, slug, resolved, nodes, ctx.User);
                 if (providerError != null) return providerError;
                 if (provider == null)
                     return Error(503, "provider_not_configured", $"No provider configured for '{slug}'");
@@ -108,7 +110,9 @@ public static class GenericCapabilityEndpoints
 
                 var status = await provider.GetStatusAsync();
                 if (status != BackendStatus.Running)
-                    return NotRunning(provider, status, $"Backend for '{slug}' is {status}. Start via POST /control/start/{slug}");
+                    return provider is RemoteNodeProvider remote
+                        ? NotRunningOnNode(remote, slug, status)
+                        : NotRunning(provider, status, $"Backend for '{slug}' is {status}. Start via POST /control/start/{slug}");
 
                 var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
 
@@ -181,7 +185,7 @@ public static class GenericCapabilityEndpoints
                         jobTracker.TryMarkCompletedUnlessCancelled(job.Id, outputPath, size, contentType);
                         if (_registry != null)
                         {
-                            var proxyCost = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry);
+                            var proxyCost = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry, nodes);
                             if (proxyCost.HasValue) jobTracker.SetJobCost(job.Id, proxyCost.Value);
                         }
                         log($"[{slug}] Job {job.Id} completed ({size / 1024}KB)", job.Id);
@@ -220,7 +224,7 @@ public static class GenericCapabilityEndpoints
                         try
                         {
                             var result = await provider.ExecuteAsync(request, execution.Token);
-                            await HandleResult(job.Id, slug, result, jobTracker, log);
+                            await HandleResult(job.Id, slug, result, jobTracker, log, nodes);
                         }
                         catch (OperationCanceledException) when (execution.Token.IsCancellationRequested)
                         {
@@ -250,7 +254,7 @@ public static class GenericCapabilityEndpoints
                             result.PrimaryOutputName, result.PrimaryFileName, result.ExtraOutputs);
                         var size = new FileInfo(path).Length;
                         jobTracker.TryMarkCompletedUnlessCancelled(job.Id, path, size, result.ContentType, result.ResultJson);
-                        if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
+                        if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry, nodes); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
                         log($"[{slug}] Job {job.Id} completed ({size / 1024}KB)", job.Id);
 
                         outputStream.Position = 0;
@@ -264,7 +268,7 @@ public static class GenericCapabilityEndpoints
                     else if (result is { Success: true, ResultJson: not null })
                     {
                         jobTracker.TryMarkCompletedUnlessCancelled(job.Id, resultJson: result.ResultJson);
-                        if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
+                        if (_registry != null) { var c = EstimateJobCost(jobTracker.GetJob(job.Id)!, _registry, nodes); if (c.HasValue) jobTracker.SetJobCost(job.Id, c.Value); }
                         ctx.Response.Headers["X-Job-Id"] = job.Id.ToString();
                         try { return Results.Json(JsonSerializer.Deserialize<object>(result.ResultJson)); }
                         catch { return Results.Text(result.ResultJson, "application/json"); }
@@ -691,7 +695,8 @@ public static class GenericCapabilityEndpoints
     }
 
 
-    private static async Task HandleResult(Guid jobId, string slug, JobResult? result, JobTrackingService jobTracker, Action<string, Guid?> log)
+    private static async Task HandleResult(Guid jobId, string slug, JobResult? result, JobTrackingService jobTracker, Action<string, Guid?> log,
+        INodeRegistry? nodes = null)
     {
         if (jobTracker.GetJob(jobId)?.Status == JobStatus.Cancelled)
         {
@@ -727,7 +732,7 @@ public static class GenericCapabilityEndpoints
         var job = jobTracker.GetJob(jobId);
         if (job != null && _registry != null)
         {
-            var cost = EstimateJobCost(job, _registry);
+            var cost = EstimateJobCost(job, _registry, nodes);
             if (cost.HasValue) jobTracker.SetJobCost(jobId, cost.Value);
         }
     }
@@ -837,11 +842,32 @@ public static class GenericCapabilityEndpoints
                 provider.StatusDetail ?? $"Backend '{provider.Name}' is not supported on {PlatformSupport.PlatformName}")
             : Error(503, "provider_not_running", message);
 
+    /// <summary>
+    /// 503 <c>provider_not_running</c> for a remote node's provider (design 3.3), with the node, and the reason when the
+    /// node or runtime is unavailable. No auto-start: <c>/control/start/{slug}?nodeId=</c> starts a managed runtime.
+    /// </summary>
+    private static IResult NotRunningOnNode(RemoteNodeProvider provider, string slug, BackendStatus status)
+    {
+        var (_, reason) = provider.Availability();
+        return Results.Json(new
+        {
+            error = "provider_not_running",
+            message = $"'{slug}' on node '{provider.NodeId}' is {status}. Start via POST /control/start/{slug}?nodeId={provider.NodeId}",
+            nodeId = provider.NodeId,
+            status = status.ToString(),
+            reason,
+        }, statusCode: 503);
+    }
+
     private static string Truncate(string s, int maxLen) =>
         s.Length <= maxLen ? s : s[..maxLen] + "...";
 
-    private static double? EstimateJobCost(JobRecord job, CapabilityRegistry registry)
+    private static double? EstimateJobCost(JobRecord job, CapabilityRegistry registry, INodeRegistry? nodes)
     {
+        // A job a remote node ran is costed from that node's GPU (design 3.2), never node zero's.
+        if (nodes is not null && PlacementParser.IsRemote(job.NodeId, nodes))
+            return EstimateRemoteJobCost(job, registry, nodes);
+
         var entry = registry.Get(job.CapabilitySlug);
         ProviderConfig? providerConfig = null;
         entry?.Config.Providers.TryGetValue(job.ProviderName, out providerConfig);
@@ -870,5 +896,39 @@ public static class GenericCapabilityEndpoints
         var hours = job.DurationMs.Value / 3_600_000.0;
         var kwh = (gpu.PowerWatts / 1000.0) * hours;
         return Math.Round(kwh * _config.ElectricityRatePerKwh, 6);
+    }
+
+    /// <summary>
+    /// A remote node's job (design 3.2): the power of the GPU its runtime runs on (<c>cuda:N</c>, <c>rocm:N</c>,
+    /// <c>xpu:N</c> is GPU N of the node's last hardware report) times the duration. A CPU runtime, an unknown
+    /// accelerator or a node with no report has no estimate; a fixed per-job cost from node zero's config never applies.
+    /// </summary>
+    private static double? EstimateRemoteJobCost(JobRecord job, CapabilityRegistry registry, INodeRegistry nodes)
+        => _config is null ? null : RemoteJobCost(job, registry, nodes, _config.ElectricityRatePerKwh);
+
+    internal static double? RemoteJobCost(JobRecord job, CapabilityRegistry registry, INodeRegistry nodes, double ratePerKwh)
+    {
+        if (job.DurationMs is not > 0 || job.NodeId is not { } nodeId) return null;
+        var accelerator = registry.Get(job.CapabilitySlug)?.NodeProviders
+            .Where(pair => pair.Key.NodeId == nodeId && pair.Value is RemoteNodeProvider)
+            .Select(pair => (RemoteNodeProvider)pair.Value)
+            .OrderByDescending(provider => provider.Name == job.ProviderName)
+            .Select(provider => provider.Accelerator)
+            .FirstOrDefault();
+        if (GpuIndex(accelerator) is not { } index) return null;
+        var gpu = nodes.Find(nodeId)?.Report?.Hardware?.Gpus.FirstOrDefault(candidate => candidate.Index == index);
+        if (gpu is null || gpu.PowerWatts <= 0) return null;
+        var hours = job.DurationMs.Value / 3_600_000.0;
+        return Math.Round(gpu.PowerWatts / 1000.0 * hours * ratePerKwh, 6);
+    }
+
+    /// <summary>The GPU index of an accelerator id (<c>cuda:1</c> is 1), or null for <c>cpu</c>, <c>mps</c> and anything else.</summary>
+    internal static int? GpuIndex(string? accelerator)
+    {
+        if (accelerator is null) return null;
+        var colon = accelerator.IndexOf(':');
+        if (colon <= 0 || accelerator[..colon] is not ("cuda" or "rocm" or "xpu")) return null;
+        return int.TryParse(accelerator[(colon + 1)..], System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var index) ? index : null;
     }
 }

@@ -19,12 +19,38 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static class GlobalEndpoints
 {
+    /// <summary>
+    /// A capability's providers on remote nodes (design 3.1), for the nodes the caller may see: status and availability
+    /// from each node's last report, never a call over the link. Null when there is none, so the field is absent.
+    /// </summary>
+    internal static IReadOnlyList<RemoteProviderStatus>? RemoteProviderStatuses(CapabilityEntry entry, INodeRegistry? nodes,
+        System.Security.Claims.ClaimsPrincipal? caller)
+    {
+        if (nodes is null || entry.NodeProviders.IsEmpty) return null;
+        var statuses = entry.NodeProviders
+            .Select(pair => (pair.Key, Provider: pair.Value as RemoteNodeProvider, Node: nodes.Find(pair.Key.NodeId)))
+            .Where(item => item.Provider is not null && item.Node is not null && NodeAccess.Allows(caller, item.Node, NodeUse.See))
+            .OrderBy(item => item.Key.NodeId, StringComparer.Ordinal)
+            .ThenBy(item => item.Key.Provider, StringComparer.Ordinal)
+            .Select(item =>
+            {
+                var (status, reason) = item.Provider!.Availability();
+                return new RemoteProviderStatus(item.Key.NodeId, item.Key.Provider, status.ToString(), reason is null, reason,
+                    item.Provider.Accelerator);
+            })
+            .ToList();
+        return statuses.Count > 0 ? statuses : null;
+    }
+
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger,
         INodeRegistry? nodes = null)
     {
         ExternalJobEndpoints.Map(endpoints, jobTracker);
 
-        endpoints.MapGet("/status", "Service status with uptime and capability states", async () =>
+        endpoints.MapGet("/status", "Service status with uptime and capability states. Each capability's providers[] are node zero's; "
+            + "nodes[] (present only when a remote node the caller may see has one) lists the providers on remote nodes: "
+            + "{nodeId, provider, status, available, reason, accelerator}, reason node_offline, node_not_eligible or runtime_disabled.",
+            async (HttpContext ctx) =>
         {
             var capabilitySnapshot = registry.Capabilities.ToArray();
             var providers = capabilitySnapshot
@@ -80,7 +106,8 @@ public static class GlobalEndpoints
                     color = entry.Definition.Color,
                     description = entry.Definition.Description,
                     category = entry.Definition.Category,
-                    rerunnable = activeProvider is IPluginProvider pp && pp.SupportsRerun
+                    rerunnable = activeProvider is IPluginProvider pp && pp.SupportsRerun,
+                    nodes = RemoteProviderStatuses(entry, nodes, ctx.User),
                 };
             }).ToArray();
 
@@ -1031,3 +1058,6 @@ public static class GlobalEndpoints
         return null;
     }
 }
+
+/// <summary>One provider on a remote node in <c>/status</c> (design 3.1).</summary>
+public sealed record RemoteProviderStatus(string NodeId, string Provider, string Status, bool Available, string? Reason, string? Accelerator);

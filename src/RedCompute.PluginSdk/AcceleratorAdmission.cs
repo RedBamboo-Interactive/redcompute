@@ -7,13 +7,24 @@ namespace RedCompute.PluginSdk;
 public sealed record AcceleratorWorkload(
     string AcceleratorId,
     string ResidencyClass,
-    string WorkloadName);
+    string WorkloadName)
+{
+    /// <summary>
+    /// The node the accelerator is on (Phase 4 design 3.2), from the execution host's node; null for node zero,
+    /// whose ids and gates are unchanged. An <see cref="AcceleratorId"/> that already names a node wins.
+    /// </summary>
+    public string? NodeId { get; init; }
+}
 
 public sealed record AcceleratorResidentRegistration(
     string AcceleratorId,
     string ResidencyClass,
     string ParticipantId,
-    Func<CancellationToken, Task<AcceleratorReleaseResult>> ReleaseAsync);
+    Func<CancellationToken, Task<AcceleratorReleaseResult>> ReleaseAsync)
+{
+    /// <summary>The node the accelerator is on, as <see cref="AcceleratorWorkload.NodeId"/>; null for node zero.</summary>
+    public string? NodeId { get; init; }
+}
 
 public sealed record AcceleratorReleaseResult(bool Success, string? Detail = null)
 {

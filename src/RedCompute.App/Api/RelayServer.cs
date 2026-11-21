@@ -65,6 +65,16 @@ public class RelayServer
     private NodeHub? _nodeHub;
     private KernelNodeSync? _nodeSync;
     private NodeEvents? _nodeEvents;
+    private NodeProviderManager? _nodeProviders;
+
+    /// <summary>
+    /// Creates a capability's provider for a remote node's runtime (Phase 4 P7, design 3.1): the host's
+    /// <see cref="ProviderDiscovery"/> with the node's host. Null: remote nodes get no providers.
+    /// </summary>
+    public RemoteProviderFactory? RemoteProviders { get; init; }
+
+    /// <summary>The accelerator admission remote providers are scoped from (one gate per node GPU, design 3.2).</summary>
+    public IAcceleratorAdmissionCoordinator? AcceleratorAdmission { get; init; }
 
     public RelayServer(RedComputeConfig config, CapabilityRegistry registry, JobTrackingService jobTracker,
         LoggingService logger, ConfigManager configManager,
@@ -548,6 +558,9 @@ public class RelayServer
         var linkKeys = new NodeLinkKeyStore(ComputeStorage.Current.NodeLinkKey, message => _log(message, null));
         var hub = _nodeHub = new NodeHub(nodes, message => _log(message, null),
             new NodeHubOptions { Resync = sync.RefreshAsync, LinkKeys = linkKeys });
+        if (RemoteProviders is not null)
+            _nodeProviders = new NodeProviderManager(_registry, nodes, hub.RemoteHost, RemoteProviders, AcceleratorAdmission,
+                message => _log(message, null));
         NodeEndpoints.Map(registry, nodes, _registry, _hardwareMonitor, hub, sync);
         NodeHub.MapRoute(_app!, hub);
         NodeHub.MapLinkKeyRoute(_app!, linkKeys);
@@ -778,6 +791,12 @@ public class RelayServer
         }
         await _docker.StopAllAsync();
 
+        // Remote providers are retired, never runtime.stop: a node's runtime is its owner's.
+        if (_nodeProviders is not null)
+        {
+            await _nodeProviders.DisposeAsync();
+            _nodeProviders = null;
+        }
         // Links close with 1012 (service restart): nodes redial and find a fresh session.
         if (_nodeHub is not null)
         {

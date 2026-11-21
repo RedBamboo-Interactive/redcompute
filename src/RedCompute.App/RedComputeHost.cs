@@ -191,6 +191,25 @@ public static class RedComputeHost
         }
     }
 
+    /// <summary>The services node zero's providers are constructed with (<see cref="InitializeCapabilities"/>).</summary>
+    private static object?[] _providerServices = [];
+
+    /// <summary>
+    /// A remote node's provider (Phase 4 P7, design 3.1): built exactly as node zero's, by type through
+    /// <see cref="ProviderDiscovery"/>, with that node's execution host and accelerator admission in place of node
+    /// zero's, so nothing in it can reach this machine's processes, files or GPU gates.
+    /// </summary>
+    private static IPluginProvider? CreateRemoteProvider(string providerType, ProviderConfig config, string capabilitySlug,
+        IExecutionHost host, IAcceleratorAdmissionCoordinator? admission)
+    {
+        var services = _providerServices
+            .Where(service => service is not IExecutionHost and not IAcceleratorAdmissionCoordinator)
+            .Prepend(admission)
+            .Prepend(host)
+            .ToArray();
+        return ProviderDiscovery.Create(providerType, config, capabilitySlug, message => Log(message), services);
+    }
+
     private static void InitializeCapabilities()
     {
         var config = ConfigManager.Config;
@@ -206,6 +225,7 @@ public static class RedComputeHost
             (INodeRegistry)Nodes,
             _kernelPlacement,
         };
+        _providerServices = extraServices;
 
         foreach (var (slug, capConfig) in config.Capabilities)
         {
@@ -361,7 +381,11 @@ public static class RedComputeHost
         _relayCts = new CancellationTokenSource();
         _relayServer = new RelayServer(ConfigManager.Config, Registry, JobTracker, Logger,
             ConfigManager, HardwareMonitor, ProviderConfig, QualityModes,
-            (msg, jobId) => Log(msg, jobId), Nodes);
+            (msg, jobId) => Log(msg, jobId), Nodes)
+        {
+            RemoteProviders = CreateRemoteProvider,
+            AcceleratorAdmission = AcceleratorAdmission,
+        };
 
         try
         {

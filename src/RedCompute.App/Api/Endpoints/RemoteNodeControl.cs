@@ -45,7 +45,7 @@ internal static class RemoteNodeControl
             return Results.Ok(new
             {
                 slug,
-                provider = NodeEndpoints.RemoteProviderName(entry, runtime.Kind),
+                provider = RemoteRuntimeKinds.ProviderName(entry, runtime.Kind),
                 nodeId,
                 runtime = runtime.Id,
                 status = answered.Status.ToString(),
@@ -87,7 +87,7 @@ internal static class RemoteNodeControl
             : null;
         return runtimes
             .Where(runtime => runtime.Capabilities.Contains(slug, StringComparer.Ordinal))
-            .Where(runtime => providerName is null || NodeEndpoints.RemoteProviderName(entry, runtime.Kind) == providerName)
+            .Where(runtime => providerName is null || RemoteRuntimeKinds.ProviderName(entry, runtime.Kind) == providerName)
             .OrderByDescending(runtime => runtime.Managed == HostRuntimeManagement.Spawn && runtime.Enabled)
             .ThenByDescending(runtime => runtime.Enabled)
             .ThenByDescending(runtime => string.Equals(RemoteRuntimeKinds.ProviderType(runtime.Kind), activeType, StringComparison.OrdinalIgnoreCase))
