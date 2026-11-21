@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using RedCompute.NodeLink.Noise;
 
 namespace RedCompute.Node.Credentials;
 
@@ -37,6 +38,19 @@ public interface INodeKeyStore
 
     /// <summary>Deletes the key and its record; true when something was deleted.</summary>
     bool Delete(string keyRef, string origin);
+
+    /// <summary>
+    /// A new link key for the identity <paramref name="keyRef"/> (Phase 4 P0.5c): the P-256 key-agreement key the
+    /// node's encrypted link uses as its Noise static, kept beside the identity with the same protection and
+    /// replacing any earlier one. The identity signs it into every handshake, so it never leaves the node.
+    /// </summary>
+    NoiseKeyPair CreateLinkKey(string keyRef, string origin, string nodeId);
+
+    /// <summary>The link key for the identity <paramref name="keyRef"/>, or null when there is none.</summary>
+    NoiseKeyPair? OpenLinkKey(string keyRef, string origin);
+
+    /// <summary>Deletes the link key; true when there was one.</summary>
+    bool DeleteLinkKey(string keyRef, string origin);
 }
 
 /// <summary>Chooses the store for a new key, and the store that holds an existing reference.</summary>

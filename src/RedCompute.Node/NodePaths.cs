@@ -42,6 +42,9 @@ public sealed record NodePaths
 
     public string StateFile => Path.Combine(Data, "node.json");
     public string KeyFile => Path.Combine(Data, "key.p8");
+
+    /// <summary>The link key beside <see cref="KeyFile"/>, for a node whose identity key is in a file.</summary>
+    public string LinkKeyFile => Path.Combine(Data, "link-key.p8");
     public string LogFile => Path.Combine(Logs, "leaf-node.log");
     public string ControlSocket => Path.Combine(Runtime, "leaf-node.sock");
     public string LockFile => Path.Combine(Runtime, "leaf-node.lock");

@@ -18,6 +18,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
 
           leaf-node pair --server https://<leaf address> --code ABCD-EFGH [--name <name>] [--allow-file-key]
           leaf-node status
+          leaf-node repin --code ABCD-EFGH   (the re-pin code the node's owner made in Leaf)
           leaf-node unpair
           leaf-node install [--keep-running-when-logged-out]
           leaf-node uninstall
@@ -45,6 +46,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                 "run" => await RunAgentAsync(ct),
                 "pair" => await PairAsync(options, ct),
                 "unpair" => await UnpairAsync(ct),
+                "repin" => await RepinAsync(options, ct),
                 "status" => await StatusAsync(options, ct),
                 "stop" => await SimpleAsync("stop", "Stopped.", ct),
                 "kill-all" => await KillAllAsync(ct),
@@ -137,12 +139,44 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         env.StateStore.Save(new NodeState { Pairing = pairing });
         env.Audit.Record("local", "pair", "paired", pairing.NodeId);
         env.Log.Info($"Paired as {pairing.NodeId} with {origin} (key in {pairing.CredentialStore}).");
+        output.WriteLine(pairing.LinkPin is { } pinned
+            ? $"Server link key {pinned.Fingerprint}: the link is end-to-end encrypted. Leaf shows the same fingerprint in Add a node."
+            : "This server does not offer encrypted node links yet; the link is not end-to-end encrypted.");
 
         output.WriteLine($"Paired as {pairing.NodeId} — fingerprint {pairing.Fingerprint}. Confirm it in Leaf.");
         if (pairing.CredentialStore == "file") output.WriteLine($"The node key is kept in {env.Paths.KeyFile} (readable only by you).");
         var reloaded = await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "reload" }, ct: ct);
         if (reloaded is null)
             output.WriteLine("The agent is not running yet: it connects when it starts (leaf-node install starts it at logon).");
+        return NodeExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// <c>leaf-node repin --code</c> (design 1b.7): the owner's single-use re-pin code buys the server's current link
+    /// key, authenticated by this node's existing identity key; the node pins it with a new link key, confirms it
+    /// with a signed proof, and the running agent reconnects encrypted. The node id stays the same.
+    /// </summary>
+    private async Task<int> RepinAsync(IReadOnlyDictionary<string, string?> options, CancellationToken ct)
+    {
+        var code = PairingCode.Normalize(Require(options, "code"));
+        var state = env.StateStore.Load();
+        var pairing = state.Pairing ?? throw new NodeCommandException("not_paired", "This node is not paired. Pair it first: leaf-node pair.");
+        var store = env.KeyStores.ForKeyRef(pairing.KeyRef);
+        using var identity = store.Open(pairing.KeyRef, pairing.ServerOrigin)
+                             ?? throw new NodeCommandException("key_missing", "The node key is gone. Pair again: leaf-node unpair, then leaf-node pair.");
+        using var server = env.ServerClient();
+        var now = env.Time.GetUtcNow();
+        var info = await server.RepinAsync(pairing.ServerOrigin, pairing.NodeId, identity, code, now, ct);
+        if (pairing.LinkPin is { } old && old.Fingerprint == info.Fingerprint)
+            env.Log.Info($"Re-pin: the server's link key is still {info.Fingerprint}.");
+        store.CreateLinkKey(pairing.KeyRef, pairing.ServerOrigin, pairing.NodeId).Dispose();
+        await server.PinAsync(pairing.ServerOrigin, pairing.NodeId, identity, code, info, now, ct);
+        env.StateStore.Save(state with { Pairing = pairing with { LinkPin = new NodeLinkPin(info.PublicKey, info.Fingerprint, info.KeyId, now) } });
+        env.Audit.Record("local", "repin", info.Fingerprint, pairing.NodeId);
+        env.Log.Info($"Pinned the server link key {info.Fingerprint} ({info.KeyId}).");
+        output.WriteLine($"Pinned the server's link key {info.Fingerprint}. The link is end-to-end encrypted from now on.");
+        if (await ControlClient.SendAsync(env.Paths, new JsonObject { ["verb"] = "reload" }, ct: ct) is null)
+            output.WriteLine("The agent is not running: it connects encrypted when it starts.");
         return NodeExitCodes.Ok;
     }
 
@@ -197,6 +231,9 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         {
             lines.Add($"Paired as {status["nodeId"]} with {status["serverOrigin"]}.");
             lines.Add($"Key fingerprint {status["fingerprint"]} ({status["credentialStore"]}).");
+            lines.Add(status["linkEncryption"]?.GetValue<string>() == "on"
+                ? $"Link encryption: on (server link key {status["serverLinkFingerprint"]})."
+                : "Link encryption: off. This node pinned no server link key; ask its owner for a re-pin code: leaf-node repin --code <code>.");
         }
         else if (status["ended"] is JsonObject ended)
         {
@@ -214,7 +251,10 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         }
         if (!running) lines.Add("The agent is not running.");
         else if (status["link"] is JsonObject link)
+        {
             lines.Add($"Link: {link["status"]}{(link["reason"] is { } reason ? $" ({reason})" : "")}.");
+            if (link["status"]?.GetValue<string>() == "needs-repin") lines.Add(NodeAgent.RepinAdvice(link["reason"]?.GetValue<string>()));
+        }
         lines.Add($"leaf-node {status["agent"]?["version"]}");
         return string.Join(Environment.NewLine, lines);
     }

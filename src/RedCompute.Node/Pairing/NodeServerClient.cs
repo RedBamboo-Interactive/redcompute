@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using RedCompute.Node.Credentials;
 using RedCompute.NodeLink;
+using RedCompute.NodeLink.Noise;
 
 namespace RedCompute.Node.Pairing;
 
@@ -31,6 +32,12 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
     public const string PairPath = "/api/nodes/link/pair";
     public const string DefaultLinkPath = "/api/nodes/link";
     public const string UnpairPath = "/api/nodes/link/unpair";
+
+    /// <summary>K0: the node confirms the server link key it pinned (signed proof, assertion-authenticated).</summary>
+    public const string PinPath = "/api/nodes/link/pin";
+
+    /// <summary>K0: an owner-issued re-pin code for this node buys the current server link key.</summary>
+    public const string RepinPath = "/api/nodes/link/repin";
 
     private readonly HttpClient _http = new(handler ?? new SocketsHttpHandler { AllowAutoRedirect = false }, disposeHandler: handler is null)
     {
@@ -112,6 +119,18 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
                         $"The server recorded key {serverFingerprint}, but this node's key is {fingerprint}. Pairing cancelled.");
 
                 store.Commit(key, nodeId!);
+
+                // E2E (K0): a kernel that hands RedCompute's link key gets it pinned, and confirmed with a signed
+                // proof; a refused proof (the kernel saw another fingerprint) cancels the pairing. An older kernel
+                // sends none: the node links in plaintext until its owner re-pins it.
+                NodeLinkPin? pin = null;
+                if (body["linkKey"] is JsonObject linkKey)
+                {
+                    var info = ReadLinkKey(origin, linkKey);
+                    store.CreateLinkKey(key.KeyRef, origin, nodeId!).Dispose();
+                    await PinAsync(origin, nodeId!, key.Key, code, info, now, ct);
+                    pin = new NodeLinkPin(info.PublicKey, info.Fingerprint, info.KeyId, now);
+                }
                 return new NodePairing
                 {
                     NodeId = nodeId!,
@@ -123,6 +142,7 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
                     Fingerprint = fingerprint,
                     Name = name,
                     PairedAt = now,
+                    LinkPin = pin,
                 };
             }
         }
@@ -132,6 +152,7 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
                 await UnpairAsync(origin, pairedNodeId, key.Key, now, CancellationToken.None);
             try
             {
+                store.DeleteLinkKey(key.KeyRef, origin);
                 store.Delete(key.KeyRef, origin);
             }
             catch
@@ -167,6 +188,86 @@ public sealed partial class NodeServerClient(HttpMessageHandler? handler = null,
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// <c>POST /api/nodes/link/repin</c> with an assertion and the owner's re-pin code: the server link key to pin
+    /// (design 1b.7). The caller then pins it with <see cref="PinAsync"/>.
+    /// </summary>
+    public async Task<NodeLinkKeyInfo> RepinAsync(string origin, string nodeId, ECDsa key, string code, DateTimeOffset now, CancellationToken ct)
+    {
+        var body = await SignedPostAsync(origin, RepinPath, nodeId, key, new JsonObject { ["code"] = code }, now, ct, "repin");
+        return body?["linkKey"] is JsonObject linkKey
+            ? ReadLinkKey(origin, linkKey)
+            : throw new NodeCommandException("bad_response", $"{origin} answered the re-pin without a link key.");
+    }
+
+    /// <summary>
+    /// <c>POST /api/nodes/link/pin</c>: confirms the pinned key with <see cref="NodeCrypto.LinkPinProof"/>. Any
+    /// refusal is an error: the kernel did not record this pin, so the server would refuse plaintext and the
+    /// node would not know why.
+    /// </summary>
+    public async Task PinAsync(string origin, string nodeId, ECDsa key, string code, NodeLinkKeyInfo info, DateTimeOffset now, CancellationToken ct)
+        => await SignedPostAsync(origin, PinPath, nodeId, key, new JsonObject
+        {
+            ["code"] = code,
+            ["fingerprint"] = info.Fingerprint,
+            ["keyId"] = info.KeyId,
+            ["proof"] = NodeCrypto.LinkPinProof(key, nodeId, code, info.Fingerprint),
+        }, now, ct, "pin");
+
+    private async Task<JsonObject?> SignedPostAsync(string origin, string path, string nodeId, ECDsa key, JsonObject body,
+        DateTimeOffset now, CancellationToken ct, string what)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, origin + path) { Content = JsonContent.Create(body) };
+        request.Headers.Authorization = new AuthenticationHeaderValue("LeafNode", NodeCrypto.Assertion(key, nodeId, origin + path, now));
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct);
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            throw new NodeCommandException("server_unreachable", $"Could not reach {origin}: {error.Message}", inner: error);
+        }
+        using (response)
+        {
+            var answer = await ReadJsonAsync(response, ct);
+            if (response.IsSuccessStatusCode) return answer;
+            var code = ErrorCode(answer);
+            throw new NodeCommandException(code ?? $"http_{(int)response.StatusCode}", code switch
+            {
+                "code_invalid" or "code_expired" or "code_used" or "code_burned" =>
+                    "That re-pin code is not valid any more. Ask the node's owner for a new one (Leaf, Nodes, Re-pin).",
+                "code_wrong_node" => "That re-pin code was made for another node.",
+                "link_key_mismatch" =>
+                    "The server says the link key this node received is not RedCompute's. Something on the network may have "
+                    + "replaced it: nothing was pinned. Compare the fingerprints Leaf shows, then try again.",
+                _ when response.StatusCode == HttpStatusCode.NotFound =>
+                    $"{origin} does not support encrypted node links yet. Update Leaf, then try again.",
+                _ => $"{origin} refused the {what} ({(int)response.StatusCode}{(code is null ? "" : " " + code)}).",
+            });
+        }
+    }
+
+    /// <summary>The kernel's <c>linkKey</c>: a valid P-256 point whose stated fingerprint, if any, is its own.</summary>
+    internal static NodeLinkKeyInfo ReadLinkKey(string origin, JsonObject linkKey)
+    {
+        var publicKey = linkKey["publicKey"]?.GetValue<string>();
+        var stated = new NodeLinkKeyInfo(NoiseProtocol.Name, publicKey ?? "", "", "");
+        var bytes = publicKey is null ? null : stated.PublicKeyBytes();
+        if (bytes is null)
+            throw new NodeCommandException("bad_response", $"{origin} sent a link key that is not a P-256 key.");
+        var protocol = linkKey["protocol"]?.GetValue<string>();
+        if (protocol is not null && protocol != NoiseProtocol.Name)
+            throw new NodeCommandException("link_protocol_unsupported",
+                $"{origin} encrypts node links with {protocol}; this leaf-node speaks {NoiseProtocol.Name}. Update leaf-node.");
+        var info = NodeLinkKeyInfo.For(bytes);
+        var fingerprint = linkKey["fingerprint"]?.GetValue<string>();
+        if (fingerprint is not null && !string.Equals(fingerprint, info.Fingerprint, StringComparison.OrdinalIgnoreCase))
+            throw new NodeCommandException("link_key_mismatch",
+                $"{origin} sent link key {info.Fingerprint} but named it {fingerprint}. Nothing was pinned.");
+        return info;
     }
 
     private static NodeCommandException PairingRefused(string origin, HttpStatusCode status, JsonObject? body)

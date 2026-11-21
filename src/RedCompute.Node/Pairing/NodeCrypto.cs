@@ -38,6 +38,19 @@ public static class NodeCrypto
             HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
 
     /// <summary>
+    /// What the node key signs to confirm the server link key it pinned (Phase 4 P0.5, design 1b.5):
+    /// <c>leaf-node-link-pin.v1</c>, the node id, the code without its hyphen and the pinned key's fingerprint, one per
+    /// line (<c>\n</c>), in UTF-8. The kernel checks the fingerprint is RedCompute's current one: an active
+    /// interceptor that swapped the key in the pair response cannot also forge this.
+    /// </summary>
+    public static string LinkPinMessage(string nodeId, string code, string fingerprint)
+        => string.Join('\n', "leaf-node-link-pin.v1", nodeId, code.Replace("-", ""), fingerprint);
+
+    public static string LinkPinProof(ECDsa key, string nodeId, string code, string fingerprint)
+        => Base64Url(key.SignData(Encoding.UTF8.GetBytes(LinkPinMessage(nodeId, code, fingerprint)),
+            HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
+
+    /// <summary>
     /// A compact JWS (ES256) the node signs for one request: header <c>{alg: ES256, typ: leaf-node+jwt}</c>,
     /// payload <c>{ iss: nodeId, aud, iat, exp: iat + 60, jti: 128-bit random }</c>. <paramref name="now"/>
     /// is the node's clock corrected by the offset the server last reported.

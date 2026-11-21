@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using RedCompute.NodeLink.Noise;
 
 namespace RedCompute.Node.Credentials;
 
@@ -53,6 +54,64 @@ public sealed class FileKeyStore(NodePaths paths) : INodeKeyStore
         {
             CryptographicOperations.ZeroMemory(bytes);
         }
+    }
+
+    public NoiseKeyPair CreateLinkKey(string keyRef, string origin, string nodeId)
+    {
+        var key = NoiseKeyPair.Generate();
+        var bytes = key.ExportPkcs8();
+        try
+        {
+            Write(paths.LinkKeyFile, bytes);
+            return key;
+        }
+        catch
+        {
+            key.Dispose();
+            throw;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    public NoiseKeyPair? OpenLinkKey(string keyRef, string origin)
+    {
+        if (!File.Exists(paths.LinkKeyFile)) return null;
+        var bytes = File.ReadAllBytes(paths.LinkKeyFile);
+        try
+        {
+            return NoiseKeyPair.FromPkcs8(bytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    public bool DeleteLinkKey(string keyRef, string origin)
+    {
+        var existed = File.Exists(paths.LinkKeyFile);
+        File.Delete(paths.LinkKeyFile);
+        File.Delete(paths.LinkKeyFile + ".tmp");
+        return existed;
+    }
+
+    /// <summary>A 0600 file (on Linux), written beside and moved in.</summary>
+    private void Write(string file, byte[] bytes)
+    {
+        Directory.CreateDirectory(paths.Data);
+        var temp = file + ".tmp";
+        File.Delete(temp);
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        using (var stream = new FileStream(temp, options))
+        {
+            stream.Write(bytes);
+            stream.Flush(flushToDisk: true);
+        }
+        File.Move(temp, file, overwrite: true);
     }
 
     public bool Delete(string keyRef, string origin)

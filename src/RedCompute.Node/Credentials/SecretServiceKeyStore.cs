@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using RedCompute.NodeLink.Noise;
 
 namespace RedCompute.Node.Credentials;
 
@@ -85,6 +86,52 @@ public sealed class SecretServiceKeyStore : INodeKeyStore
     }
 
     private static string KeyId(string keyRef) => keyRef[Prefix.Length..];
+
+    // The link key: the same keyring, the identity's attributes with keyId <id>-link.
+    public NoiseKeyPair CreateLinkKey(string keyRef, string origin, string nodeId)
+    {
+        var library = Require();
+        var key = NoiseKeyPair.Generate();
+        var pkcs8 = key.ExportPkcs8();
+        var secret = Convert.ToBase64String(pkcs8);
+        CryptographicOperations.ZeroMemory(pkcs8);
+        var result = Call(() => library.Store(
+            new() { ["app"] = App, ["origin"] = origin, ["nodeId"] = nodeId, ["keyId"] = KeyId(keyRef) + "-link" },
+            $"Leaf node link key ({origin})", secret));
+        if (result.Error is not null)
+        {
+            key.Dispose();
+            throw new NodeCommandException("secret_store_failed", $"The Secret Service did not store the link key: {result.Error}");
+        }
+        return key;
+    }
+
+    public NoiseKeyPair? OpenLinkKey(string keyRef, string origin)
+    {
+        var library = Require();
+        var result = Call(() => library.Lookup(new() { ["app"] = App, ["keyId"] = KeyId(keyRef) + "-link" }));
+        if (result.Error is not null)
+            throw new NodeCommandException("secret_lookup_failed", $"The Secret Service did not return the link key: {result.Error}");
+        if (result.Value is null) return null;
+        var bytes = Convert.FromBase64String(result.Value);
+        try
+        {
+            return NoiseKeyPair.FromPkcs8(bytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    public bool DeleteLinkKey(string keyRef, string origin)
+    {
+        var library = Require();
+        var result = Call(() => library.Clear(new() { ["app"] = App, ["keyId"] = KeyId(keyRef) + "-link" }));
+        if (result.Error is not null)
+            throw new NodeCommandException("secret_clear_failed", $"The Secret Service did not delete the link key: {result.Error}");
+        return result.Value is not null;
+    }
 
     private static Libsecret Require()
         => Libsecret.Load() ?? throw new NodeCommandException("no_secret_service", "libsecret-1.so.0 is not installed on this machine.");

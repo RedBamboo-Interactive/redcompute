@@ -5,6 +5,7 @@ using RedCompute.Node.Link;
 using RedCompute.Node.Pairing;
 using RedCompute.Node.Reports;
 using RedCompute.NodeLink;
+using RedCompute.NodeLink.Noise;
 using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Node;
@@ -144,6 +145,14 @@ public sealed class NodeAgent : IAsyncDisposable
                                $"The node key ({pairing.KeyRef}) is gone. Pair again: leaf-node unpair, then leaf-node pair.");
         using (OpenKey()) { } // fail now, not at the first dial
 
+        // E2E (P0.5c): a pinned node always encrypts to its pin and never sends plaintext; the identity key signs
+        // the binding of its link key into each handshake.
+        using var linkKey = pairing.LinkPin is null ? null
+            : store.OpenLinkKey(pairing.KeyRef, pairing.ServerOrigin)
+              ?? throw new NodeCommandException("link_key_missing",
+                  "This node's link key is gone. Ask its owner for a re-pin code, then run: leaf-node repin --code <code>.");
+        var secure = pairing.LinkPin is { } pin ? Secure(pairing, pin.PublicKeyBytes(), linkKey!, OpenKey) : null;
+
         var dial = _env.Dial?.Invoke(pairing, OpenKey) ?? new NodeDialer(pairing, OpenKey, _env.Time).DialAsync;
         var handler = new NodeLinkHandler(pairing.NodeId, _reporter, _env.Audit, _env.Log, () => pairing.CredentialStore,
             (session, clis) => PushAsync(session, new JsonObject { ["clis"] = clis }));
@@ -156,6 +165,7 @@ public sealed class NodeAgent : IAsyncDisposable
             Features = AgentIdentity.Features,
             Link = _env.Link,
             Backoff = _env.Backoff,
+            Secure = secure,
         });
         client.StatusChanged += (status, reason) => OnClientStatus(client, status, reason);
 
@@ -206,6 +216,33 @@ public sealed class NodeAgent : IAsyncDisposable
         }
     }
 
+    /// <summary>The Noise initiator for a pinned node (design 1b.2, 1b.4).</summary>
+    internal static Func<ILinkTransport, CancellationToken, Task<ILinkTransport>> Secure(NodePairing pairing, byte[] serverKey,
+        NoiseKeyPair linkKey, Func<ECDsa> identity)
+        => async (transport, ct) => await NoiseLink.InitiateAsync(transport, new NoiseInitiatorOptions
+        {
+            NodeId = pairing.NodeId,
+            LocalStatic = linkKey,
+            ServerStatic = serverKey,
+            Binding = binding => NoiseBinding.Payload(binding, bytes =>
+            {
+                using var key = identity();
+                return key.SignData(bytes, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+            }),
+        }, ct);
+
+    /// <summary>What the owner reads when the encrypted link cannot be set up (design 1b.7).</summary>
+    internal static string RepinAdvice(string? reason) => reason switch
+    {
+        _ when reason?.Contains(NoiseLink.KeyUnknown) == true || reason?.Contains(NoiseLink.KeyMismatch) == true =>
+            "The server's link key is not the one this node pinned. It will not connect until its owner gives it a re-pin code: leaf-node repin --code <code>.",
+        _ when reason?.Contains(NoiseLink.E2eRequired) == true =>
+            "The server requires an encrypted link, and this node has no pinned link key. Ask its owner for a re-pin code: leaf-node repin --code <code>.",
+        _ when reason?.Contains(NoiseLink.IdentityInvalid) == true =>
+            "The server could not tie this node's link key to its identity. Ask its owner for a re-pin code: leaf-node repin --code <code>.",
+        _ => "The encrypted link could not be set up. Ask the node's owner for a re-pin code: leaf-node repin --code <code>.",
+    };
+
     private void OnClientStatus(LinkClient client, LinkClientStatus status, string? reason)
     {
         var text = status switch
@@ -219,6 +256,7 @@ public sealed class NodeAgent : IAsyncDisposable
             _ => "stopped",
         };
         if (status == LinkClientStatus.Online) _env.Log.Info($"Link online ({reason}).");
+        else if (status == LinkClientStatus.NeedsRepin) _env.Log.Warn($"{RepinAdvice(reason)} ({reason})");
         else if (status is LinkClientStatus.Offline or LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate or LinkClientStatus.NeedsRepin)
             _env.Log.Info($"Link {text}{(reason is null ? "" : $": {reason}")}.");
         SetLinkStatus(text, reason);
@@ -407,6 +445,7 @@ public static class NodeLifecycle
 
         try
         {
+            store?.DeleteLinkKey(pairing.KeyRef, pairing.ServerOrigin);
             store?.Delete(pairing.KeyRef, pairing.ServerOrigin);
         }
         catch (NodeCommandException error)
@@ -455,6 +494,8 @@ public static class NodeLifecycle
             answer["serverOrigin"] = pairing.ServerOrigin;
             answer["fingerprint"] = pairing.Fingerprint;
             answer["credentialStore"] = pairing.CredentialStore;
+            answer["linkEncryption"] = pairing.LinkPin is null ? "off" : "on";
+            answer["serverLinkFingerprint"] = pairing.LinkPin?.Fingerprint;
             answer["pairedAt"] = pairing.PairedAt.ToString("O");
         }
         if (state.Ended is { } ended)

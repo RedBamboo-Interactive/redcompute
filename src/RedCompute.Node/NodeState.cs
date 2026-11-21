@@ -28,6 +28,22 @@ public sealed record NodePairing
     public required string Fingerprint { get; init; }
     public string? Name { get; init; }
     public required DateTimeOffset PairedAt { get; init; }
+
+    /// <summary>
+    /// RedCompute's link key, pinned at pairing or by <c>leaf-node repin</c> (Phase 4 P0.5c). With a pin the node
+    /// always encrypts its link to this key and never sends plaintext; without one (paired before E2E, or with a
+    /// kernel without K0) it links in plaintext. Only the owner's re-pin code changes it.
+    /// </summary>
+    public NodeLinkPin? LinkPin { get; init; }
+}
+
+/// <summary>A pinned server link key: the SEC1 point (base64url), its fingerprint and key id, when it was pinned.</summary>
+public sealed record NodeLinkPin(string PublicKey, string Fingerprint, string KeyId, DateTimeOffset PinnedAt)
+{
+    public byte[] PublicKeyBytes()
+        => new RedCompute.NodeLink.Noise.NodeLinkKeyInfo(RedCompute.NodeLink.Noise.NoiseProtocol.Name, PublicKey, Fingerprint, KeyId).PublicKeyBytes()
+           ?? throw new NodeCommandException("bad_state", "The pinned server link key in node.json is not a P-256 key. Re-pin: leaf-node repin --code <code>.",
+               NodeExitCodes.Configuration);
 }
 
 /// <summary>Why the node stopped being paired: <c>revoked</c>, <c>unknown</c> (the server forgot it) or <c>unpaired</c>.</summary>

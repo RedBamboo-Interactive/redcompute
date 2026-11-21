@@ -36,6 +36,20 @@ public sealed class NoiseKeyPair : IDisposable
 
     public static NoiseKeyPair Generate() => new(ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256));
 
+    /// <summary>
+    /// Wraps a P-256 key the caller made and hands over (a persisted, non-exportable CNG key on Windows): only its
+    /// public part is read, the private part stays where it is. The pair owns <paramref name="key"/> from now on.
+    /// </summary>
+    public static NoiseKeyPair FromKey(ECDiffieHellman key)
+    {
+        if (key.KeySize != 256)
+        {
+            key.Dispose();
+            throw new CryptographicException("A Noise static key is a P-256 key.");
+        }
+        return new NoiseKeyPair(key);
+    }
+
     /// <summary>A key pair from its PKCS#8 private key (how a static key is stored).</summary>
     public static NoiseKeyPair FromPkcs8(ReadOnlySpan<byte> pkcs8)
     {

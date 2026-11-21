@@ -3,6 +3,7 @@ using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using RedCompute.NodeLink.Noise;
 
 namespace RedCompute.Node.Credentials;
 
@@ -61,6 +62,39 @@ public sealed class CngKeyStore : INodeKeyStore
         }
         return deleted;
     }
+
+    public NoiseKeyPair CreateLinkKey(string keyRef, string origin, string nodeId)
+    {
+        DeleteLinkKey(keyRef, origin);
+        using var key = CngKey.Create(CngAlgorithm.ECDiffieHellmanP256, LinkKeyName(keyRef), new CngKeyCreationParameters
+        {
+            Provider = CngProvider.MicrosoftSoftwareKeyStorageProvider,
+            ExportPolicy = CngExportPolicies.None,
+            KeyUsage = CngKeyUsages.KeyAgreement,
+            KeyCreationOptions = CngKeyCreationOptions.None,
+        });
+        return NoiseKeyPair.FromKey(new ECDiffieHellmanCng(key));
+    }
+
+    public NoiseKeyPair? OpenLinkKey(string keyRef, string origin)
+    {
+        var name = LinkKeyName(keyRef);
+        if (!CngKey.Exists(name, CngProvider.MicrosoftSoftwareKeyStorageProvider)) return null;
+        using var key = CngKey.Open(name, CngProvider.MicrosoftSoftwareKeyStorageProvider);
+        return NoiseKeyPair.FromKey(new ECDiffieHellmanCng(key));
+    }
+
+    public bool DeleteLinkKey(string keyRef, string origin)
+    {
+        var name = LinkKeyName(keyRef);
+        if (!CngKey.Exists(name, CngProvider.MicrosoftSoftwareKeyStorageProvider)) return false;
+        using var key = CngKey.Open(name, CngProvider.MicrosoftSoftwareKeyStorageProvider);
+        key.Delete();
+        return true;
+    }
+
+    /// <summary><c>LeafNode/&lt;origin&gt;/&lt;random&gt;/link</c>: the identity key's name with <c>/link</c>.</summary>
+    internal static string LinkKeyName(string keyRef) => keyRef[Prefix.Length..] + "/link";
 
     /// <summary>Whether the key and the credential still exist (status, tests, the uninstall check).</summary>
     public static (bool Key, bool Credential) Exists(string keyRef, string origin)
