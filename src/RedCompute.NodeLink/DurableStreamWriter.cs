@@ -26,7 +26,7 @@ public sealed class DurableStreamWriter : IDisposable
         if (!Class.MayBeDurable) throw new ArgumentException($"Class {Class.Name} is never durable.", nameof(@class));
         Priority = priority ?? Class.Priority;
         var low = (options ?? LinkOptions.Default).LowPriorityFrameBytes;
-        FrameBytes = Priority >= 2 ? Math.Min(low, FrameCodec.MaxPayload) : FrameCodec.MaxPayload;
+        FrameBytes = Priority >= 2 ? Math.Min(low, FrameCodec.MaxSendPayload) : FrameCodec.MaxSendPayload;
         // A spool reopened after a restart may already hold the stream's CLOSE, or have trimmed it:
         // then the receiver committed everything and the stream is finished.
         _closeSeq = spool.CloseSeq;

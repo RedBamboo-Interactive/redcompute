@@ -14,6 +14,14 @@ public sealed class LinkServerOptions
     public AgentPolicy? AgentPolicy { get; init; }
     public ProtocolRange Protocol { get; init; } = LinkProtocol.Supported;
     public LinkOptions Link { get; init; } = LinkOptions.Default;
+
+    /// <summary>
+    /// Runs on each connection before the hello, within the handshake timeout, with the node id the
+    /// ingress bound, and returns the transport the link runs over: the Noise responder
+    /// (<see cref="Noise.NoiseLink.AcceptAsync"/>). A <see cref="LinkProtocolException"/> closes the
+    /// connection with its code. Null runs every link in plaintext.
+    /// </summary>
+    public Func<ILinkTransport, string, CancellationToken, Task<ILinkTransport>>? Secure { get; init; }
 }
 
 /// <summary>
@@ -78,6 +86,7 @@ public sealed class LinkServer : IAsyncDisposable
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
             timeout.CancelAfter(_options.Link.HandshakeTimeout);
+            if (_options.Secure is { } secure) transport = await secure(transport, boundNodeId, timeout.Token);
             hello = LinkHandshake.ReadHello(FrameCodec.Decode(await transport.ReceiveAsync(timeout.Token)));
         }
         catch (LinkProtocolException error)

@@ -52,6 +52,13 @@ public static class FrameCodec
     public const int HeaderSize = 24;
     public const int MaxPayload = 64 * 1024;
     public const int MaxFrame = HeaderSize + MaxPayload;
+
+    /// <summary>
+    /// What a sender puts in one frame: 17 bytes under <see cref="MaxPayload"/>, so a frame sealed for an
+    /// end-to-end encrypted link (record type + AEAD tag, <see cref="Noise.NoiseLink.RecordOverhead"/>) still
+    /// fits the <see cref="MaxFrame"/> every relay accepts. Receivers keep accepting <see cref="MaxPayload"/>.
+    /// </summary>
+    public const int MaxSendPayload = MaxPayload - Noise.NoiseLink.RecordOverhead;
     private const ushort KnownFlags = (ushort)(FrameFlags.Fin | FrameFlags.AckValid | FrameFlags.Urgent);
 
     public static byte[] Encode(in LinkFrame frame)

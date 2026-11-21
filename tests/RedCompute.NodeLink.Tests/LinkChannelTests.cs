@@ -41,12 +41,13 @@ public sealed class LinkChannelTests
     public void Frames_are_numbered_from_one_split_at_the_frame_size_and_fin_on_the_last()
     {
         var channel = Sender();
-        channel.EnqueueMessage(new byte[FrameCodec.MaxPayload * 2 + 10]);
+        // Senders split at MaxSendPayload, so a frame sealed for an encrypted link still fits a relay's MaxFrame.
+        channel.EnqueueMessage(new byte[FrameCodec.MaxSendPayload * 2 + 10]);
         channel.EnqueueMessage([]);
         var frames = Drain(channel);
         Assert.Equal([1UL, 2, 3, 4], frames.Select(f => f.Seq));
         Assert.Equal([false, false, true, true], frames.Select(f => f.IsFin));
-        Assert.Equal([FrameCodec.MaxPayload, FrameCodec.MaxPayload, 10, 0], frames.Select(f => f.Payload.Length));
+        Assert.Equal([FrameCodec.MaxSendPayload, FrameCodec.MaxSendPayload, 10, 0], frames.Select(f => f.Payload.Length));
         Assert.All(frames, f => Assert.True(f.HasAck)); // the receive ack rides on every DATA
     }
 

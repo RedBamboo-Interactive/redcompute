@@ -126,6 +126,11 @@ public enum DialAction
     RetryAfter,
     /// <summary>Close 4409: another connection of this node won; back off.</summary>
     Superseded,
+    /// <summary>
+    /// Close 4495, 4496 or 4497: the encrypted link cannot be set up with the key pinned (or not pinned) at
+    /// pairing. The node keeps its pin, never re-pins by itself, and retries hourly until its owner re-pins it.
+    /// </summary>
+    NeedsRepin,
 }
 
 /// <summary>A dial the server refused before the WebSocket opened.</summary>
@@ -155,6 +160,7 @@ public static class DialOutcomes
             LinkCloseCodes.UpgradeRequired => DialAction.NeedsUpdate,
             LinkCloseCodes.RateLimited => DialAction.RetryAfter,
             LinkCloseCodes.Superseded => DialAction.Superseded,
+            LinkCloseCodes.LinkKeyUnknown or LinkCloseCodes.E2eRequired or LinkCloseCodes.LinkIdentityInvalid => DialAction.NeedsRepin,
             _ => DialAction.Retry,
         };
     }

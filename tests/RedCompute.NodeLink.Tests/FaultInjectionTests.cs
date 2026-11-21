@@ -21,11 +21,37 @@ public sealed class FaultInjectionTests(ITestOutputHelper output)
     private static int Records => int.TryParse(Environment.GetEnvironmentVariable("NODELINK_FAULT_RECORDS"), out var n) && n > 0 ? n : 16;
 
     public static TheoryData<string> Schedules => new(FaultSchedule.All.Select(s => s.Name));
+    public static TheoryData<string> EncryptedSchedules => new(FaultSchedule.Encrypted.Select(s => s.Name));
 
     [Theory]
     [MemberData(nameof(Schedules))]
     public Task Every_record_arrives_exactly_once_and_in_order(string schedule)
         => RunSeedsAsync(Seeds, seed => new Harness(FaultSchedule.Named(schedule), seed, Records).RunAsync(Scenario.FaultsOnly));
+
+    /// <summary>
+    /// The same proof over an end-to-end encrypted link (Phase 4 design, 1b.8). A dropped, duplicated,
+    /// reordered, corrupted or tampered record never opens: the connection closes with
+    /// <c>e2e_frame_rejected</c> and the link resumes on a new one, so every invariant above still holds,
+    /// and the relay never carries a plaintext frame.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EncryptedSchedules))]
+    public async Task Every_record_arrives_exactly_once_and_in_order_over_an_encrypted_link(string schedule)
+    {
+        var rejected = 0;
+        var injected = 0;
+        await RunSeedsAsync(Seeds, async seed =>
+        {
+            var harness = new Harness(FaultSchedule.Named(schedule), seed, Records, encrypted: true);
+            var failure = await harness.RunAsync(Scenario.FaultsOnly);
+            Interlocked.Add(ref rejected, harness.FramesRejected);
+            Interlocked.Add(ref injected, harness.Proxy.Tampered + harness.Proxy.Corrupted);
+            return failure ?? (harness.Proxy.PlaintextMessages > 0 ? $"{harness.Proxy.PlaintextMessages} plaintext messages relayed" : null);
+        });
+        output.WriteLine($"{schedule}: {rejected} connections closed e2e_frame_rejected, {injected} messages tampered or corrupted");
+        if (schedule is "tamper" or "corrupt" or "drop" or "duplicate" or "reorder")
+            Assert.True(rejected > 0, $"{schedule}: no record was ever rejected, so the schedule did not reach the AEAD");
+    }
 
     [Fact]
     public Task Durable_streams_survive_server_restarts_and_ephemeral_channels_reset_cleanly()
@@ -93,6 +119,13 @@ public sealed class FaultInjectionTests(ITestOutputHelper output)
         private readonly DurableStreamWriter _downWriter;
         private readonly string _spoolDirectory = Path.Combine(Path.GetTempPath(), "nodelink-harness-" + Guid.NewGuid().ToString("N"));
         private readonly LinkFaultProxy _proxy;
+        private readonly E2eKeys? _keys;
+        private int _framesRejected;
+
+        public LinkFaultProxy Proxy => _proxy;
+
+        /// <summary>Connections either end closed because a record did not open.</summary>
+        public int FramesRejected => Volatile.Read(ref _framesRejected);
         private readonly TaskCompletionSource _upEphemeralDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _downEphemeralDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private LinkServer _server;
@@ -104,8 +137,9 @@ public sealed class FaultInjectionTests(ITestOutputHelper output)
         private int _upEphemeralStarted;
         private int _downEphemeralStarted;
 
-        public Harness(FaultSchedule schedule, int seed, int records)
+        public Harness(FaultSchedule schedule, int seed, int records, bool encrypted = false)
         {
+            _keys = encrypted ? new E2eKeys() : null;
             _schedule = schedule;
             _seed = seed;
             _records = records;
@@ -122,7 +156,12 @@ public sealed class FaultInjectionTests(ITestOutputHelper output)
                 ServerEpoch = "epoch-" + epoch,
                 HandlerFactory = _ => new SinkHandler(_upSink, _upEphemeral),
                 Link = Options,
+                Secure = _keys?.ServerSecure,
             });
+            server.Disconnected += (_, _, ended) =>
+            {
+                if (ended.Reason?.Contains(Noise.NoiseLink.FrameRejected, StringComparison.Ordinal) == true) Interlocked.Increment(ref _framesRejected);
+            };
             server.Connected += (nodeId, session, resumed) =>
             {
                 if (resumed) return;
@@ -152,6 +191,9 @@ public sealed class FaultInjectionTests(ITestOutputHelper output)
             Dial = _proxy.DialAsync,
             Link = Options,
             Backoff = new ReconnectBackoff(new Random(_seed), TimeSpan.FromMilliseconds(5), TimeSpan.FromMilliseconds(50)),
+            Secure = _keys?.ClientSecure(NodeId),
+            // A fault on a handshake message can read as "old server" or "key mismatch": retry soon in the harness.
+            NeedsUpdateRetry = TimeSpan.FromMilliseconds(20),
         });
 
         private void StartClient()
@@ -252,6 +294,7 @@ public sealed class FaultInjectionTests(ITestOutputHelper output)
                 }
                 _upWriter.Dispose();
                 _downWriter.Dispose();
+                _keys?.Dispose();
                 try
                 {
                     SegmentFileSpool.Delete(_spoolDirectory);

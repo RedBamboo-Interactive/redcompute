@@ -139,7 +139,7 @@ internal sealed class LinkChannel
 
     // ================================================================= send side
 
-    public int FrameBytesFor => Priority >= 2 ? Math.Min(_options.LowPriorityFrameBytes, FrameCodec.MaxPayload) : FrameCodec.MaxPayload;
+    public int FrameBytesFor => Priority >= 2 ? Math.Min(_options.LowPriorityFrameBytes, FrameCodec.MaxSendPayload) : FrameCodec.MaxSendPayload;
 
     /// <summary>Splits a message into frames, FIN on the last (an empty message is one empty FIN frame).</summary>
     public void EnqueueMessage(ReadOnlySpan<byte> message)

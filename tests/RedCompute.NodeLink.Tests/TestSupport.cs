@@ -118,8 +118,12 @@ internal sealed class LinkPair : IAsyncDisposable
 
     public LinkPair(ILinkHandler? nodeHandler = null, ILinkHandler? serverHandler = null, LinkOptions? options = null,
         Func<CancellationToken, Task<ILinkTransport>>? dial = null, AgentPolicy? policy = null, string agentVersion = "0.1.0",
-        string nodeId = NodeId, IReadOnlyList<string>? nodeFeatures = null)
+        string nodeId = NodeId, IReadOnlyList<string>? nodeFeatures = null,
+        Func<ILinkTransport, CancellationToken, Task<ILinkTransport>>? clientSecure = null,
+        Func<ILinkTransport, string, CancellationToken, Task<ILinkTransport>>? serverSecure = null,
+        TimeSpan? needsUpdateRetry = null)
     {
+        _serverSecure = serverSecure;
         Options = options ?? FastOptions;
         NodeHandler = nodeHandler ?? new TestLinkHandler();
         ServerHandler = serverHandler ?? new TestLinkHandler();
@@ -134,10 +138,13 @@ internal sealed class LinkPair : IAsyncDisposable
             Dial = dial ?? DialAsync,
             Link = Options,
             Backoff = new ReconnectBackoff(new Random(7), TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(100)),
+            Secure = clientSecure,
+            NeedsUpdateRetry = needsUpdateRetry ?? TimeSpan.FromHours(1),
         });
     }
 
     private readonly AgentPolicy? _policy;
+    private readonly Func<ILinkTransport, string, CancellationToken, Task<ILinkTransport>>? _serverSecure;
     private int _epoch;
 
     private LinkServer NewServer() => new(new LinkServerOptions
@@ -147,6 +154,7 @@ internal sealed class LinkPair : IAsyncDisposable
         Features = [LinkFeatures.DescribeV1, LinkFeatures.DiagEcho],
         AgentPolicy = _policy,
         Link = Options,
+        Secure = _serverSecure,
     });
 
     /// <summary>A RedCompute restart: every link session is gone; the next hello cannot resume.</summary>

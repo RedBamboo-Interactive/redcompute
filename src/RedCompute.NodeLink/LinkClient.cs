@@ -9,6 +9,13 @@ public sealed class LinkClientOptions
     /// <summary>Opens one connection to the ingress (a WebSocket with a fresh node assertion in production).</summary>
     public required Func<CancellationToken, Task<ILinkTransport>> Dial { get; init; }
 
+    /// <summary>
+    /// Runs on each dialled connection before the hello, within the handshake timeout, and returns the
+    /// transport the link runs over: the Noise initiator for a node with a pinned server key
+    /// (<see cref="Noise.NoiseLink.InitiateAsync"/>). Null runs the link in plaintext.
+    /// </summary>
+    public Func<ILinkTransport, CancellationToken, Task<ILinkTransport>>? Secure { get; init; }
+
     public IReadOnlyList<string> Features { get; init; } = [];
     public ProtocolRange Protocol { get; init; } = LinkProtocol.Supported;
     public LinkOptions Link { get; init; } = LinkOptions.Default;
@@ -26,6 +33,12 @@ public enum LinkClientStatus
     /// <summary>The server refused the node (revoked or unknown): the client stopped.</summary>
     Refused,
     NeedsUpdate,
+    /// <summary>
+    /// The encrypted link cannot be set up with the pinned server key (4495), the server requires
+    /// encryption this node has no pin for (4496), or refused the node's link key binding (4497). The client
+    /// retries hourly with the same pin; only its owner's re-pin changes it.
+    /// </summary>
+    NeedsRepin,
     Stopped,
 }
 
@@ -101,6 +114,10 @@ public sealed class LinkClient : IAsyncDisposable
                         SetStatus(LinkClientStatus.NeedsUpdate, StatusReason);
                         delay = _options.NeedsUpdateRetry;
                         break;
+                    case DialAction.NeedsRepin:
+                        SetStatus(LinkClientStatus.NeedsRepin, StatusReason);
+                        delay = _options.NeedsUpdateRetry;
+                        break;
                     case DialAction.RetryAfter:
                         delay = retryAfter ?? _backoff.Next(closeCode);
                         break;
@@ -121,7 +138,8 @@ public sealed class LinkClient : IAsyncDisposable
         }
         finally
         {
-            if (Status is not (LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate)) SetStatus(LinkClientStatus.Stopped, null);
+            if (Status is not (LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate or LinkClientStatus.NeedsRepin))
+                SetStatus(LinkClientStatus.Stopped, null);
         }
     }
 
@@ -132,6 +150,19 @@ public sealed class LinkClient : IAsyncDisposable
         try
         {
             transport = await _options.Dial(ct);
+            if (_options.Secure is { } secure)
+            {
+                using var handshake = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                handshake.CancelAfter(_options.Link.HandshakeTimeout);
+                try
+                {
+                    transport = await secure(transport, handshake.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    throw new TimeoutException("No encrypted handshake answer in time.");
+                }
+            }
             LinkSession? current;
             lock (_gate) current = _session is { IsReset: false } live ? live : null;
             var hello = new LinkHello(_options.NodeId, _options.Protocol, _options.Agent, _options.Features, current?.ResumeInfo());
@@ -223,7 +254,10 @@ public sealed class LinkClient : IAsyncDisposable
             var code = error is LinkProtocolException protocol ? protocol.CloseCode
                 : error is TimeoutException ? LinkCloseCodes.Timeout : LinkCloseCodes.Abnormal;
             if (transport is not null) await transport.CloseAsync(code, error.Message, CancellationToken.None);
-            return (DialAction.Retry, code, null);
+            // The encrypted handshake's own verdicts: a server without E2E, or a server key that is not the pin.
+            var action = error is LinkProtocolException { CloseCode: LinkCloseCodes.UpgradeRequired or LinkCloseCodes.LinkKeyUnknown }
+                ? DialOutcomes.Classify(null, null, code) : DialAction.Retry;
+            return (action, code, null);
         }
     }
 

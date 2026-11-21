@@ -215,10 +215,11 @@ public sealed class NodeAgent : IAsyncDisposable
             LinkClientStatus.Offline => "offline",
             LinkClientStatus.Refused => "refused",
             LinkClientStatus.NeedsUpdate => "needs-update",
+            LinkClientStatus.NeedsRepin => "needs-repin",
             _ => "stopped",
         };
         if (status == LinkClientStatus.Online) _env.Log.Info($"Link online ({reason}).");
-        else if (status is LinkClientStatus.Offline or LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate)
+        else if (status is LinkClientStatus.Offline or LinkClientStatus.Refused or LinkClientStatus.NeedsUpdate or LinkClientStatus.NeedsRepin)
             _env.Log.Info($"Link {text}{(reason is null ? "" : $": {reason}")}.");
         SetLinkStatus(text, reason);
     }

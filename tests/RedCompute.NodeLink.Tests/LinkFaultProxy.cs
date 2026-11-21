@@ -8,7 +8,7 @@ namespace RedCompute.NodeLink.Tests;
 /// still finishes.
 /// </summary>
 internal sealed record FaultSchedule(string Name, double Drop = 0, double Duplicate = 0, double Reorder = 0, double Delay = 0,
-    double SlowReader = 0, int CutConnections = 0, int HalfOpenConnections = 0, int CorruptConnections = 0)
+    double SlowReader = 0, int CutConnections = 0, int HalfOpenConnections = 0, int CorruptConnections = 0, int TamperConnections = 0)
 {
     public override string ToString() => Name;
 
@@ -26,7 +26,14 @@ internal sealed record FaultSchedule(string Name, double Drop = 0, double Duplic
         new("mixed", Drop: 0.01, Duplicate: 0.01, Reorder: 0.01, Delay: 0.01, SlowReader: 0.002, CutConnections: 1, CorruptConnections: 1),
     ];
 
-    public static FaultSchedule Named(string name) => All.Single(s => s.Name == name);
+    /// <summary>
+    /// The schedules for an end-to-end encrypted link: all of the above, plus <c>tamper</c> (flip one bit
+    /// anywhere in a message). A plaintext link has no integrity of its own (TLS gives it), so tamper runs
+    /// encrypted only.
+    /// </summary>
+    public static IReadOnlyList<FaultSchedule> Encrypted { get; } = [.. All, new("tamper", TamperConnections: 3)];
+
+    public static FaultSchedule Named(string name) => Encrypted.Single(s => s.Name == name);
 }
 
 /// <summary>
@@ -41,7 +48,11 @@ internal sealed class LinkFaultProxy(FaultSchedule schedule, int seed, Func<ILin
 
     public int Connections => Volatile.Read(ref _connections);
     public int Corrupted;
+    public int Tampered;
     public int Dropped;
+
+    /// <summary>Messages relayed that were not a Noise handshake message or record (an encrypted link relays none).</summary>
+    public int PlaintextMessages;
 
     /// <summary>Refuses every further dial as the kernel would refuse a revoked node.</summary>
     public bool Refuse { get; set; }
@@ -63,6 +74,7 @@ internal sealed class LinkFaultProxy(FaultSchedule schedule, int seed, Func<ILin
         if (index <= schedule.CutConnections) (connection.Event, connection.EventAt) = ("cut", random.Next(10, 300));
         else if (index <= schedule.HalfOpenConnections) (connection.Event, connection.EventAt) = ("half-open", random.Next(10, 300));
         else if (index <= schedule.CorruptConnections) (connection.Event, connection.EventAt) = ("corrupt", random.Next(10, 300));
+        else if (index <= schedule.TamperConnections) (connection.Event, connection.EventAt) = ("tamper", random.Next(10, 300));
 
         var (node, proxyNode) = LinkPipe.Create(16);
         var (proxyServer, server) = LinkPipe.Create(16);
@@ -90,6 +102,8 @@ internal sealed class LinkFaultProxy(FaultSchedule schedule, int seed, Func<ILin
                     return;
                 }
                 if (connection.HalfOpen) continue;
+                if (message.Length == 0 || message[0] is not (Noise.NoiseLink.InitiatorHandshake or Noise.NoiseLink.ResponderHandshake or Noise.NoiseLink.Record))
+                    Interlocked.Increment(ref PlaintextMessages);
 
                 var n = Interlocked.Increment(ref connection.Frames);
                 if (n == connection.EventAt)
@@ -107,6 +121,11 @@ internal sealed class LinkFaultProxy(FaultSchedule schedule, int seed, Func<ILin
                             message = (byte[])message.Clone();
                             message[0] = 0x7F; // an unknown format: the receiver must close 4400, never deliver
                             Interlocked.Increment(ref Corrupted);
+                            break;
+                        case "tamper":
+                            message = (byte[])message.Clone();
+                            message[random.Next(message.Length)] ^= (byte)(1 << random.Next(8)); // anywhere: the AEAD must refuse it
+                            Interlocked.Increment(ref Tampered);
                             break;
                     }
                 }

@@ -17,6 +17,12 @@ public static class LinkCloseCodes
     public const int Superseded = 4409;
     public const int UpgradeRequired = 4426;
     public const int RateLimited = 4429;
+    /// <summary>E2E: the handshake is not for a link key the server holds, or the server did not prove the pinned one.</summary>
+    public const int LinkKeyUnknown = 4495;
+    /// <summary>E2E: this node's link is encrypted; the server refuses plaintext from it.</summary>
+    public const int E2eRequired = 4496;
+    /// <summary>E2E: the node's link key is not bound to its paired identity.</summary>
+    public const int LinkIdentityInvalid = 4497;
 }
 
 /// <summary>The peer broke the protocol; the link closes with <see cref="CloseCode"/>.</summary>
