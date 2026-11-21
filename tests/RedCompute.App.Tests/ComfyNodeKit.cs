@@ -48,7 +48,6 @@ internal sealed class FakeComfyUi : IAsyncDisposable
 
     /// <summary>Set once an endless answer stopped because the server went away.</summary>
     public TaskCompletionSource EndlessAborted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    public long EndlessBytesWritten;
 
     public byte[] Output { get; set; } = Encoding.ASCII.GetBytes("\x89PNG fake output");
 
@@ -102,11 +101,10 @@ internal sealed class FakeComfyUi : IAsyncDisposable
             try
             {
                 if (endless != "/view") await ctx.Response.Body.WriteAsync("{\"x\":\""u8.ToArray());
+                // Not a measure of what left: once the connection is gone Kestrel's writes complete without writing until
+                // RequestAborted fires. What the node really forwarded is in its audit (ComfyNodeSide.Forwarded).
                 while (!ctx.RequestAborted.IsCancellationRequested)
-                {
                     await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
-                    Interlocked.Add(ref EndlessBytesWritten, chunk.Length);
-                }
             }
             catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException) { }
             EndlessAborted.TrySetResult();
@@ -190,6 +188,9 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
     public NodeEnvironment Environment { get; }
     public RuntimeManager Runtimes { get; }
 
+    /// <summary>Every exchange the node's forward finished, as its audit saw it (bytes really read from the runtime and sent).</summary>
+    public ConcurrentQueue<ForwardAudit> Forwarded { get; } = new();
+
     private ComfyNodeSide(int port)
     {
         Root = Path.Combine(Path.GetTempPath(), "leaf-node-e2e-" + Guid.NewGuid().ToString("N")[..10]);
@@ -207,9 +208,14 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
         };
         Runtimes = new RuntimeManager(Environment);
         var env = Environment;
-        _forward = new ForwardHost(new RuntimeForwardTarget(Runtimes), audit: entry => env.Audit.Record("forward", entry.Path, entry.Outcome,
-            $"{entry.Runtime} {entry.Mode}{(entry.Method is null ? "" : " " + entry.Method)} status {entry.Status?.ToString() ?? "-"}"
-            + $" request {entry.RequestBytes} B response {entry.ResponseBytes} B"));
+        var forwarded = Forwarded;
+        _forward = new ForwardHost(new RuntimeForwardTarget(Runtimes), audit: entry =>
+        {
+            forwarded.Enqueue(entry);
+            env.Audit.Record("forward", entry.Path, entry.Outcome,
+                $"{entry.Runtime} {entry.Mode}{(entry.Method is null ? "" : " " + entry.Method)} status {entry.Status?.ToString() ?? "-"}"
+                + $" request {entry.RequestBytes} B response {entry.ResponseBytes} B");
+        });
     }
 
     public static async Task<ComfyNodeSide> StartAsync(int port)
@@ -223,6 +229,14 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
     /// <summary>The node's audit log, as text.</summary>
     public string AuditText()
         => File.Exists(Paths.Audit) ? File.ReadAllText(Paths.Audit) : "";
+
+    /// <summary>The node's log, as text (read while the agent still holds it open).</summary>
+    public string LogText()
+    {
+        if (!File.Exists(Paths.LogFile)) return "";
+        using var stream = new FileStream(Paths.LogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return new StreamReader(stream).ReadToEnd();
+    }
 
     public override ChannelAcceptance? AcceptChannel(LinkSession session, ChannelOpenInfo info)
         => ForwardHost.IsForwardClass(info.Class) ? _forward.Accept(session, info) : _phase3.AcceptChannel(session, info);
@@ -292,7 +306,8 @@ internal sealed class ComfyNodeKit : IAsyncDisposable
         {
             ["workflow_json"] = JsonSerializer.Serialize(workflow),
             ["workflow_entity"] = new { slug = "test-workflow" },
-            ["workflow_inputs"] = new { prompt = "a red leaf" },
+            // As the kernel freezes it: the effective inputs, the asset reference among them (never sent to ComfyUI).
+            ["workflow_inputs"] = image is null ? (object)new { prompt = "a red leaf" } : new { prompt = "a red leaf", image },
             ["workflow_parameters"] = parameters,
             ["output_node"] = "9",
             ["media_type"] = "image",

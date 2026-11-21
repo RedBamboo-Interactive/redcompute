@@ -51,9 +51,12 @@ public sealed class ComfyRemoteCapTests : IAsyncLifetime
         Assert.False(result!.Success);
         Assert.Contains(path, result.ErrorMessage);
         Assert.Contains($"{cap} cap", result.ErrorMessage);
-        // The exchange was aborted: the runtime saw the server go away, long before anything like a gigabyte.
+        // The exchange was aborted: the runtime saw the server go away, and the node had forwarded no more than its
+        // channel's window and buffers (8 MiB at most) past the cap, nothing like a gigabyte.
         await _kit.Comfy.EndlessAborted.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.True(Interlocked.Read(ref _kit.Comfy.EndlessBytesWritten) < 128L << 20);
+        var exchange = await ForwardedAsync(path);
+        Assert.NotEqual("ok", exchange.Outcome);
+        Assert.True(exchange.ResponseBytes < 16L << 20, $"the node forwarded {exchange.ResponseBytes} bytes of {path}");
     }
 
     [Fact]
@@ -68,5 +71,14 @@ public sealed class ComfyRemoteCapTests : IAsyncLifetime
         Assert.Contains("/queue", release.Detail);
         Assert.Contains("64 KiB cap", release.Detail);
         await _kit.Comfy.EndlessAborted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.NotEqual("ok", (await ForwardedAsync("/queue")).Outcome);
+    }
+
+    private async Task<RedCompute.NodeLink.Forward.ForwardAudit> ForwardedAsync(string path)
+    {
+        RedCompute.NodeLink.Forward.ForwardAudit? found = null;
+        await NodeTestKit.WaitAsync(() => (found = _kit.Node.Forwarded.FirstOrDefault(e => e.Path.StartsWith(path, StringComparison.Ordinal))) is not null,
+            $"the node's audit of {path}");
+        return found!;
     }
 }

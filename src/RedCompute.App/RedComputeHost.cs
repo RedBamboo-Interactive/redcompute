@@ -206,6 +206,8 @@ public static class RedComputeHost
             .Where(service => service is not IExecutionHost and not IAcceleratorAdmissionCoordinator)
             .Prepend(admission)
             .Prepend(host)
+            // The server's own network, for what a job names on the server (input assets): fetched here, never by the node.
+            .Append(new ServerNetwork(Nodes.LocalHost.Network))
             .ToArray();
         return ProviderDiscovery.Create(providerType, config, capabilitySlug, message => Log(message), services);
     }

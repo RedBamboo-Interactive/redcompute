@@ -32,6 +32,13 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly HttpClient _healthClient;
     /// <summary>For <c>/view</c>: node zero's <see cref="_http"/>; on a remote node a client capped at <see cref="MaxOutputBytes"/>.</summary>
     private readonly HttpClient _download;
+    /// <summary>
+    /// On a remote node, the server's own client for the job's input assets (<see cref="ServerNetwork"/>): the asset is
+    /// fetched here and only its bytes are uploaded to the node. Null on node zero (its assets go through
+    /// <see cref="_http"/>, as before) and on a remote provider built without a server network (assets refused).
+    /// </summary>
+    private readonly HttpClient? _serverAssets;
+    private readonly bool _remote;
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly IDisposable? _acceleratorRegistration;
     private readonly IDisposable? _runtimeRegistration;
@@ -65,6 +72,12 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     /// </summary>
     internal long MaxOutputBytes { get; init; } = 1L << 30;
     internal long MaxJsonBytes { get; init; } = 16L << 20;
+    /// <summary>On a remote node, the most the server fetches for one input asset before uploading it to the node.</summary>
+    internal long MaxAssetBytes { get; init; } = 256L << 20;
+
+    internal const string DefaultRedLeafBaseUrl = "http://127.0.0.1:18804";
+    /// <summary>Where an asset id or a relative asset path resolves (the kernel). Tests point it at a fake kernel.</summary>
+    internal string RedLeafBaseUrl { get; init; } = DefaultRedLeafBaseUrl;
 
     public string Name => "ComfyUI";
     public string CapabilitySlug => _capabilitySlug;
@@ -101,7 +114,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     };
 
     public ComfyUIProvider(ProviderConfig config, string capabilitySlug, Action<string> log,
-        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null)
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null,
+        ServerNetwork? serverNetwork = null)
     {
         _config = config;
         _capabilitySlug = capabilitySlug;
@@ -125,6 +139,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             _http = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30), () => MaxJsonBytes);
             _healthClient = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromSeconds(5), () => MaxJsonBytes);
             _download = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30), () => MaxOutputBytes);
+            _serverAssets = serverNetwork?.CreateClient(TimeSpan.FromMinutes(5), () => MaxAssetBytes);
+            _remote = true;
         }
         _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
         _acceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0");
@@ -340,7 +356,9 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         extraParams.Remove("negative");
         extraParams.Remove("seed");
 
-        await ResolveAssetParamsAsync(extraParams, wfDef.Parameters, ct);
+        var assetError = await ResolveAssetParamsAsync(extraParams, wfDef.Parameters, ct);
+        if (assetError is not null)
+            return new JobResult { Success = false, ErrorMessage = assetError };
         InjectParameters(workflow, wfDef.Parameters, prompt, negative, actualSeed, extraParams);
 
         await using var acceleratorLease = _acceleratorAdmission is null
@@ -417,6 +435,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         _http.Dispose();
         _healthClient.Dispose();
         if (!ReferenceEquals(_download, _http)) _download.Dispose();
+        _serverAssets?.Dispose();
     }
 
     // --- Private methods ---
@@ -1032,7 +1051,12 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         }
     }
 
-    private async Task ResolveAssetParamsAsync(
+    /// <summary>
+    /// Replaces each asset parameter with the name ComfyUI gave its upload. On node zero a failed asset is logged and
+    /// left as it was (unchanged behaviour); on a remote node it fails the job instead (the returned error), so an
+    /// asset reference never reaches the node in the prompt.
+    /// </summary>
+    private async Task<string?> ResolveAssetParamsAsync(
         Dictionary<string, object?> extras,
         List<WorkflowParameter> paramDefs,
         CancellationToken ct)
@@ -1046,32 +1070,109 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             if (value is JsonElement je)
             {
                 if (je.ValueKind == JsonValueKind.Object && je.TryGetProperty("assetUrl", out var urlProp))
-                    assetUrl = NormalizeRedLeafAssetReference(urlProp.GetString());
+                    assetUrl = NormalizeRedLeafAssetReference(urlProp.GetString(), RedLeafBaseUrl);
                 else if (je.ValueKind == JsonValueKind.Object && je.TryGetProperty("assetId", out var idProp))
-                    assetUrl = NormalizeRedLeafAssetReference(idProp.GetString());
+                    assetUrl = NormalizeRedLeafAssetReference(idProp.GetString(), RedLeafBaseUrl);
                 else if (je.ValueKind == JsonValueKind.String && param.Type is "image" or "video" or "audio")
-                    assetUrl = NormalizeRedLeafAssetReference(je.GetString());
+                    assetUrl = NormalizeRedLeafAssetReference(je.GetString(), RedLeafBaseUrl);
             }
 
             if (string.IsNullOrEmpty(assetUrl)) continue;
 
             if (assetUrl.StartsWith("/"))
-                assetUrl = $"http://127.0.0.1:18804{assetUrl}";
+                assetUrl = $"{RedLeafBaseUrl}{assetUrl}";
 
-            var uploadedName = await UploadFileToComfyAsync(assetUrl, ct);
+            var uploadedName = _remote
+                ? await UploadServerAssetToNodeAsync(assetUrl, ct)
+                : await UploadFileToComfyAsync(assetUrl, ct);
             if (uploadedName != null)
                 extras[param.Name] = uploadedName;
+            else if (_remote)
+                return $"The input asset for '{param.Name}' could not be fetched on the server and sent to the node.";
             else
                 _log($"[ComfyUI] Warning: failed to resolve asset for param '{param.Name}'");
         }
+        return null;
     }
 
-    internal static string? NormalizeRedLeafAssetReference(string? value)
+    internal static string? NormalizeRedLeafAssetReference(string? value, string redLeafBaseUrl = DefaultRedLeafBaseUrl)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
         if (Uri.TryCreate(value, UriKind.Absolute, out _)) return value;
-        if (value.StartsWith('/')) return $"http://127.0.0.1:18804{value}";
-        return $"http://127.0.0.1:18804/api/assets/{value}";
+        if (value.StartsWith('/')) return $"{redLeafBaseUrl}{value}";
+        return $"{redLeafBaseUrl}/api/assets/{value}";
+    }
+
+    /// <summary>
+    /// A remote node's input asset (review P4-P7, item 2): fetched on the server with the server's own client, capped
+    /// at <see cref="MaxAssetBytes"/>, then uploaded to the node's ComfyUI through the forward's <c>/upload/image</c>
+    /// under a fresh name. The asset's URL and id stay on the server: the node sees only the bytes, the fresh name and an
+    /// extension from the media type (or a plain one from the URL), never the reference.
+    /// </summary>
+    private async Task<string?> UploadServerAssetToNodeAsync(string fileUrl, CancellationToken ct)
+    {
+        if (_serverAssets is null)
+        {
+            _log("[ComfyUI] Input asset refused: this provider runs on a remote node and has no server-side client to fetch it.");
+            return null;
+        }
+        try
+        {
+            byte[] bytes;
+            string contentType;
+            using (var resp = await _serverAssets.GetAsync(fileUrl, ct))
+            {
+                if (!resp.IsSuccessStatusCode)
+                {
+                    _log($"[ComfyUI] Failed to download asset: HTTP {(int)resp.StatusCode} from {fileUrl}");
+                    return null;
+                }
+                bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+                contentType = resp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+            }
+
+            var filename = $"rl_{Guid.NewGuid():N}{AssetExtension(contentType, fileUrl)}";
+            using var form = new MultipartFormDataContent();
+            form.Add(new ByteArrayContent(bytes), "image", filename);
+            form.Add(new StringContent("true"), "overwrite");
+
+            using var uploadResp = await _http.PostAsync($"{BaseUrl}/upload/image", form, ct);
+            if (!uploadResp.IsSuccessStatusCode)
+            {
+                var body = await uploadResp.Content.ReadAsStringAsync(ct);
+                _log($"[ComfyUI] Asset upload error {(int)uploadResp.StatusCode}: {body[..Math.Min(body.Length, 200)]}");
+                return null;
+            }
+
+            var result = await uploadResp.Content.ReadFromJsonAsync<JsonElement>(ct);
+            var name = result.GetProperty("name").GetString();
+            _log($"[ComfyUI] Uploaded asset '{name}' to the node ({bytes.Length / 1024}KB, {contentType})");
+            return name;
+        }
+        catch (Exception ex)
+        {
+            _log($"[ComfyUI] Asset upload error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The upload's extension: from the media type, else the URL's if it is short and plain, else <c>.bin</c>.</summary>
+    internal static string AssetExtension(string contentType, string fileUrl)
+    {
+        var known = contentType switch
+        {
+            "image/jpeg" or "image/jpg" => ".jpg",
+            "image/png" => ".png",
+            "image/webp" => ".webp",
+            "video/mp4" => ".mp4",
+            "video/webm" => ".webm",
+            "audio/wav" => ".wav",
+            "audio/mpeg" => ".mp3",
+            _ => null,
+        };
+        if (known is not null) return known;
+        var ext = Uri.TryCreate(fileUrl, UriKind.Absolute, out var uri) ? Path.GetExtension(uri.AbsolutePath) : "";
+        return ext.Length is >= 2 and <= 6 && ext[1..].All(char.IsAsciiLetterOrDigit) ? ext.ToLowerInvariant() : ".bin";
     }
 
     private async Task<string?> UploadFileToComfyAsync(string fileUrl, CancellationToken ct)
