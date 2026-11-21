@@ -62,6 +62,13 @@ public sealed record ForwardLimits
     public int BusyRetries { get; init; } = 5;
     public TimeSpan BusyRetryDelay { get; init; } = TimeSpan.FromMilliseconds(50);
 
+    /// <summary>
+    /// How long the server waits for the node's "connected" on a WebSocket (the node's handshake with the runtime):
+    /// past it the channel is reset and the connect fails <see cref="ForwardErrorCodes.UpstreamFailed"/>, so a node
+    /// or runtime that never answers cannot hold the caller.
+    /// </summary>
+    public TimeSpan WsHandshakeTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     public static ForwardLimits Default { get; } = new();
 }
 
@@ -172,8 +179,11 @@ public sealed record ForwardOpen(string Runtime, string Mode, string? Method, st
                 headers.Add(new(name, value));
                 if (headers.Count > MaxHeaders) break;
             }
-            if (meta["bodyBytes"] is not JsonValue body || !body.TryGetValue<long>(out bodyBytes)
-                || body.GetValueKind() != JsonValueKind.Number)
+            // The number's own text, so a meta built in memory (a JsonValue of an int) reads as one parsed from the wire;
+            // a fraction or an exponent is not an integer.
+            if (meta["bodyBytes"] is not JsonValue body || body.GetValueKind() != JsonValueKind.Number
+                || !long.TryParse(body.ToJsonString(), System.Globalization.NumberStyles.AllowLeadingSign,
+                    System.Globalization.CultureInfo.InvariantCulture, out bodyBytes))
             {
                 error = "bodyBytes is an integer.";
                 return null;

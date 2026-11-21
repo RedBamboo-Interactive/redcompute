@@ -143,12 +143,18 @@ public sealed class ForwardClient
         socket.Attach(handle);
         try
         {
-            await socket.Ready.WaitAsync(ct);
+            await socket.Ready.WaitAsync(Limits.WsHandshakeTimeout, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             handle.Reset(LinkErrorCodes.Closed, "The caller gave up.");
             throw;
+        }
+        catch (TimeoutException)
+        {
+            var message = $"The node did not open the WebSocket within {Limits.WsHandshakeTimeout.TotalSeconds:0.#} s.";
+            handle.Reset(LinkErrorCodes.Closed, message);
+            throw new ForwardException(ForwardErrorCodes.UpstreamFailed, message);
         }
         return socket;
     }

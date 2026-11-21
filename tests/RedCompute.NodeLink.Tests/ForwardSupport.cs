@@ -92,6 +92,11 @@ internal sealed class FakeRuntime : IForwardTarget
 
     public async Task<WebSocket> ConnectAsync(ForwardOpen open, ForwardDecision decision, CancellationToken ct)
     {
+        if (open.Path == "/ws-hang")
+        {
+            // A runtime that never answers its handshake: the node never says "connected".
+            await Task.Delay(Timeout.Infinite, ct);
+        }
         if (open.Path != "/ws") throw new ForwardTargetException(ForwardErrorCodes.UpstreamFailed, "No WebSocket there.");
         var query = open.Query.Split('&').Select(p => p.Split('=')).ToDictionary(p => p[0], p => p[1]);
         var seed = int.Parse(query["seed"]);

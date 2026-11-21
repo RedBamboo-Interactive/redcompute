@@ -13,6 +13,7 @@ namespace RedCompute.NodeLink.Tests;
 /// The forward end to end over an in-memory link (Phase 4 design 2.2, 2.3): the server's <see cref="ForwardClient"/>
 /// against the node's <see cref="ForwardHost"/> and a fake runtime.
 /// </summary>
+[Collection(TimingCollection.Name)]
 public sealed class ForwardTests
 {
     private sealed class Rig : IAsyncDisposable
@@ -293,6 +294,20 @@ public sealed class ForwardTests
             (await Assert.ThrowsAsync<ForwardException>(() => rig.Client.ConnectWebSocketAsync(FakeRuntime.Runtime, "/nows", ""))).Code);
         Assert.Equal(ForwardErrorCodes.RouteNotAllowed,
             (await Assert.ThrowsAsync<ForwardException>(() => rig.Client.ConnectWebSocketAsync(FakeRuntime.Runtime, "/manager/ws", ""))).Code);
+    }
+
+    [Fact]
+    public async Task A_websocket_the_node_never_opens_fails_typed_at_the_handshake_timeout()
+    {
+        await using var rig = await StartAsync(serverLimits: new ForwardLimits { WsHandshakeTimeout = TimeSpan.FromMilliseconds(400) });
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        // No caller token: the limit alone ends the wait.
+        var error = await Assert.ThrowsAsync<ForwardException>(() => rig.Client.ConnectWebSocketAsync(FakeRuntime.Runtime, "/ws-hang", "")
+            .WaitAsync(TimeSpan.FromSeconds(20)));
+        Assert.Equal(ForwardErrorCodes.UpstreamFailed, error.Code);
+        Assert.InRange(started.Elapsed, TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(10));
+        // The reset reaches the node, which stops its handshake: both tables end empty.
+        await Wait.UntilAsync(() => rig.Host.OpenExchanges == 0 && rig.Client.OpenExchanges == 0, what: "both tables to empty");
     }
 
     [Fact]

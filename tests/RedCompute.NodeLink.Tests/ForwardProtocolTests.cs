@@ -75,13 +75,30 @@ public sealed class ForwardProtocolTests
         { "body above 2^40", m => m["bodyBytes"] = (1L << 40) + 1 },
         { "body as a string", m => m["bodyBytes"] = "5" },
         { "body as a fraction", m => m["bodyBytes"] = 1.5 },
+        { "body as an exponent", m => m["bodyBytes"] = JsonNode.Parse("5e3") },
+        { "body missing", m => m.Remove("bodyBytes") },
         { "mode ws on a port channel", m => m["mode"] = "ws" },
     };
+
+    [Fact]
+    public void The_unspoiled_meta_parses()
+    {
+        // The control for the malformed cases below: each spoils exactly one thing of this meta. Built in memory (an
+        // int bodyBytes) and read from the wire, it is the same OPEN.
+        var open = ForwardOpen.Parse(HttpMeta(), ForwardModes.Http, out var error);
+        Assert.True(open is not null, error);
+        Assert.Equal(812341, open.BodyBytes);
+        var wire = ForwardOpen.Parse(JsonNode.Parse(HttpMeta().ToJsonString())!.AsObject(), ForwardModes.Http, out error);
+        Assert.True(wire is not null, error);
+        Assert.Equal(open.ToMeta().ToJsonString(), wire.ToMeta().ToJsonString());
+    }
 
     [Theory]
     [MemberData(nameof(BadMetas))]
     public void A_malformed_http_open_is_refused(string why, Action<JsonObject> spoil)
     {
+        // The unspoiled meta parses (The_unspoiled_meta_parses), so a refusal here is this case's.
+        Assert.NotNull(ForwardOpen.Parse(HttpMeta(), ForwardModes.Http, out _));
         var meta = HttpMeta();
         spoil(meta);
         Assert.True(ForwardOpen.Parse(meta, ForwardModes.Http, out var error) is null, why);
