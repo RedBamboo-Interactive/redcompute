@@ -21,8 +21,6 @@ namespace RedCompute.Node.Runtimes;
 /// </summary>
 public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
 {
-    public const int MaxLogLines = 200;
-    public const int MaxLogBytes = 64 * 1024;
     public static readonly TimeSpan MaxGrace = TimeSpan.FromSeconds(60);
 
     private readonly NodeEnvironment _env;
@@ -47,7 +45,6 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         public long Created { get; set; }
         public bool Stopping { get; set; }
         public bool Adopted { get; set; }
-        public Queue<string> Lines { get; } = new();
         /// <summary>The runtime's output file, rolled as the agent's own log is (5 MB, five files).</summary>
         public NodeLog? Log { get; set; }
         public bool Managed => Registration.Managed == HostRuntimeManagement.Spawn;
@@ -326,10 +323,11 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
             {
             }
             var expected = entry.Stopping;
+            // Written before the reap closes the runtime's log file.
+            Remember(entry, $"[leaf-node] exited{(code is null ? "" : $" with code {code}")}");
             ReapAndForget(entry);
             entry.Status = expected ? BackendStatus.Stopped : BackendStatus.Error;
             entry.Detail = expected ? null : $"It exited{(code is null ? "" : $" with code {code}")}.";
-            Remember(entry, $"[leaf-node] exited{(code is null ? "" : $" with code {code}")}");
             view = View(entry);
         }
         _env.Audit.Record("runtime", entry.Registration.Id, entry.Status == BackendStatus.Stopped ? "stopped" : "exited", null);
@@ -504,25 +502,6 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         return (ok, result);
     }
 
-    /// <summary>The last <paramref name="tailLines"/> lines of a runtime's output, at most 64 KiB.</summary>
-    public IReadOnlyList<string> Logs(string id, int tailLines)
-    {
-        lock (_gate)
-        {
-            if (!_entries.TryGetValue(id, out var entry))
-                throw new HostRuntimeException(HostRuntimeException.Unknown, $"No runtime '{id}' is registered on this node.");
-            var lines = entry.Lines.TakeLast(Math.Clamp(tailLines, 0, MaxLogLines)).ToList();
-            var bytes = 0;
-            var kept = new List<string>();
-            for (var i = lines.Count - 1; i >= 0; i--)
-            {
-                bytes += System.Text.Encoding.UTF8.GetByteCount(lines[i]) + 1;
-                if (bytes > MaxLogBytes) break;
-                kept.Insert(0, lines[i]);
-            }
-            return kept;
-        }
-    }
 
     // ================================================================= health
 
@@ -648,15 +627,8 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         if (Status(id) is { } view) Raise(view);
     }
 
-    private void Remember(Entry entry, string line)
-    {
-        lock (entry.Lines)
-        {
-            entry.Lines.Enqueue(line.Length > 4096 ? line[..4096] : line);
-            while (entry.Lines.Count > MaxLogLines) entry.Lines.Dequeue();
-            entry.Log?.Info(line);
-        }
-    }
+    /// <summary>One line of a runtime's output, to its log file on the node (NodeLog serializes its writers).</summary>
+    private static void Remember(Entry entry, string line) => entry.Log?.Info(line.Length > 4096 ? line[..4096] : line);
 
     private void OpenLog(Entry entry)
     {

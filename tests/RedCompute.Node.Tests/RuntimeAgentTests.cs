@@ -152,15 +152,25 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
     [InlineData("runtime.stop", "{\"id\":\"comfy-m\",\"graceSeconds\":61}")]
     [InlineData("runtime.stop", "{\"id\":\"comfy-m\",\"graceSeconds\":\"5\"}")]
     [InlineData("runtime.stop", "{\"id\":\"comfy-m\",\"graceSeconds\":1.5}")]
-    [InlineData("runtime.logs", "{\"id\":\"comfy-m\",\"tailLines\":201}")]
-    [InlineData("runtime.logs", "{\"id\":\"comfy-m\"}")]
-    [InlineData("runtime.logs", "{\"id\":\"comfy-m\",\"tailLines\":10,\"path\":\"/etc/passwd\"}")]
     [InlineData("runtime.status", "{\"id\":\"comfy-m\",\"id2\":\"x\"}")]
     public async Task Parameters_are_exactly_the_listed_members(string method, string parameters)
     {
         var error = await Assert.ThrowsAsync<LinkRpcException>(() => _linked.ServerSession.CallAsync(method, JsonNode.Parse(parameters)));
         Assert.Equal(LinkErrorCodes.InvalidParams, error.Code);
         Assert.Null(_linked.Agent.Runtimes.Status(Managed)!.StartedAt);
+    }
+
+    [Theory]
+    [InlineData("{\"id\":\"comfy-m\",\"tailLines\":10}")]
+    [InlineData("{\"id\":\"comfy-m\"}")]
+    [InlineData("{}")]
+    public async Task There_is_no_runtime_logs_for_the_server(string parameters)
+    {
+        // Review P4-P7, item 6: the server never asked for a runtime's output, so the node does not offer it.
+        var error = await Assert.ThrowsAsync<LinkRpcException>(() => _linked.ServerSession.CallAsync("runtime.logs", JsonNode.Parse(parameters)));
+        Assert.Equal(LinkErrorCodes.MethodNotAllowed, error.Code);
+        Assert.Contains(_home.Environment().Audit.Read(), l => l["name"]!.GetValue<string>() == "runtime.logs"
+            && l["kind"]!.GetValue<string>() == "request" && l["outcome"]!.GetValue<string>() == "refused");
     }
 
     [Fact]
@@ -220,7 +230,9 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         await manager.StartAsync(Managed);
         await Wait.UntilAsync(() => manager.Status(Managed)!.Status == BackendStatus.Error, "the error", timeoutMs: 20_000);
         Assert.StartsWith("It exited", manager.Status(Managed)!.StatusDetail);
-        Assert.Contains(manager.Logs(Managed, 10), line => line.Contains("exited"));
+        // The exit is in the runtime's log file on the node (its owner's to read; the server cannot ask for it).
+        using (var log = new FileStream(_home.Paths.RuntimeLog(Managed), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            Assert.Contains("[leaf-node] exited", new StreamReader(log).ReadToEnd());
         Assert.NotNull(registry.Load().Single(r => r.Id == Managed));
     }
 

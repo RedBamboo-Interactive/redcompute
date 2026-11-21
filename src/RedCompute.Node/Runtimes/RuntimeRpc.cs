@@ -8,6 +8,8 @@ namespace RedCompute.Node.Runtimes;
 /// <summary>
 /// The <c>runtime.v1</c> control methods (Phase 4 design 2.4). Parameters are exactly the listed members: any other
 /// member is <c>invalid_params</c>, so the server can never pass a program, an argument, an environment or a folder.
+/// There is no <c>runtime.logs</c> (review P4-P7, item 6): the server never asked for a runtime's output, so the node
+/// does not offer it (<c>method_not_allowed</c>). The owner reads it in the runtime's log file on the node.
 /// </summary>
 public static class RuntimeRpc
 {
@@ -15,10 +17,9 @@ public static class RuntimeRpc
     public const string Start = "runtime.start";
     public const string Stop = "runtime.stop";
     public const string Status = "runtime.status";
-    public const string Logs = "runtime.logs";
     public const string Changed = "runtime.changed";
 
-    public static bool Handles(string method) => method is List or Start or Stop or Status or Logs;
+    public static bool Handles(string method) => method is List or Start or Stop or Status;
 
     public static async Task<JsonNode> AnswerAsync(RuntimeManager runtimes, string method, JsonElement parameters, CancellationToken ct)
     {
@@ -48,12 +49,6 @@ public static class RuntimeRpc
                         ? RuntimeManager.Json(runtime)
                         : throw new LinkRpcException(HostRuntimeException.Unknown, $"No runtime '{id}' is registered on this node.");
                 }
-                case Logs:
-                {
-                    var read = Members(parameters, required: ["id", "tailLines"], optional: []);
-                    var lines = runtimes.Logs(read.Id, read.TailLines);
-                    return new JsonObject { ["lines"] = new JsonArray(lines.Select(l => (JsonNode)JsonValue.Create(l)!).ToArray()) };
-                }
                 default:
                     throw new LinkRpcException(LinkErrorCodes.MethodNotAllowed, $"This node does not do '{method}'.");
             }
@@ -64,7 +59,7 @@ public static class RuntimeRpc
         }
     }
 
-    private readonly record struct Read(string Id, TimeSpan? Grace, int TailLines);
+    private readonly record struct Read(string Id, TimeSpan? Grace);
 
     private static Read Members(JsonElement parameters, string[] required, string[] optional)
     {
@@ -77,7 +72,6 @@ public static class RuntimeRpc
         var seen = new HashSet<string>(StringComparer.Ordinal);
         string? id = null;
         TimeSpan? grace = null;
-        var tail = 0;
         foreach (var property in parameters.EnumerateObject())
         {
             if (!seen.Add(property.Name) || (!required.Contains(property.Name) && !optional.Contains(property.Name)))
@@ -94,15 +88,11 @@ public static class RuntimeRpc
                         throw Invalid("graceSeconds is 0..60.");
                     grace = TimeSpan.FromSeconds(seconds);
                     break;
-                case "tailLines":
-                    if (property.Value.ValueKind != JsonValueKind.Number || !property.Value.TryGetInt32(out tail) || tail is < 1 or > RuntimeManager.MaxLogLines)
-                        throw Invalid($"tailLines is 1..{RuntimeManager.MaxLogLines}.");
-                    break;
             }
         }
         foreach (var name in required)
             if (!seen.Contains(name)) throw Invalid($"'{name}' is required.");
-        return new Read(id ?? "", grace, tail);
+        return new Read(id ?? "", grace);
     }
 
     private static LinkRpcException Invalid(string message) => new(LinkErrorCodes.InvalidParams, message);
