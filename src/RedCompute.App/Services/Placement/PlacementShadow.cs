@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Security.Claims;
+using RedCompute.App.Services.Nodes;
 using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.App.Services.Placement;
@@ -67,10 +69,11 @@ public sealed class PlacementShadow
     /// Starts the comparison in the background and returns at once: resolving may wait on RedLeaf, and a start
     /// never waits on, or fails because of, its shadow. Every fault is counted, none escapes.
     /// </summary>
+    /// <param name="caller">Who the start was for, so the background resolution routes as the start would (<see cref="NodeAccess"/>).</param>
     public void Observe(PlacementRequest placement, PlacementRoute route, string? app, LegacyPlacement legacy,
-        IHostPathRules rules)
+        IHostPathRules rules, ClaimsPrincipal? caller = null)
     {
-        var task = Task.Run(() => ObserveAsync(placement, route, app, legacy, rules));
+        var task = Task.Run(() => ObserveAsync(placement, route, app, legacy, rules, caller));
         _inFlight[task] = 0;
         _ = task.ContinueWith(done => _inFlight.TryRemove(done, out _), TaskScheduler.Default);
     }
@@ -79,13 +82,13 @@ public sealed class PlacementShadow
     internal Task IdleAsync() => Task.WhenAll(_inFlight.Keys);
 
     internal async Task ObserveAsync(PlacementRequest placement, PlacementRoute route, string? app, LegacyPlacement legacy,
-        IHostPathRules rules)
+        IHostPathRules rules, ClaimsPrincipal? caller = null)
     {
         Resolution<ResolvedPlacement> resolution;
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            resolution = await _resolver.ResolveAsync(placement, route, timeout.Token);
+            resolution = await _resolver.ResolveAsync(placement, route, caller, timeout.Token);
         }
         catch (Exception ex)
         {

@@ -374,7 +374,7 @@ public sealed class PlacementResolverTests : IDisposable
         var kernel = new Fixed();
         var result = await new PlacementResolver(Nodes(), kernel, kernel, null).ResolveAsync(Placement(
             $$$"""{"workspace":{"agentId":"{{{AgentId}}}"},"scratch":{"owner":"nova","executionKey":"d1"}}""", PlacementRoute.Session),
-            PlacementRoute.Session);
+            PlacementRoute.Session, null);
 
         var resolved = result.Value!;
         Assert.Equal(NodeZero, resolved.NodeId);
@@ -393,9 +393,9 @@ public sealed class PlacementResolverTests : IDisposable
 
         var withScratch = await resolver.ResolveAsync(Placement(
             $$$"""{"workspace":{"agentId":"{{{AgentId}}}"},"scratch":{"owner":"nova","executionKey":"d1"}}""", PlacementRoute.Session),
-            PlacementRoute.Session);
+            PlacementRoute.Session, null);
         var without = await resolver.ResolveAsync(Placement(
-            $$$"""{"workspace":{"agentId":"{{{AgentId}}}"}}""", PlacementRoute.Session), PlacementRoute.Session);
+            $$$"""{"workspace":{"agentId":"{{{AgentId}}}"}}""", PlacementRoute.Session), PlacementRoute.Session, null);
 
         Assert.Equal("S:\\nova\\d1", withScratch.Value!.WorkingDirectory);
         Assert.Equal((422, "validation_failed"), (without.Error!.Status, without.Error.Code));
@@ -411,7 +411,7 @@ public sealed class PlacementResolverTests : IDisposable
         var json = $$$"""{"nodeId":"local","scratch":{"owner":"nova","executionKey":"d1"},"scratchAs":"{{{scratchAs}}}"}""";
 
         var resolved = (await new PlacementResolver(Nodes(), kernel, kernel, null)
-            .ResolveAsync(Placement(json, PlacementRoute.Execute), PlacementRoute.Execute)).Value!;
+            .ResolveAsync(Placement(json, PlacementRoute.Execute), PlacementRoute.Execute, null)).Value!;
 
         Assert.Equal(workingDirectory, resolved.WorkingDirectory);
         Assert.Equal(addDir is null ? null : [addDir], resolved.AddDirs);
@@ -424,7 +424,7 @@ public sealed class PlacementResolverTests : IDisposable
     {
         var resolved = (await new PlacementResolver(Nodes(), null, null, Repositories())
             .ResolveAsync(new PlacementRequest(null, null, new RepositoryPlacement(RepositoryId, null, "laurent/x", null), null),
-                PlacementRoute.Session)).Value!;
+                PlacementRoute.Session, null)).Value!;
 
         Assert.Equal(Worktree, resolved.WorkingDirectory);
         Assert.Equal(RepositoryId, resolved.RepositoryId);
@@ -437,9 +437,9 @@ public sealed class PlacementResolverTests : IDisposable
         var kernel = new Fixed();
 
         var unknown = await new PlacementResolver(Nodes(), kernel, kernel, null)
-            .ResolveAsync(new PlacementRequest("node_01JCZ000000000000000OTHER", new WorkspacePlacement(AgentId), null, null), PlacementRoute.Session);
+            .ResolveAsync(new PlacementRequest("node_01JCZ000000000000000OTHER", new WorkspacePlacement(AgentId), null, null), PlacementRoute.Session, null);
         var noKernel = await new PlacementResolver(Nodes(), null, null, null)
-            .ResolveAsync(new PlacementRequest(null, new WorkspacePlacement(AgentId), null, null), PlacementRoute.Session);
+            .ResolveAsync(new PlacementRequest(null, new WorkspacePlacement(AgentId), null, null), PlacementRoute.Session, null);
 
         Assert.Equal("node_not_found", unknown.Error!.Code);
         Assert.Empty(kernel.Calls);

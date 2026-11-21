@@ -229,34 +229,10 @@ public static class NodeEndpoints
     }
 
     /// <summary>
-    /// Who sees a remote node: the kernel's read rule for <c>/api/nodes</c> (its <c>NodeAccess.CanRead</c>).
-    /// Node zero is everyone's. A remote node is visible to its owner and to admins, decided from a signed
-    /// subject: the anonymous local identity (<c>LocalDefault</c>, <c>local-user</c>), <c>system</c> and
-    /// services have none, whatever roles they carry. An Agent's execution token carries the subject of the
-    /// person it works for, so it sees what they see. The kernel itself (<c>service:redleaf</c>), the
-    /// source of these entities, sees them all, as RedCompute does in the kernel.
+    /// Who sees a remote node: the kernel's read rule for <c>/api/nodes</c> (its <c>NodeAccess.CanRead</c>),
+    /// which is <see cref="NodeAccess"/>'s <see cref="NodeUse.See"/>, the same rule placement uses.
     /// </summary>
-    internal static bool CanSee(ClaimsPrincipal user, NodeDescriptor node)
-    {
-        if (node.Kind == NodeKind.Local) return true;
-        if (SettingsEndpoints.IsRedLeafService(user)) return true;
-        if (Subject(user) is not { } subject) return false;
-        return (node.OwnerUserId is { } owner && string.Equals(owner, subject, StringComparison.OrdinalIgnoreCase))
-               || ExecutionIdentityClaims.ReadRoles(user).Contains("admin", StringComparer.OrdinalIgnoreCase);
-    }
-
-    /// <summary>The signed subject a node read is decided for, or null (anonymous, LocalDefault, local-user, system, a service).</summary>
-    private static string? Subject(ClaimsPrincipal user)
-    {
-        if (user.Identity?.IsAuthenticated != true
-            || string.Equals(user.Identity.AuthenticationType, ConfidentialResourcePolicy.LocalDefaultAuthenticationType, StringComparison.Ordinal))
-            return null;
-        var subject = user.FindFirst("sub")?.Value;
-        if (string.IsNullOrWhiteSpace(subject) || subject is "local-user" or "system"
-            || subject.StartsWith("service:", StringComparison.OrdinalIgnoreCase))
-            return null;
-        return subject;
-    }
+    internal static bool CanSee(ClaimsPrincipal user, NodeDescriptor node) => NodeAccess.Allows(user, node, NodeUse.See);
 
     /// <summary>
     /// The response schema, exported from the record itself. Discovery reads the first 200 response type,

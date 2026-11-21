@@ -56,14 +56,16 @@ public static class GenericCapabilityEndpoints
                 var (body, bodyError) = await ReadJsonBody(ctx);
                 if (bodyError is not null)
                     return Error(400, "invalid_json", bodyError);
-                // nodeId only, validated and checked against the registry. Taken out of the body so
-                // the provider, its schema validation and the job input see exactly what they did.
+                // nodeId only, validated and checked against the registry and against what the caller may
+                // use (NodeAccess). Taken out of the body so the provider, its schema validation and the job
+                // input see exactly what they did. With no nodeId the work runs on node zero, which is where
+                // Automatic routes every caller while no remote node runs work.
                 if (body.Remove(PlacementRequest.Member, out var placementValue) && placementValue is JsonElement placementElement)
                 {
                     if (!PlacementParser.TryParseValue(placementElement, PlacementRoute.Generate, conversationOnly: false,
                             out var placement, out var placementError))
                         return placementError!.ToResult();
-                    if (placement is not null && PlacementParser.ResolveNode(placement, nodes, out _) is { } nodeError)
+                    if (placement is not null && PlacementParser.ResolveNode(placement, nodes, ctx.User, out _) is { } nodeError)
                         return nodeError.ToResult();
                 }
 

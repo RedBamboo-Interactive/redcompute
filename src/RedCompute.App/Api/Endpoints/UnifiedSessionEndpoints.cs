@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.Placement;
 using RedCompute.App.Services.SessionArtifacts;
 using RedCompute.App.Services.SessionTitles;
@@ -374,7 +375,7 @@ public static class UnifiedSessionEndpoints
                     $"Provider '{provider.ProviderId}' does not support the conversation-only execution profile");
             // Validated and its node checked; the legacy fields below still decide the launch. The
             // references are stored with the session.
-            if (ReadPlacement(body, PlacementRoute.Session, conversationOnly, out var placement) is { } placementError)
+            if (ReadPlacement(body, PlacementRoute.Session, conversationOnly, ctx.User, out var placement) is { } placementError)
                 return placementError;
 
             var projectPath = body.TryGetProperty("projectPath", out var pp) ? pp.GetString() : null;
@@ -560,7 +561,7 @@ public static class UnifiedSessionEndpoints
                 _shadow?.Observe(placement, PlacementRoute.Session, provenance.Origin.App.Id,
                     new LegacyPlacement(projectPath, scratchDirectory,
                         repository is null ? null : repositoryValue.GetString(), null, null),
-                    _host.PathRules);
+                    _host.PathRules, ctx.User);
 
             return Results.Json(WithNode(SessionAccessService.Overlay(session, provider), _nodes));
         })
@@ -2259,7 +2260,7 @@ public static class UnifiedSessionEndpoints
                 return Error(422, "validation_failed", "prompt is required");
             // Validated and its node checked; the legacy fields below still decide the launch. The
             // job input below stays exactly what it was, so idempotency keys keep matching.
-            if (ReadPlacement(body, PlacementRoute.Execute, conversationOnly: false, out var placement) is { } placementError)
+            if (ReadPlacement(body, PlacementRoute.Execute, conversationOnly: false, ctx.User, out var placement) is { } placementError)
                 return placementError;
 
             var workingDir = body.TryGetProperty("workingDir", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : null;
@@ -2398,7 +2399,7 @@ public static class UnifiedSessionEndpoints
                     new LegacyPlacement(workingDir, null, null,
                         providerParams.TryGetValue("addDirs", out var legacyAddDirs) && legacyAddDirs is string[] dirs ? dirs : null,
                         legacyEnvironment),
-                    _host.PathRules);
+                    _host.PathRules, ctx.User);
 
             var streamKey = job.Id.ToString();
             var asyncMode = ctx.Request.Query.ContainsKey("async");
@@ -3275,15 +3276,20 @@ public static class UnifiedSessionEndpoints
         => Results.Json(new ErrorResponse { Error = error, Message = message }, statusCode: status);
 
     /// <summary>
-    /// The body's <c>placement</c>, validated, with its node resolved against the registry; the error
-    /// to return when it is refused. Absent or null is no placement.
+    /// The body's <c>placement</c>, validated, with its node resolved against the registry as the caller may
+    /// use it (<see cref="NodeAccess"/>); the error to return when it is refused. Absent or null is no placement.
     /// </summary>
     internal static IResult? ReadPlacement(JsonElement body, PlacementRoute route, bool conversationOnly,
-        out PlacementRequest? placement)
+        ClaimsPrincipal? caller, out PlacementRequest? placement)
+        => ReadPlacement(body, route, conversationOnly, caller, _nodes, out placement);
+
+    /// <summary>The same, against a given registry (the routes pass theirs).</summary>
+    internal static IResult? ReadPlacement(JsonElement body, PlacementRoute route, bool conversationOnly,
+        ClaimsPrincipal? caller, INodeRegistry? nodes, out PlacementRequest? placement)
     {
         if (!PlacementParser.TryParse(body, route, conversationOnly, out placement, out var error))
             return error!.ToResult();
-        if (placement is not null && PlacementParser.ResolveNode(placement, _nodes, out _) is { } nodeError)
+        if (placement is not null && PlacementParser.ResolveNode(placement, nodes, caller, out _) is { } nodeError)
         {
             placement = null;
             return nodeError.ToResult();
@@ -3297,7 +3303,7 @@ public static class UnifiedSessionEndpoints
         + "scratch: {owner, executionKey}, scratchAs: env|add-dir|cwd}. nodeId is a /nodes id or 'local'; null or absent routes to this node. "
         + "At most one of workspace or repository; scratchAs needs scratch, add-dir is execute-only, cwd excludes workspace and repository; "
         + "conversation-only sessions take nodeId only. Unknown members and malformed values are 422 validation_failed naming the member "
-        + "in fields; an unknown node is 404 node_not_found with nodeId. Accepted and validated today; the legacy path fields "
+        + "in fields; an unknown node, or one the caller may not use (a remote node is its owner's and admins'; an Agent counts as its person), is 404 node_not_found with nodeId. Accepted and validated today; the legacy path fields "
         + "(projectPath, repositoryId, scratchDir, workingDir, env, addDirs) still decide where the work runs, so send both until "
         + "GET /ping lists the placement.v1 feature. A start that sends both is resolved by reference in the background and "
         + "compared with them (GET /placement/shadow-status).";

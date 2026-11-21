@@ -221,7 +221,7 @@ public sealed class PlacementRequestTests
     [InlineData(Legacy, NodeZero)]
     public void A_known_node_resolves_to_its_id(string requested, string expected)
     {
-        var error = PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), Nodes(), out var nodeId);
+        var error = PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), Nodes(), null, out var nodeId);
 
         Assert.Null(error);
         Assert.Equal(expected, nodeId);
@@ -232,7 +232,7 @@ public sealed class PlacementRequestTests
     [InlineData("7e1e0000-0000-4000-8000-0000000000a1")]
     public void An_unknown_node_is_404_with_its_id(string requested)
     {
-        var error = PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), Nodes(), out var nodeId);
+        var error = PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), Nodes(), null, out var nodeId);
 
         Assert.Null(nodeId);
         Assert.Equal(404, error!.Status);
@@ -243,7 +243,7 @@ public sealed class PlacementRequestTests
     [Fact]
     public void A_null_node_is_routed_later()
     {
-        Assert.Null(PlacementParser.ResolveNode(new PlacementRequest(null, null, null, null), Nodes(), out var nodeId));
+        Assert.Null(PlacementParser.ResolveNode(new PlacementRequest(null, null, null, null), Nodes(), null, out var nodeId));
         Assert.Null(nodeId);
     }
 
@@ -252,7 +252,7 @@ public sealed class PlacementRequestTests
     [InlineData(NodeZero, false)]
     public void Without_a_registry_only_the_local_alias_is_known(string requested, bool known)
     {
-        var error = PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), null, out var nodeId);
+        var error = PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), null, null, out var nodeId);
 
         Assert.Equal(known, error is null);
         Assert.Equal(known ? INodeRegistry.LocalAlias : null, nodeId);

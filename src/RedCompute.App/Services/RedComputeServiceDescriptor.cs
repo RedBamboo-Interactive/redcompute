@@ -77,7 +77,10 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         Summary: "The computers RedCompute runs work on: node zero (this machine, kind local) and the machines paired with "
             + "Leaf that run the leaf-node agent (kind remote). Each node reports its platform, a hardware summary, its status, "
             + "and placement {eligible, reason}; node zero also lists the capabilities and providers it runs. Remote nodes do not "
-            + "run work yet (placement reason remote_execution_not_available). Pairing, confirming, renaming and revoking are "
+            + "run work yet (placement reason remote_execution_not_available). A remote node is its owner's and admins' (an Agent "
+            + "counts as its person): only they see it here and may name it in placement.nodeId or ?nodeId= on /control; for "
+            + "anyone else it is 404 node_not_found, as an unknown id. Automatic placement uses node zero or the person's own "
+            + "nodes, never another's. Pairing, confirming, renaming and revoking are "
             + "the kernel's /api/nodes routes. Use 'local' as the id of this machine. GET /nodes/agent says where the Nightly "
             + "published the leaf-node agent (archives, hashes, one install command per OS).",
         Concepts:

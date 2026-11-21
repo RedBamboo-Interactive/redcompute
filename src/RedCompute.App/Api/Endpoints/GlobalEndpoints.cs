@@ -9,6 +9,8 @@ using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Helpers;
 using RedCompute.App.Services;
 using RedCompute.App.Services.Jobs;
+using RedCompute.App.Services.Nodes;
+using RedCompute.App.Services.Placement;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Providers;
 using RedCompute.PluginSdk;
@@ -506,8 +508,9 @@ public static class GlobalEndpoints
             .WithParam("since", "string", description: "ISO8601 start time (defaults to start of today UTC)", location: ParamLocation.Query)
             .WithParam("until", "string", description: "ISO8601 end time (defaults to now)", location: ParamLocation.Query);
 
-        endpoints.MapPost("/control/start/{slug}", "Start a capability's active provider", async (string slug) =>
+        endpoints.MapPost("/control/start/{slug}", "Start a capability's active provider", async (string slug, HttpContext ctx) =>
         {
+            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
             if (entry.ActiveProvider == null) return Results.BadRequest(new { error = "no_provider", message = "No active provider configured" });
@@ -523,10 +526,12 @@ public static class GlobalEndpoints
                     message = entry.ActiveProvider.StatusDetail ?? $"The provider for '{slug}' is not supported on {PlatformSupport.PlatformName}",
                 }, statusCode: 503);
             return Results.Json(new { error = "start_failed", message = $"Failed to start provider for '{slug}'" }, statusCode: 500);
-        });
+        })
+            .WithParam("nodeId", "string", description: ControlNodeDescription, location: ParamLocation.Query);
 
-        endpoints.MapPost("/control/stop/{slug}", "Stop a capability's active provider", async (string slug) =>
+        endpoints.MapPost("/control/stop/{slug}", "Stop a capability's active provider", async (string slug, HttpContext ctx) =>
         {
+            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null) return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
             if (entry.ActiveProvider == null) return Results.Ok(new { slug, status = "Stopped" });
@@ -534,7 +539,8 @@ public static class GlobalEndpoints
             entry.IsManuallyDisabled = true;
             await entry.ActiveProvider.StopAsync();
             return Results.Ok(new { slug, status = "Stopped" });
-        });
+        })
+            .WithParam("nodeId", "string", description: ControlNodeDescription, location: ParamLocation.Query);
 
         endpoints.MapPost("/control/sleep/{slug}", "Put a capability to sleep", (string slug) =>
         {
@@ -554,8 +560,9 @@ public static class GlobalEndpoints
             return Results.Ok(new { slug, sleeping = false });
         });
 
-        endpoints.MapPost("/control/start/{slug}/{providerName}", "Start a specific provider for a capability", async (string slug, string providerName) =>
+        endpoints.MapPost("/control/start/{slug}/{providerName}", "Start a specific provider for a capability", async (string slug, string providerName, HttpContext ctx) =>
         {
+            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null)
                 return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
@@ -566,10 +573,12 @@ public static class GlobalEndpoints
             if (success)
                 return Results.Ok(new { slug, provider = providerName, status = "Running" });
             return Results.Json(new { error = "start_failed", message = $"Failed to start provider '{providerName}' for '{slug}'" }, statusCode: 500);
-        });
+        })
+            .WithParam("nodeId", "string", description: ControlNodeDescription, location: ParamLocation.Query);
 
-        endpoints.MapPost("/control/stop/{slug}/{providerName}", "Stop a specific provider for a capability", async (string slug, string providerName) =>
+        endpoints.MapPost("/control/stop/{slug}/{providerName}", "Stop a specific provider for a capability", async (string slug, string providerName, HttpContext ctx) =>
         {
+            if (ControlNode(ctx, nodes) is { } nodeError) return nodeError;
             var entry = registry.Get(slug);
             if (entry == null)
                 return Results.NotFound(new { error = "not_found", message = $"Capability '{slug}' not found" });
@@ -578,7 +587,8 @@ public static class GlobalEndpoints
 
             await provider.StopAsync();
             return Results.Ok(new { slug, provider = providerName, status = "Stopped" });
-        });
+        })
+            .WithParam("nodeId", "string", description: ControlNodeDescription, location: ParamLocation.Query);
 
         // ============================================================
         // LOG ENDPOINTS (AI-Native)
@@ -985,4 +995,20 @@ public static class GlobalEndpoints
         Dictionary<string, string>? FieldAssurance, string? RuleVersion, string? Source);
 
     public static void Initialize() => _startTime = DateTimeOffset.UtcNow;
+
+    internal const string ControlNodeDescription =
+        "The node the capability runs on: a /nodes id or 'local'. Omitted, it is this node (node zero), as before. "
+        + "A node the caller may not use is 404 node_not_found, the same answer as an unknown id; a remote node the caller "
+        + "may use cannot run capabilities in this release (409 node_not_eligible or node_offline).";
+
+    /// <summary>
+    /// The node a control call names in <c>?nodeId=</c>, checked as placement is (<see cref="NodeAccess"/>):
+    /// null when it is node zero or absent, else the answer to return.
+    /// </summary>
+    internal static IResult? ControlNode(HttpContext ctx, INodeRegistry? nodes)
+    {
+        var requested = ctx.Request.Query["nodeId"].FirstOrDefault();
+        if (string.IsNullOrEmpty(requested)) return null;
+        return PlacementParser.ResolveNode(new PlacementRequest(requested, null, null, null), nodes, ctx.User, out _)?.ToResult();
+    }
 }

@@ -1,4 +1,6 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
+using RedCompute.App.Services.Nodes;
 using RedCompute.PluginSdk;
 using RedCompute.PluginSdk.Hosting;
 
@@ -44,13 +46,18 @@ public sealed class PlacementResolver
         _repositories = repositories;
     }
 
+    /// <param name="caller">
+    /// Who the work is for: an explicit node must be one they may place on, and Automatic considers only
+    /// node zero and their person's own nodes (<see cref="NodeAccess"/>). Null is no person: node zero only.
+    /// </param>
     public async Task<Resolution<ResolvedPlacement>> ResolveAsync(PlacementRequest placement, PlacementRoute route,
-        CancellationToken ct = default)
+        ClaimsPrincipal? caller, CancellationToken ct = default)
     {
-        if (PlacementParser.ResolveNode(placement, _nodes, out var requested) is { } nodeError)
+        if (PlacementParser.ResolveNode(placement, _nodes, caller, out var requested) is { } nodeError)
             return new(null, nodeError);
-        // Phase 2 has one node, so every routing step (design 2.3) yields it.
-        var nodeId = requested ?? _nodes?.LocalNodeId ?? INodeRegistry.LocalAlias;
+        // Automatic: no remote node runs work yet, so every caller is routed to node zero.
+        var nodeId = requested
+            ?? (_nodes is null ? INodeRegistry.LocalAlias : NodeAccess.RouteAutomatic(caller, _nodes, node => NodeAccess.HostAvailable(_nodes, node)));
         IExecutionHost host;
         try
         {

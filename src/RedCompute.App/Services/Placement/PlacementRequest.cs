@@ -1,7 +1,9 @@
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
+using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Nodes;
 using RedCompute.PluginSdk;
@@ -201,13 +203,16 @@ public static class PlacementParser
     }
 
     /// <summary>
-    /// The node a placement names, as the registry knows it: the local node for <c>local</c>, its own
-    /// id or the legacy id; 409 <c>node_offline</c> / <c>node_not_eligible</c> for a known node that cannot
-    /// run work (every remote node in Phase 3); 404 <c>node_not_found</c> for anything else. Without a registry (hosts and
-    /// tests with no node identity) only <c>local</c> is known. A null node id is routed later (2.3)
+    /// The node a placement names, as the registry knows it and as the caller may use it: the local node for
+    /// <c>local</c>, its own id or the legacy id; 404 <c>node_not_found</c> for an unknown id and, with exactly
+    /// the same answer, for a node the caller may not place on (<see cref="NodeAccess"/>), so an answer never
+    /// tells which ids exist; 409 <c>node_offline</c> / <c>node_not_eligible</c> for a node the caller may use that
+    /// cannot run work (every remote node in this release). Without a registry (hosts and tests with no node
+    /// identity) only <c>local</c> is known. A null node id is routed later (<see cref="NodeAccess.RouteAutomatic"/>)
     /// and resolves to null here.
     /// </summary>
-    public static PlacementError? ResolveNode(PlacementRequest placement, INodeRegistry? nodes, out string? nodeId)
+    public static PlacementError? ResolveNode(PlacementRequest placement, INodeRegistry? nodes, ClaimsPrincipal? caller,
+        out string? nodeId)
     {
         nodeId = null;
         if (placement.NodeId is not { } requested) return null;
@@ -221,6 +226,7 @@ public static class PlacementParser
         }
         else if (nodes.Find(requested) is { } node)
         {
+            if (!NodeAccess.Allows(caller, node, NodeUse.Place)) return NodeNotFound(requested);
             nodeId = node.Id;
             if (node.Kind == NodeKind.Local) return null;
             try
@@ -239,9 +245,12 @@ public static class PlacementParser
             nodeId = nodes.LocalNodeId;
             return null;
         }
-        return new PlacementError(StatusCodes.Status404NotFound, "node_not_found",
-            $"No node has the id '{requested}'", NodeId: requested);
+        return NodeNotFound(requested);
     }
+
+    /// <summary>The one answer for an unknown node and for a node the caller may not use.</summary>
+    private static PlacementError NodeNotFound(string requested) => new(StatusCodes.Status404NotFound, "node_not_found",
+        $"No node has the id '{requested}'", NodeId: requested);
 
     private static bool TryWorkspace(JsonElement placement, out WorkspacePlacement? workspace, out PlacementError? error)
     {

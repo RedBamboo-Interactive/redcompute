@@ -251,11 +251,12 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
         _nodes.LinkUp(RemoteId(1), new NodeLinkState("s1", Now, Now, null, null, 1, [], "0.1.0", false, null));
         _nodes.MarkRevoked(RemoteId(3), "revoked_by_owner");
 
-        var online = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(1), null, null, null), _nodes, out var onlineId);
-        var offline = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(2), null, null, null), _nodes, out _);
-        var revoked = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(3), null, null, null), _nodes, out _);
-        var unknown = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(9), null, null, null), _nodes, out _);
-        var local = PlacementParser.ResolveNode(new PlacementRequest("local", null, null, null), _nodes, out var localId);
+        var online = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(1), null, null, null), _nodes, User(Owner), out var onlineId);
+        var offline = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(2), null, null, null), _nodes, User(Owner), out _);
+        // Revoked before its entity synced, so it has no owner: only an admin may name it.
+        var revoked = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(3), null, null, null), _nodes, User("user-admin", "admin"), out _);
+        var unknown = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(9), null, null, null), _nodes, User(Owner), out _);
+        var local = PlacementParser.ResolveNode(new PlacementRequest("local", null, null, null), _nodes, User(Owner), out var localId);
 
         Assert.Equal((409, "node_not_eligible", "remote_execution_not_available"), (online!.Status, online.Code, online.Reason));
         Assert.Null(onlineId);
@@ -266,7 +267,7 @@ public sealed class NodeEndpointRemoteTests : IAsyncLifetime
         Assert.Equal(LocalId, localId);
 
         _nodes.LinkDown(RemoteId(1), "s1", "heartbeat_timeout");
-        var down = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(1), null, null, null), _nodes, out _);
+        var down = PlacementParser.ResolveNode(new PlacementRequest(RemoteId(1), null, null, null), _nodes, User(Owner), out _);
         Assert.Equal((409, "node_offline", "offline"), (down!.Status, down.Code, down.Reason));
     }
 
