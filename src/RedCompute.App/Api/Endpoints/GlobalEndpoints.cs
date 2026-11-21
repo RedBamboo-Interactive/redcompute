@@ -1034,7 +1034,8 @@ public static class GlobalEndpoints
         + "node the call starts or stops the runtime its owner registered there for the capability (runtime.start/stop, by "
         + "id only; node zero's provider is untouched) and answers {slug, provider, nodeId, runtime, status}; 422 "
         + "provider_unavailable_on_node with availableOn when no runtime there serves it, 409 runtime_not_managed for one "
-        + "its owner runs (attach mode), 409 runtime_disabled when its owner disabled it.";
+        + "its owner runs (attach mode), 409 runtime_disabled when its owner disabled it, 409 runtime_stopping for a start "
+        + "while a stop is still in progress (retry once it reports stopped).";
 
     /// <summary>
     /// The node a control call names in <c>?nodeId=</c>, checked as placement is (<see cref="NodeAccess"/>):

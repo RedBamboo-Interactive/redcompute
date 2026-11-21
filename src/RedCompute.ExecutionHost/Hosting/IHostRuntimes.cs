@@ -29,12 +29,16 @@ public sealed record HostRuntime(
     public string? Version { get; init; }
 }
 
-/// <summary>Why a runtime call was refused: <c>runtime_unknown</c>, <c>runtime_not_managed</c> or <c>runtime_disabled</c>.</summary>
+/// <summary>
+/// Why a runtime call was refused: <c>runtime_unknown</c>, <c>runtime_not_managed</c>, <c>runtime_disabled</c> or
+/// <c>runtime_stopping</c> (a start while a stop is still in progress; retry once it reports stopped).
+/// </summary>
 public sealed class HostRuntimeException(string code, string message) : Exception(message)
 {
     public const string Unknown = "runtime_unknown";
     public const string NotManaged = "runtime_not_managed";
     public const string Disabled = "runtime_disabled";
+    public const string Stopping = "runtime_stopping";
 
     public string Code { get; } = code;
 }

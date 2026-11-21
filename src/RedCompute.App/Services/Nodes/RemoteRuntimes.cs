@@ -251,7 +251,7 @@ public sealed class RemoteHostRuntimes : IHostRuntimes
             return await session.CallAsync(method, parameters, deadline.Token);
         }
         catch (LinkRpcException error) when (error.Code is HostRuntimeException.Unknown or HostRuntimeException.NotManaged
-                                                 or HostRuntimeException.Disabled)
+                                                 or HostRuntimeException.Disabled or HostRuntimeException.Stopping)
         {
             throw new HostRuntimeException(error.Code, error.Message);
         }

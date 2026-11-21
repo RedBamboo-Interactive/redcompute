@@ -355,6 +355,10 @@ public sealed class RemoteExecutionHostTests : IAsyncLifetime
             (await Assert.ThrowsAsync<HostRuntimeException>(() => host.Runtimes.StartAsync("comfyui-attach"))).Code);
         Assert.Equal(HostRuntimeException.Disabled,
             (await Assert.ThrowsAsync<HostRuntimeException>(() => host.Runtimes.StartAsync("comfyui-off"))).Code);
+        // A start while the node is still stopping it (review P4-P7, item 3) is typed too, not a bare RPC failure.
+        _agent.Stopping["comfyui-1"] = true;
+        Assert.Equal(HostRuntimeException.Stopping,
+            (await Assert.ThrowsAsync<HostRuntimeException>(() => host.Runtimes.StartAsync("comfyui-1"))).Code);
         var calls = _agent.Calls.Count;
         Assert.Equal(HostRuntimeException.Unknown,
             (await Assert.ThrowsAsync<HostRuntimeException>(() => host.Runtimes.StartAsync("never-reported"))).Code);

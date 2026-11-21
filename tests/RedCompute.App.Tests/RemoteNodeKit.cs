@@ -42,6 +42,9 @@ internal sealed class RuntimeNodeHandler : LinkHandler
     /// <summary>What <c>runtime.start</c> answers (the runtime then reports on its own).</summary>
     public string StartAnswer { get; set; } = "starting";
 
+    /// <summary>Runtimes a stop is still in progress for: <c>runtime.start</c> on them answers <c>runtime_stopping</c>.</summary>
+    public ConcurrentDictionary<string, bool> Stopping { get; } = new(StringComparer.Ordinal);
+
     public static JsonObject ComfyUi(string id = "comfyui-1", string managed = "spawn", string status = "stopped", bool enabled = true,
         int port = 8188, string accelerator = "cuda:0") => new()
     {
@@ -77,6 +80,7 @@ internal sealed class RuntimeNodeHandler : LinkHandler
             {
                 var r when (string?)r["managed"] == "attach" => throw new LinkRpcException("runtime_not_managed", "Its owner runs it."),
                 var r when (bool?)r["enabled"] == false => throw new LinkRpcException("runtime_disabled", "Its owner disabled it."),
+                var r when Stopping.ContainsKey((string)r["id"]!) => throw new LinkRpcException("runtime_stopping", "It is stopping."),
                 _ => new JsonObject { ["status"] = StartAnswer },
             },
             "runtime.stop" => Find(Id()) is var stopped && (string?)stopped["managed"] == "attach"

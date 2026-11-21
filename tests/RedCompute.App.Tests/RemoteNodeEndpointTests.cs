@@ -177,6 +177,18 @@ public sealed class RemoteNodeEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_start_while_the_node_is_still_stopping_the_runtime_is_409_runtime_stopping()
+    {
+        _ownAgent.Stopping["comfyui-1"] = true;
+
+        var refused = await SendAsync("POST", "/control/start/{slug}", User(Owner), nodeId: Own);
+
+        Assert.Equal((409, "runtime_stopping"), (refused.Status, refused.Code));
+        Assert.Equal(("runtime.start", """{"id":"comfyui-1"}"""), _ownAgent.Calls.Last());
+        Assert.Equal((0, 0), (_provider.Starts, _provider.Stops));
+    }
+
+    [Fact]
     public async Task An_attach_runtime_is_runtime_not_managed_and_a_disabled_one_runtime_disabled()
     {
         // The owner disables the managed one: the enabled attach-mode one is what start means now.

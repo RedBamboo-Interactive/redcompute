@@ -229,7 +229,11 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
                 throw new HostRuntimeException(HostRuntimeException.NotManaged, $"'{id}' is run by the node's owner (attach mode): it is only reached, never started.");
             if (!entry.Registration.Enabled)
                 throw new HostRuntimeException(HostRuntimeException.Disabled, $"The node's owner disabled '{id}'.");
-            if (entry.Alive && !entry.Stopping) return Task.FromResult(View(entry));
+            // A start during a stop is refused (review P4-P7, item 3): spawning now would race the stop's reap, and the
+            // server retries once the runtime reports stopped. The flag is cleared as soon as the stopped process is gone.
+            if (entry.Stopping)
+                throw new HostRuntimeException(HostRuntimeException.Stopping, $"'{id}' is stopping; start it again once it has stopped.");
+            if (entry.Alive) return Task.FromResult(View(entry));
             Spawn(entry);
             view = View(entry);
         }
@@ -353,24 +357,30 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
     {
         Entry? entry;
         IHostProcess? process;
+        int pid;
+        long created;
         lock (_gate)
         {
             if (!_entries.TryGetValue(id, out entry) || !entry.Managed || !entry.Alive) return;
             entry.Stopping = true;
+            // What this stop stops: only that process (or, adopted, that pid and creation time) is reaped below.
             process = entry.Process;
+            pid = entry.Pid;
+            created = entry.Created;
             Kill(entry);
         }
         var wait = grace is { } g && g > TimeSpan.Zero ? (g > MaxGrace ? MaxGrace : g) : TimeSpan.FromSeconds(10);
         var deadline = DateTime.UtcNow + wait;
         while (DateTime.UtcNow < deadline)
         {
-            if (process is null ? !IdentityAlive(entry.Pid, entry.Created) : Exited(process)) break;
+            if (process is null ? !IdentityAlive(pid, created) : Exited(process)) break;
             await Task.Delay(50);
         }
         HostRuntime view;
         lock (_gate)
         {
-            if (entry.Alive && (process is null || Exited(process) || !IdentityAlive(entry.Pid, entry.Created)))
+            var same = entry.Alive && ReferenceEquals(entry.Process, process) && entry.Pid == pid && entry.Created == created;
+            if (same && (process is null ? !IdentityAlive(pid, created) : Exited(process)))
                 ReapAndForget(entry);
             if (!entry.Alive)
             {
@@ -436,12 +446,15 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         {
         }
         entry.Tree = null;
-        entry.Process?.Dispose();
+        // Disposed off the lock: Process.Dispose waits for an Exited callback in flight, and that callback (OnExited)
+        // waits for this lock. Disposing here would deadlock a stop whose poll saw the exit before the callback ran.
+        if (entry.Process is { } process) ThreadPool.QueueUserWorkItem(static p => p.Dispose(), process, preferLocal: false);
         entry.Process = null;
         entry.Pid = 0;
         entry.Created = 0;
         entry.StartedAt = null;
         entry.Adopted = false;
+        entry.Stopping = false;
         entry.Log?.Dispose();
         entry.Log = null;
         DeleteState(entry.Registration.Id);
@@ -547,15 +560,20 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         {
             var registration = entry.Registration;
             var adoptedGone = false;
+            int gonePid = 0;
+            long goneCreated = 0;
             lock (_gate)
                 if (entry.Managed && entry.Alive && entry.Process is null && !IdentityAlive(entry.Pid, entry.Created) && entry.Tree is not { LiveProcesses.Count: > 0 })
-                    adoptedGone = true;
+                    (adoptedGone, gonePid, goneCreated) = (true, entry.Pid, entry.Created);
             var healthy = (!entry.Managed || entry.Alive) && !adoptedGone && await _probe(registration, ct);
             HostRuntime? changed = null;
             lock (_gate)
             {
                 var before = (entry.Status, entry.Detail);
-                if (adoptedGone)
+                // Reaped only if it is still the adopted process seen gone: a stop and a start during the probe leave a
+                // new process, which the next probe looks at.
+                var stillGone = adoptedGone && entry.Process is null && entry.Pid == gonePid && entry.Created == goneCreated;
+                if (stillGone)
                 {
                     ReapAndForget(entry);
                     entry.Status = BackendStatus.Error;
@@ -566,7 +584,7 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
                     entry.Status = healthy ? BackendStatus.Running : BackendStatus.Stopped;
                     entry.Detail = healthy ? null : $"Nothing answers at 127.0.0.1:{registration.Port}.";
                 }
-                else if (entry.Alive && !entry.Stopping)
+                else if (entry.Alive && !entry.Stopping && !adoptedGone)
                 {
                     if (healthy)
                     {

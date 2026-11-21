@@ -51,7 +51,8 @@ internal static class RemoteNodeControl
                 status = answered.Status.ToString(),
             });
         }
-        catch (HostRuntimeException error) when (error.Code is HostRuntimeException.NotManaged or HostRuntimeException.Disabled)
+        catch (HostRuntimeException error) when (error.Code is HostRuntimeException.NotManaged or HostRuntimeException.Disabled
+                                                     or HostRuntimeException.Stopping)
         {
             return Results.Json(new { error = error.Code, message = error.Message, nodeId, runtime = runtime.Id },
                 statusCode: StatusCodes.Status409Conflict);
