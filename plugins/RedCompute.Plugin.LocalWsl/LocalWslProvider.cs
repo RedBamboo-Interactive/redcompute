@@ -12,7 +12,7 @@ namespace RedCompute.Plugin.LocalWsl;
 
 public class LocalWslProvider : IPluginProvider, IServiceProxyClient
 {
-    private const string ProcessMarker = "REDCOMPUTE_LOCALWSL_PROCESS=";
+    private const string ProcessMarker = RuntimeRecipes.LocalWslProcessMarker;
     private readonly ProviderConfig _config;
     private readonly string _capabilitySlug;
     private readonly string _providerType;
@@ -61,7 +61,14 @@ public class LocalWslProvider : IPluginProvider, IServiceProxyClient
         LaunchHostnameProcess = spec => _executionHost.Processes.Start(spec);
         _healthClient = CreateServiceClient(TimeSpan.FromSeconds(5));
         ProxyClient = CreateServiceClient(IServiceProxyClient.ProxyTimeout);
+        // Node zero's runtimes list (design 2.4): this backend, started and stopped as always.
+        if (_executionHost.Runtimes is LocalHostRuntimes runtimes)
+            _runtimeRegistration = runtimes.Register(new LocalRuntimeRegistration(
+                $"{capabilitySlug}@{config.BackendPort}", _providerType, $"{capabilitySlug} ({_providerType})", capabilitySlug,
+                config.BackendPort, Accelerator: null, () => _status, () => StatusDetail, StartAsync, StopAsync));
     }
+
+    private readonly IDisposable? _runtimeRegistration;
 
     /// <summary>The generic proxy's client, over the host's handler (<see cref="IServiceProxyClient"/>).</summary>
     public HttpClient ProxyClient { get; }
@@ -205,84 +212,26 @@ public class LocalWslProvider : IPluginProvider, IServiceProxyClient
 
     public async ValueTask DisposeAsync()
     {
+        _runtimeRegistration?.Dispose();
         await StopAsync();
         _healthClient.Dispose();
         ProxyClient.Dispose();
     }
 
-    /// <summary>The backend launch: uncontained, as local backends always ran (design section 6).</summary>
-    internal HostSpawnSpec BuildSpawnSpec()
+    /// <summary>The backend launch: the shared recipe (design 2.4) over this provider's config.</summary>
+    internal HostSpawnSpec BuildSpawnSpec() => RuntimeRecipes.LocalWsl(Recipe());
+
+    internal string BuildWslBackendCommand() => RuntimeRecipes.LocalWslBackendCommand(Recipe());
+
+    private LocalWslRecipe Recipe() => new()
     {
-        var extraArgs = BuildBackendArguments();
-
-        if (_config.WslDistro != null)
-        {
-            var command = BuildWslBackendCommand();
-            var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(command));
-            var dollar = ((char)36).ToString();
-            var lifecycleScript =
-                "set -euo pipefail; " +
-                $"command={dollar}(printf '%s' '{encoded}' | base64 -d); " +
-                $"setsid bash -lc \"{dollar}command\" & child={dollar}!; " +
-                $"start={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}child/stat\"); " +
-                $"printf '{ProcessMarker}%s:%s\\n' \"{dollar}child\" \"{dollar}start\"; " +
-                "cleanup() { " +
-                $"current={dollar}(awk '{{print {dollar}22}}' \"/proc/{dollar}child/stat\" 2>/dev/null || true); " +
-                $"[ \"{dollar}current\" = \"{dollar}start\" ] && kill -TERM -- \"-{dollar}child\" 2>/dev/null || true; }}; " +
-                $"trap cleanup TERM INT EXIT; wait \"{dollar}child\"";
-            // wsl.exe reparses the command tail through the distribution shell. Passing a
-            // lifecycle script containing '$' directly therefore expands its variables before
-            // bash -lc receives it. Base64-wrap the whole script so that the reparse-safe outer
-            // command contains no shell variables; the inner bash owns every expansion.
-            var lifecycleEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(lifecycleScript));
-            var wrapper = $"printf '%s' '{lifecycleEncoded}' | base64 -d | bash";
-
-            return new HostSpawnSpec
-            {
-                FileName = "wsl.exe",
-                ArgumentList = ["-d", _config.WslDistro, "--", "bash", "-lc", wrapper],
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                StandardOutput = StdioMode.Pipe,
-                StandardError = StdioMode.Pipe,
-                Containment = ContainmentMode.None,
-                OwnerLabel = "localwsl",
-            };
-        }
-
-        return new HostSpawnSpec
-        {
-            FileName = "cmd.exe",
-            RawArguments = $"/c cd /d \"{_config.ServerPath}\" && python3 server.py{extraArgs}",
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            StandardOutput = StdioMode.Pipe,
-            StandardError = StdioMode.Pipe,
-            Containment = ContainmentMode.None,
-            OwnerLabel = "localwsl",
-        };
-    }
-
-    internal string BuildWslBackendCommand()
-    {
-        var venvActivate = _config.VenvPath != null
-            ? $"if [ -f {_config.VenvPath}/bin/activate ]; then source {_config.VenvPath}/bin/activate; fi; "
-            : "";
-        var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
-        return $"{venvActivate}cd '{ShellLiteral(serverPath)}' && exec python3 server.py{BuildBackendArguments()}";
-    }
-
-    private string BuildBackendArguments()
-    {
-        var extraArgs = "";
-        if (!string.IsNullOrEmpty(_config.Model))
-            extraArgs += $" --model {_config.Model}";
-        if (!string.IsNullOrEmpty(_config.ModelRevision))
-            extraArgs += $" --revision {_config.ModelRevision}";
-        if (_config.BackendPort > 0)
-            extraArgs += $" --port {_config.BackendPort}";
-        return extraArgs;
-    }
+        WslDistro = _config.WslDistro,
+        ServerPath = _config.ServerPath,
+        VenvPath = _config.VenvPath,
+        Model = _config.Model,
+        ModelRevision = _config.ModelRevision,
+        BackendPort = _config.BackendPort,
+    };
 
     private async Task StopOwnedProcessAsync(CancellationToken ct)
     {
@@ -365,9 +314,6 @@ public class LocalWslProvider : IPluginProvider, IServiceProxyClient
         startTime = parts[1];
         return true;
     }
-
-    private static string ShellLiteral(string value)
-        => value.Replace("'", "'\"'\"'", StringComparison.Ordinal);
 
     private async Task<bool> CheckHealthAsync()
     {

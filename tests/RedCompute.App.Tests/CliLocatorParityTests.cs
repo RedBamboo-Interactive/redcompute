@@ -126,6 +126,7 @@ public sealed class CliLocatorParityTests : IDisposable
         public IHostPlatform Platform { get; } = new ControlledPlatform(new LocalExecutionHost("node_parity").Platform, appData, path);
         public IHostHardware Hardware => _local.Hardware;
         public IHostQueries Queries => _local.Queries;
+        public IHostRuntimes Runtimes => _local.Runtimes;
     }
 
     private sealed class ControlledPlatform(IHostPlatform inner, string appData, string path) : IHostPlatform

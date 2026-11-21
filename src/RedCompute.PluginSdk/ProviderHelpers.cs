@@ -35,15 +35,7 @@ public static class ProviderHelpers
         return defaultValue;
     }
 
+    /// <summary><see cref="RedCompute.PluginSdk.Hosting.RuntimeRecipes.WslPath"/>, where the launch recipes need it too.</summary>
     public static string ConvertToWslPath(string windowsPath)
-    {
-        if (string.IsNullOrEmpty(windowsPath)) return windowsPath;
-        if (windowsPath.Length >= 2 && windowsPath[1] == ':')
-        {
-            var drive = char.ToLower(windowsPath[0]);
-            var rest = windowsPath[2..].Replace('\\', '/');
-            return $"/mnt/{drive}{rest}";
-        }
-        return windowsPath.Replace('\\', '/');
-    }
+        => RedCompute.PluginSdk.Hosting.RuntimeRecipes.WslPath(windowsPath);
 }

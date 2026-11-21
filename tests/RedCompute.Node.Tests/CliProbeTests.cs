@@ -91,6 +91,7 @@ public sealed class CliProbeTests : IDisposable
         public IHostPlatform Platform { get; } = new IsolatedPlatform(new LocalExecutionHost("node_cli_test").Platform, root, path);
         public IHostHardware Hardware => _local.Hardware;
         public IHostQueries Queries => _local.Queries;
+        public IHostRuntimes Runtimes => _local.Runtimes;
     }
 
     private sealed class IsolatedPlatform(IHostPlatform inner, string root, string path) : IHostPlatform

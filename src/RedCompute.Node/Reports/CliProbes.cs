@@ -249,6 +249,7 @@ internal sealed class SearchPathHost(IExecutionHost inner, string path) : IExecu
     public IHostPlatform Platform { get; } = new SearchPathPlatform(inner.Platform, path);
     public IHostHardware Hardware => inner.Hardware;
     public IHostQueries Queries => inner.Queries;
+    public IHostRuntimes Runtimes => inner.Runtimes;
 
     private sealed class SearchPathPlatform(IHostPlatform platform, string path) : IHostPlatform
     {

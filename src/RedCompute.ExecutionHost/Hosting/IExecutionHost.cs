@@ -34,6 +34,9 @@ public interface IExecutionHost
     IHostPlatform Platform { get; }
     IHostHardware Hardware { get; }
     IHostQueries Queries { get; }
+
+    /// <summary>The runtimes (ComfyUI, speech servers) this host serves (Phase 4, design 2.4).</summary>
+    IHostRuntimes Runtimes { get; }
 }
 
 public interface IHostPathRules

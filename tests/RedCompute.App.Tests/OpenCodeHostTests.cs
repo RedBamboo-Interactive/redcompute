@@ -291,6 +291,7 @@ public sealed class OpenCodeHostTests : IDisposable
         public IHostHardware Hardware => _local.Hardware;
         public RecordingQueries Queries { get; }
         IHostQueries IExecutionHost.Queries => Queries;
+        public IHostRuntimes Runtimes => _local.Runtimes;
     }
 
     private sealed record QueryCall(HostPath Database, string Sql, IReadOnlyDictionary<string, object?>? Parameters,

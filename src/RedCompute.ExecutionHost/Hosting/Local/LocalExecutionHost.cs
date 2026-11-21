@@ -36,6 +36,7 @@ public sealed class LocalExecutionHost : IExecutionHost
         Platform = new LocalPlatform();
         Hardware = new LocalHardware();
         Queries = new LocalQueries();
+        Runtimes = new LocalHostRuntimes();
     }
 
     public string NodeId { get; }
@@ -48,6 +49,9 @@ public sealed class LocalExecutionHost : IExecutionHost
     public IHostPlatform Platform { get; }
     public IHostHardware Hardware { get; }
     public IHostQueries Queries { get; }
+
+    /// <summary>The backends node zero's providers launch, registered by them (<see cref="LocalHostRuntimes"/>).</summary>
+    public IHostRuntimes Runtimes { get; }
 
     /// <summary>
     /// The single point where this host hands a start info to the OS: (start info, containment,

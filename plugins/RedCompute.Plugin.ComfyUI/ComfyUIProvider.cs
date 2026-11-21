@@ -32,6 +32,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     private readonly HttpClient _healthClient;
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly IDisposable? _acceleratorRegistration;
+    private readonly IDisposable? _runtimeRegistration;
     private readonly string _acceleratorId;
     private readonly IExecutionHost _executionHost;
     private readonly string _baseUrl;
@@ -107,6 +108,11 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         _pollTimeoutSeconds = double.TryParse(ProviderHelpers.GetExtra(config, "_pollTimeoutSeconds", "1800"), out var t) ? t : 1800;
         _acceleratorId = ProviderHelpers.GetExtra(config, "AcceleratorId", "cuda:0");
         _acceleratorAdmission = acceleratorAdmission;
+        // Node zero's runtimes list (design 2.4): this provider's ComfyUI, started and stopped as always.
+        if (_executionHost.Runtimes is LocalHostRuntimes runtimes)
+            _runtimeRegistration = runtimes.Register(new LocalRuntimeRegistration(
+                $"comfyui@{_port}", "comfyui", "ComfyUI", capabilitySlug, _port, _acceleratorId,
+                () => _status, () => StatusDetail, StartAsync, StopAsync));
         _acceleratorRegistration = acceleratorAdmission?.RegisterPreemptibleResident(
             new AcceleratorResidentRegistration(
                 _acceleratorId,
@@ -385,6 +391,7 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
     public async ValueTask DisposeAsync()
     {
         _acceleratorRegistration?.Dispose();
+        _runtimeRegistration?.Dispose();
         await StopAsync();
         _http.Dispose();
         _healthClient.Dispose();
@@ -392,120 +399,31 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
 
     // --- Private methods ---
 
-    /// <summary>The server launch: uncontained, as ComfyUI always ran (design section 6).</summary>
-    internal HostSpawnSpec BuildSpawnSpec()
+    /// <summary>The server launch: the shared recipe (design 2.4) over this provider's config.</summary>
+    internal HostSpawnSpec BuildSpawnSpec() => RuntimeRecipes.ComfyUi(Recipe(), _executionHost);
+
+    /// <summary>What the recipe is built from: config.json's entry, read exactly as before the move.</summary>
+    private ComfyUiRecipe Recipe() => new()
     {
-        var arguments = BuildComfyArguments(_config.WslDistro != null);
-        var serverArgs = ProviderHelpers.GetExtra(_config, "ServerArgs", "");
-
-        if (_config.WslDistro != null)
-        {
-            var serverPath = ProviderHelpers.ConvertToWslPath(_config.ServerPath ?? ".");
-            var command = new StringBuilder();
-            if (!string.IsNullOrWhiteSpace(_config.VenvPath))
-            {
-                var activatePath = CombinePortablePath(
-                    ProviderHelpers.ConvertToWslPath(_config.VenvPath), "bin/activate");
-                command.Append("source ").Append(QuoteBashArgument(activatePath)).Append(" && ");
-            }
-            command.Append("cd ").Append(QuoteBashArgument(serverPath)).Append(" && python ");
-            command.AppendJoin(' ', arguments.Select(QuoteBashArgument));
-            if (!string.IsNullOrWhiteSpace(serverArgs))
-                command.Append(' ').Append(serverArgs.Trim());
-
-            return new HostSpawnSpec
-            {
-                FileName = "wsl.exe",
-                ArgumentList = ["-d", _config.WslDistro, "bash", "-lc", command.ToString()],
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                StandardOutput = StdioMode.Pipe,
-                StandardError = StdioMode.Pipe,
-                Containment = ContainmentMode.None,
-                OwnerLabel = "comfyui",
-            };
-        }
-
-        var pythonExe = ResolveNativePythonExecutable(_config, _executionHost);
-
-        return new HostSpawnSpec
-        {
-            FileName = pythonExe,
-            RawArguments = string.Join(' ', arguments.Select(QuoteWindowsArgument))
-                + (string.IsNullOrWhiteSpace(serverArgs) ? "" : $" {serverArgs.Trim()}"),
-            WorkingDirectory = _config.ServerPath is { } workingDirectory ? _executionHost.Path(workingDirectory) : null,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            StandardOutput = StdioMode.Pipe,
-            StandardError = StdioMode.Pipe,
-            Containment = ContainmentMode.None,
-            OwnerLabel = "comfyui",
-        };
-    }
+        Host = _host,
+        Port = _port,
+        WslDistro = _config.WslDistro,
+        ServerPath = _config.ServerPath,
+        VenvPath = _config.VenvPath,
+        ServerArgs = ProviderHelpers.GetExtra(_config, "ServerArgs", ""),
+        ModelsDirectory = ProviderHelpers.GetExtra(_config, "ModelsDirectory", ""),
+        OutputDirectory = ProviderHelpers.GetExtra(_config, "OutputDirectory", ""),
+        InputDirectory = ProviderHelpers.GetExtra(_config, "InputDirectory", ""),
+        TempDirectory = ProviderHelpers.GetExtra(_config, "TempDirectory", ""),
+        UserDirectory = ProviderHelpers.GetExtra(_config, "UserDirectory", ""),
+        DatabaseUrl = ProviderHelpers.GetExtra(_config, "DatabaseUrl", ""),
+    };
 
     internal static string ResolveNativePythonExecutable(ProviderConfig config)
         => ResolveNativePythonExecutable(config, LocalExecutionHost.Shared);
 
     internal static string ResolveNativePythonExecutable(ProviderConfig config, IExecutionHost host)
-    {
-        if (!string.IsNullOrWhiteSpace(config.VenvPath))
-            return host.PathRules.Combine(config.VenvPath, "Scripts", "python.exe");
-
-        if (!string.IsNullOrWhiteSpace(config.ServerPath))
-        {
-            var portablePython = host.PathRules.GetFullPath(host.PathRules.Combine(
-                config.ServerPath, "..", "python_embeded", "python.exe"));
-            if (host.Files.FileExists(host.Path(portablePython))) return portablePython;
-        }
-
-        return "python";
-    }
-
-    private List<string> BuildComfyArguments(bool forWsl)
-    {
-        var arguments = new List<string>
-        {
-            "main.py", "--listen", _host, "--port", _port.ToString(CultureInfo.InvariantCulture)
-        };
-
-        AddPathArgument(arguments, "ModelsDirectory", "--models-directory", forWsl);
-        AddPathArgument(arguments, "OutputDirectory", "--output-directory", forWsl);
-        AddPathArgument(arguments, "InputDirectory", "--input-directory", forWsl);
-        AddPathArgument(arguments, "TempDirectory", "--temp-directory", forWsl);
-        AddPathArgument(arguments, "UserDirectory", "--user-directory", forWsl);
-
-        var databaseUrl = ProviderHelpers.GetExtra(_config, "DatabaseUrl", "").Trim();
-        if (databaseUrl.Length == 0)
-        {
-            var userDirectory = ProviderHelpers.GetExtra(_config, "UserDirectory", "").Trim();
-            if (userDirectory.Length > 0)
-            {
-                var databasePath = CombinePortablePath(userDirectory, "comfyui.db");
-                if (forWsl) databasePath = ProviderHelpers.ConvertToWslPath(databasePath);
-                databaseUrl = "sqlite:///" + databasePath.Replace('\\', '/');
-            }
-        }
-        else if (forWsl)
-        {
-            databaseUrl = ConvertDatabaseUrlToWsl(databaseUrl);
-        }
-
-        if (databaseUrl.Length > 0)
-        {
-            arguments.Add("--database-url");
-            arguments.Add(databaseUrl);
-        }
-
-        return arguments;
-    }
-
-    private void AddPathArgument(List<string> arguments, string key, string option, bool forWsl)
-    {
-        var value = ProviderHelpers.GetExtra(_config, key, "").Trim();
-        if (value.Length == 0) return;
-        arguments.Add(option);
-        arguments.Add(forWsl ? ProviderHelpers.ConvertToWslPath(value) : value);
-    }
+        => RuntimeRecipes.ComfyUiNativePython(config.VenvPath, config.ServerPath, host);
 
     private void EnsureConfiguredDirectories()
     {
@@ -520,70 +438,6 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
             var path = ProviderHelpers.GetExtra(_config, key, "").Trim();
             if (path.Length > 0) _executionHost.Files.CreateDirectory(_executionHost.Path(path));
         }
-    }
-
-    private static string CombinePortablePath(string directory, string child)
-    {
-        var separator = directory.Contains('\\') || (directory.Length >= 2 && directory[1] == ':')
-            ? '\\'
-            : '/';
-        return directory.TrimEnd('\\', '/') + separator + child;
-    }
-
-    private static string ConvertDatabaseUrlToWsl(string databaseUrl)
-    {
-        const string sqlitePrefix = "sqlite:///";
-        if (!databaseUrl.StartsWith(sqlitePrefix, StringComparison.OrdinalIgnoreCase))
-            return databaseUrl;
-
-        var path = databaseUrl[sqlitePrefix.Length..];
-        return path.Length >= 2 && path[1] == ':'
-            ? sqlitePrefix + ProviderHelpers.ConvertToWslPath(path)
-            : databaseUrl;
-    }
-
-    private static string QuoteBashArgument(string value)
-    {
-        if (value.Length > 0 && value.All(c => char.IsLetterOrDigit(c) || c is '_' or '-' or '.' or '/' or ':'))
-            return value;
-        if (value == "~") return "\"$HOME\"";
-        if (value.StartsWith("~/", StringComparison.Ordinal))
-            return "\"$HOME\"/" + QuoteBashLiteral(value[2..]);
-        if (value.StartsWith("sqlite:///~/", StringComparison.OrdinalIgnoreCase))
-            return QuoteBashLiteral("sqlite:///") + "\"$HOME\"/" + QuoteBashLiteral(value[12..]);
-        return QuoteBashLiteral(value);
-    }
-
-    private static string QuoteBashLiteral(string value)
-        => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
-
-    private static string QuoteWindowsArgument(string value)
-    {
-        if (value.Length > 0 && value.All(c => !char.IsWhiteSpace(c) && c != '"')) return value;
-
-        var quoted = new StringBuilder("\"");
-        var backslashes = 0;
-        foreach (var c in value)
-        {
-            if (c == '\\')
-            {
-                backslashes++;
-                continue;
-            }
-
-            if (c == '"')
-            {
-                quoted.Append('\\', backslashes * 2 + 1).Append('"');
-                backslashes = 0;
-                continue;
-            }
-
-            quoted.Append('\\', backslashes).Append(c);
-            backslashes = 0;
-        }
-
-        quoted.Append('\\', backslashes * 2).Append('"');
-        return quoted.ToString();
     }
 
     private async Task<bool> CheckHealthAsync()

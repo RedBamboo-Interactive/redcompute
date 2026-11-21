@@ -100,6 +100,7 @@ public sealed class ProcessCliCommandRunnerTests : IDisposable
         public IHostNetwork Network => throw new NotSupportedException();
         public IHostHardware Hardware => throw new NotSupportedException();
         public IHostQueries Queries => throw new NotSupportedException();
+        public IHostRuntimes Runtimes => throw new NotSupportedException();
     }
 
     private sealed class LinuxPlatform : IHostPlatform

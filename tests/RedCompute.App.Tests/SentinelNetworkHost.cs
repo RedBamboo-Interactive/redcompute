@@ -37,6 +37,7 @@ internal sealed class SentinelNetworkHost : IExecutionHost
     public IHostPlatform Platform { get; }
     public IHostHardware Hardware => _local.Hardware;
     public IHostQueries Queries => _local.Queries;
+    public IHostRuntimes Runtimes => _local.Runtimes;
 
     internal sealed class SentinelNetwork(IHostNetwork local) : IHostNetwork
     {
