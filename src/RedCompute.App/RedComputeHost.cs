@@ -197,20 +197,12 @@ public static class RedComputeHost
     /// <summary>
     /// A remote node's provider (Phase 4 P7, design 3.1): built exactly as node zero's, by type through
     /// <see cref="ProviderDiscovery"/>, with that node's execution host and accelerator admission in place of node
-    /// zero's, so nothing in it can reach this machine's processes, files or GPU gates.
+    /// zero's (<see cref="RemoteProviderCreation"/>, which throws rather than build one over this machine's host).
     /// </summary>
     private static IPluginProvider? CreateRemoteProvider(string providerType, ProviderConfig config, string capabilitySlug,
         IExecutionHost host, IAcceleratorAdmissionCoordinator? admission)
-    {
-        var services = _providerServices
-            .Where(service => service is not IExecutionHost and not IAcceleratorAdmissionCoordinator)
-            .Prepend(admission)
-            .Prepend(host)
-            // The server's own network, for what a job names on the server (input assets): fetched here, never by the node.
-            .Append(new ServerNetwork(Nodes.LocalHost.Network))
-            .ToArray();
-        return ProviderDiscovery.Create(providerType, config, capabilitySlug, message => Log(message), services);
-    }
+        => RemoteProviderCreation.Create(ProviderDiscovery, _providerServices, Nodes.LocalHost.Network, providerType, config,
+            capabilitySlug, host, admission, message => Log(message));
 
     private static void InitializeCapabilities()
     {

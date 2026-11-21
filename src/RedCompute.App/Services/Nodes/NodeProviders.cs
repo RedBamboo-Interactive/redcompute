@@ -117,10 +117,10 @@ public sealed class NodeProviderManager : IAsyncDisposable
         entry.Config.Providers.TryGetValue(providerName, out var nodeZeroConfig);
         var config = RemoteProviderConfig.For(type, nodeZeroConfig, runtime);
         var host = _hostOf(nodeId).ForRuntime(runtime.Id);
-        var admission = _admission is null ? null : new NodeScopedAcceleratorAdmission(_admission, nodeId);
         IPluginProvider? inner;
         try
         {
+            var admission = _admission is null ? null : new NodeScopedAcceleratorAdmission(_admission, nodeId);
             inner = _factory(type, config, slug, host, admission);
         }
         catch (Exception error)
@@ -426,14 +426,42 @@ public static class RemoteProviderConfig
 /// A remote node's view of the accelerator admission (design 3.2): every workload and resident it registers is on that
 /// node (<see cref="AcceleratorWorkload.NodeId"/> from the host's node), so a remote GPU has its own gate and resident
 /// set and never meets node zero's <c>cuda:0</c>.
+/// By construction (review P4-P7, item 11): the node id is a remote node's (not blank, not the <c>local</c> alias, no
+/// <c>/</c>), and every accelerator id is rewritten to <c>{node}/{bare}</c>. An id that already names a node (which the
+/// coordinator would otherwise take as is, <c>node_zero/cuda:0</c> included) keeps only its bare part, so nothing a
+/// remote provider passes can reach another node's gate.
 /// </summary>
-internal sealed class NodeScopedAcceleratorAdmission(IAcceleratorAdmissionCoordinator inner, string nodeId) : IAcceleratorAdmissionCoordinator
+internal sealed class NodeScopedAcceleratorAdmission : IAcceleratorAdmissionCoordinator
 {
-    public string NodeId { get; } = nodeId;
+    private readonly IAcceleratorAdmissionCoordinator _inner;
+
+    public NodeScopedAcceleratorAdmission(IAcceleratorAdmissionCoordinator inner, string nodeId)
+    {
+        ArgumentNullException.ThrowIfNull(inner);
+        if (inner is NodeScopedAcceleratorAdmission)
+            throw new ArgumentException("The admission is already scoped to a node", nameof(inner));
+        if (string.IsNullOrWhiteSpace(nodeId) || nodeId.Contains('/') || nodeId.Trim() != nodeId
+            || string.Equals(nodeId, INodeRegistry.LocalAlias, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"'{nodeId}' is not a remote node id", nameof(nodeId));
+        _inner = inner;
+        NodeId = nodeId;
+    }
+
+    public string NodeId { get; }
+
+    /// <summary><c>{node}/{bare}</c>: the bare id (after any node prefix) on this node.</summary>
+    internal string Scoped(string acceleratorId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(acceleratorId);
+        var bare = acceleratorId[(acceleratorId.LastIndexOf('/') + 1)..];
+        if (string.IsNullOrWhiteSpace(bare))
+            throw new ArgumentException($"'{acceleratorId}' names no accelerator", nameof(acceleratorId));
+        return $"{NodeId}/{bare}";
+    }
 
     public IDisposable RegisterPreemptibleResident(AcceleratorResidentRegistration registration)
-        => inner.RegisterPreemptibleResident(registration with { NodeId = NodeId });
+        => _inner.RegisterPreemptibleResident(registration with { AcceleratorId = Scoped(registration.AcceleratorId), NodeId = NodeId });
 
     public ValueTask<IAsyncDisposable> AcquireAsync(AcceleratorWorkload workload, CancellationToken cancellationToken = default)
-        => inner.AcquireAsync(workload with { NodeId = NodeId }, cancellationToken);
+        => _inner.AcquireAsync(workload with { AcceleratorId = Scoped(workload.AcceleratorId), NodeId = NodeId }, cancellationToken);
 }

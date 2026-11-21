@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
+using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.App.Services;
 
@@ -124,7 +125,28 @@ public class ProviderDiscovery
         }
     }
 
-    private static object? CreateInstance(Type type, ProviderConfig config, string capabilitySlug, Action<string> log, object?[]? extraServices = null)
+    /// <summary>
+    /// A provider for a remote node (review P4-P7, item 11): built, as <see cref="Create"/> builds node zero's, by type
+    /// through its constructor, but only by a constructor that receives <paramref name="host"/> itself in every
+    /// execution-host parameter. A provider with no such constructor would fall back to this machine's host
+    /// (<c>host ?? LocalExecutionHost.Shared</c>), so it is never built: this throws instead of returning null or a
+    /// provider over node zero.
+    /// </summary>
+    public IPluginProvider CreateOnHost(string providerType, ProviderConfig config, string capabilitySlug, Action<string> log,
+        object?[] extraServices, IExecutionHost host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        if (!_providerTypes.TryGetValue(providerType, out var type))
+            throw new InvalidOperationException($"Unknown provider type: '{providerType}'");
+        return CreateInstance(type, config, capabilitySlug, log, extraServices, host) as IPluginProvider
+               ?? throw new InvalidOperationException($"'{providerType}' is not a provider");
+    }
+
+    /// <summary>Registers a provider type by name, as <see cref="ScanAssemblies"/> would (tests).</summary>
+    internal void Register(string providerType, Type type) => _providerTypes[providerType] = type;
+
+    private static object? CreateInstance(Type type, ProviderConfig config, string capabilitySlug, Action<string> log,
+        object?[]? extraServices = null, IExecutionHost? requiredHost = null)
     {
         var constructors = type.GetConstructors()
             .OrderByDescending(c => c.GetParameters().Length)
@@ -164,13 +186,33 @@ public class ProviderDiscovery
                 if (!canResolve) break;
             }
 
-            if (canResolve)
-                return ctor.Invoke(args);
+            if (!canResolve) continue;
+            if (requiredHost is not null && !ReceivesOnly(parameters, args, requiredHost)) continue;
+            return ctor.Invoke(args);
         }
 
+        if (requiredHost is not null)
+            throw new InvalidOperationException(
+                $"{type.FullName} has no constructor that takes the node's execution host, so it cannot run on a remote node");
         throw new InvalidOperationException(
             $"No suitable constructor found for {type.FullName}. " +
             $"Expected (ProviderConfig config, string capabilitySlug, Action<string> log)");
+    }
+
+    /// <summary>
+    /// True when the constructor has at least one execution-host parameter and every one of them receives
+    /// <paramref name="host"/> itself (never a default null, never another host).
+    /// </summary>
+    private static bool ReceivesOnly(ParameterInfo[] parameters, object?[] args, IExecutionHost host)
+    {
+        var any = false;
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            if (!typeof(IExecutionHost).IsAssignableFrom(parameters[i].ParameterType)) continue;
+            if (!ReferenceEquals(args[i], host)) return false;
+            any = true;
+        }
+        return any;
     }
 
     public IReadOnlyCollection<string> AvailableTypes => _providerTypes.Keys;
