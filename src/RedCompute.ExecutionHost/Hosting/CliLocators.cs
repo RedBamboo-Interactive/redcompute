@@ -8,20 +8,41 @@ namespace RedCompute.PluginSdk.Hosting;
 /// </summary>
 public static class CliLocators
 {
-    /// <summary>The Claude Code CLI: the configured path, else the managed install, the SDK, Claude Desktop, PATH.</summary>
+    /// <summary>
+    /// The Claude Code CLI: the configured path, else the managed install, the SDK, Claude Desktop,
+    /// Anthropic's native per-user install (~/.local/bin), PATH.
+    /// </summary>
     public static string? Claude(IExecutionHost host, string? configuredPath)
         => Claude(
             host,
             configuredPath,
             host.Platform.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            host.Platform.GetEnvironmentVariable("PATH"));
+            host.Platform.GetEnvironmentVariable("PATH"),
+            host.Platform.GetFolderPath(Environment.SpecialFolder.UserProfile));
 
-    /// <summary><see cref="Claude(IExecutionHost, string?)"/> with the application-data folder and PATH given.</summary>
+    /// <summary>
+    /// <see cref="Claude(IExecutionHost, string?)"/> with the application-data folder and PATH given,
+    /// without the native per-user install (the search order the Claude Code plugin had).
+    /// </summary>
     public static string? Claude(
         IExecutionHost host,
         string? configuredPath,
         string applicationData,
         string? pathEnvironment)
+        => Claude(host, configuredPath, applicationData, pathEnvironment, userProfile: null);
+
+    /// <summary>
+    /// <see cref="Claude(IExecutionHost, string?)"/> with every folder given. <paramref name="userProfile"/>
+    /// is the home folder whose <c>.local/bin</c> Anthropic's native installer (install.sh, install.ps1)
+    /// writes to; that folder is often not on the PATH RedCompute inherited (Windows adds nothing, and a
+    /// Linux login adds ~/.local/bin only if it existed when the session started). Null skips it.
+    /// </summary>
+    public static string? Claude(
+        IExecutionHost host,
+        string? configuredPath,
+        string applicationData,
+        string? pathEnvironment,
+        string? userProfile)
     {
         bool FileExists(string path) => host.Files.FileExists(host.Path(path));
 
@@ -62,6 +83,15 @@ public static class CliLocators
                 .FirstOrDefault();
             if (desktopExe != null)
                 return desktopExe;
+        }
+
+        // Anthropic's native installer puts the CLI in ~/.local/bin, for this user only.
+        if (!string.IsNullOrWhiteSpace(userProfile))
+        {
+            var nativeExe = host.PathRules.Combine(userProfile, ".local", "bin",
+                host.Platform.IsWindows ? "claude.exe" : "claude");
+            if (FileExists(nativeExe))
+                return nativeExe;
         }
 
         // Fallback: search PATH for claude.cmd / claude.exe

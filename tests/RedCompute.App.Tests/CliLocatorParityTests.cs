@@ -136,8 +136,14 @@ public sealed class CliLocatorParityTests : IDisposable
         public bool IsLinux => inner.IsLinux;
         public bool CanLaunchLocalBackends => inner.CanLaunchLocalBackends;
         public string? GetEnvironmentVariable(string name) => name == "PATH" ? path : inner.GetEnvironmentVariable(name);
-        public string GetFolderPath(Environment.SpecialFolder folder)
-            => folder == Environment.SpecialFolder.ApplicationData ? appData : inner.GetFolderPath(folder);
+        // The user profile is an empty folder beside appdata, so this machine's own ~/.local/bin
+        // never takes part in the comparison with the plugins' old search order.
+        public string GetFolderPath(Environment.SpecialFolder folder) => folder switch
+        {
+            Environment.SpecialFolder.ApplicationData => appData,
+            Environment.SpecialFolder.UserProfile => System.IO.Path.Combine(System.IO.Path.GetDirectoryName(appData)!, "home"),
+            _ => inner.GetFolderPath(folder),
+        };
         public string ComputeDataRoot => inner.ComputeDataRoot;
     }
 
