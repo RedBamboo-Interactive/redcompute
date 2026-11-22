@@ -172,7 +172,9 @@ public sealed class LinkSession : IAsyncDisposable
         else if (error is TimeoutException) (code, reason) = (LinkCloseCodes.Timeout, "missed heartbeats");
         else if (ct.IsCancellationRequested || _life.IsCancellationRequested) (code, reason) = (LinkCloseCodes.GoingAway, "stopping");
         else (code, reason) = (LinkCloseCodes.Abnormal, error?.Message);
-        if (!byPeer) await transport.CloseAsync(code, reason, CancellationToken.None);
+        // Our own close, or the answer to the peer's (the WebSocket close handshake), so that neither side is left
+        // waiting for the other's close frame.
+        await transport.CloseAsync(code, reason, CancellationToken.None);
 
         var result = new LinkDisconnect(code, reason, byPeer, _options.Time.GetElapsedTime(started), error);
         lock (_gate)

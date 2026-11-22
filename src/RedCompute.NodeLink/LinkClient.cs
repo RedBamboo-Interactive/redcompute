@@ -257,14 +257,15 @@ public sealed class LinkClient : IAsyncDisposable
             var ended = await pump;
             _backoff.OnLinkEnded(ended.UpFor);
             SetStatus(LinkClientStatus.Offline, $"closed {ended.Code}{(ended.Reason is null ? "" : ": " + ended.Reason)}");
-            // A 4403 counts as the server's own word only with the in-band verdict that came before it.
-            var action = DialOutcomes.Classify(null, null, ended.Code);
-            if (action == DialAction.Stop && session.PeerVerdict is { } verdict)
+            // The in-band verdict is the server's own word (sealed when the link is encrypted), whatever close follows
+            // it: a close code is not authenticated, and a relay reports a dropped server as 1012 (C8). A 4403
+            // without the verdict before it stays a bare close code.
+            if (session.PeerVerdict is { } verdict)
             {
                 StatusReason = verdict;
-                return (action, ended.Code, null);
+                return (DialAction.Stop, ended.Code, null);
             }
-            return (Authenticate(action, authenticated: false), ended.Code, null);
+            return (Authenticate(DialOutcomes.Classify(null, null, ended.Code), authenticated: false), ended.Code, null);
         }
         catch (LinkDialException error)
         {
