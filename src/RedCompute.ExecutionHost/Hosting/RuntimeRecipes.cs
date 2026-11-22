@@ -117,13 +117,16 @@ public static class RuntimeRecipes
     }
 
     /// <summary>
-    /// The Python a native ComfyUI runs on: the venv's, else a portable install's
-    /// <c>python_embeded</c> beside the server folder, else <c>python</c> on PATH.
+    /// The Python a native ComfyUI runs on: the venv's (<c>Scripts\python.exe</c> on Windows,
+    /// <c>bin/python</c> on Linux and macOS, as <c>python -m venv</c> lays them out), else a portable
+    /// install's <c>python_embeded</c> beside the server folder, else <c>python</c> on PATH.
     /// </summary>
     public static string ComfyUiNativePython(string? venvPath, string? serverPath, IExecutionHost host)
     {
         if (!string.IsNullOrWhiteSpace(venvPath))
-            return host.PathRules.Combine(venvPath, "Scripts", "python.exe");
+            return host.Platform.IsWindows
+                ? host.PathRules.Combine(venvPath, "Scripts", "python.exe")
+                : host.PathRules.Combine(venvPath, "bin", "python");
 
         if (!string.IsNullOrWhiteSpace(serverPath))
         {
