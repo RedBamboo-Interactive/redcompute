@@ -145,7 +145,9 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                         var (passed, tested) = await agent.Runtimes.TestAsync(id, TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 900)), ct);
                         return new JsonObject { ["ok"] = true, ["passed"] = passed, ["runtime"] = RuntimeManager.Json(tested) };
                     }
-                    var runtime = verb == "runtime-start" ? await agent.Runtimes.StartAsync(id, ct) : await agent.Runtimes.StopAsync(id, null, ct);
+                    var runtime = verb == "runtime-start"
+                        ? await agent.Runtimes.StartAsync(id, RuntimeRequester.Owner, ct)
+                        : await agent.Runtimes.StopAsync(id, RuntimeRequester.Owner, null, ct);
                     return new JsonObject { ["ok"] = true, ["runtime"] = RuntimeManager.Json(runtime) };
                 }
                 catch (HostRuntimeException error)

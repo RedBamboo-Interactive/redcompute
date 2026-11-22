@@ -33,13 +33,13 @@ public static class RuntimeRpc
                 case Start:
                 {
                     var id = Members(parameters, required: ["id"], optional: []).Id;
-                    var runtime = await runtimes.StartAsync(id, ct);
+                    var runtime = await runtimes.StartAsync(id, RuntimeRequester.Server, ct);
                     return new JsonObject { ["status"] = runtime.Status.ToString().ToLowerInvariant() };
                 }
                 case Stop:
                 {
                     var read = Members(parameters, required: ["id"], optional: ["graceSeconds"]);
-                    var runtime = await runtimes.StopAsync(read.Id, read.Grace, ct);
+                    var runtime = await runtimes.StopAsync(read.Id, RuntimeRequester.Server, read.Grace, ct);
                     return new JsonObject { ["status"] = runtime.Status.ToString().ToLowerInvariant() };
                 }
                 case Status:

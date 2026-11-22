@@ -7,6 +7,16 @@ using RedCompute.PluginSdk.Hosting;
 namespace RedCompute.Node.Runtimes;
 
 /// <summary>
+/// Who asked for a runtime's start or stop, as its audit entry and log line say: the node's owner (<c>leaf-node runtime
+/// start|stop</c>, over the control IPC) or the server (<c>runtime.start|stop</c> over the link).
+/// </summary>
+public enum RuntimeRequester
+{
+    Owner,
+    Server,
+}
+
+/// <summary>
 /// The runtimes on this node (Phase 4 design 2.4): the owner's registrations, and what the agent started from them.
 /// It is the node's <see cref="IHostRuntimes"/>, which the server reaches over <c>runtime.v1</c>.
 /// <list type="bullet">
@@ -217,7 +227,18 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         lock (_gate) return _entries.TryGetValue(id, out var entry) ? entry.Registration : null;
     }
 
-    public Task<HostRuntime> StartAsync(string id, CancellationToken ct = default)
+    /// <summary>The reason a start or stop by <paramref name="by"/> is audited and logged with.</summary>
+    public static string Reason(RuntimeRequester by) => by == RuntimeRequester.Owner ? "asked by the owner" : "asked by the server";
+
+    // Through the shared interface only the server's runtime.v1 reaches this manager; the owner's commands name themselves.
+    Task<HostRuntime> IHostRuntimes.StartAsync(string id, CancellationToken ct) => StartAsync(id, RuntimeRequester.Server, ct);
+
+    Task<HostRuntime> IHostRuntimes.StopAsync(string id, TimeSpan? grace, CancellationToken ct) => StopAsync(id, RuntimeRequester.Server, grace, ct);
+
+    /// <summary>Starts a managed runtime for <paramref name="by"/>, who its audit entry names.</summary>
+    public Task<HostRuntime> StartAsync(string id, RuntimeRequester by, CancellationToken ct = default) => StartCore(id, Reason(by));
+
+    private Task<HostRuntime> StartCore(string id, string why)
     {
         HostRuntime view;
         lock (_gate)
@@ -233,14 +254,14 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
             if (entry.Stopping)
                 throw new HostRuntimeException(HostRuntimeException.Stopping, $"'{id}' is stopping; start it again once it has stopped.");
             if (entry.Alive) return Task.FromResult(View(entry));
-            Spawn(entry);
+            Spawn(entry, why);
             view = View(entry);
         }
         Raise(view);
         return Task.FromResult(view);
     }
 
-    private void Spawn(Entry entry)
+    private void Spawn(Entry entry, string why)
     {
         var id = entry.Registration.Id;
         HostSpawnSpec spec;
@@ -307,8 +328,8 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         process.EnableRaisingEvents = true;
         process.Exited += (_, _) => OnExited(entry, process);
         if (process.HasExited) OnExited(entry, process);
-        _env.Audit.Record("runtime", id, "started", $"pid {process.Id}");
-        _env.Log.Info($"Runtime {id} started (PID {process.Id}).");
+        _env.Audit.Record("runtime", id, "started", $"pid {process.Id}; {why}");
+        _env.Log.Info($"Runtime {id} started (PID {process.Id}, {why}).");
     }
 
     private void OnExited(Entry entry, IHostProcess process)
@@ -337,7 +358,8 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
         Raise(view);
     }
 
-    public async Task<HostRuntime> StopAsync(string id, TimeSpan? grace = null, CancellationToken ct = default)
+    /// <summary>Stops a managed runtime for <paramref name="by"/>, who its audit entry names.</summary>
+    public async Task<HostRuntime> StopAsync(string id, RuntimeRequester by, TimeSpan? grace = null, CancellationToken ct = default)
     {
         lock (_gate)
         {
@@ -346,7 +368,7 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
             if (!entry.Managed)
                 throw new HostRuntimeException(HostRuntimeException.NotManaged, $"'{id}' is run by the node's owner (attach mode): the agent never stops it.");
         }
-        await StopCoreAsync(id, "asked by the server", grace);
+        await StopCoreAsync(id, Reason(by), grace);
         return Status(id)!;
     }
 
@@ -499,7 +521,7 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
             return (answered, Status(id)!);
         }
         var wasRunning = Status(id) is { } before && before.StartedAt is not null;
-        await StartAsync(id, ct);
+        await StartCore(id, "the owner's test");
         var deadline = _env.Time.GetUtcNow() + timeout;
         var ok = false;
         while (_env.Time.GetUtcNow() < deadline && !ct.IsCancellationRequested)

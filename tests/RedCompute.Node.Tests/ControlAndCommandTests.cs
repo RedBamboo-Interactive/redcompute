@@ -260,7 +260,7 @@ public sealed class ControlAndCommandTests : IDisposable
         await using (var agentBefore = new Runtimes.RuntimeManager(env, env.RuntimeSpec, env.RuntimeProbe))
         {
             agentBefore.Load();
-            await agentBefore.StartAsync("comfy-m");
+            await agentBefore.StartAsync("comfy-m", Runtimes.RuntimeRequester.Server);
             pid = RuntimeAgentTests.PidOf(_home, "comfy-m");
         }
         Assert.True(RuntimeAgentTests.Alive(pid), "kept after the agent stopped");

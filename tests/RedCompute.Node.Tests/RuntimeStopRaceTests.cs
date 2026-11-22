@@ -49,14 +49,14 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
     [Fact]
     public async Task A_start_during_a_stop_is_refused_as_stopping_and_starts_once_the_stop_is_done()
     {
-        await _manager.StartAsync(Id);
+        await _manager.StartAsync(Id, RuntimeRequester.Server);
         var first = Assert.Single(_host.Started);
         first.HoldKill = true;
 
-        var stop = _manager.StopAsync(Id, TimeSpan.FromSeconds(20));
+        var stop = _manager.StopAsync(Id, RuntimeRequester.Server, TimeSpan.FromSeconds(20));
         await Wait.UntilAsync(() => first.KillRequested, "the stop's kill");
 
-        var refused = await Assert.ThrowsAsync<HostRuntimeException>(() => _manager.StartAsync(Id));
+        var refused = await Assert.ThrowsAsync<HostRuntimeException>(() => _manager.StartAsync(Id, RuntimeRequester.Server));
         Assert.Equal(HostRuntimeException.Stopping, refused.Code);
         Assert.Single(_host.Started); // nothing spawned during the stop
         Assert.True(RuntimeAgentTests.Alive(first.Id));
@@ -66,7 +66,7 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
         Assert.False(RuntimeAgentTests.Alive(first.Id));
 
         // Once stopped, a start goes through: a new process, tracked.
-        await _manager.StartAsync(Id);
+        await _manager.StartAsync(Id, RuntimeRequester.Server);
         Assert.Equal(2, _host.Started.Count);
         Assert.Equal(_host.Started[1].Id, RuntimeAgentTests.PidOf(_home, Id));
     }
@@ -74,16 +74,16 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
     [Fact]
     public async Task A_stop_reaps_only_the_process_it_stopped_not_one_started_after_its_exit()
     {
-        await _manager.StartAsync(Id);
+        await _manager.StartAsync(Id, RuntimeRequester.Server);
         var first = Assert.Single(_host.Started);
         first.HideExit = true; // the stop's poll keeps seeing it alive after it really exited
 
-        var stop = _manager.StopAsync(Id, TimeSpan.FromSeconds(20));
+        var stop = _manager.StopAsync(Id, RuntimeRequester.Server, TimeSpan.FromSeconds(20));
         // The kill went through and the exit handler reaped the first process: the stop is over as far as the runtime
         // goes, and a start is allowed again, while the stop's own poll has not seen the exit yet.
         await Wait.UntilAsync(() => _manager.Status(Id)!.Status == BackendStatus.Stopped, "the exit handler's reap", timeoutMs: 20_000);
         Assert.False(stop.IsCompleted);
-        await _manager.StartAsync(Id);
+        await _manager.StartAsync(Id, RuntimeRequester.Server);
         var second = _host.Started[1];
         Assert.True(RuntimeAgentTests.Alive(second.Id));
 
@@ -95,7 +95,7 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
         Assert.NotEqual(BackendStatus.Stopped, _manager.Status(Id)!.Status);
         Assert.True(RuntimeAgentTests.Alive(second.Id));
         Assert.Equal(second.Id, RuntimeAgentTests.PidOf(_home, Id));
-        await _manager.StopAsync(Id, TimeSpan.FromSeconds(10));
+        await _manager.StopAsync(Id, RuntimeRequester.Server, TimeSpan.FromSeconds(10));
         await Wait.UntilAsync(() => !RuntimeAgentTests.Alive(second.Id), "the second process stopped");
     }
 
@@ -104,11 +104,11 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
     {
         // Review follow-up 2: the process outlives the grace. The stop ends, Stopping is cleared, the runtime reads
         // Error "did not stop", and a later start is not refused as runtime_stopping; a later stop tries again.
-        await _manager.StartAsync(Id);
+        await _manager.StartAsync(Id, RuntimeRequester.Server);
         var first = Assert.Single(_host.Started);
         first.HoldKill = true;
 
-        var view = await _manager.StopAsync(Id, TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(30));
+        var view = await _manager.StopAsync(Id, RuntimeRequester.Server, TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(BackendStatus.Error, view.Status);
         Assert.Contains("did not stop", view.StatusDetail);
@@ -116,7 +116,7 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
         Assert.Contains(_home.Environment().Audit.Read(), record => (string?)record["outcome"] == "stop-failed");
 
         // Not runtime_stopping: the live process is still the runtime, so nothing new is spawned.
-        var started = await _manager.StartAsync(Id);
+        var started = await _manager.StartAsync(Id, RuntimeRequester.Server);
         Assert.Equal(BackendStatus.Error, started.Status);
         Assert.Single(_host.Started);
         Assert.Equal(first.Id, RuntimeAgentTests.PidOf(_home, Id));
@@ -124,7 +124,7 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
         // A later stop, whose kill now takes, stops it.
         first.ReleaseKill();
         first.HoldKill = false;
-        Assert.Equal(BackendStatus.Stopped, (await _manager.StopAsync(Id, TimeSpan.FromSeconds(10)).WaitAsync(TimeSpan.FromSeconds(30))).Status);
+        Assert.Equal(BackendStatus.Stopped, (await _manager.StopAsync(Id, RuntimeRequester.Server, TimeSpan.FromSeconds(10)).WaitAsync(TimeSpan.FromSeconds(30))).Status);
         await Wait.UntilAsync(() => !RuntimeAgentTests.Alive(first.Id), "the process stopped");
     }
 

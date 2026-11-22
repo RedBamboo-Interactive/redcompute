@@ -227,7 +227,7 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
             return new HostSpawnSpec { FileName = start.FileName, ArgumentList = start.ArgumentList.ToList(), Containment = ContainmentMode.None, OwnerLabel = "comfyui" };
         }, (_, _) => Task.FromResult(false));
         manager.Load();
-        await manager.StartAsync(Managed);
+        await manager.StartAsync(Managed, RuntimeRequester.Server);
         await Wait.UntilAsync(() => manager.Status(Managed)!.Status == BackendStatus.Error, "the error", timeoutMs: 20_000);
         Assert.StartsWith("It exited", manager.Status(Managed)!.StatusDetail);
         // The exit is in the runtime's log file on the node (its owner's to read; the server cannot ask for it).
@@ -490,6 +490,44 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         Assert.Equal(ForwardErrorCodes.RuntimeUnknown, FindCode(await Assert.ThrowsAnyAsync<HttpRequestException>(() => http.GetAsync("/system_stats"))));
     }
 
+    [Fact]
+    public async Task A_start_or_stop_is_audited_as_the_owners_or_the_servers_by_who_asked()
+    {
+        await using var control = new Control.ControlServer(_home.Paths,
+            (request, token) => NodeCommands.HandleControlAsync(_linked.Agent, request, () => Task.CompletedTask, token), _home.Environment().Log);
+        control.Start();
+        var commands = new NodeCommands(_home.Environment(), new StringWriter());
+        // What the agent audited for the managed runtime's starts and stops (the stop's own entry, not its exit's).
+        string[] Asked() => _home.Environment().Audit.Read()
+            .Where(l => l["kind"]!.GetValue<string>() == "runtime" && l["name"]!.GetValue<string>() == Managed
+                        && l["outcome"]!.GetValue<string>() is "started" or "stopped" && l["detail"] is not null)
+            .Select(l => $"{l["outcome"]!.GetValue<string>()}: {l["detail"]!.GetValue<string>().Split("; ")[^1]}")
+            .ToArray();
+
+        // The owner, over the control IPC (leaf-node runtime start|stop).
+        Assert.Equal(0, await commands.RunAsync(["runtime", "start", Managed], CancellationToken.None));
+        await Wait.UntilAsync(() => _linked.Agent.Runtimes.Status(Managed)?.Status == BackendStatus.Running, "running");
+        Assert.Equal(0, await commands.RunAsync(["runtime", "stop", Managed], CancellationToken.None));
+        Assert.Equal(["started: asked by the owner", "stopped: asked by the owner"], Asked());
+
+        // The server, over the link (runtime.start|stop).
+        await _linked.ServerSession.CallAsync("runtime.start", new JsonObject { ["id"] = Managed });
+        await Wait.UntilAsync(() => _linked.Agent.Runtimes.Status(Managed)?.Status == BackendStatus.Running, "running again");
+        await _linked.ServerSession.CallAsync("runtime.stop", new JsonObject { ["id"] = Managed });
+        Assert.Equal(["started: asked by the owner", "stopped: asked by the owner", "started: asked by the server", "stopped: asked by the server"],
+            Asked());
+
+        // The agent's log says the same.
+        string log;
+        using (var reader = new StreamReader(new FileStream(Path.Combine(_home.Paths.Logs, "leaf-node.log"), FileMode.Open, FileAccess.Read,
+                   FileShare.ReadWrite | FileShare.Delete)))
+            log = reader.ReadToEnd(); // the running agent holds it open
+        Assert.Contains($"Runtime {Managed} stopped (asked by the owner).", log);
+        Assert.Contains($"Runtime {Managed} stopped (asked by the server).", log);
+        Assert.Matches($@"Runtime {Managed} started \(PID \d+, asked by the owner\)\.", log);
+        Assert.Matches($@"Runtime {Managed} started \(PID \d+, asked by the server\)\.", log);
+    }
+
     private static string? FindCode(Exception error)
     {
         for (Exception? e = error; e is not null; e = e.InnerException)
@@ -520,7 +558,7 @@ public sealed class RuntimeLifecycleTests : IDisposable
         await using (var first = new RuntimeManager(env, RuntimeAgentTests.Sleeper, (_, _) => Task.FromResult(true)))
         {
             first.Load();
-            await first.StartAsync("comfy-m");
+            await first.StartAsync("comfy-m", RuntimeRequester.Server);
             pid = RuntimeAgentTests.PidOf(_home, "comfy-m");
         }
         // The agent stopped: the runtime is kept.
@@ -535,7 +573,7 @@ public sealed class RuntimeLifecycleTests : IDisposable
             Assert.Equal("adopted after an agent restart", adopted.StatusDetail);
             await second.ProbeOnceAsync();
             Assert.Equal(BackendStatus.Running, second.Status("comfy-m")!.Status);
-            await second.StartAsync("comfy-m"); // already up: no spawn
+            await second.StartAsync("comfy-m", RuntimeRequester.Server); // already up: no spawn
             Assert.Equal(pid, RuntimeAgentTests.PidOf(_home, "comfy-m"));
             Assert.Contains(_home.Environment().Audit.Read(), l => l["outcome"]!.GetValue<string>() == "adopted");
         }
