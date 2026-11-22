@@ -20,7 +20,7 @@ The rebuild script uses the shared `redbamboo-packages/dotnet/rebuild.ps1`. It s
 
 The kernel locates `RedCompute.exe` through the `compute` path in `leaf.workspace.json` (in the `redleaf` repo), which points at this checkout; `src\RedCompute.App\bin\Release\net9.0-windows\RedCompute.exe` is the probed build output. `computeExePath` in the kernel config overrides it.
 
-Tests live in `tests/` (`RedCompute.App.Tests`, `RedCompute.Plugin.Codex.Tests`, `RedCompute.ReleaseTool.Tests`, `RedCompute.NodeLink.Tests`, `RedCompute.Node.Tests`); run them with `dotnet test` and an `--artifacts-path` outside the checkout when a live RedCompute runs from it. `release/Test-LockedRestoreModes.ps1` checks that every committed lock file restores in locked mode.
+Tests live in `tests/` (`RedCompute.App.Tests`, `RedCompute.Plugin.Codex.Tests`, `RedCompute.ReleaseTool.Tests`, `RedCompute.NodeLink.Tests`, `RedCompute.Node.Tests`); run them with `dotnet test` and an `--artifacts-path` outside the checkout when a live RedCompute runs from it. `release/Test-LockedRestoreModes.ps1` checks that every committed lock file restores in locked mode. `tests/RedCompute.KernelLinkHarness` is no test project: it is RedCompute's side (NodeHub, node endpoints, kernel sync and a real leaf-node agent) of the kernel's end-to-end revoke test, redleaf's `NodeRevokeEndToEndTests`, which runs it when `LEAF_KERNEL_LINK_HARNESS` names its built executable.
 
 ### Linux (preview)
 

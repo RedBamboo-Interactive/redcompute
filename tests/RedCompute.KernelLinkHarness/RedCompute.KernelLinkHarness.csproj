@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A stand-in RedCompute for the kernel's end-to-end node tests (redleaf: NodeRevokeEndToEndTests): RedCompute's
+       real NodeHub, node endpoints, link key and kernel sync on a loopback port, and one real leaf-node agent driven
+       through its own commands. The kernel test host is the real kernel side (pairing, revoke, the ingress relay).
+       Never shipped. Follows the host it tests (LeafTargetOs, see Directory.Build.props). -->
+  <PropertyGroup Condition="'$(LeafTargetOs)' == 'windows'">
+    <TargetFramework>net9.0-windows</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(LeafTargetOs)' == 'linux'">
+    <TargetFramework>net9.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RedCompute.App\RedCompute.App.csproj" />
+    <ProjectReference Include="..\..\src\RedCompute.Node\RedCompute.Node.csproj" />
+  </ItemGroup>
+</Project>
