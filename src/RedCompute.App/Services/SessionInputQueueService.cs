@@ -177,11 +177,15 @@ public sealed class SessionInputQueueService
     }
 
     public Task<SessionInputAdmissionResult> AdmitAsync(SessionInputQueueSubmission submission, CancellationToken ct = default)
-        => AdmitCoreAsync(submission, ct, null);
-    internal Task<SessionInputAdmissionResult> AdmitWithCallerAsync(SessionInputQueueSubmission submission, string token, CancellationToken ct)
-        => AdmitCoreAsync(submission, ct, token);
+        => AdmitAsync(submission, ct, waitForDelivery: true);
+    internal Task<SessionInputAdmissionResult> AdmitAsync(SessionInputQueueSubmission submission, CancellationToken ct,
+        bool waitForDelivery)
+        => AdmitCoreAsync(submission, ct, null, waitForDelivery);
+    internal Task<SessionInputAdmissionResult> AdmitWithCallerAsync(SessionInputQueueSubmission submission, string token,
+        CancellationToken ct, bool waitForDelivery = true)
+        => AdmitCoreAsync(submission, ct, token, waitForDelivery);
     private async Task<SessionInputAdmissionResult> AdmitCoreAsync(SessionInputQueueSubmission submission, CancellationToken ct,
-        string? authenticatedCallerToken)
+        string? authenticatedCallerToken, bool waitForDelivery)
     {
         var admitted = await _store.EnqueueAsync(submission, ct);
         await PublishAsync(submission.SessionId, [admitted.Item.Id], admitted.Existing ? "idempotent_replay" : "queued", ct);
@@ -207,13 +211,29 @@ public sealed class SessionInputQueueService
             await _store.SetInterruptResultAsync(admitted.Item.Id, interruptResult, ct);
         }
 
-        await ProcessSessionAsync(submission.SessionId, ct, authenticatedCallerToken is null ? null
-            : new CallerRecovery(authenticatedCallerToken, admitted.Item.OwnerUserId, admitted.Item.ProvenanceScope));
+        var caller = authenticatedCallerToken is null ? null
+            : new CallerRecovery(authenticatedCallerToken, admitted.Item.OwnerUserId, admitted.Item.ProvenanceScope);
+        if (waitForDelivery)
+            await ProcessSessionAsync(submission.SessionId, ct, caller);
+        else
+            _ = Task.Run(() => DeliverAfterAdmissionAsync(submission.SessionId, caller));
         var current = await _store.GetAsync(submission.SessionId, admitted.Item.Id, submission.OwnerUserId, ct)
             ?? admitted.Item;
         var summary = await GetSummaryAsync(submission.SessionId, submission.OwnerUserId, ct);
         return new SessionInputAdmissionResult(current, admitted.Existing,
             current.State == SessionInputQueueState.Delivered ? "delivered" : "queued", summary, interruptResult);
+    }
+
+    // A provider can wait for its current tool to return before folding a steer. Keep that
+    // wait inside the queue's per-session gate and independent of the submitting HTTP request.
+    private async Task DeliverAfterAdmissionAsync(string sessionId, CallerRecovery? caller)
+    {
+        try { await ProcessSessionAsync(sessionId, CancellationToken.None, caller); }
+        catch (Exception ex)
+        {
+            _log($"[InputQueue] Admission delivery pass failed for session {sessionId}: {ex.Message}", null);
+            Signal(sessionId);
+        }
     }
 
     /// <summary>

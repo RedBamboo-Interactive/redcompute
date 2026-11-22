@@ -32,6 +32,46 @@ public sealed class SessionSteeringQueueTests
             (await f.Store.GetAsync("session", waiting.Item.Id, "owner"))!.State);
     }
 
+    [Fact]
+    public async Task AsynchronousSteerAcknowledgesAdmissionWhileProviderIsStillFolding()
+    {
+        using var f = new Fixture();
+        var service = f.Service();
+        var providerRelease = new TaskCompletionSource<SessionInputDeliveryResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var providerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Runtime.SteerOverride = () =>
+        {
+            providerEntered.TrySetResult();
+            return providerRelease.Task;
+        };
+        using var request = new CancellationTokenSource();
+        var submission = f.Submission("foreground note", SessionInputDeliveryPolicy.SteerCurrent);
+
+        SessionInputAdmissionResult admission;
+        try
+        {
+            admission = await service.AdmitAsync(submission, request.Token, waitForDelivery: false)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await providerEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("queued", admission.Disposition);
+            Assert.Equal(SessionInputDeliveryPolicy.SteerCurrent, admission.Item.DeliveryPolicy);
+            Assert.Equal(SessionInputQueueState.Delivering,
+                (await f.Store.GetAsync("session", admission.Item.Id, "owner"))!.State);
+            request.Cancel();
+        }
+        finally
+        {
+            providerRelease.TrySetResult(SessionInputDeliveryResult.Accepted());
+            await service.WaitForDeliveryQuiescenceAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        var delivered = await f.Store.GetAsync("session", admission.Item.Id, "owner");
+        Assert.Equal(SessionInputQueueState.Delivered, delivered!.State);
+        Assert.Equal(SessionInputDeliveryPolicy.SteerCurrent, delivered.DeliveryPolicy);
+        Assert.Equal(submission.MessageUid, delivered.DeliveredMessageUid);
+        Assert.Equal(1, f.Runtime.Steers);
+    }
+
     [Theory]
     [InlineData(SessionInputDeliveryStatus.NotSteerable)]
     [InlineData(SessionInputDeliveryStatus.Unsupported)]
@@ -535,6 +575,7 @@ public sealed class SessionSteeringQueueTests
         internal string? LastSteerText;
         internal List<UnifiedMessageRecord> Messages = [];
         internal SessionInputDeliveryResult SteerResult = SessionInputDeliveryResult.Accepted();
+        internal Func<Task<SessionInputDeliveryResult>>? SteerOverride;
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
             => SessionProviderProxy.Route(method, args, InvokeProvider);
@@ -554,7 +595,7 @@ public sealed class SessionSteeringQueueTests
                 case nameof(ISessionProvider.TrySteerInputAsync):
                     Steers++;
                     LastSteerText = SessionInputFormatting.UserText((IReadOnlyList<SessionInputPart>)args![1]!);
-                    return Task.FromResult(SteerResult);
+                    return SteerOverride?.Invoke() ?? Task.FromResult(SteerResult);
                 case nameof(ISessionProvider.InterruptSession):
                     Interrupts++;
                     return InterruptResult.Interrupted;

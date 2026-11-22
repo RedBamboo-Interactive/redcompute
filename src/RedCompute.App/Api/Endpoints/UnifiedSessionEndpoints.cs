@@ -25,7 +25,7 @@ public static class UnifiedSessionEndpoints
 {
     internal static Task<SessionInputAdmissionResult> AdmitWithCurrentCallerAsync(HttpContext ctx,
         ISessionProvider provider, UnifiedSessionInfo info, SessionInputQueueSubmission submission,
-        SessionInputQueueService queue, CancellationToken ct)
+        SessionInputQueueService queue, CancellationToken ct, bool waitForDelivery = true)
     {
         var identity = ExecutionContextScope.Current;
         var owner = ResolveUserId(ctx);
@@ -43,7 +43,8 @@ public static class UnifiedSessionEndpoints
             && submission.Provenance.Origin.App.Kind == "direct-client" && submission.Provenance.Origin.App.Id == "direct-redcompute-api"
             && submission.Provenance.Actor.Kind == "app" && submission.Provenance.Actor.Id == "direct-redcompute-api")
             token = SessionExecutionToken.IssueAuthenticatedDirect(ctx, info.Id, submission.MessageUid, provider.ProviderId, provider.ProviderDisplayName);
-        return token is null ? queue.AdmitAsync(submission, ct) : queue.AdmitWithCallerAsync(submission, token, ct);
+        return token is null ? queue.AdmitAsync(submission, ct, waitForDelivery)
+            : queue.AdmitWithCallerAsync(submission, token, ct, waitForDelivery);
     }
     private static readonly HashSet<string> SupportedImageMediaTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1227,7 +1228,7 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapPost("/ai-session/sessions/{id}/message",
-            "Durably admit a user message, then deliver now, steer into the active turn, or queue after it according to delivery policy.", async (HttpContext ctx, string id) =>
+            "Durably admit a user message, then deliver according to its policy. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
         {
             var (provider, info) = FindSessionAcrossProviders(registry, id);
             if (info == null)
@@ -1399,8 +1400,11 @@ public static class UnifiedSessionEndpoints
                     messageUid,
                     attachmentIds,
                     idempotencyKey);
-                var resumeAttempted = IsAutoResumable(provider, info);
-                var admitted = await AdmitWithCurrentCallerAsync(ctx, provider, info, submission, _inputQueue!, ctx.RequestAborted);
+                var waitForDelivery = deliveryPolicy != SessionInputDeliveryPolicy.SteerCurrent
+                    || !body.TryGetProperty("waitForDelivery", out var wait) || wait.ValueKind != JsonValueKind.False;
+                var resumeAttempted = waitForDelivery && IsAutoResumable(provider, info);
+                var admitted = await AdmitWithCurrentCallerAsync(ctx, provider, info, submission, _inputQueue!,
+                    ctx.RequestAborted, waitForDelivery);
                 var (_, currentInfo) = FindSessionAcrossProviders(registry, id);
                 var resumed = resumeAttempted && currentInfo?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
                 var queueSummary = admitted.Queue;
@@ -1469,6 +1473,7 @@ public static class UnifiedSessionEndpoints
                     deploymentVerificationTarget = DeploymentVerificationTargetSchema,
                     displayContent = new { type = "string", description = "Human-readable draft shown in queue views when provider input contains an enriched context envelope" },
                     delivery = new { type = "string", @enum = new[] { "after-current", "steer-current", "interrupt-current" }, @default = "after-current", description = "Durable delivery policy. steer-current injects into a supported active turn without interruption; it demotes to after-current when steering is unavailable (deliveryReason steer_unavailable) and runs as the next turn when no turn is running (deliveryReason no_active_turn). interrupt-current interrupts the running turn (interruptResult, turnInterrupted) and is delivered next, ahead of older queued input, which keeps its order behind it; nothing overtakes an input in flight or failed." },
+                    waitForDelivery = new { type = "boolean", @default = true, description = "Set false with steer-current to acknowledge durable admission before provider delivery. Read input-queue/{itemId} for the final state." },
                     messageUid = new { type = "string", description = "Stable message identity to persist with the message. Supply it when the same logical message is also stored elsewhere (cross-stream dedup); minted server-side when omitted. Returned in the response." },
                 },
             })
