@@ -368,7 +368,8 @@ public sealed class HostThreadingTests : IDisposable
         addClient.Invoke(broadcaster, addClient.GetParameters().Length == 3
             ? new object?[] { "test", socket, false }
             : new object?[] { "test", socket });
-        var pipeline = new SessionTranscriptPipeline(redLeaf.Client, broadcaster, (_, _) => { }, (_, _) => false,
+        var pipelineLog = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var pipeline = new SessionTranscriptPipeline(redLeaf.Client, broadcaster, (line, _) => pipelineLog.Enqueue(line), (_, _) => false,
             new TranscriptSequenceStore(Path.Combine(_root, "cursor.db")));
 
         using var pump = new SingleThreadContext();
@@ -428,7 +429,8 @@ public sealed class HostThreadingTests : IDisposable
             foreach (var frame in frames.Where(f => f.Type == "tool_result"))
             {
                 // The reference is the id RedLeaf returned once it held the bytes for this stamp.
-                Assert.NotNull(frame.RecordId);
+                Assert.True(frame.RecordId is not null,
+                    $"{session} published tool_result {frame.Sequence} without a payload reference. Pipeline log: {string.Join(" | ", pipelineLog)}");
                 Assert.Equal((session, frame.Sequence), redLeaf.Issued[frame.RecordId!.Value]);
             }
             // RedLeaf received this session's payloads in stamp order.

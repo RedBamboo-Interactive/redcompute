@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Net.WebSockets;
+using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -140,6 +143,118 @@ public sealed class TranscriptMirrorOrderTests
             (origin.GetProperty("kind").GetString(), origin.GetProperty("task_id").GetString()));
     }
 
+    // Persist before publish on the live path. When the payload write fails (a 5xx, or the 15 s client timeout of a starved
+    // machine) the result used to be published inline anyway, with nothing stored: a client saw it at a stamp the transcript
+    // did not have, and the completed turn's mirror then stored the same output again under a new sequence.
+    [Fact]
+    public async Task ToolResultWhosePayloadWriteFailsIsNotPublishedBeforeItIsStored()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start(rejectFirstPayloadWrite: true);
+        var frames = new FrameSocket();
+        var pipeline = redLeaf.Pipeline(frames);
+
+        pipeline.HandleLiveEvent("claude-code", "session-1", ToolResultEvent());
+
+        Assert.Empty(frames.Of("tool_result"));
+        await redLeaf.WaitForArrivals(1);
+        Assert.Equal(["tool_result:1"], redLeaf.Arrivals);
+        Assert.Contains("transcript:epoch:1", redLeaf.ExternalIds);
+        Assert.Equal("alpha", redLeaf.Data.Single().GetProperty("tool_result").GetString());
+    }
+
+    [Fact]
+    public async Task AWithheldToolResultIsNotStoredAgainByTheCompletedTurnsMirror()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start(rejectFirstPayloadWrite: true);
+        var pipeline = redLeaf.Pipeline(new FrameSocket());
+
+        pipeline.HandleLiveEvent("claude-code", "session-1", ToolResultEvent());
+        pipeline.MirrorMessages([new AiMessageSnapshot
+        {
+            Provider = "claude-code", SessionId = "session-1", Role = "assistant", EventType = "tool_result",
+            ToolName = "Bash", ToolResult = "alpha", MessageId = "toolu_1", MessageUid = "turn-1",
+            Timestamp = DateTimeOffset.UtcNow,
+        }]);
+
+        await redLeaf.WaitForArrivals(1);
+        // One failed attempt at the stamp; the mirror wrote nothing under a new sequence.
+        Assert.Equal(["transcript:epoch:1"], redLeaf.PayloadExternalIds.ToArray());
+        Assert.Equal(["tool_result:1"], redLeaf.Arrivals);
+    }
+
+    // The write RedLeaf committed before its acknowledgement was lost: the queued copy carries the same identity.
+    [Fact]
+    public async Task ToolResultWhoseAcknowledgementIsLostIsStoredOnceAndNotPublished()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start(loseFirstPayloadAcknowledgement: true);
+        var frames = new FrameSocket();
+        var pipeline = redLeaf.Pipeline(frames);
+
+        pipeline.HandleLiveEvent("claude-code", "session-1", ToolResultEvent());
+
+        await redLeaf.WaitForRecordPosts(1);
+        Assert.Empty(frames.Of("tool_result"));
+        Assert.Equal(["tool_result:1"], redLeaf.Arrivals);
+    }
+
+    [Fact]
+    public async Task AStoredToolResultIsPublishedWithItsPayloadReference()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start();
+        var frames = new FrameSocket();
+        var pipeline = redLeaf.Pipeline(frames);
+
+        pipeline.HandleLiveEvent("claude-code", "session-1", ToolResultEvent());
+
+        var frame = Assert.Single(frames.Of("tool_result"));
+        Assert.Equal(42L, frame.GetProperty("payloadRef").GetProperty("recordId").GetInt64());
+        Assert.Equal(["tool_result:1"], redLeaf.Arrivals);
+    }
+
+    private static UnifiedStreamEvent ToolResultEvent() => new()
+    {
+        Type = "tool_result", ToolName = "Bash", MessageId = "toolu_1", MessageUid = "turn-1", ToolResult = "alpha",
+    };
+
+    /// <summary>The session.stream events a client would have been sent.</summary>
+    private sealed class FrameSocket : WebSocket
+    {
+        private readonly ConcurrentQueue<JsonElement> _events = new();
+
+        public WebSocketBroadcaster Broadcaster { get; } = new();
+
+        public FrameSocket()
+        {
+            // AppHost cbe0265 added allowsLogEvents; the release pin predates it, so pass it only when AddClient takes it.
+            var addClient = typeof(WebSocketBroadcaster).GetMethod("AddClient", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            addClient.Invoke(Broadcaster, addClient.GetParameters().Length == 3
+                ? new object?[] { "test", this, false }
+                : new object?[] { "test", this });
+        }
+
+        public List<JsonElement> Of(string type) => _events.Where(e => e.GetProperty("type").GetString() == type).ToList();
+
+        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage,
+            CancellationToken cancellationToken)
+        {
+            using var json = JsonDocument.Parse(Encoding.UTF8.GetString(buffer));
+            if (json.RootElement.GetProperty("type").GetString() == SessionTranscriptPipeline.StreamEventType)
+                _events.Enqueue(json.RootElement.GetProperty("data").GetProperty("event").Clone());
+            return Task.CompletedTask;
+        }
+
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override WebSocketState State => WebSocketState.Open;
+        public override string? SubProtocol => null;
+        public override void Abort() { }
+        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+        public override void Dispose() { }
+        public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
     private static AiMessageSnapshot ToolUse() => new()
     {
         Provider = "claude-code", SessionId = "session-1", Role = "assistant", EventType = "tool_use",
@@ -160,6 +275,7 @@ public sealed class TranscriptMirrorOrderTests
         private int _rejectRecordWrites;
         private int _loseRecordAcknowledgements;
         private int _losePayloadAcknowledgements;
+        private int _rejectPayloadWrites;
         private readonly ConcurrentDictionary<string, byte> _stored = new();
         public ConcurrentQueue<string> Arrivals { get; } = new();
         public ConcurrentQueue<(string? ExternalId, DateTimeOffset CreatedAt)> RecordPosts { get; } = new();
@@ -172,8 +288,26 @@ public sealed class TranscriptMirrorOrderTests
         public SessionTranscriptPipeline Pipeline() =>
             new(_client, new WebSocketBroadcaster(), (_, _) => { }, null, new Sequences());
 
+        public SessionTranscriptPipeline Pipeline(FrameSocket frames) =>
+            new(_client, frames.Broadcaster, (_, _) => { }, null, new Sequences());
+
+        /// <summary>The batched writer flushes on its own tick: wait for what it was handed, without a clock of its own.</summary>
+        public Task WaitForArrivals(int count) => WaitFor(() => Arrivals.Count >= count);
+        public Task WaitForRecordPosts(int count) => WaitFor(() => RecordPosts.Count >= count);
+
+        private static async Task WaitFor(Func<bool> done)
+        {
+            var give = DateTime.UtcNow + Step.Backstop;
+            while (!done())
+            {
+                if (DateTime.UtcNow > give) throw new TimeoutException("The batched writer never delivered the queued record");
+                await Task.Delay(25);
+            }
+        }
+
         public static async Task<FakeRedLeaf> Start(bool rejectFirstRecordWrite = false,
-            bool loseFirstRecordAcknowledgement = false, bool loseFirstPayloadAcknowledgement = false)
+            bool loseFirstRecordAcknowledgement = false, bool loseFirstPayloadAcknowledgement = false,
+            bool rejectFirstPayloadWrite = false)
         {
             var builder = WebApplication.CreateSlimBuilder();
             builder.Logging.ClearProviders();
@@ -183,6 +317,7 @@ public sealed class TranscriptMirrorOrderTests
                 _rejectRecordWrites = rejectFirstRecordWrite ? 1 : 0,
                 _loseRecordAcknowledgements = loseFirstRecordAcknowledgement ? 1 : 0,
                 _losePayloadAcknowledgements = loseFirstPayloadAcknowledgement ? 1 : 0,
+                _rejectPayloadWrites = rejectFirstPayloadWrite ? 1 : 0,
             };
             server.MapGet("/api/entities/{slug}", () => Results.Ok(new { id = Guid.Parse("11111111-1111-1111-1111-111111111111") }));
             server.MapPost("/api/streams/{stream}/records", async (HttpContext ctx) =>
@@ -209,6 +344,7 @@ public sealed class TranscriptMirrorOrderTests
                 var form = await ctx.Request.ReadFormAsync();
                 var externalId = form.ContainsKey("external_id") ? form["external_id"].ToString() : null;
                 f.PayloadExternalIds.Enqueue(externalId ?? "(none)");
+                if (Interlocked.Exchange(ref f._rejectPayloadWrites, 0) == 1) return Results.StatusCode(503);
                 if (externalId is null || f._stored.TryAdd(externalId, 0))
                     f.Arrive(form["data"].ToString());
                 if (Interlocked.Exchange(ref f._losePayloadAcknowledgements, 0) == 1) return Results.StatusCode(503);

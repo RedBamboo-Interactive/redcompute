@@ -118,8 +118,45 @@ public sealed class SessionTranscriptPipeline
         }
         catch (Exception ex)
         {
-            _log($"[Transcript] Payload append failed for {provider}/{sessionId}; using inline fallback: {ex.Message}", null);
-            Broadcast(provider, sessionId, evt);
+            // Persist before publish holds on this path too: a frame whose record RedLeaf may not hold would be seen by a
+            // client at a stamp the transcript does not have (the mirror stores the output again under a new sequence, and
+            // a write that committed before the failure would be stored twice). The result is queued durably under its own
+            // identity instead and not published live; the sequence gap sends a client to history, which holds it once
+            // the writer has flushed.
+            _log($"[Transcript] Payload append failed for {provider}/{sessionId} at {stamp.Epoch}:{stamp.Sequence}; "
+                + $"queued under its own identity, not published live: {ex.Message}", null);
+            QueueWithheldToolResult(provider, sessionId, evt, output, stamp);
+        }
+    }
+
+    private void QueueWithheldToolResult(string provider, string sessionId, UnifiedStreamEvent evt, string output, TranscriptStamp stamp)
+    {
+        try
+        {
+            EnqueueInline(new AiMessageSnapshot
+            {
+                Provider = provider,
+                SessionId = sessionId,
+                Role = "assistant",
+                EventType = "tool_result",
+                ToolName = evt.ToolName,
+                ToolInput = evt.ToolInput?.ToString(),
+                ToolResult = output,
+                MessageId = evt.MessageId,
+                Phase = evt.Phase,
+                MessageUid = evt.MessageUid,
+                ParentToolUseId = evt.ParentToolUseId,
+                TurnOrigin = evt.TurnOrigin,
+                Timestamp = DateTimeOffset.UtcNow,
+                AttachmentsJson = evt.Attachments is { Count: > 0 } ? JsonSerializer.Serialize(evt.Attachments) : null,
+            }, stamp);
+            // The completed turn's mirror must not store this output again under a new sequence.
+            _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, output)] = DateTimeOffset.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            // Nothing is queued: leave the output to the mirror, which stores it when the turn completes.
+            _log($"[Transcript] Could not queue the withheld tool result for {provider}/{sessionId}: {ex.Message}", null);
         }
     }
 
