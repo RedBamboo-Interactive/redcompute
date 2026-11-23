@@ -850,7 +850,11 @@ internal sealed class ContainedProcessTree : IContainedTree
             SessionProcessContainment.KillIdentity(escapee.Pid, escapee.Created, $"{Owner} root {RootPid}", ignoreProtection: IsKept));
         foreach (var (pid, created) in unjoined)
             SessionProcessContainment.KillIdentity(pid, created, $"{Owner} root {RootPid}", ignoreProtection: IsKept);
-        try { File.Delete(LedgerPath); } catch { }
+        // After any persist that was already writing: _reaped stops the next ones, this removes what the last wrote.
+        lock (_persistGate)
+        {
+            try { File.Delete(LedgerPath); } catch { }
+        }
         ReleaseHandles();
 
         if (members > 0 || escapees.Length > 0)
@@ -880,7 +884,16 @@ internal sealed class ContainedProcessTree : IContainedTree
             foreach (var entry in tracked) SessionProcessContainment.Native.Close(entry.Handle);
     }
 
+    // Snapshot and write are one step: two callers (the scan thread and a Track) that each took a snapshot under _gate
+    // could otherwise write them in the other order, leaving an older ledger on disk while _persisted names the newer.
+    private readonly object _persistGate = new();
+
     private void PersistLedger()
+    {
+        lock (_persistGate) PersistLedgerSerialized();
+    }
+
+    private void PersistLedgerSerialized()
     {
         SessionProcessContainment.EscapeeLedger ledger;
         lock (_gate)
