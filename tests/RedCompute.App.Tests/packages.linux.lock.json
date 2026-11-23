@@ -446,6 +446,7 @@
         "dependencies": {
           "Google.Apis.Auth": "[1.69.0, )",
           "Microsoft.Data.Sqlite": "[9.0.0, )",
+          "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )",
           "System.IdentityModel.Tokens.Jwt": "[8.7.0, )"
         }
       },

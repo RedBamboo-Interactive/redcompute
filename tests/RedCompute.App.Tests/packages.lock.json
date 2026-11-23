@@ -479,6 +479,7 @@
           "Google.Apis.Auth": "[1.69.0, )",
           "H.NotifyIcon.Wpf": "[2.2.0, )",
           "Microsoft.Data.Sqlite": "[9.0.0, )",
+          "SQLitePCLRaw.bundle_e_sqlite3": "[2.1.12, )",
           "System.Drawing.Common": "[9.0.0, )",
           "System.IdentityModel.Tokens.Jwt": "[8.7.0, )"
         }
