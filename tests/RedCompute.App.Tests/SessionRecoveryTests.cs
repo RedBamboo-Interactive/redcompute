@@ -423,8 +423,9 @@ public sealed class SessionRecoveryTests
             await stream.WriteAsync(response); await stream.FlushAsync();
         });
         var jwt = new JwtService(new JwtOptions { SigningKey = "recovery-no-redirect-secret-1234567890123456789" });
-        var reader = new RedLeafSessionReader($"http://127.0.0.1:{port}", jwt, null!);
-        var authority = await reader.RecoverAuthorityAsync(f.Runtime.Info, item, default).WaitAsync(TimeSpan.FromSeconds(3));
+        var reader = new RedLeafSessionReader($"http://127.0.0.1:{port}", jwt, null!, Step.Backstop);
+        var authority = await Step.Await(reader.RecoverAuthorityAsync(f.Runtime.Info, item, default),
+            $"RecoverAuthorityAsync to answer the 302 the stub server on port {port} sends");
         Assert.Equal("recovery_host_redirect", authority.ErrorCode); Assert.Null(authority.AccessToken);
         await server; listener.Stop();
     }

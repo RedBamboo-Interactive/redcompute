@@ -50,9 +50,9 @@ public sealed class SessionSteeringQueueTests
         SessionInputAdmissionResult admission;
         try
         {
-            admission = await service.AdmitAsync(submission, request.Token, waitForDelivery: false)
-                .WaitAsync(TimeSpan.FromSeconds(5));
-            await providerEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            admission = await Step.Await(service.AdmitAsync(submission, request.Token, waitForDelivery: false),
+                "the steer to be admitted (AdmitAsync with waitForDelivery: false)");
+            await Step.Await(providerEntered.Task, "the provider's Steer to be entered");
             Assert.Equal("queued", admission.Disposition);
             Assert.Equal(SessionInputDeliveryPolicy.SteerCurrent, admission.Item.DeliveryPolicy);
             Assert.Equal(SessionInputQueueState.Delivering,
@@ -62,7 +62,7 @@ public sealed class SessionSteeringQueueTests
         finally
         {
             providerRelease.TrySetResult(SessionInputDeliveryResult.Accepted());
-            await service.WaitForDeliveryQuiescenceAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await Step.Await(service.WaitForDeliveryQuiescenceAsync(), "the queue's delivery to go quiet after the provider was released");
         }
 
         var delivered = await f.Store.GetAsync("session", admission.Item.Id, "owner");

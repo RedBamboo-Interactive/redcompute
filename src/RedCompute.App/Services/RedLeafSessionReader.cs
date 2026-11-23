@@ -109,7 +109,16 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         return response.IsSuccessStatusCode;
     }
 
+    /// <summary>How long one request to RedLeaf may take before it is given up: the production deadline.</summary>
+    internal static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
+
     public RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService, QualityModeService qualityModes)
+        : this(redLeafBaseUrl, jwtService, qualityModes, RequestTimeout)
+    {
+    }
+
+    /// <summary>For a test that is about what the reader does with an answer, not about how long RedLeaf may take to give it.</summary>
+    internal RedLeafSessionReader(string redLeafBaseUrl, JwtService jwtService, QualityModeService qualityModes, TimeSpan requestTimeout)
     {
         _qualityModes = qualityModes;
         _recoveryJwt = jwtService;
@@ -121,7 +130,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             () => jwtService.GenerateServiceAccessToken("redcompute", roles: ["service", "admin"])))
         {
             BaseAddress = new Uri(redLeafBaseUrl.TrimEnd('/') + "/"),
-            Timeout = TimeSpan.FromSeconds(15),
+            Timeout = requestTimeout,
         };
         _recoveryHttp = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) {
             BaseAddress = _http.BaseAddress, Timeout = _http.Timeout };
