@@ -830,7 +830,9 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             InputTokens = inputTokens,
             OutputTokens = outputTokens,
             CachedInputTokens = cachedInputTokens,
-            ContextTokens = Int(d, "context_tokens"),
+            // Older OpenCode snapshots stored ACP current context usage only in input_tokens.
+            ContextTokens = Int(d, "context_tokens")
+                ?? (provider.Equals("opencode", StringComparison.OrdinalIgnoreCase) ? inputTokens : null),
             // Provider runtime metadata is authoritative. The quality mode is only a fallback for
             // sessions whose provider did not report a live account/model-specific window.
             ContextWindow = Int(d, "context_window") ?? _qualityModes.GetContextWindow(model),

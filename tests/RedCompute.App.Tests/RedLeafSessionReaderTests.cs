@@ -51,6 +51,41 @@ public sealed class RedLeafSessionReaderTests
         Assert.DoesNotContain(handler.Requests, path => path.Contains("after_id="));
     }
 
+    [Theory]
+    [InlineData("opencode", 12_325, null, 12_325)]
+    [InlineData("opencode", 12_325, 12_400, 12_400)]
+    [InlineData("opencode", 12_325, 0, 0)]
+    [InlineData("opencode", null, null, null)]
+    [InlineData("claude", 12_325, null, null)]
+    [InlineData("codex", 12_325, null, null)]
+    public async Task GetSessionAsync_OnlyOpenCodeUsesLegacyInputTokensForContext(
+        string provider, int? inputTokens, int? contextTokens, int? expectedContextTokens)
+    {
+        var data = new Dictionary<string, object?>
+        {
+            ["session_id"] = "session-1",
+            ["provider"] = provider,
+            ["input_tokens"] = inputTokens,
+            ["context_window"] = 1_000_000,
+        };
+        if (contextTokens.HasValue)
+            data["context_tokens"] = contextTokens.Value;
+
+        using var http = new HttpClient(new SessionHandler(JsonSerializer.Serialize(data)))
+            { BaseAddress = new Uri("http://redleaf/") };
+        var config = new RedComputeConfig { RedLeafUrl = "http://redleaf" };
+        var log = new Action<string, Guid?>((_, _) => { });
+        var quality = new QualityModeService(config, log, new ProviderConfigService(config, log));
+        var reader = new RedLeafSessionReader(http, quality);
+
+        var (info, _) = await reader.GetSessionAsync("session-1");
+
+        Assert.NotNull(info);
+        Assert.Equal(inputTokens, info.InputTokens);
+        Assert.Equal(expectedContextTokens, info.ContextTokens);
+        Assert.Equal(1_000_000, info.ContextWindow);
+    }
+
     [Fact]
     public async Task GetSessionAsync_CodexSubscriptionZeroUsesApiEquivalentEstimate()
     {
@@ -111,7 +146,7 @@ public sealed class RedLeafSessionReaderTests
         Assert.Equal(ImagePayloadHandler.Bytes, await payload.Content.ReadAsByteArrayAsync());
     }
 
-    private sealed class SessionHandler : HttpMessageHandler
+    private sealed class SessionHandler(string? sessionData = null) : HttpMessageHandler
     {
         public List<string> Requests { get; } = [];
 
@@ -129,7 +164,7 @@ public sealed class RedLeafSessionReaderTests
                         {
                             id = "entity-1",
                             name = "Tail test",
-                            data = JsonSerializer.Serialize(new
+                            data = sessionData ?? JsonSerializer.Serialize(new
                             {
                                 session_id = "session-1",
                                 provider = "codex",

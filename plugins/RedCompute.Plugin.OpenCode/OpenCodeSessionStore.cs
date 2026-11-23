@@ -37,6 +37,8 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
         OutputTokens = r.OutputTokens,
+        // ACP usage_update.used is current context usage. The record keeps it in InputTokens.
+        ContextTokens = r.InputTokens,
         ContextWindow = r.ContextWindow,
         Effort = r.Effort,
         QualityTier = r.QualityTier,

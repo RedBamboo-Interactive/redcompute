@@ -348,6 +348,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         CostUsd = s.CostUsd,
         InputTokens = s.InputTokens,
         OutputTokens = s.OutputTokens,
+        ContextTokens = s.InputTokens,
         ContextWindow = s.ContextWindow,
         Effort = s.Effort,
         QualityTier = s.QualityTier,
