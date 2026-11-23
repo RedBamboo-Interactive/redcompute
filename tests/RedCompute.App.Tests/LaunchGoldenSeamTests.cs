@@ -532,6 +532,10 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         var worktree = Path.Combine(_root, "repository.worktrees", "feature");
         Directory.CreateDirectory(repository);
         Directory.CreateDirectory(worktree);
+        // A golden records the environment keys that differ from this process's own. git's launch overlays
+        // GIT_OPTIONAL_LOCKS=0 and GIT_TERMINAL_PROMPT=0, so a machine (or an agent session) that already exports one of them
+        // would not show it as a change. Pin the baseline: neither is set while the launch is recorded.
+        using var baseline = new ScopedEnvironment("GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT");
         var answered = false;
         var host = new LocalExecutionHost("golden-node")
         {
@@ -720,5 +724,25 @@ public sealed class LaunchGoldenSeamTests : IDisposable
                 process.Dispose();
             }
         try { Directory.Delete(_root, true); } catch { }
+    }
+}
+
+/// <summary>Removes environment variables from this process for a scope and puts them back after it.</summary>
+internal sealed class ScopedEnvironment : IDisposable
+{
+    private readonly Dictionary<string, string?> _before = [];
+
+    public ScopedEnvironment(params string[] names)
+    {
+        foreach (var name in names)
+        {
+            _before[name] = Environment.GetEnvironmentVariable(name);
+            Environment.SetEnvironmentVariable(name, null);
+        }
+    }
+
+    public void Dispose()
+    {
+        foreach (var (name, value) in _before) Environment.SetEnvironmentVariable(name, value);
     }
 }
