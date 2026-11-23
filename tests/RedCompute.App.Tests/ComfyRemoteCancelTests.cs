@@ -37,6 +37,6 @@ public sealed class ComfyRemoteCancelTests : IAsyncLifetime
         // An id the server never submitted through this node: the node refuses each route that would act on it.
         await provider.CancelPromptAsync("owners-prompt-7", "test");
         Assert.DoesNotContain(_kit.Comfy.Requests, r => r.Text.Contains("owners-prompt-7"));
-        Assert.Contains("route_not_allowed", _kit.Node.AuditText());
+        await NodeTestKit.WaitAsync(() => _kit.Node.AuditText().Contains("route_not_allowed"), "the refusal's audit line", 30_000);
     }
 }

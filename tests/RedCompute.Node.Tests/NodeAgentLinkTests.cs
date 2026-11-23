@@ -58,8 +58,10 @@ public sealed class NodeAgentLinkTests : IAsyncLifetime
         foreach (var cli in clis)
             Assert.Equal(["name", "installed", "version", "signedIn", "authMethod", "path"], cli.EnumerateObject().Select(p => p.Name));
 
-        var audit = _home.Environment().Audit.Read();
-        foreach (var method in new[] { "node.describe", "node.hardware", "node.cli" })
+        string[] methods = ["node.describe", "node.hardware", "node.cli"];
+        var audit = await Wait.AuditAsync(_home.Environment().Audit, a => methods.All(method =>
+            a.Any(line => line["name"]!.GetValue<string>() == method && line["outcome"]!.GetValue<string>() == "answered")));
+        foreach (var method in methods)
             Assert.Contains(audit, line => line["name"]!.GetValue<string>() == method && line["outcome"]!.GetValue<string>() == "answered");
     }
 
@@ -75,7 +77,8 @@ public sealed class NodeAgentLinkTests : IAsyncLifetime
         var error = await Assert.ThrowsAsync<LinkRpcException>(() =>
             _linked.ServerSession.CallAsync(method, new JsonObject { ["path"] = "/etc/passwd", ["argv"] = new JsonArray("sh") }));
         Assert.Equal(LinkErrorCodes.MethodNotAllowed, error.Code);
-        var line = Assert.Single(_home.Environment().Audit.Read(), l => l["name"]!.GetValue<string>() == method);
+        var lines = await Wait.AuditAsync(_home.Environment().Audit, a => a.Any(l => l["name"]!.GetValue<string>() == method));
+        var line = Assert.Single(lines, l => l["name"]!.GetValue<string>() == method);
         Assert.Equal("refused", line["outcome"]!.GetValue<string>());
         Assert.Equal("request", line["kind"]!.GetValue<string>());
         Assert.DoesNotContain("passwd", line.ToJsonString()); // the audit never holds payloads
@@ -90,7 +93,9 @@ public sealed class NodeAgentLinkTests : IAsyncLifetime
                 _linked.ServerSession.OpenChannelAsync(new ChannelOpenRequest(@class), new Collector()));
             Assert.Equal(LinkErrorCodes.ClassNotSupported, error.Code);
         }
-        var refused = _home.Environment().Audit.Read().Where(l => l["kind"]!.GetValue<string>() == "channel").ToList();
+        var refused = (await Wait.AuditAsync(_home.Environment().Audit,
+            a => a.Count(l => l["kind"]!.GetValue<string>() == "channel" && l["outcome"]!.GetValue<string>() == "refused") >= 4))
+            .Where(l => l["kind"]!.GetValue<string>() == "channel").ToList();
         Assert.Equal(4, refused.Count(l => l["outcome"]!.GetValue<string>() == "refused"));
     }
 
@@ -113,7 +118,8 @@ public sealed class NodeAgentLinkTests : IAsyncLifetime
         Assert.Equal(1, _linked.Agent.KillAll());
         await Wait.UntilAsync(() => collector.ResetCode is not null, "the reset");
         Assert.Equal("killed_by_owner", collector.ResetCode);
-        Assert.Contains(_home.Environment().Audit.Read(), l => l["name"]!.GetValue<string>() == "kill-all");
+        Assert.Contains(await Wait.AuditAsync(_home.Environment().Audit, a => a.Any(l => l["name"]!.GetValue<string>() == "kill-all")),
+            l => l["name"]!.GetValue<string>() == "kill-all");
     }
 
     [Fact]

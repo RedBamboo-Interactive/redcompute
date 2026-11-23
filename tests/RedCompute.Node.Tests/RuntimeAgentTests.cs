@@ -169,8 +169,9 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         // Review P4-P7, item 6: the server never asked for a runtime's output, so the node does not offer it.
         var error = await Assert.ThrowsAsync<LinkRpcException>(() => _linked.ServerSession.CallAsync("runtime.logs", JsonNode.Parse(parameters)));
         Assert.Equal(LinkErrorCodes.MethodNotAllowed, error.Code);
-        Assert.Contains(_home.Environment().Audit.Read(), l => l["name"]!.GetValue<string>() == "runtime.logs"
-            && l["kind"]!.GetValue<string>() == "request" && l["outcome"]!.GetValue<string>() == "refused");
+        Func<JsonObject, bool> refused = l => l["name"]!.GetValue<string>() == "runtime.logs"
+            && l["kind"]!.GetValue<string>() == "request" && l["outcome"]!.GetValue<string>() == "refused";
+        Assert.Contains(await Wait.AuditAsync(_home.Environment().Audit, a => a.Any(refused)), l => refused(l));
     }
 
     [Fact]
@@ -210,11 +211,15 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         Assert.Equal("stopped", stopped.GetProperty("status").GetString());
         await Wait.UntilAsync(() => !Alive(pid), "the process gone");
         Assert.False(File.Exists(Path.Combine(_home.Paths.RuntimeState, Managed + ".json")));
-        var audit = _home.Environment().Audit.Read().Where(l => l["kind"]!.GetValue<string>() == "runtime" && l["name"]!.GetValue<string>() == Managed)
+        Func<JsonObject, string, bool> runtimeLine = (l, outcome) => l["kind"]!.GetValue<string>() == "runtime"
+            && l["name"]!.GetValue<string>() == Managed && l["outcome"]!.GetValue<string>() == outcome;
+        var all = await Wait.AuditAsync(_home.Environment().Audit, a => a.Any(l => runtimeLine(l, "started")) && a.Any(l => runtimeLine(l, "stopped"))
+            && a.Any(l => l["name"]!.GetValue<string>() == "runtime.start" && l["kind"]!.GetValue<string>() == "request"));
+        var audit = all.Where(l => l["kind"]!.GetValue<string>() == "runtime" && l["name"]!.GetValue<string>() == Managed)
             .Select(l => l["outcome"]!.GetValue<string>()).ToList();
         Assert.Contains("started", audit);
         Assert.Contains("stopped", audit);
-        Assert.Contains(_home.Environment().Audit.Read(), l => l["name"]!.GetValue<string>() == "runtime.start" && l["kind"]!.GetValue<string>() == "request");
+        Assert.Contains(all, l => l["name"]!.GetValue<string>() == "runtime.start" && l["kind"]!.GetValue<string>() == "request");
     }
 
     [Fact]
@@ -394,8 +399,9 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         // Nothing reached the runtime but the agent's own health probe, which polls /system_stats on its own schedule
         // (counting every request made this test flaky).
         Assert.DoesNotContain(_comfy.Requests.Skip(before), request => request.Target != "/system_stats");
-        Assert.Contains(_home.Environment().Audit.Read(), l => l["kind"]!.GetValue<string>() == "forward"
-            && l["outcome"]!.GetValue<string>() == ForwardErrorCodes.RouteNotAllowed);
+        Func<JsonObject, bool> refusal = l => l["kind"]!.GetValue<string>() == "forward"
+            && l["outcome"]!.GetValue<string>() == ForwardErrorCodes.RouteNotAllowed;
+        Assert.Contains(await Wait.AuditAsync(_home.Environment().Audit, a => a.Any(refusal)), l => refusal(l));
     }
 
     [Fact]
@@ -513,12 +519,14 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         Assert.Equal(0, await commands.RunAsync(["runtime", "start", Managed], CancellationToken.None));
         await Wait.UntilAsync(() => _linked.Agent.Runtimes.Status(Managed)?.Status == BackendStatus.Running, "running");
         Assert.Equal(0, await commands.RunAsync(["runtime", "stop", Managed], CancellationToken.None));
+        await Wait.UntilAsync(() => Asked().Length >= 2, "the owner's start and stop audited");
         Assert.Equal(["started: asked by the owner", "stopped: asked by the owner"], Asked());
 
         // The server, over the link (runtime.start|stop).
         await _linked.ServerSession.CallAsync("runtime.start", new JsonObject { ["id"] = Managed });
         await Wait.UntilAsync(() => _linked.Agent.Runtimes.Status(Managed)?.Status == BackendStatus.Running, "running again");
         await _linked.ServerSession.CallAsync("runtime.stop", new JsonObject { ["id"] = Managed });
+        await Wait.UntilAsync(() => Asked().Length >= 4, "the server's start and stop audited");
         Assert.Equal(["started: asked by the owner", "stopped: asked by the owner", "started: asked by the server", "stopped: asked by the server"],
             Asked());
 

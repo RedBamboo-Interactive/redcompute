@@ -113,7 +113,8 @@ public sealed class RuntimeStopRaceTests : IAsyncLifetime
         Assert.Equal(BackendStatus.Error, view.Status);
         Assert.Contains("did not stop", view.StatusDetail);
         Assert.True(RuntimeAgentTests.Alive(first.Id));
-        Assert.Contains(_home.Environment().Audit.Read(), record => (string?)record["outcome"] == "stop-failed");
+        Assert.Contains(await Wait.AuditAsync(_home.Environment().Audit, a => a.Any(record => (string?)record["outcome"] == "stop-failed")),
+            record => (string?)record["outcome"] == "stop-failed");
 
         // Not runtime_stopping: the live process is still the runtime, so nothing new is spawned.
         var started = await _manager.StartAsync(Id, RuntimeRequester.Server);

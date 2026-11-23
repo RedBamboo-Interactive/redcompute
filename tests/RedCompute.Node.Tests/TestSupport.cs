@@ -112,6 +112,23 @@ internal sealed class StubHttp(Func<HttpRequestMessage, string, HttpResponseMess
 
 internal static class Wait
 {
+    /// <summary>
+    /// The audit once <paramref name="ready"/> holds for it. The agent records some exchanges after their effect is visible
+    /// (a forward once its close is queued, a stop once the process is gone), so a test that asserts on a line waits for it
+    /// instead of reading once; the line's presence is what is asserted, the wait is only for it to be written.
+    /// </summary>
+    public static async Task<IReadOnlyList<System.Text.Json.Nodes.JsonObject>> AuditAsync(AuditLog audit,
+        Func<IReadOnlyList<System.Text.Json.Nodes.JsonObject>, bool> ready, int timeoutMs = 30_000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (true)
+        {
+            var records = audit.Read();
+            if (ready(records) || DateTime.UtcNow > deadline) return records; // on timeout the caller's own assertion reports it
+            await Task.Delay(10);
+        }
+    }
+
     public static async Task UntilAsync(Func<bool> condition, string what, int timeoutMs = 10_000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
