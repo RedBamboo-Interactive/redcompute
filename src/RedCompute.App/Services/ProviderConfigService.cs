@@ -5,6 +5,7 @@ using System.Text.Json;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Auth.Vault;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Sessions;
 using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services;
@@ -341,7 +342,8 @@ public class ProviderConfigService
 
         foreach (var entity in snapshot.Values)
         {
-            if (entity.Capabilities.Count == 0) continue;
+            // An OpenCode profile configures just the process that selected it.
+            if (entity.Capabilities.Count == 0 || SharedOpenCodeSettings(entity) is not null) continue;
 
             foreach (var kernelSlug in entity.Capabilities)
             {
@@ -387,6 +389,7 @@ public class ProviderConfigService
 
         foreach (var entity in snapshot.Values.Where(provider => !string.IsNullOrEmpty(provider.ApiKey)))
         {
+            if (SharedOpenCodeSettings(entity) is not null) continue;
             foreach (var kernelSlug in entity.Capabilities)
             {
                 var mapped = slugMap.TryGetValue(kernelSlug, out var mappedSlug);
@@ -417,7 +420,8 @@ public class ProviderConfigService
 
         Dictionary<string, ProviderEntityConfig> snapshot;
         lock (_lock) { snapshot = _providers; }
-        if (!snapshot.TryGetValue(reference, out var entity)) return null;
+        if (!snapshot.TryGetValue(reference, out var entity) || SharedOpenCodeSettings(entity) is not null)
+            return null;
 
         if (entity.RuntimeBinding.Equals("dedicated", StringComparison.OrdinalIgnoreCase))
             return cap.Providers.ContainsKey(entity.Slug) ? entity.Slug : null;
@@ -438,6 +442,56 @@ public class ProviderConfigService
 
         return new ProviderEntityConfig(slug, slug, slug, slug, null, null, null, null, "active", null);
     }
+
+    public bool HasSharedOpenCodeProfile(string reference)
+        => SharedOpenCodeSettings(Resolve(ResolveReference(reference))) is not null;
+
+    /// <summary>Creates a runtime-only profile. The credential never enters the persisted backend config.</summary>
+    public ProviderConfig? ResolveSharedOpenCodeProfile(string reference)
+    {
+        var provider = Resolve(ResolveReference(reference));
+        if (SharedOpenCodeSettings(provider) is not { } settings) return null;
+
+        return new ProviderConfig
+        {
+            Type = provider.ProviderType ?? "OpenCode",
+            EntityId = provider.Id,
+            EntitySlug = provider.Slug,
+            DisplayName = provider.Name,
+            Backend = provider.Backend,
+            RuntimeBinding = provider.RuntimeBinding,
+            Endpoint = provider.EndpointUrl,
+            Model = provider.DefaultModel,
+            KeyBinding = provider is { ApiKeyAuthoritative: true, ApiKey: { Length: > 0 } key, ApiKeyDestination: { } destination }
+                ? new ProviderKeyBinding(key, destination)
+                : null,
+            Extra = new Dictionary<string, object?> { ["opencode"] = settings.GetRawText() },
+        };
+    }
+
+    internal static IReadOnlyList<ModelInfo>? GetSharedOpenCodeModels(ProviderEntityConfig provider)
+    {
+        if (SharedOpenCodeSettings(provider) is not { } settings) return null;
+        if (settings.ValueKind != JsonValueKind.Object
+            || GetSettingString(settings, "id") is not { Length: > 0 } id
+            || !settings.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Object)
+            return [];
+
+        return models.EnumerateObject()
+            .Where(model => model.Value.ValueKind == JsonValueKind.Object)
+            .Select(model => new ModelInfo
+            {
+                Id = id + "/" + model.Name,
+                Name = GetSettingString(model.Value, "name") ?? model.Name,
+            }).ToArray();
+    }
+
+    private static JsonElement? SharedOpenCodeSettings(ProviderEntityConfig provider)
+        => provider.Backend.Equals("opencode", StringComparison.OrdinalIgnoreCase)
+            && provider.RuntimeBinding.Equals("shared", StringComparison.OrdinalIgnoreCase)
+            && provider.Settings is { ValueKind: JsonValueKind.Object } settings && settings.TryGetProperty("opencode", out var profile)
+                ? profile
+                : null;
 
     /// <summary>Normalize an entity reference (ID, slug, or legacy backend alias) to its provider slug.</summary>
     public string ResolveReference(string reference)

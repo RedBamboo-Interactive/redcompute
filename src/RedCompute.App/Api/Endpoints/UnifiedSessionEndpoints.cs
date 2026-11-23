@@ -2200,7 +2200,7 @@ public static class UnifiedSessionEndpoints
                 string? runtimeError = runtime == null ? "provider_plugin_not_loaded" : null;
                 if (runtime != null)
                 {
-                    try { models = runtime.GetAvailableModels(); }
+                    try { models = ProviderConfigService.GetSharedOpenCodeModels(p) ?? runtime.GetAvailableModels(); }
                     catch (Exception ex)
                     {
                         runtimeError = "model_discovery_failed";
@@ -2277,9 +2277,17 @@ public static class UnifiedSessionEndpoints
             if (body.TryGetProperty("timeout", out var to) && to.ValueKind == JsonValueKind.Number)
                 timeout = Math.Clamp(to.GetInt32(), 1, 7200);
 
+            var sharedOpenCodeProfile = provider.ProviderId == "opencode"
+                && q.ProviderName is { } profileReference
+                && _providerConfig?.HasSharedOpenCodeProfile(profileReference) == true;
             Dictionary<string, string>? env = null;
             if (body.TryGetProperty("env", out var envProp) && envProp.ValueKind == JsonValueKind.Object)
+            {
+                if (sharedOpenCodeProfile && envProp.EnumerateObject().Any())
+                    return Error(422, "provider_environment_override",
+                        "Vaulted OpenCode profiles do not accept caller environment overrides.");
                 env = envProp.EnumerateObject().ToDictionary(ep => ep.Name, ep => ep.Value.GetString() ?? "");
+            }
             var legacyEnvironment = env;
 
             var providerParams = new Dictionary<string, object?>();
@@ -2306,6 +2314,9 @@ public static class UnifiedSessionEndpoints
             // the first thing that genuinely needs the daemon, so bring it up here and nowhere else.
             var namesContainer = providerParams.TryGetValue("container", out var reqContainer) && reqContainer is string { Length: > 0 };
             var namesImage = providerParams.TryGetValue("dockerImage", out var reqImage) && reqImage is string { Length: > 0 };
+            if (sharedOpenCodeProfile && (namesContainer || namesImage))
+                return Error(422, "provider_container_not_supported",
+                    "Vaulted OpenCode profiles require a host-local process.");
             if (namesContainer || namesImage)
                 await DockerDesktopService.EnsureRunningAsync(s => log(s, null), _host);
 
@@ -2329,8 +2340,11 @@ public static class UnifiedSessionEndpoints
             if (userId != null)
                 providerParams["userId"] = userId;
 
-            // Thread provider endpoint/key into env so providers that support custom endpoints can use them.
-            env = WithProviderCredentialEnv(env, q.EndpointUrl, q.ApiKey, q.ApiKeyDestination);
+            // Only the server can select the profile. OpenCode resolves its credential at launch.
+            if (sharedOpenCodeProfile)
+                providerParams["providerEntity"] = q.ProviderName;
+            else
+                env = WithProviderCredentialEnv(env, q.EndpointUrl, q.ApiKey, q.ApiKeyDestination);
 
             var inputSummary = prompt.Length > 100 ? prompt[..97] + "..." : prompt;
             var idempotencyKey = ctx.Request.Headers.TryGetValue("X-Idempotency-Key", out var ik) ? ik.ToString() : null;

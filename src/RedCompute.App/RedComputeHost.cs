@@ -213,6 +213,7 @@ public static class RedComputeHost
         {
             (IJobTracker)JobTracker,
             (IProviderQualityModeResolver)QualityModes,
+            (Func<string, ProviderConfig?>)ProviderConfig.ResolveSharedOpenCodeProfile,
             (IAcceleratorAdmissionCoordinator)AcceleratorAdmission,
             (Action<string, Guid?>)((msg, jobId) => Log(msg, jobId)),
             (IExecutionHost)Nodes.LocalHost,
@@ -297,6 +298,7 @@ public static class RedComputeHost
             {
                 (IJobTracker)JobTracker,
                 (IProviderQualityModeResolver)QualityModes,
+                (Func<string, ProviderConfig?>)ProviderConfig.ResolveSharedOpenCodeProfile,
                 (IAcceleratorAdmissionCoordinator)AcceleratorAdmission,
                 (Action<string, Guid?>)((message, jobId) => Log(message, jobId)),
                 (IExecutionHost)Nodes.LocalHost,

@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -23,6 +24,9 @@ public class OpenCodeSessionService
     private readonly IAcceleratorAdmissionCoordinator? _acceleratorAdmission;
     private readonly Action<string, Guid?> _log;
     private readonly IExecutionHost _host;
+    private readonly Func<string, ProviderConfig?>? _resolveSharedProfile;
+
+    internal NpmCliVersionManager CliVersionManager { get; }
 
     /// <summary>Containment owner of the ACP session process tree.</summary>
     internal const string AcpOwner = "opencode";
@@ -96,12 +100,12 @@ public class OpenCodeSessionService
 
     public OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
         Action<string, Guid?> log, IAcceleratorAdmissionCoordinator? acceleratorAdmission = null,
-        IExecutionHost? host = null)
+        IExecutionHost? host = null, Func<string, ProviderConfig?>? resolveSharedProfile = null)
         : this(config, jobTracker, store, log,
             new OpenCodeNativeSessionReader(
                 OpenCodeNativeSessionReader.ResolveDbPath(host ?? LocalExecutionHost.Shared, config.OpenCodeDataHome),
                 host ?? LocalExecutionHost.Shared),
-            acceleratorAdmission, host)
+            acceleratorAdmission, host, resolveSharedProfile)
     {
     }
 
@@ -111,13 +115,18 @@ public class OpenCodeSessionService
     /// </param>
     internal OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
         Action<string, Guid?> log, IOpenCodeNativeSessionReader nativeSessionReader,
-        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null)
+        IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null,
+        Func<string, ProviderConfig?>? resolveSharedProfile = null)
     {
         // The host first: recovery below already kills recorded PIDs on it.
         _host = host ?? LocalExecutionHost.Shared;
         LaunchAcpProcess = spec => _host.Processes.Start(spec);
         LaunchExecProcess = spec => _host.Processes.Start(spec);
         _config = config;
+        _resolveSharedProfile = resolveSharedProfile;
+        CliVersionManager = new NpmCliVersionManager(
+            "opencode-ai", "OpenCode", ResolveOpenCodePath, GetCliSessionState,
+            static (_, _) => Task.CompletedTask, host: _host);
         _jobTracker = jobTracker;
         _store = store;
         _nativeSessionReader = nativeSessionReader;
@@ -174,13 +183,6 @@ public class OpenCodeSessionService
             return null;
         }
 
-        var opencodePath = ResolveOpenCodePath();
-        if (opencodePath == null)
-        {
-            LastStartError = "Could not find 'opencode' CLI. Install opencode or set OpenCodePath in config.";
-            return null;
-        }
-
         var id = Guid.NewGuid().ToString("N")[..12];
         var info = new OpenCodeSessionInfo
         {
@@ -204,7 +206,7 @@ public class OpenCodeSessionService
             Access = access is { AccessLevel: not null } ? access : new SessionAccessState(SessionAccessLevels.Ask),
         };
 
-        var (session, error) = await SpawnAcpSession(info, opencodePath, projectPath, null, model, effort,
+        var (session, error) = await SpawnAcpSession(info, projectPath, null, model, effort,
             thinkingBudget, scratchDirectory, developerInstructions);
         if (session == null)
         {
@@ -274,13 +276,6 @@ public class OpenCodeSessionService
         record.Dismissed = false;
         _store.SaveSession(record);
 
-        var opencodePath = ResolveOpenCodePath();
-        if (opencodePath == null)
-        {
-            LastStartError = "Could not find 'opencode' CLI.";
-            return null;
-        }
-
         var info = new OpenCodeSessionInfo
         {
             Id = record.Id,
@@ -317,7 +312,7 @@ public class OpenCodeSessionService
         };
 
         var (session, error) = await SpawnAcpSession(
-            info, opencodePath, record.ProjectPath, record.OpenCodeSessionId,
+            info, record.ProjectPath, record.OpenCodeSessionId,
             scratchDirectory: record.ScratchDirectory,
             developerInstructions: record.DeveloperInstructions);
         if (session == null)
@@ -360,13 +355,35 @@ public class OpenCodeSessionService
         return info;
     }
 
-    private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
-        OpenCodeSessionInfo info, string opencodePath, string projectPath, string? existingSessionId,
+    private Task<(ManagedSession? session, string? error)> SpawnAcpSession(
+        OpenCodeSessionInfo info, string projectPath, string? existingSessionId,
         string? model = null, string? effort = null, int? thinkingBudget = null,
         string? scratchDirectory = null, string? developerInstructions = null)
+        => CliVersionManager.RunWhenInstallIdleAsync(spawned => SpawnAcpSessionCore(
+            info, projectPath, existingSessionId, model, effort, thinkingBudget,
+            scratchDirectory, developerInstructions, spawned));
+
+    private async Task<(ManagedSession? session, string? error)> SpawnAcpSessionCore(
+        OpenCodeSessionInfo info, string projectPath, string? existingSessionId,
+        string? model, string? effort, int? thinkingBudget,
+        string? scratchDirectory, string? developerInstructions, Action spawned)
     {
+        var opencodePath = ResolveOpenCodePath();
+        if (opencodePath == null)
+            return (null, "Could not find 'opencode' CLI. Install opencode or set OpenCodePath in config.");
+
         // The variables set over the inherited environment, in the order they were always set.
         var environment = NewEnvironment(_host);
+        var profile = info.ProviderEntity is { } reference ? _resolveSharedProfile?.Invoke(reference) : null;
+        var resolvedModel = model ?? _config.Model;
+        if (profile is not null)
+        {
+            effort ??= info.Effort;
+            var applied = OpenCodeProviderProfile.Apply(_host, environment, profile, model ?? info.Model, effort);
+            if (applied.Error is not null) return (null, applied.Error);
+            resolvedModel = applied.Model;
+        }
+
         if (SessionScratch.Environment(scratchDirectory, sessionId: info.Id) is { } scratchEnvironment)
             foreach (var (key, value) in scratchEnvironment)
                 environment[key] = value;
@@ -390,12 +407,14 @@ public class OpenCodeSessionService
             OwnerLabel = AcpOwner,
         };
 
-        var resolvedModel = model ?? _config.Model;
-
         IHostProcess process;
         try
         {
-            process = LaunchAcpProcess(spec)!;
+            var launched = LaunchAcpProcess(spec);
+            if (launched == null)
+                return (null, "Failed to start opencode acp.");
+            process = launched;
+            spawned();
         }
         catch (Exception ex)
         {
@@ -487,7 +506,7 @@ public class OpenCodeSessionService
                     });
                 }
 
-                if (!string.IsNullOrEmpty(effort) && session.AcpSessionId != null)
+                if (profile is null && !string.IsNullOrEmpty(effort) && session.AcpSessionId != null)
                 {
                     try
                     {
@@ -516,6 +535,16 @@ public class OpenCodeSessionService
                 }
             }
 
+            if (profile is not null && !string.IsNullOrWhiteSpace(effort) && session.AcpSessionId is { } acpSessionId)
+            {
+                await SendRequest(session, "session/set_config_option", new
+                {
+                    sessionId = acpSessionId,
+                    configId = "effort",
+                    value = effort,
+                });
+            }
+
             if (sessionResult.TryGetProperty("_meta", out var meta)
                 && meta.TryGetProperty("opencode", out var oc)
                 && oc.TryGetProperty("modelId", out var modelId))
@@ -523,7 +552,7 @@ public class OpenCodeSessionService
                 info.Model = modelId.GetString();
             }
 
-            if (!string.IsNullOrEmpty(resolvedModel) && existingSessionId == null)
+            if (!string.IsNullOrEmpty(resolvedModel) && (existingSessionId == null || profile is not null))
                 info.Model = resolvedModel;
 
             _sessions[info.Id] = session;
@@ -1878,24 +1907,29 @@ public class OpenCodeSessionService
         string? model, int timeout,
         CancellationToken ct,
         string? streamKey = null,
-        Dictionary<string, string>? env = null)
+        Dictionary<string, string>? env = null, string? providerEntity = null, string? effort = null)
     {
+        var profile = providerEntity is null ? null : _resolveSharedProfile?.Invoke(providerEntity);
         var useDocker = !string.IsNullOrWhiteSpace(container);
+        if (useDocker && profile is not null)
+            return new ExecuteResult(false, null, null, null, 0, 0, null,
+                "Vaulted OpenCode provider profiles require a host-local process.");
 
         if (useDocker && !string.IsNullOrWhiteSpace(_config.OpenCodeDataHome))
             return new ExecuteResult(false, null, null, null, 0, 0, null,
                 "OpenCodeDataHome is not supported for Docker execution");
 
-        if (!useDocker)
-        {
-            var opencodePath = ResolveOpenCodePath();
-            if (opencodePath == null)
-                return new ExecuteResult(false, null, null, null, 0, 0, null,
-                    "Could not find 'opencode' CLI. Install opencode or set OpenCodePath in config.");
-        }
+        await using var acceleratorLease = await AcquireForModelAsync(model ?? profile?.Model ?? _config.Model, ct);
+        return await CliVersionManager.RunWhenInstallIdleAsync(
+            spawned => ExecuteCoreAsync(prompt, container, workingDir, model, timeout, ct, streamKey, env,
+                useDocker, profile, effort, spawned), ct);
+    }
 
-        await using var acceleratorLease = await AcquireForModelAsync(model ?? _config.Model, ct);
-
+    private async Task<ExecuteResult> ExecuteCoreAsync(
+        string prompt, string? container, string? workingDir, string? model, int timeout,
+        CancellationToken ct, string? streamKey, Dictionary<string, string>? env, bool useDocker,
+        ProviderConfig? profile, string? effort, Action spawned)
+    {
         string fileName;
         List<string> arguments;
         HostPath? directory = null;
@@ -1908,7 +1942,11 @@ public class OpenCodeSessionService
         }
         else
         {
-            fileName = ResolveOpenCodePath()!;
+            var opencodePath = ResolveOpenCodePath();
+            if (opencodePath == null)
+                return new ExecuteResult(false, null, null, null, 0, 0, null,
+                    "Could not find 'opencode' CLI. Install opencode or set OpenCodePath in config.");
+            fileName = opencodePath;
             arguments = [];
             if (!string.IsNullOrWhiteSpace(workingDir))
                 directory = _host.Path(workingDir);
@@ -1917,9 +1955,21 @@ public class OpenCodeSessionService
                 foreach (var (k, v) in env)
                     environment[k] = v;
             ApplyConfiguredDataHome(_host, environment, _config.OpenCodeDataHome);
+            if (profile is not null)
+            {
+                var applied = OpenCodeProviderProfile.Apply(_host, environment, profile, model, effort);
+                if (applied.Error is not null)
+                    return new ExecuteResult(false, null, null, null, 0, 0, null, applied.Error);
+                model = applied.Model;
+            }
         }
 
         BuildExecArgs(arguments, model);
+        if (profile is not null && !string.IsNullOrWhiteSpace(effort))
+        {
+            arguments.Add("--variant");
+            arguments.Add(effort);
+        }
 
         var sw = Stopwatch.StartNew();
         // Every stream piped, all three UTF-8 (stdin included, as it always was), no window,
@@ -1943,6 +1993,7 @@ public class OpenCodeSessionService
         });
         if (process == null)
             return new ExecuteResult(false, null, null, null, 0, 0, null, "Failed to start opencode process");
+        spawned();
         if (streamKey != null)
             _runningProcesses[streamKey] = process;
         _log($"[OpenCode] Process started in {sw.ElapsedMilliseconds}ms", null);
@@ -2384,6 +2435,15 @@ public class OpenCodeSessionService
 
     // ===== Process Management =====
 
+    private CliProviderSessionState GetCliSessionState()
+    {
+        // Every resident ACP process uses the package, including an idle session that can
+        // accept a new turn. The normal session parking path remains responsible for it.
+        var sessions = _sessions.Values.ToArray();
+        var ownedProcessIds = sessions.Select(session => session.Info.ProcessId).OfType<int>().ToArray();
+        return new CliProviderSessionState(sessions.Length, [], ownedProcessIds);
+    }
+
     public void CancelExecution(string key)
     {
         if (_sessions.TryGetValue(key, out _))
@@ -2491,25 +2551,25 @@ public class OpenCodeSessionService
         var path = host.PathRules.Combine(directory, $"{sessionId}.md");
         host.Files.WriteAllText(host.Path(path), developerInstructions, new UTF8Encoding(false));
 
-        JsonObject config;
-        try
-        {
-            var existing = environment.TryGetValue("OPENCODE_CONFIG_CONTENT", out var set)
-                ? set
-                : host.Platform.GetEnvironmentVariable("OPENCODE_CONFIG_CONTENT");
-            config = !string.IsNullOrWhiteSpace(existing)
-                ? JsonNode.Parse(existing) as JsonObject ?? new JsonObject()
-                : new JsonObject();
-        }
-        catch (JsonException)
-        {
-            config = new JsonObject();
-        }
+        var config = ReadInlineConfig(host, environment);
 
         var instructions = config["instructions"] as JsonArray ?? new JsonArray();
         instructions.Insert(0, path);
         config["instructions"] = instructions;
         environment["OPENCODE_CONFIG_CONTENT"] = config.ToJsonString();
+    }
+
+    internal static JsonObject ReadInlineConfig(IExecutionHost host, IDictionary<string, string> environment)
+    {
+        var existing = environment.TryGetValue("OPENCODE_CONFIG_CONTENT", out var set)
+            ? set
+            : host.Platform.GetEnvironmentVariable("OPENCODE_CONFIG_CONTENT");
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            try { return JsonNode.Parse(existing) as JsonObject ?? new JsonObject(); }
+            catch (JsonException) { }
+        }
+        return new JsonObject();
     }
 
     /// <summary>The CLI on the host: <see cref="CliLocators.OpenCode"/> (shared with the node agent).</summary>

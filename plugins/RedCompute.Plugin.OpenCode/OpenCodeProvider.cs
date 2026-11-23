@@ -11,7 +11,7 @@ using RedCompute.PluginSdk.Hosting;
 namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
-    IIdleSessionParkingProvider
+    IIdleSessionParkingProvider, ICliVersionManagedProvider
 {
     private readonly string _capabilitySlug;
     private readonly OpenCodeSessionService _opencode;
@@ -35,6 +35,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     // ISessionProvider
     public string ProviderId => "opencode";
     public string ProviderDisplayName => "Open Code";
+    public NpmCliVersionManager CliVersionManager => _opencode.CliVersionManager;
     public SessionCapabilities Capabilities =>
         SessionCapabilities.StatelessExecution |
         SessionCapabilities.PersistentSessions |
@@ -59,7 +60,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     public OpenCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, Action<string, Guid?> log,
         IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null,
-        INodeRegistry? nodes = null)
+        INodeRegistry? nodes = null, Func<string, ProviderConfig?>? resolveSharedProfile = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -77,7 +78,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         _store = new OpenCodeSessionStore(nodes?.StampNodeId);
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,
-            acceleratorAdmission: acceleratorAdmission, host: host);
+            acceleratorAdmission: acceleratorAdmission, host: host, resolveSharedProfile: resolveSharedProfile);
         WireEvents();
     }
 
@@ -289,7 +290,10 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 
         env = OneshotEnvironment(env,
             providerParams?.TryGetValue("accessLevel", out var level) == true ? level as string : null);
-        var result = await _opencode.ExecuteAsync(prompt, container, workingDir, model, timeout, ct, streamKey, env);
+        var providerEntity = providerParams?.GetValueOrDefault("providerEntity") as string;
+        var effort = providerParams?.GetValueOrDefault("effort") as string;
+        var result = await _opencode.ExecuteAsync(
+            prompt, container, workingDir, model, timeout, ct, streamKey, env, providerEntity, effort);
         return new SessionExecuteResult(result.Success, result.Text, result.StreamOutput,
             result.Model, result.InputTokens, result.OutputTokens, result.CostUsd, result.Error);
     }
