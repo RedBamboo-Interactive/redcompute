@@ -802,6 +802,25 @@ public sealed class StoredPathRebaseEndToEndTests : IDisposable
         Assert.False(ConfigManager.AdoptBundledBackends(clean));
     }
 
+    [Theory]
+    [InlineData("/home/rlupdate/.local/share/RedLeaf-Suite/components/redcompute/0.1.23/backends/stt-local")]
+    [InlineData("/home/rlupdate/.local/share/RedLeaf-Suite/components/redcompute/0.1.23/backends/diarization-local/")]
+    [InlineData(@"C:\old-install\backends\stt-local")]
+    public void A_bundled_path_reads_the_same_whichever_separator_the_older_build_wrote(string persisted)
+    {
+        // Regression: 0.1.24 on Linux threw "Sequence contains no matching element" at startup on a config an
+        // 0.1.23 install had written, because the slug was taken with Path.GetFileName on a backslash string.
+        var config = ConfigManager.CreateDefault();
+        config.Capabilities["stt"].Providers["local-wsl"].ServerPath = persisted;
+
+        Assert.True(ConfigManager.IsBundledBackendPath(persisted));
+        Assert.True(ConfigManager.AdoptBundledBackends(config));
+
+        var adopted = config.Capabilities["stt"].Providers["local-wsl"].ServerPath!;
+        Assert.Equal(Path.Combine(AppContext.BaseDirectory, "backends",
+            ConfigManager.BundledBackendSlug(persisted)!), adopted);
+    }
+
     // ------------------------------------------------------------------------ the runner, the move
 
     private sealed class Throwing(string owner) : IStoredPathRebaser

@@ -33,16 +33,22 @@ public class ConfigManager
     /// That directory is recomputed at every start, so it is never persisted (a copy written by an older build
     /// points into whichever install directory that build ran from, which a move or an update leaves behind).
     /// </summary>
-    internal static bool IsBundledBackendPath(string? value)
+    internal static bool IsBundledBackendPath(string? value) => BundledBackendSlug(value) is not null;
+
+    /// <summary>
+    /// The shipped backend's slug when <paramref name="value"/> is <c>&lt;dir&gt;/backends/&lt;slug&gt;</c>, else null.
+    /// Splits on both separators by hand: <c>Path.GetFileName</c> only knows the running OS's, so a path a Linux
+    /// build wrote (forward slashes) or a Windows one did (backslashes) must read the same on either.
+    /// </summary>
+    internal static string? BundledBackendSlug(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value)) return false;
+        if (string.IsNullOrWhiteSpace(value)) return null;
         var trimmed = value.Replace('/', '\\').TrimEnd('\\');
         var slash = trimmed.LastIndexOf('\\');
-        if (slash <= 0) return false;
-        var slug = trimmed[(slash + 1)..];
-        if (!BundledBackendSlugs.Contains(slug, StringComparer.OrdinalIgnoreCase)) return false;
-        var parent = trimmed[..slash];
-        return parent.EndsWith(@"\backends", StringComparison.OrdinalIgnoreCase);
+        if (slash <= 0) return null;
+        var slug = BundledBackendSlugs.FirstOrDefault(s => s.Equals(trimmed[(slash + 1)..], StringComparison.OrdinalIgnoreCase));
+        if (slug is null) return null;
+        return trimmed[..slash].EndsWith(@"\backends", StringComparison.OrdinalIgnoreCase) ? slug : null;
     }
 
     public RedComputeConfig Config { get; private set; } = new();
@@ -300,9 +306,8 @@ public class ConfigManager
         foreach (var (capabilitySlug, capability) in config.Capabilities)
         foreach (var (name, provider) in capability.Providers)
         {
-            if (!IsBundledBackendPath(provider.ServerPath)) continue;
-            var slug = Path.GetFileName(provider.ServerPath!.Replace('/', '\\').TrimEnd('\\'));
-            var current = BundledBackendPath(BundledBackendSlugs.First(s => s.Equals(slug, StringComparison.OrdinalIgnoreCase)));
+            if (BundledBackendSlug(provider.ServerPath) is not { } slug) continue;
+            var current = BundledBackendPath(slug);
             if (!string.Equals(provider.ServerPath, current, StringComparison.Ordinal))
             {
                 provider.ServerPath = current;
