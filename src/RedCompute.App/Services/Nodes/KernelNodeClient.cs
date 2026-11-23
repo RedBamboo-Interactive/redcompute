@@ -235,6 +235,7 @@ public sealed class KernelNodeSync : IAsyncDisposable
     private Task? _presenceLoop;
     private SyncFlight? _flight;
     private long _lastListAt;
+    private int _started; // reads begun, under _flightGate
     private int _lists;
     private int _presenceWakeups;
     private readonly HashSet<string> _loggedProblems = new(StringComparer.Ordinal);
@@ -284,6 +285,8 @@ public sealed class KernelNodeSync : IAsyncDisposable
     /// </summary>
     public async Task<bool> RefreshAsync(CancellationToken ct)
     {
+        int startedBeforeCall;
+        lock (_flightGate) startedBeforeCall = _started;
         while (true)
         {
             SyncFlight flight;
@@ -291,7 +294,11 @@ public sealed class KernelNodeSync : IAsyncDisposable
             lock (_flightGate)
             {
                 if (_life.IsCancellationRequested) return false;
+                // A read that began after this call is the read the caller needs, however late it gets here to join it, even
+                // one that has already ended: a caller held up between waiting out the older read and looking again must
+                // not be sent on to a third.
                 if (_flight is { Started: false } pending) (flight, fresh) = (pending, true);
+                else if (_flight is { StartNumber: > 0 } started && started.StartNumber > startedBeforeCall) (flight, fresh) = (started, true);
                 else if (_flight is { } running && !running.Task.IsCompleted) (flight, fresh) = (running, false);
                 else (flight, fresh) = (_flight = Launch(), true);
             }
@@ -305,6 +312,8 @@ public sealed class KernelNodeSync : IAsyncDisposable
     private sealed class SyncFlight
     {
         public bool Started;
+        /// <summary>Which read this is, counting from 1 (0 until it starts).</summary>
+        public int StartNumber;
         public Task<bool> Task = null!;
     }
 
@@ -325,6 +334,7 @@ public sealed class KernelNodeSync : IAsyncDisposable
             lock (_flightGate)
             {
                 flight.Started = true;
+                flight.StartNumber = ++_started;
                 _lastListAt = _time.GetTimestamp();
             }
             Interlocked.Increment(ref _lists);

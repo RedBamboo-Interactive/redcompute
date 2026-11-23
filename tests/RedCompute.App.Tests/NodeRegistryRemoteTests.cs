@@ -335,10 +335,35 @@ public sealed class NodeRegistryRemoteTests : IDisposable
         await WaitAsync(() => kernel.Lists == 2, "the second read");
         kernel.Answer(1, [Kernel(RemoteId(1)), Kernel(RemoteId(2))]);
 
-        Assert.All(await Task.WhenAll(burst), Assert.True);
+        Assert.All(await Task.WhenAll(burst).WaitAsync(TimeSpan.FromSeconds(30)), Assert.True);
         // Every caller has its answer from that one read; none is left to start a third.
         Assert.Equal(2, kernel.Lists);
         Assert.NotNull(registry.Find(RemoteId(2)));
+    }
+
+    [Fact]
+    public async Task Callers_that_waited_out_a_read_share_the_next_one_however_late_they_look_again()
+    {
+        // Every caller was called while the first read was under way, so each needs a read that starts after its call.
+        // The first of them to look again launches it; one held up until that read has begun must take it, not start a third
+        // read of the kernel (which, here, nobody answers).
+        for (var round = 0; round < 50; round++)
+        {
+            var kernel = new GatedKernel();
+            await using var sync = new KernelNodeSync(Registry(), kernel, _ => { }, minimumResyncInterval: TimeSpan.Zero);
+
+            var first = sync.RefreshAsync(CancellationToken.None);
+            await WaitAsync(() => kernel.Lists == 1, "the first read");
+            // RefreshAsync takes its place before it first awaits, so all six are in line behind the read under way.
+            var callers = Enumerable.Range(0, 6).Select(_ => sync.RefreshAsync(CancellationToken.None)).ToList();
+            kernel.Answer(0, []);
+            Assert.True(await first);
+
+            await WaitAsync(() => kernel.Lists == 2, "the second read");
+            kernel.Answer(1, []);
+            Assert.All(await Task.WhenAll(callers).WaitAsync(TimeSpan.FromSeconds(30)), Assert.True);
+            Assert.Equal(2, kernel.Lists);
+        }
     }
 
     /// <summary>A clock and timers that move only when the test says so.</summary>
