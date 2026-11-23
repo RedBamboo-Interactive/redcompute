@@ -221,11 +221,36 @@ public sealed class AuditLog
         lock (_gate)
         {
             if (!Directory.Exists(_folder)) return [];
-            return Directory.EnumerateFiles(_folder, "*.jsonl").Order(StringComparer.Ordinal)
-                .SelectMany(File.ReadLines)
-                .Select(line => JsonNode.Parse(line) as JsonObject)
-                .OfType<JsonObject>()
-                .ToList();
+            var records = new List<JsonObject>();
+            foreach (var path in Directory.EnumerateFiles(_folder, "*.jsonl").Order(StringComparer.Ordinal))
+            {
+                // Another AuditLog on this folder (the agent's, while the CLI or a test reads) appends to the same file:
+                // File.ReadLines would open it FileShare.Read, which fails against that writer and makes the writer's own
+                // append fail too (Record drops the line on an IOException). Share it as the writer does.
+                string[] lines;
+                try
+                {
+                    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    using var reader = new StreamReader(stream, Encoding.UTF8);
+                    lines = reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                }
+                catch (FileNotFoundException)
+                {
+                    continue; // pruned between the listing and the open
+                }
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    try
+                    {
+                        if (JsonNode.Parse(lines[i]) is JsonObject record) records.Add(record);
+                    }
+                    catch (System.Text.Json.JsonException) when (i == lines.Length - 1)
+                    {
+                        // the record being appended right now
+                    }
+                }
+            }
+            return records;
         }
     }
 }

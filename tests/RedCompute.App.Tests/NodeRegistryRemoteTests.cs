@@ -314,26 +314,84 @@ public sealed class NodeRegistryRemoteTests : IDisposable
     {
         var kernel = new GatedKernel();
         var registry = Registry();
-        await using var sync = new KernelNodeSync(registry, kernel, _ => { }, minimumResyncInterval: TimeSpan.FromMilliseconds(300));
+        // The spacing runs on a clock the test moves, so the boundary is exact whatever the machine is doing.
+        var time = new ManualTime();
+        await using var sync = new KernelNodeSync(registry, kernel, _ => { }, time: time, minimumResyncInterval: TimeSpan.FromMilliseconds(300));
 
         var prior = sync.RefreshAsync(CancellationToken.None);
         await WaitAsync(() => kernel.Lists == 1, "the first read");
-        var watch = System.Diagnostics.Stopwatch.StartNew();
         var burst = Enumerable.Range(0, 5).Select(_ => sync.RefreshAsync(CancellationToken.None)).ToList();
         kernel.Answer(0, [Kernel(RemoteId(1))]);
         Assert.True(await prior);
 
         // The burst arrived while the first read was under way: it waits for the spacing (it is not refused)
-        // and shares one new read.
+        // and shares one new read. Its one flight is parked on the spacing timer.
+        await WaitAsync(() => time.PendingTimers == 1, "the spacing timer");
+        time.Advance(TimeSpan.FromMilliseconds(299));
+        Assert.Equal(1, kernel.Lists);
+        Assert.All(burst, task => Assert.False(task.IsCompleted));
+
+        time.Advance(TimeSpan.FromMilliseconds(1));
         await WaitAsync(() => kernel.Lists == 2, "the second read");
-        var spacing = watch.Elapsed;
         kernel.Answer(1, [Kernel(RemoteId(1)), Kernel(RemoteId(2))]);
 
         Assert.All(await Task.WhenAll(burst), Assert.True);
-        await Task.Delay(50);
+        // Every caller has its answer from that one read; none is left to start a third.
         Assert.Equal(2, kernel.Lists);
-        Assert.True(spacing >= TimeSpan.FromMilliseconds(250), $"the second read started after {spacing.TotalMilliseconds} ms");
         Assert.NotNull(registry.Find(RemoteId(2)));
+    }
+
+    /// <summary>A clock and timers that move only when the test says so.</summary>
+    private sealed class ManualTime : TimeProvider
+    {
+        private readonly object _gate = new();
+        private readonly List<ManualTimer> _timers = [];
+        private long _ticks = TimeSpan.FromDays(1).Ticks;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() { lock (_gate) return _ticks; }
+
+        public int PendingTimers { get { lock (_gate) return _timers.Count(t => t.Due is not null); } }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state);
+            lock (_gate) _timers.Add(timer);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+
+        public void Advance(TimeSpan by)
+        {
+            List<ManualTimer> due;
+            lock (_gate)
+            {
+                _ticks += by.Ticks;
+                due = _timers.Where(t => t.Due <= _ticks).ToList();
+                foreach (var timer in due) timer.Due = null;
+            }
+            foreach (var timer in due) timer.Fire();
+        }
+
+        private sealed class ManualTimer(ManualTime owner, TimerCallback callback, object? state) : ITimer
+        {
+            public long? Due;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (owner._gate) Due = dueTime == Timeout.InfiniteTimeSpan ? null : owner._ticks + dueTime.Ticks;
+                return true;
+            }
+
+            public void Fire() => callback(state);
+
+            public void Dispose()
+            {
+                lock (owner._gate) { Due = null; owner._timers.Remove(this); }
+            }
+
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
     }
 
     [Fact]

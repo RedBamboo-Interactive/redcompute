@@ -59,6 +59,32 @@ public sealed class AuditLogTests : IDisposable
         Assert.DoesNotContain(records, record => record["outcome"]!.GetValue<string>() == AuditLog.TruncatedOutcome);
     }
 
+    [Fact]
+    public void A_read_and_a_write_by_another_log_on_the_folder_do_not_lock_each_other_out()
+    {
+        // The agent and a reader (leaf-node status, a test) each have their own AuditLog on one folder, so the in-process
+        // gate does not order them: the reader used to open the file FileShare.Read, which fails against a writer that
+        // holds it, and made the writer's append fail too (Record drops a line on an IOException).
+        var writer = new AuditLog(_folder, _time);
+        var reader = new AuditLog(_folder, _time);
+        writer.Record("request", "first", "answered");
+        var file = Path.Combine(_folder, "2026-11-16.jsonl");
+
+        // Another day's file is held open by a writer, with a line half written.
+        using (var appending = new FileStream(Path.Combine(_folder, "2026-11-15.jsonl"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        {
+            appending.Write("{\"at\":\"2026-11-15T09:00:00+00:00\",\"kind\":\"request\",\"name\":\"half"u8);
+            appending.Flush();
+            Assert.Equal("first", Assert.Single(reader.Read())["name"]!.GetValue<string>());
+        }
+
+        using (var reading = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            writer.Record("request", "second", "answered");
+        }
+        Assert.Equal(2, reader.Read().Count(record => record["name"]!.GetValue<string>() is "first" or "second"));
+    }
+
     private sealed class ManualTime(DateTimeOffset now) : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = now;

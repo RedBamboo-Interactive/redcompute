@@ -709,14 +709,53 @@ public sealed class SessionAccessEndpointTests
         var f = new Fixture(Full, fullEnabled: true);
         f.Policy.Policy = f.Policy.Policy with { Revision = 4, DefaultLevel = Full };
         await f.Access.EnsureLaunchStateAsync(f.Provider.Proxy, "session-1");
-        await WaitForAsync(() => f.Policy.Reads >= 2);
+        await f.Access.PolicyPassesIdleAsync().WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(Full, f.Provider.State.AccessLevel);
 
         f.Policy.Policy = f.Policy.Policy with { Revision = 5, DefaultLevel = Auto, FullAccess = new FullAccessAcknowledgement(false, 1) };
         await f.Access.ResolveStartAsync(f.Provider.Proxy, null, null, unattended: false, personPresent: false, agentEntityId: null);
 
-        await WaitForAsync(() => f.Provider.State.AccessLevel == Auto);
+        await f.Access.PolicyPassesIdleAsync().WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(Auto, f.Provider.State.AccessLevel);
+    }
+
+    [Fact]
+    public async Task A_revision_noticed_while_a_pass_is_running_is_applied_when_that_pass_ends()
+    {
+        // The ordering the test above leaves to the scheduler: a decision reads revision 5 while the
+        // pass for revision 4 is still running. That read must not be forgotten.
+        var f = new Fixture(Full, fullEnabled: true);
+        var gated = new GatedPolicySource(f.Policy.Policy with { Revision = 4, DefaultLevel = Full });
+        var access = new SessionAccessService(gated, () => f.Registry.FindProviders<ISessionProvider>(), _ => null, (_, _) => { });
+
+        await access.EnsureLaunchStateAsync(f.Provider.Proxy, "session-1");
+        await gated.PassHeld.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        gated.Policy = gated.Policy with { Revision = 5, DefaultLevel = Auto, FullAccess = new FullAccessAcknowledgement(false, 1) };
+        await access.ResolveStartAsync(f.Provider.Proxy, null, null, unattended: false, personPresent: false, agentEntityId: null);
+        gated.Release.SetResult();
+        await access.PolicyPassesIdleAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(Auto, f.Provider.State.AccessLevel);
+    }
+
+    /// <summary>Holds the second read (the one inside the first pass) until released.</summary>
+    private sealed class GatedPolicySource(SessionAccessPolicy initial) : ISessionAccessPolicySource
+    {
+        private int reads;
+        public SessionAccessPolicy Policy { get; set; } = initial;
+        public readonly TaskCompletionSource PassHeld = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<SessionAccessPolicy> GetAsync(bool refresh = false, CancellationToken ct = default)
+        {
+            var snapshot = Policy;
+            if (Interlocked.Increment(ref reads) == 2)
+            {
+                PassHeld.SetResult();
+                await Release.Task;
+            }
+            return snapshot;
+        }
     }
 
     private static async Task WaitForAsync(Func<bool> condition)

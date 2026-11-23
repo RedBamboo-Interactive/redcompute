@@ -407,8 +407,18 @@ public sealed class SessionRecoveryTests
         listener.Start(); var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
         var server = Task.Run(async () => {
             using var connection = await listener.AcceptTcpClientAsync();
-            using var stream = connection.GetStream(); using var reader = new StreamReader(stream, leaveOpen: true);
-            string? line; while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync())) { }
+            using var stream = connection.GetStream();
+            // The request is a POST: take its whole body before answering. Closing a socket that still holds unread
+            // request bytes resets the connection on Windows, and the reset can discard the 302 before the client reads it.
+            var head = new List<byte>(); var one = new byte[1];
+            while (!(head.Count >= 4 && head[^4] == '\r' && head[^3] == '\n' && head[^2] == '\r' && head[^1] == '\n'))
+                if (await stream.ReadAsync(one) == 0) break; else head.Add(one[0]);
+            var match = System.Text.RegularExpressions.Regex.Match(System.Text.Encoding.ASCII.GetString([.. head]), @"(?im)^content-length:\s*(\d+)");
+            for (var left = match.Success ? int.Parse(match.Groups[1].Value) : 0; left > 0;)
+            {
+                var read = await stream.ReadAsync(new byte[Math.Min(left, 4096)]);
+                if (read == 0) break; left -= read;
+            }
             var response = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 302 Found\r\nLocation: https://example.com/credential-trap\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             await stream.WriteAsync(response); await stream.FlushAsync();
         });

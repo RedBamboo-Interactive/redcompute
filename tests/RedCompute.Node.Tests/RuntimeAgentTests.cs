@@ -262,7 +262,10 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         Assert.Equal("close", seen.Headers["connection"]);
         Assert.Equal("t1", seen.Headers["x-trace"]);
         foreach (var header in new[] { "authorization", "cookie", "x-forwarded-for" }) Assert.False(seen.Headers.ContainsKey(header), header);
-        Assert.Contains(_home.Environment().Audit.Read(), l => l["kind"]!.GetValue<string>() == "forward" && l["name"]!.GetValue<string>() == "/view");
+        // The node records the exchange once its close is queued, which is after the response has reached the server:
+        // the audit line follows the response, it is not part of it.
+        await Wait.UntilAsync(() => _home.Environment().Audit.Read().Any(l => l["kind"]!.GetValue<string>() == "forward" && l["name"]!.GetValue<string>() == "/view"),
+            "the forward's audit line", timeoutMs: 30_000);
     }
 
     [Fact]
@@ -455,7 +458,9 @@ public sealed class RuntimeAgentTests : IAsyncLifetime
         var pid = PidOf(_home, Managed);
         await _linked.LinkServer.RevokeAsync(NodeAgentLinkTests.NodeId);
         await Wait.UntilAsync(() => !Alive(pid), "the managed runtime gone after the revoke");
-        Assert.Contains(_home.Environment().Audit.Read(), l => l["kind"]!.GetValue<string>() == "runtime" && l["outcome"]!.GetValue<string>() == "stopped");
+        // The runtime's "stopped" line is written once the stop has finished, after its process is already gone.
+        await Wait.UntilAsync(() => _home.Environment().Audit.Read().Any(l => l["kind"]!.GetValue<string>() == "runtime" && l["outcome"]!.GetValue<string>() == "stopped"),
+            "the stop's audit line", timeoutMs: 30_000);
     }
 
     [Fact]

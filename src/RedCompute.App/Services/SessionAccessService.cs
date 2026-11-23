@@ -311,16 +311,43 @@ public sealed class SessionAccessService(
     private async Task<SessionAccessPolicy> ReadPolicyAsync(CancellationToken ct)
     {
         var current = await policy.GetAsync(ct: ct);
-        if (current.Available && current.Revision is { } seen && seen != Interlocked.Read(ref appliedRevision)
-            && Interlocked.CompareExchange(ref passQueued, 1, 0) == 0)
-            _ = Task.Run(async () =>
-            {
-                try { await ApplyPolicyPassAsync(announced: false, seen, CancellationToken.None); }
-                catch (Exception ex) { log($"[Access] Policy pass for revision {seen} failed: {ex.Message}", null); }
-                finally { Interlocked.Exchange(ref passQueued, 0); }
-            });
+        if (current.Available && current.Revision is { } seen)
+        {
+            // Record the sighting before trying to start a pass: a pass already running may have
+            // read an older revision, and it re-checks this when it ends.
+            Interlocked.Exchange(ref observedRevision, seen);
+            if (seen != Interlocked.Read(ref appliedRevision) && Interlocked.CompareExchange(ref passQueued, 1, 0) == 0)
+                passTask = Task.Run(RunPassesAsync);
+        }
         return current;
     }
+
+    private long observedRevision = -1;
+    private volatile Task passTask = Task.CompletedTask;
+
+    /// <summary>
+    /// The single background runner (<see cref="passQueued"/> is its claim). A revision seen while it
+    /// was busy could not start another pass, so once it releases the claim it looks again: it either
+    /// reclaims and runs for the newer revision, or a reader that saw one after the release already
+    /// started its own runner. Either way no sighting is dropped.
+    /// </summary>
+    private async Task RunPassesAsync()
+    {
+        while (true)
+        {
+            var target = Interlocked.Read(ref observedRevision);
+            try { await ApplyPolicyPassAsync(announced: false, target, CancellationToken.None); }
+            catch (Exception ex) { log($"[Access] Policy pass for revision {target} failed: {ex.Message}", null); }
+            Interlocked.Exchange(ref passQueued, 0);
+
+            var latest = Interlocked.Read(ref observedRevision);
+            if (latest == target || latest == Interlocked.Read(ref appliedRevision)) return;
+            if (Interlocked.CompareExchange(ref passQueued, 1, 0) != 0) return;
+        }
+    }
+
+    /// <summary>Completes when no background policy pass is running (for tests).</summary>
+    internal Task PolicyPassesIdleAsync() => passTask;
 
     private async Task<SessionAccessPolicyChangeResult> ApplyPolicyPassAsync(bool announced, long? revision, CancellationToken ct)
     {
