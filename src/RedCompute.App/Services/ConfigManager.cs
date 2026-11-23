@@ -209,7 +209,7 @@ public class ConfigManager
     {
         var defaults = CreateDefault();
         // A bundled backend path the file carries (an older build wrote it) is dropped on the save below.
-        var dirty = AdoptBundledBackends(Config);
+        var dirty = AdoptBundledBackends(Config, message => RedComputeHost.Log(message));
         foreach (var (slug, defaultCap) in defaults.Capabilities)
         {
             if (!Config.Capabilities.TryGetValue(slug, out var existingCap))
@@ -299,25 +299,38 @@ public class ConfigManager
     /// A bundled backend path read from the file (an older build persisted it) is pointed at this install's own
     /// directory, and the file is rewritten without it. Returns true when the file carried one.
     /// </summary>
-    internal static bool AdoptBundledBackends(RedComputeConfig config)
+    /// <remarks>
+    /// Per entry: one the file carries that cannot be read or adopted is skipped with one warning naming it
+    /// (<paramref name="warn"/>) and the rest are still adopted. A bad persisted value never stops RedCompute starting.
+    /// </remarks>
+    internal static bool AdoptBundledBackends(RedComputeConfig config, Action<string>? warn = null)
     {
         var dirty = false;
         var defaults = CreateDefault();
-        foreach (var (capabilitySlug, capability) in config.Capabilities)
-        foreach (var (name, provider) in capability.Providers)
+        foreach (var (capabilitySlug, capability) in config.Capabilities.ToArray())
         {
-            if (BundledBackendSlug(provider.ServerPath) is not { } slug) continue;
-            var current = BundledBackendPath(slug);
-            if (!string.Equals(provider.ServerPath, current, StringComparison.Ordinal))
+            foreach (var (name, provider) in (capability?.Providers ?? []).ToArray())
             {
-                provider.ServerPath = current;
-                dirty = true;
+                try
+                {
+                    if (BundledBackendSlug(provider.ServerPath) is not { } slug) continue;
+                    var current = BundledBackendPath(slug);
+                    if (!string.Equals(provider.ServerPath, current, StringComparison.Ordinal))
+                    {
+                        provider.ServerPath = current;
+                        dirty = true;
+                    }
+                    // Dropped on save only where the defaults refill it (see SerializeForPersistence).
+                    if (defaults.Capabilities.TryGetValue(capabilitySlug, out var fallbackCapability)
+                        && fallbackCapability.Providers.TryGetValue(name, out var fallback)
+                        && IsBundledBackendPath(fallback.ServerPath))
+                        dirty = true;
+                }
+                catch (Exception ex)
+                {
+                    warn?.Invoke($"[Config] Skipped bundled backend path of {capabilitySlug}/{name}: {ex.GetType().Name}: {ex.Message}");
+                }
             }
-            // Dropped on save only where the defaults refill it (see SerializeForPersistence).
-            if (defaults.Capabilities.TryGetValue(capabilitySlug, out var fallbackCapability)
-                && fallbackCapability.Providers.TryGetValue(name, out var fallback)
-                && IsBundledBackendPath(fallback.ServerPath))
-                dirty = true;
         }
         return dirty;
     }

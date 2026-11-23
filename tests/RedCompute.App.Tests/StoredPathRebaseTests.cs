@@ -821,6 +821,24 @@ public sealed class StoredPathRebaseEndToEndTests : IDisposable
             ConfigManager.BundledBackendSlug(persisted)!), adopted);
     }
 
+    [Fact]
+    public void A_malformed_entry_is_skipped_with_a_warning_and_the_valid_one_is_still_adopted()
+    {
+        var config = ConfigManager.CreateDefault();
+        config.Capabilities["stt"].Providers["local-wsl"].ServerPath = "/old/install/backends/stt-local";
+        // A null provider (a JSON null in the file) cannot be read; it must not stop the others.
+        config.Capabilities["stt"].Providers["broken"] = null!;
+        var warnings = new List<string>();
+
+        var dirty = ConfigManager.AdoptBundledBackends(config, warnings.Add);
+
+        Assert.True(dirty);
+        Assert.Equal(Path.Combine(AppContext.BaseDirectory, "backends", "stt-local"),
+            config.Capabilities["stt"].Providers["local-wsl"].ServerPath);
+        var warning = Assert.Single(warnings);
+        Assert.Contains("stt/broken", warning);
+    }
+
     // ------------------------------------------------------------------------ the runner, the move
 
     private sealed class Throwing(string owner) : IStoredPathRebaser
