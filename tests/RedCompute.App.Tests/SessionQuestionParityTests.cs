@@ -396,7 +396,7 @@ public sealed class SessionQuestionParityTests : IDisposable
             try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
             process.Dispose();
         }
-        try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { }
+        try { ScratchDirectory.Delete(_root); } catch { }
     }
 
     private static JsonElement QuestionsJson() => JsonSerializer.SerializeToElement(new[]

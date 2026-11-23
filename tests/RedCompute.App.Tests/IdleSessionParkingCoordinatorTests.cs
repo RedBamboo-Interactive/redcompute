@@ -307,9 +307,7 @@ public sealed class IdleSessionParkingCoordinatorTests : IDisposable
 
     public void Dispose()
     {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(_root, "input.db")}");
-        SqliteConnection.ClearPool(connection);
-        if (Directory.Exists(_root)) Directory.Delete(_root, true);
+        ScratchDirectory.Delete(_root);
     }
 
     public interface ITestProvider : ISessionProvider, IIdleSessionParkingProvider, IBackendProvider, IPluginEventSource { }

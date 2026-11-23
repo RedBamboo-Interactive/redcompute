@@ -485,13 +485,7 @@ public sealed class SessionRecoveryTests
         }
         public void Dispose()
         {
-            using var connection = new SqliteConnection($"Data Source={Path.Combine(Root, "jobs.db")}");
-            SqliteConnection.ClearPool(connection);
-            if (!Directory.Exists(Root)) return;
-            // Staged attachments are stored read-only; clear that so the scratch tree can go.
-            foreach (var file in Directory.EnumerateFiles(Root, "*", SearchOption.AllDirectories))
-                File.SetAttributes(file, FileAttributes.Normal);
-            Directory.Delete(Root, true);
+            ScratchDirectory.Delete(Root);
         }
     }
     public interface ITestProvider : ISessionProvider, IBackendProvider { }

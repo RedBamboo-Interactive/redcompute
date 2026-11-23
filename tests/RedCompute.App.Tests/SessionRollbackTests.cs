@@ -877,9 +877,8 @@ public sealed class SessionRollbackTests
 
         public void Dispose()
         {
-            SqliteConnection.ClearAllPools();
             _ = _client.DisposeAsync();
-            if (Directory.Exists(_root)) Directory.Delete(_root, true);
+            ScratchDirectory.Delete(_root);
         }
     }
 

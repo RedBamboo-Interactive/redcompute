@@ -245,9 +245,6 @@ public sealed class SessionInputQueueEventTests : IDisposable
 
     public void Dispose()
     {
-        if (!Directory.Exists(_root)) return;
-        foreach (var path in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-            File.SetAttributes(path, FileAttributes.Normal);
-        Directory.Delete(_root, recursive: true);
+        ScratchDirectory.Delete(_root);
     }
 }

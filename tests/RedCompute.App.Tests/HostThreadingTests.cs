@@ -488,8 +488,7 @@ public sealed class HostThreadingTests : IDisposable
                 try { process.WaitForExit(5000); } catch { }
             }
         }
-        SqliteConnection.ClearAllPools();
-        try { Directory.Delete(_root, true); } catch { }
+        try { ScratchDirectory.Delete(_root); } catch { }
     }
 
     /// <summary>

@@ -439,8 +439,7 @@ public sealed class SessionInterruptTurnTests
         public void Dispose()
         {
             _http.Dispose();
-            SqliteConnection.ClearAllPools();
-            try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { }
+            try { ScratchDirectory.Delete(_root); } catch { }
         }
     }
 

@@ -554,8 +554,7 @@ public sealed class SessionSteeringQueueTests
 
         public void Dispose()
         {
-            SqliteConnection.ClearAllPools();
-            if (Directory.Exists(Root)) Directory.Delete(Root, true);
+            ScratchDirectory.Delete(Root);
         }
     }
 
