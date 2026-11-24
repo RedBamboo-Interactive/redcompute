@@ -22,6 +22,19 @@ internal static class LaunchGoldens
 {
     public const string RecordVariable = "REDCOMPUTE_GOLDEN_RECORD";
 
+    /// <summary>
+    /// Agent sessions themselves carry the suite URLs (R6), so a test host started from one inherits them
+    /// with exactly the values a launch sets. Diffed against that host, they would vanish from
+    /// environmentChanges and the goldens would depend on where the tests ran. Nothing under test reads
+    /// them from the process environment, so the test host drops them before any launch copies it.
+    /// </summary>
+    [ModuleInitializer]
+    internal static void ClearAmbientSuiteUrls()
+    {
+        Environment.SetEnvironmentVariable(SessionScratch.RedLeafUrlVariable, null);
+        Environment.SetEnvironmentVariable(SessionScratch.RedComputeUrlVariable, null);
+    }
+
     public static bool Recording => Environment.GetEnvironmentVariable(RecordVariable) == "1";
 
     public static string Directory => Path.Combine(RepoRoot(), "tests", "Goldens", "Launch");
