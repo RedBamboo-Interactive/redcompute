@@ -16,7 +16,13 @@ public sealed class PlacementAuthority
     /// <summary>The <c>GET /ping</c> feature naming this contract.</summary>
     public const string Feature = "placement.v1";
 
-    private static readonly TimeSpan ResolveTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// The whole resolution: up to three RedLeaf or kernel calls (15 s each) and a branch's git (30 s with its
+    /// retry) fit with room to spare, so a loaded machine slows a start down instead of failing it. A start that
+    /// used to work on its legacy fields must not fail because resolving it took longer than the legacy
+    /// validation did.
+    /// </summary>
+    private static readonly TimeSpan ResolveTimeout = TimeSpan.FromSeconds(90);
 
     private readonly PlacementResolver _resolver;
     private readonly Func<CancellationToken, Task<bool>>? _probe;

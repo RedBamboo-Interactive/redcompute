@@ -261,24 +261,100 @@ public sealed class PlacementResolverTests : IDisposable
         Assert.Equal((409, "worktree_not_found"), (result.Error!.Status, result.Error.Code));
     }
 
-    /// <summary>
-    /// The only transient answer branch resolution has: a git that takes longer than its limit is 503 (retry),
-    /// never a wrong folder or a conflict. This is what a stalled git start on a loaded machine looks like.
-    /// </summary>
-    [WindowsFact("Needs a process that outlives the limit")]
-    public async Task A_git_that_outlives_its_limit_is_a_timeout_not_an_answer()
+    // ── git's budget: a slow start is waited for and retried; only a real stall is a timeout ─────────
+
+    private static readonly string[] WorktreeList = ["worktree", "list", "--porcelain"];
+
+    private static ProcessStartInfo Hung() => new("ping", "-n 60 127.0.0.1")
+    {
+        RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        UseShellExecute = false, CreateNoWindow = true,
+    };
+
+    /// <summary>The real git, started after <paramref name="seconds"/> seconds (a loaded machine's slow process start).</summary>
+    private static ProcessStartInfo Slow(ProcessStartInfo git, int seconds)
+    {
+        var quoted = string.Join(' ', git.ArgumentList.Select(a => '"' + a + '"'));
+        return new ProcessStartInfo("cmd", $"/c ping -n {seconds + 1} 127.0.0.1 >nul & git {quoted}")
+        {
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = git.WorkingDirectory,
+        };
+    }
+
+    [Fact]
+    public void Git_gets_more_than_the_old_ten_seconds_and_a_second_attempt()
+    {
+        Assert.True(RedCompute.App.Services.HostGit.Attempts >= 2);
+        // The test assembly raises the limit for loaded hosts; the production default is what ships.
+        Assert.Equal(TimeSpan.FromSeconds(15), RedCompute.App.Services.HostGit.DefaultTimeout);
+        Assert.True(RedCompute.App.Services.HostGit.DefaultTimeout > TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>A git that starts after 11 s, longer than the old 10 s limit, still resolves under the production 15 s attempt.</summary>
+    [WindowsFact("Needs a process that is slow to start")]
+    public async Task A_git_slower_than_the_old_limit_still_resolves()
     {
         var host = new LocalExecutionHost("slow-git")
         {
-            StartProcess = (start, _, _) => Process.Start(new ProcessStartInfo("ping", "-n 30 127.0.0.1")
-            {
-                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                UseShellExecute = false, CreateNoWindow = true,
-            }),
+            StartProcess = (start, _, _) => Process.Start(Slow(start, 11)),
         };
 
-        await Assert.ThrowsAsync<TimeoutException>(() => RedCompute.App.Services.HostGit.RunAsync(host, Repo,
-            ["worktree", "list", "--porcelain"], CancellationToken.None, TimeSpan.FromMilliseconds(300)));
+        var lines = await RedCompute.App.Services.HostGit.RunAsync(host, Repo, WorktreeList, CancellationToken.None,
+            TimeSpan.FromSeconds(15));
+
+        Assert.Contains(lines!, line => line == "branch refs/heads/laurent/x");
+    }
+
+    [WindowsFact("Needs a process that outlives the limit")]
+    public async Task A_stalled_git_start_is_retried_once_and_the_retry_answers()
+    {
+        var starts = 0;
+        var host = new LocalExecutionHost("stalled-git")
+        {
+            StartProcess = (start, _, _) => Process.Start(Interlocked.Increment(ref starts) == 1 ? Hung() : start),
+        };
+
+        var lines = await RedCompute.App.Services.HostGit.RunAsync(host, Repo, WorktreeList, CancellationToken.None,
+            TimeSpan.FromMilliseconds(500));
+
+        Assert.Equal(2, starts);
+        Assert.Contains(lines!, line => line == "branch refs/heads/laurent/x");
+    }
+
+    [WindowsFact("Needs a process that outlives the limit")]
+    public async Task A_git_that_stalls_on_every_attempt_is_a_timeout_after_exactly_two()
+    {
+        var starts = 0;
+        var host = new LocalExecutionHost("hung-git")
+        {
+            StartProcess = (_, _, _) => { Interlocked.Increment(ref starts); return Process.Start(Hung()); },
+        };
+
+        await Assert.ThrowsAsync<TimeoutException>(() => RedCompute.App.Services.HostGit.RunAsync(host, Repo, WorktreeList,
+            CancellationToken.None, TimeSpan.FromMilliseconds(300)));
+        Assert.Equal(2, starts);
+    }
+
+    /// <summary>
+    /// Through the resolver: a branch whose first git start stalls resolves on the retry instead of answering 503,
+    /// which since stage B would fail a start that worked on its legacy fields.
+    /// </summary>
+    [WindowsFact("Needs a process that outlives the limit")]
+    public async Task A_branch_resolves_when_its_first_git_stalls()
+    {
+        var starts = 0;
+        var host = new LocalExecutionHost("stalled-git")
+        {
+            // A start that is slow, not hung: within the (raised) test limit, so this is the resolver's own path.
+            StartProcess = (start, _, _) => Process.Start(Interlocked.Increment(ref starts) == 1 ? Slow(start, 2) : start),
+        };
+
+        var result = await Repositories().ResolveAsync(new RepositoryPlacement(RepositoryId, null, "laurent/x", null), NodeZero,
+            legacyNode: true, host);
+
+        Assert.True(result.Ok, $"answered {result.Error?.Code}: {result.Error?.Message}");
+        Assert.Equal(Worktree, result.Value!.WorkingDirectory);
     }
 
     [Fact]
