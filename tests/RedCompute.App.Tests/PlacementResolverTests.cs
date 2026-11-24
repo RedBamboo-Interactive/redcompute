@@ -261,13 +261,35 @@ public sealed class PlacementResolverTests : IDisposable
         Assert.Equal((409, "worktree_not_found"), (result.Error!.Status, result.Error.Code));
     }
 
+    /// <summary>
+    /// The only transient answer branch resolution has: a git that takes longer than its limit is 503 (retry),
+    /// never a wrong folder or a conflict. This is what a stalled git start on a loaded machine looks like.
+    /// </summary>
+    [WindowsFact("Needs a process that outlives the limit")]
+    public async Task A_git_that_outlives_its_limit_is_a_timeout_not_an_answer()
+    {
+        var host = new LocalExecutionHost("slow-git")
+        {
+            StartProcess = (start, _, _) => Process.Start(new ProcessStartInfo("ping", "-n 30 127.0.0.1")
+            {
+                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true,
+            }),
+        };
+
+        await Assert.ThrowsAsync<TimeoutException>(() => RedCompute.App.Services.HostGit.RunAsync(host, Repo,
+            ["worktree", "list", "--porcelain"], CancellationToken.None, TimeSpan.FromMilliseconds(300)));
+    }
+
     [Fact]
     public async Task A_main_only_repository_refuses_a_worktree_but_keeps_its_checkout()
     {
         var resolver = Repositories(branchWork: "main-only");
 
-        Assert.Equal("main_only", (await Resolve(resolver, "laurent/x")).Error!.Code);
-        Assert.True((await Resolve(resolver, "main")).Ok);
+        var worktree = await Resolve(resolver, "laurent/x");
+        Assert.True(worktree.Error?.Code == "main_only", $"answered {worktree.Error?.Code}: {worktree.Error?.Message}");
+        var checkout = await Resolve(resolver, "main");
+        Assert.True(checkout.Ok, $"answered {checkout.Error?.Code}: {checkout.Error?.Message}");
     }
 
     [Theory]

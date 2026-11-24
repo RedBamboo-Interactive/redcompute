@@ -9,14 +9,18 @@ namespace RedCompute.App.Services;
 /// </summary>
 internal static class HostGit
 {
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// How long one git call may take, from its start. Settable so a test host that shares its CPU with a
+    /// whole suite (a loaded Nightly) can allow for a slow process start; production keeps 10 seconds.
+    /// </summary>
+    internal static TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// stdout lines, or null on a non-zero exit. Throws <see cref="TimeoutException"/> when git takes
     /// too long, and <see cref="InvalidOperationException"/> when it does not start.
     /// </summary>
     public static async Task<List<string>?> RunAsync(IExecutionHost host, string workingDirectory, string[] args,
-        CancellationToken ct)
+        CancellationToken ct, TimeSpan? limit = null)
     {
         var spec = new HostSpawnSpec
         {
@@ -40,7 +44,7 @@ internal static class HostGit
         using var process = host.Processes.Start(spec) ?? throw new InvalidOperationException("git did not start");
         process.StandardInput.Close();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(Timeout);
+        timeout.CancelAfter(limit ?? Timeout);
         var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
         try
         {
