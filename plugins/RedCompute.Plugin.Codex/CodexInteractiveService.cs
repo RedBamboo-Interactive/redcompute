@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -337,9 +338,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 spawned);
             info.WritableScratchDirectory = await ResolveWritableScratchAsync(info, conn.InitializeResult, () => provenance);
             var session = new ManagedSession { Info = info, Connection = conn };
+            var threadConfig = await ReadThreadConfigAsync(conn, info);
 
             var result = await conn.SendRequestAsync(
-                "thread/start", BuildThreadStartParams(info), timeoutSeconds: 60);
+                "thread/start", BuildThreadStartParams(info, threadConfig), timeoutSeconds: 60);
 
             // The id lives at result.thread.id — not result.threadId, which is the obvious guess.
             info.ThreadId = result.TryGetProperty("thread", out var thread) && thread.TryGetProperty("id", out var tid)
@@ -354,6 +356,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 return null;
             }
 
+            await VerifyThreadMcpAsync(conn, info.ThreadId, threadConfig);
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
             _jobLifecycle.Start(info, provenance, confidential);
@@ -387,7 +390,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         if (_sessions.TryGetValue(sessionId, out var live)) return live.Info;
 
         var record = _store.FindSession(sessionId);
-        if (record?.ThreadId == null)
+        if (record?.ThreadId is not { } persistedThreadId)
         {
             _log($"[Codex] Cannot resume {sessionId}: no thread id on record", null);
             return null;
@@ -419,16 +422,17 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 spawned);
             info.WritableScratchDirectory = await ResolveWritableScratchAsync(info, conn.InitializeResult,
                 () => _jobLifecycle.GetCreationProvenance(info));
+            var threadConfig = await ReadThreadConfigAsync(conn, info);
             try
             {
                 var resumedThread = await conn.SendRequestAsync(
-                    "thread/resume", BuildThreadResumeParams(info), timeoutSeconds: 60);
+                    "thread/resume", BuildThreadResumeParams(info, threadConfig), timeoutSeconds: 60);
                 info.HistoryMode = HistoryModeOf(resumedThread) ?? info.HistoryMode;
             }
             catch (Exception ex) when (CanRecreateMissingEmptyRollout(record, ex))
             {
                 var started = await conn.SendRequestAsync(
-                    "thread/start", BuildThreadStartParams(info), timeoutSeconds: 60);
+                    "thread/start", BuildThreadStartParams(info, threadConfig), timeoutSeconds: 60);
                 var replacementThreadId = ThreadIdFromStartResult(started);
                 if (replacementThreadId is null)
                     throw new InvalidOperationException(
@@ -442,6 +446,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 info.HistoryMode = HistoryModeOf(started);
             }
 
+            await VerifyThreadMcpAsync(conn, info.ThreadId ?? persistedThreadId, threadConfig);
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
             info.StopReason = null;
@@ -1039,7 +1044,75 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                     Core.Sessions.SessionAccessNotices.LaunchNote(level, info.Unattended))
                 : info.DeveloperInstructions;
 
-    internal static object BuildThreadStartParams(CodexSessionInfo info) => new
+    private static async Task<Dictionary<string, object>> ReadThreadConfigAsync(
+        CodexAppServerConnection conn, CodexSessionInfo info)
+    {
+        // Ask the app-server to resolve the same cwd and trusted config layers as the thread.
+        // An empty mcp_servers table merges with lower layers, leaving their servers enabled.
+        var result = await conn.SendRequestAsync("config/read",
+            new { cwd = info.ProjectPath, includeLayers = false }, timeoutSeconds: 30);
+        if (result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("config", out var config)
+            || config.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("Codex did not report its effective configuration.");
+        return BuildThreadConfig(info, config);
+    }
+
+    internal static Dictionary<string, object> BuildThreadConfig(CodexSessionInfo info,
+        JsonElement effectiveConfig = default)
+    {
+        // Apps and plugins can add servers independently of the mcp_servers table.
+        var config = new Dictionary<string, object>
+        {
+            ["features"] = new { apps = false, plugins = false },
+        };
+        if (SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile))
+            config["web_search"] = "disabled";
+
+        var servers = effectiveConfig.ValueKind == JsonValueKind.Object
+            && effectiveConfig.TryGetProperty("mcp_servers", out var inherited) ? inherited : default;
+        config["mcp_servers"] = BuildSessionMcpConfig(servers);
+        return config;
+    }
+
+    private static Dictionary<string, JsonObject> BuildSessionMcpConfig(JsonElement inheritedServers)
+        => inheritedServers.ValueKind switch
+        {
+            JsonValueKind.Object => inheritedServers.EnumerateObject().ToDictionary(
+                server => server.Name, _ => new JsonObject { ["enabled"] = false }),
+            JsonValueKind.Null or JsonValueKind.Undefined => new(),
+            _ => throw new InvalidOperationException("Codex reported an invalid MCP configuration."),
+        };
+
+    private async Task VerifyThreadMcpAsync(CodexAppServerConnection conn, string threadId,
+        Dictionary<string, object> threadConfig)
+    {
+        var configuredServers = threadConfig.GetValueOrDefault("mcp_servers") as Dictionary<string, JsonObject>;
+        var toolCount = 0;
+        string? cursor = null;
+        do
+        {
+            var result = await conn.SendRequestAsync("mcpServerStatus/list",
+                new { threadId, detail = "toolsAndAuthOnly", cursor }, timeoutSeconds: 30);
+            if (result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("data", out var servers)
+                || servers.ValueKind != JsonValueKind.Array)
+                throw new InvalidOperationException("Codex did not report its thread MCP inventory.");
+            foreach (var server in servers.EnumerateArray())
+            {
+                if (!server.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Object)
+                    throw new InvalidOperationException("Codex did not report the tools for a thread MCP server.");
+                var serverToolCount = tools.EnumerateObject().Count();
+                if (serverToolCount == 0) continue;
+                if (!server.TryGetProperty("name", out var name) || name.GetString() is not { } serverName
+                    || configuredServers?.GetValueOrDefault(serverName)?["enabled"]?.GetValue<bool>() != true)
+                    throw new InvalidOperationException("Codex reported unexpected MCP tools for a Leaf thread.");
+                toolCount += serverToolCount;
+            }
+            cursor = result.TryGetProperty("nextCursor", out var next) ? next.GetString() : null;
+        } while (!string.IsNullOrEmpty(cursor));
+        _log($"[Codex] Thread {threadId} MCP tools: {toolCount}", null);
+    }
+
+    internal static object BuildThreadStartParams(CodexSessionInfo info, Dictionary<string, object>? threadConfig = null) => new
     {
         cwd = info.ProjectPath,
         model = info.Model,
@@ -1053,12 +1126,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         sandbox = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
             ? "read-only"
             : null,
-        config = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
-            ? new { web_search = "disabled" }
-            : null,
+        config = threadConfig ?? BuildThreadConfig(info),
     };
 
-    internal static object BuildThreadResumeParams(CodexSessionInfo info) => new
+    internal static object BuildThreadResumeParams(CodexSessionInfo info, Dictionary<string, object>? threadConfig = null) => new
     {
         threadId = info.ThreadId,
         cwd = info.ProjectPath,
@@ -1073,9 +1144,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         sandbox = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
             ? "read-only"
             : null,
-        config = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
-            ? new { web_search = "disabled" }
-            : null,
+        config = threadConfig ?? BuildThreadConfig(info),
     };
 
     /// <summary>

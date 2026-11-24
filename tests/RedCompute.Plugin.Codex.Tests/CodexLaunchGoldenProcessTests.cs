@@ -23,6 +23,8 @@ public sealed class CodexLaunchGoldenProcessTests : IDisposable
         {
             ["results"] = new JsonObject
             {
+                ["config/read"] = new JsonObject { ["config"] = new JsonObject() },
+                ["mcpServerStatus/list"] = new JsonObject { ["data"] = new JsonArray() },
                 ["thread/start"] = new JsonObject { ["thread"] = new JsonObject { ["id"] = "thread-golden" } },
                 ["model/list"] = new JsonObject { ["data"] = new JsonArray() },
             },

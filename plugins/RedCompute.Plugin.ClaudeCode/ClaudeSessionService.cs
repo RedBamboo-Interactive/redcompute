@@ -2314,6 +2314,8 @@ public partial class ClaudeSessionService
         string? pathEnvironment)
         => CliLocators.Claude(host, configuredPath, applicationData, pathEnvironment);
 
+    private static string BuildSessionMcpConfig() => EmptyMcpConfig;
+
     private void PopulateSessionArgs(List<string> arguments, string permissionMode, string? resumeClaudeSessionId = null,
         string? model = null, string? effort = null, string? developerInstructions = null)
     {
@@ -2340,6 +2342,10 @@ public partial class ClaudeSessionService
             // Restore visible thinking text on Opus 4.7+/Fable 5 (display defaults to "omitted").
             "--thinking-display", "summarized" })
             arguments.Add(arg);
+
+        // Use Leaf's empty MCP configuration for start, resume and recovery. Strict mode also
+        // prevents this CLI from loading the signed-in account's claude.ai connectors.
+        arguments.AddRange(["--strict-mcp-config", "--mcp-config", BuildSessionMcpConfig()]);
 
         // Blank means unset: the provider config ships "Model": "", and a "--model ''" launch
         // fails every turn with "model: String should have at least 1 character".
@@ -2939,7 +2945,12 @@ public partial class ClaudeSessionService
                 session.Info.Status = SessionStatus.Active;
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
-                _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode})", null);
+                var mcpServerCount = root.TryGetProperty("mcp_servers", out var servers) && servers.ValueKind == JsonValueKind.Array
+                    ? servers.GetArrayLength() : (int?)null;
+                var mcpToolCount = root.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array
+                    ? tools.EnumerateArray().Count(tool => tool.ValueKind == JsonValueKind.String
+                        && tool.GetString()!.StartsWith("mcp__", StringComparison.Ordinal)) : (int?)null;
+                _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode}, MCP servers: {mcpServerCount?.ToString() ?? "unknown"}, MCP tools: {mcpToolCount?.ToString() ?? "unknown"})", null);
                 return;
             }
 

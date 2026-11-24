@@ -502,7 +502,10 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         if (home != null) Directory.CreateDirectory(home);
         return new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path, OpenCodeDataHome = home },
             new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), new LaunchGoldenProcessTests.GoldenOpenCodeStore(),
-            (_, _) => { }, host: capture ? CapturingHost() : null);
+            (_, _) => { }, host: capture ? CapturingHost() : null)
+        {
+            ReadEnabledMcpServers = _ => Task.FromResult(Array.Empty<string>()),
+        };
     }
 
     // ---- CLI version manager: the npm runner's start info ---------------------------------------------

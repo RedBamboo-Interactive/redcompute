@@ -41,6 +41,7 @@ public class OpenCodeSessionService
     /// </summary>
     internal Func<HostSpawnSpec, IHostProcess?> LaunchAcpProcess { get; set; }
     internal Func<HostSpawnSpec, IHostProcess?> LaunchExecProcess { get; set; }
+    internal Func<HostSpawnSpec, Task<string[]>> ReadEnabledMcpServers { get; set; }
 
     public event Action<OpenCodeSessionInfo>? SessionCreated;
     public event Action<OpenCodeSessionInfo>? SessionUpdated;
@@ -122,6 +123,7 @@ public class OpenCodeSessionService
         _host = host ?? LocalExecutionHost.Shared;
         LaunchAcpProcess = spec => _host.Processes.Start(spec);
         LaunchExecProcess = spec => _host.Processes.Start(spec);
+        ReadEnabledMcpServers = ResolveEnabledMcpServersAsync;
         _config = config;
         _resolveSharedProfile = resolveSharedProfile;
         CliVersionManager = new NpmCliVersionManager(
@@ -411,6 +413,7 @@ public class OpenCodeSessionService
         IHostProcess process;
         try
         {
+            await SuppressInheritedMcpAsync(spec, environment);
             var launched = LaunchAcpProcess(spec);
             if (launched == null)
                 return (null, "Failed to start opencode acp.");
@@ -448,6 +451,7 @@ public class OpenCodeSessionService
             }, timeoutSeconds: 60);
 
             JsonElement sessionResult;
+            var sessionMcpServers = BuildSessionMcpServers();
             if (existingSessionId != null)
             {
                 SeedKnownNativeParts(session, existingSessionId);
@@ -461,7 +465,7 @@ public class OpenCodeSessionService
                     {
                         sessionId = existingSessionId,
                         cwd = projectPath,
-                        mcpServers = Array.Empty<object>(),
+                        mcpServers = sessionMcpServers,
                     }, timeoutSeconds: 60);
                 }
                 else
@@ -473,7 +477,7 @@ public class OpenCodeSessionService
                         {
                             sessionId = existingSessionId,
                             cwd = projectPath,
-                            mcpServers = Array.Empty<object>(),
+                            mcpServers = sessionMcpServers,
                         }, timeoutSeconds: 60);
                     }
                     finally
@@ -489,7 +493,7 @@ public class OpenCodeSessionService
                 sessionResult = await SendRequest(session, "session/new", new
                 {
                     cwd = projectPath,
-                    mcpServers = Array.Empty<object>(),
+                    mcpServers = sessionMcpServers,
                 }, timeoutSeconds: 60);
 
                 if (sessionResult.TryGetProperty("sessionId", out var sid))
@@ -2537,6 +2541,69 @@ public class OpenCodeSessionService
     /// can be enforced. OpenCode's own default allows everything, which made Ask close to Full.
     /// </summary>
     internal const string PermissionEnvironment = "OPENCODE_PERMISSION";
+
+    private static object[] BuildSessionMcpServers() => [];
+
+    private async Task SuppressInheritedMcpAsync(HostSpawnSpec spec, IDictionary<string, string> environment)
+    {
+        // ACP mcpServers adds to OpenCode's user and project servers. Disable those entries
+        // before launching ACP, keeping the provider profile and all other OpenCode config.
+        var inheritedServers = await ReadEnabledMcpServers(spec);
+        if (inheritedServers.Length == 0) return;
+
+        var config = ReadInlineConfig(_host, environment);
+        DisableMcpServers(config, inheritedServers);
+        environment["OPENCODE_CONFIG_CONTENT"] = config.ToJsonString();
+        if ((await ReadEnabledMcpServers(spec)).Length != 0)
+            throw new InvalidOperationException("OpenCode configuration still enables inherited MCP servers.");
+    }
+
+    internal static void DisableMcpServers(JsonObject config, IEnumerable<string> serverNames)
+    {
+        if (config["mcp"] is not JsonObject servers)
+            config["mcp"] = servers = new JsonObject();
+        foreach (var name in serverNames)
+        {
+            if (servers[name] is not JsonObject server)
+                servers[name] = server = new JsonObject();
+            server["enabled"] = false;
+        }
+    }
+
+    private async Task<string[]> ResolveEnabledMcpServersAsync(HostSpawnSpec spec)
+    {
+        // The CLI resolves the native layers for this exact cwd and environment. Read only
+        // the server names, since the resolved config can contain provider secrets.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var process = _host.Processes.Start(spec with { ArgumentList = ["debug", "config", "--pure"] })
+            ?? throw new InvalidOperationException("Could not read OpenCode configuration.");
+        try
+        {
+            process.StandardInput.Close();
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null, timeout.Token);
+            await Task.WhenAll(stdout, stderr, process.WaitForExitAsync(timeout.Token));
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException("Could not read OpenCode configuration.");
+
+            using var resolved = JsonDocument.Parse(await stdout);
+            var config = resolved.RootElement;
+            if (!config.TryGetProperty("mcp", out var servers) || servers.ValueKind == JsonValueKind.Null)
+                return [];
+            return servers.EnumerateObject()
+                .Where(server => !server.Value.TryGetProperty("enabled", out var enabled)
+                    || enabled.ValueKind != JsonValueKind.False)
+                .Select(server => server.Name).ToArray();
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException("OpenCode did not report valid configuration.");
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+    }
 
     /// <summary>
     /// A persistent session asks for what Ask guards (commands, the network, files outside the

@@ -58,6 +58,20 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
         Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "permission-21", Content: "allow_session", Decision: "allow_session" });
     }
 
+    [Fact]
+    public void McpOverrideKeepsOtherInlineConfiguration()
+    {
+        var config = JsonNode.Parse("""
+            {"model":"leaf/model","mcp":{"local":{"type":"local","command":["example"],"enabled":true}}}
+            """)!.AsObject();
+        OpenCodeSessionService.DisableMcpServers(config, ["local", "project-server"]);
+        Assert.Equal("leaf/model", config["model"]!.GetValue<string>());
+        var mcp = config["mcp"]!;
+        Assert.False(mcp["local"]!["enabled"]!.GetValue<bool>());
+        Assert.Equal("example", mcp["local"]!["command"]![0]!.GetValue<string>());
+        Assert.False(mcp["project-server"]!["enabled"]!.GetValue<bool>());
+    }
+
     [Theory]
     [InlineData(SessionPermissionDecisions.AllowOnce, "once")]
     [InlineData(SessionPermissionDecisions.Deny, "reject")]

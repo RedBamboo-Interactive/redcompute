@@ -276,7 +276,11 @@ public sealed class CodexRollbackTests : IDisposable
               if ($null -eq $request.id) { continue }
               [System.IO.File]::AppendAllText($log, ($line + "`n"))
               $response = $null
-              if ($request.method -eq 'thread/start' -or $request.method -eq 'thread/resume') {
+              if ($request.method -eq 'config/read') {
+                $result = @{ config = @{} }
+              } elseif ($request.method -eq 'mcpServerStatus/list') {
+                $result = @{ data = @() }
+              } elseif ($request.method -eq 'thread/start' -or $request.method -eq 'thread/resume') {
                 $result = @{ thread = @{ id = 'thread-1'; {{mode}} } }
               } elseif ($request.method -eq 'turn/start') {
                 $turn++

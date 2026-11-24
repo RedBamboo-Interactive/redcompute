@@ -48,7 +48,10 @@ public sealed class CodexConversationProfileTests
         Assert.Equal(JsonValueKind.Null, value.GetProperty("approvalPolicy").ValueKind);
         Assert.Equal(JsonValueKind.Null, value.GetProperty("sandbox").ValueKind);
         Assert.Equal(JsonValueKind.Null, value.GetProperty("baseInstructions").ValueKind);
-        Assert.Equal(JsonValueKind.Null, value.GetProperty("config").ValueKind);
+        var config = value.GetProperty("config");
+        Assert.False(config.TryGetProperty("web_search", out _));
+        Assert.False(config.GetProperty("features").GetProperty("apps").GetBoolean());
+        Assert.False(config.GetProperty("features").GetProperty("plugins").GetBoolean());
     }
 
     [Theory]
@@ -80,6 +83,31 @@ public sealed class CodexConversationProfileTests
         var value = JsonSerializer.SerializeToElement(CodexInteractiveService.BuildThreadStartParams(info));
 
         Assert.Equal("trusted SHIN instructions", value.GetProperty("developerInstructions").GetString());
+    }
+
+    [Fact]
+    public void StartAndResumeDisableInheritedServersWithoutCopyingOtherConfig()
+    {
+        using var inherited = JsonDocument.Parse("""
+            {"mcp_servers":{"global":{"command":"example"},"project.example":{"enabled":true}},
+             "model_reasoning_effort":"medium"}
+            """);
+        var info = Session(SessionExecutionProfile.ConversationOnly);
+        var config = CodexInteractiveService.BuildThreadConfig(info, inherited.RootElement);
+        foreach (var parameters in new[]
+        {
+            CodexInteractiveService.BuildThreadStartParams(info, config),
+            CodexInteractiveService.BuildThreadResumeParams(info, config),
+        })
+        {
+            var overrides = JsonSerializer.SerializeToElement(parameters).GetProperty("config");
+            var mcp = overrides.GetProperty("mcp_servers");
+            Assert.False(mcp.GetProperty("global").GetProperty("enabled").GetBoolean());
+            Assert.False(mcp.GetProperty("project.example").GetProperty("enabled").GetBoolean());
+            Assert.False(mcp.GetProperty("global").TryGetProperty("command", out _));
+            Assert.False(overrides.TryGetProperty("model_reasoning_effort", out _));
+            Assert.Equal("disabled", overrides.GetProperty("web_search").GetString());
+        }
     }
 
     [Fact]

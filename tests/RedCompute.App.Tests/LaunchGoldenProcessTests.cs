@@ -210,7 +210,10 @@ public sealed class LaunchGoldenProcessTests : IDisposable
         var dataHome = Path.Combine(_probe.Root, "opencode-data");
         Directory.CreateDirectory(dataHome);
         return new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path, OpenCodeDataHome = dataHome },
-            new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), store, (_, _) => { });
+            new ClaudeDeveloperInstructionsTests.MemoryJobTracker(), store, (_, _) => { })
+        {
+            ReadEnabledMcpServers = _ => Task.FromResult(Array.Empty<string>()),
+        };
     }
 
     private static string InstructionsDirectory => Path.Combine(

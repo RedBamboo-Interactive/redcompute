@@ -14,13 +14,16 @@
     "stdio",
     "--thinking-display",
     "summarized",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
     "--model",
     "claude-golden-model",
     "--effort",
     "high"
   ],
   "cli": "claude",
-  "commandLine": "\"<root>\\cli\\claude.exe\" --output-format stream-json --verbose --input-format stream-json --include-partial-messages --replay-user-messages --permission-mode acceptEdits --allow-dangerously-skip-permissions --permission-prompt-tool stdio --thinking-display summarized --model claude-golden-model --effort high",
+  "commandLine": "\"<root>\\cli\\claude.exe\" --output-format stream-json --verbose --input-format stream-json --include-partial-messages --replay-user-messages --permission-mode acceptEdits --allow-dangerously-skip-permissions --permission-prompt-tool stdio --thinking-display summarized --strict-mcp-config --mcp-config \"{\\\"mcpServers\\\":{}}\" --model claude-golden-model --effort high",
   "containment": "session:claude-code",
   "cwd": "<root>\\project",
   "environmentChanges": {

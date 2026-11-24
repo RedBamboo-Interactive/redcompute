@@ -553,7 +553,11 @@ public sealed class CodexCliLaunchGateTests : IDisposable
         while ($null -ne ($line = [Console]::In.ReadLine())) {
           try { $request = $line | ConvertFrom-Json } catch { continue }
           if ($null -eq $request.id) { continue }
-          if ($request.method -eq 'thread/start') {
+          if ($request.method -eq 'config/read') {
+            $result = @{ config = @{} }
+          } elseif ($request.method -eq 'mcpServerStatus/list') {
+            $result = @{ data = @() }
+          } elseif ($request.method -eq 'thread/start') {
             $result = @{ thread = @{ id = 'thread-1' } }
           } else {
             $result = @{}
@@ -746,7 +750,11 @@ public sealed class CodexCliLaunchGateTests : IDisposable
             while ($null -ne ($line = [Console]::In.ReadLine())) {
               try { $request = $line | ConvertFrom-Json } catch { continue }
               if ($null -eq $request.id) { continue }
-              if ($request.method -eq 'turn/start') {
+              if ($request.method -eq 'config/read') {
+                $result = @{ config = @{} }
+              } elseif ($request.method -eq 'mcpServerStatus/list') {
+                $result = @{ data = @() }
+              } elseif ($request.method -eq 'turn/start') {
                 $result = @{ turn = @{ id = 'turn-1' } }
               } else {
                 $result = @{}
@@ -780,7 +788,11 @@ public sealed class CodexCliLaunchGateTests : IDisposable
               try { $request = $line | ConvertFrom-Json } catch { continue }
               if ($null -eq $request.id) { continue }
               if ($request.method -eq 'turn/start' -and $behavior -eq 'hold-start') { continue }
-              if ($request.method -eq 'thread/start') {
+              if ($request.method -eq 'config/read') {
+                $result = @{ config = @{} }
+              } elseif ($request.method -eq 'mcpServerStatus/list') {
+                $result = @{ data = @() }
+              } elseif ($request.method -eq 'thread/start') {
                 $result = @{ thread = @{ id = 'thread-1' } }
               } elseif ($request.method -eq 'turn/start') {
                 $result = @{ turn = @{ id = 'turn-1' } }
