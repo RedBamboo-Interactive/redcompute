@@ -51,6 +51,10 @@ internal static class SessionExecutionToken
         }
 
         childEnvironment["REDLEAF_EXECUTION_TOKEN"] = token;
+        // A one-shot with suite access is told where the suite is, as a session is (SessionScratch.Environment);
+        // a caller that already set one of them keeps its own.
+        foreach (var (name, url) in SessionScratch.SuiteUrlVariables())
+            childEnvironment.TryAdd(name, url);
         return childEnvironment;
     }
 

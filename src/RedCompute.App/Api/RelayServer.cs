@@ -106,6 +106,7 @@ public class RelayServer
         // Loopback only: the outside world reaches Compute through the Leaf kernel's
         // /compute/* proxy (one origin, one tunnel). Nothing dials this port directly.
         builder.WebHost.UseUrls($"http://127.0.0.1:{_config.ApiPort}");
+        SessionScratch.ConfigureSuiteUrls(_config.RedLeafUrl, $"http://127.0.0.1:{_config.ApiPort}");
         builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(options =>
         {
             options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());

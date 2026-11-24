@@ -27,9 +27,11 @@
     "stdout": "utf-8/preamble=3"
   },
   "environmentChanges": {
+    "REDCOMPUTE_URL": "http://127.0.0.1:18800",
     "REDLEAF_EXECUTION_TOKEN": "golden-execution-token",
     "REDLEAF_SCRATCH_DIR": "<root>\\scratch",
     "REDLEAF_SCRATCH_ROOT": "<root>\\scratch",
+    "REDLEAF_URL": "http://127.0.0.1:18804",
     "TEMP": "<root>\\scratch",
     "TMP": "<root>\\scratch",
     "TMPDIR": "<root>\\scratch"

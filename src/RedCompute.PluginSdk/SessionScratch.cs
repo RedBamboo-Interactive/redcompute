@@ -14,6 +14,37 @@ public static class SessionScratch
 {
     private static readonly AsyncLocal<Func<string?, string?>?> CurrentExecutionToken = new();
 
+    /// <summary>The suite variable that names RedLeaf's base URL for the process (R6).</summary>
+    public const string RedLeafUrlVariable = "REDLEAF_URL";
+
+    /// <summary>The suite variable that names RedCompute's own base URL for the process (R6).</summary>
+    public const string RedComputeUrlVariable = "REDCOMPUTE_URL";
+
+    private static volatile string _redLeafUrl = "http://127.0.0.1:18804";
+    private static volatile string _redComputeUrl = "http://127.0.0.1:18800";
+
+    /// <summary>
+    /// Sets the base URLs the suite variables carry: RedLeaf's (<c>--redleaf-url</c>) and RedCompute's own bound
+    /// address. Until it is called they are the suite's standard loopback ports, which is what every Skill and
+    /// prompt writes out by hand today.
+    /// </summary>
+    public static void ConfigureSuiteUrls(string redLeafUrl, string redComputeUrl)
+    {
+        _redLeafUrl = redLeafUrl.TrimEnd('/');
+        _redComputeUrl = redComputeUrl.TrimEnd('/');
+    }
+
+    /// <summary>
+    /// The two URL variables a process that holds a suite execution token gets, so agents read where RedLeaf and
+    /// RedCompute are instead of writing a loopback address into their commands (placement design 5.3): they are
+    /// what a node's own relay would answer differently.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> SuiteUrlVariables() => new Dictionary<string, string>
+    {
+        [RedLeafUrlVariable] = _redLeafUrl,
+        [RedComputeUrlVariable] = _redComputeUrl,
+    };
+
     /// <summary><see cref="TryResolveDirectory(IExecutionHost, string?, out string?)"/> on this machine.</summary>
     public static bool TryResolveDirectory(string? value, out string? directory)
         => TryResolveDirectory(LocalExecutionHost.Shared, value, out directory);
@@ -57,7 +88,10 @@ public static class SessionScratch
         if (!suiteAccess)
             environment["REDLEAF_EXECUTION_TOKEN"] = "";
         else if (token is not null)
+        {
             environment["REDLEAF_EXECUTION_TOKEN"] = token;
+            foreach (var (name, url) in SuiteUrlVariables()) environment[name] = url;
+        }
         return environment;
     }
 
