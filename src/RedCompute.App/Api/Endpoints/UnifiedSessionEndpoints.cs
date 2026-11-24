@@ -3680,6 +3680,11 @@ public static class UnifiedSessionEndpoints
                 properties = new
                 {
                     workState = WorkStateSchema,
+                    promptCache = new
+                    {
+                        type = new[] { "object", "null" },
+                        description = "Measured provider input and cached-read counts. Partial indicates incomplete session coverage. LatestRequest is one provider call, which can be part of a user turn.",
+                    },
                     nodeId = new { type = "string", description = "The node (computer) the session runs on; see GET /nodes. Sessions older than node ids report the local node." },
                     accessLevel = new { type = new[] { "string", "null" }, @enum = SessionAccessLevels.All.Cast<object?>().Append(null).ToArray(),
                         description = "The session's access level; null for a session persisted before access levels and not yet relaunched" },

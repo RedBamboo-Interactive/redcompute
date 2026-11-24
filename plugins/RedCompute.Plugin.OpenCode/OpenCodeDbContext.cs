@@ -3,6 +3,8 @@ using System.IO;
 using Microsoft.EntityFrameworkCore;
 using RedCompute.Core.Storage;
 
+using System.Text.Json;
+
 namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeDbContext : DbContext
@@ -43,7 +45,7 @@ public class OpenCodeDbContext : DbContext
         try
         {
             using var cmd = conn.CreateCommand();
-            foreach (var col in new[] { "OpenCodeSessionId", "Effort", "QualityTier", "ProviderEntity", "RepositoryId", "Source", "UserId", "UserName", "UserAvatarUrl", "StopReason", "StoppedAt", "DeveloperInstructions", "ScratchDirectory" })
+            foreach (var col in new[] { "OpenCodeSessionId", "Effort", "PromptCache", "QualityTier", "ProviderEntity", "RepositoryId", "Source", "UserId", "UserName", "UserAvatarUrl", "StopReason", "StoppedAt", "DeveloperInstructions", "ScratchDirectory" })
             {
                 cmd.CommandText = $"ALTER TABLE Sessions ADD COLUMN {col} TEXT";
                 try { cmd.ExecuteNonQuery(); }
@@ -127,6 +129,9 @@ public class OpenCodeDbContext : DbContext
         modelBuilder.Entity<OpenCodeSessionRecord>(entity =>
         {
             entity.HasKey(s => s.Id);
+            entity.Property(s => s.PromptCache).HasConversion(
+                value => JsonSerializer.Serialize(value, (JsonSerializerOptions?)null),
+                value => JsonSerializer.Deserialize<RedCompute.Core.Sessions.PromptCacheUsage>(value, (JsonSerializerOptions?)null));
             entity.Property(s => s.StartedAt).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));

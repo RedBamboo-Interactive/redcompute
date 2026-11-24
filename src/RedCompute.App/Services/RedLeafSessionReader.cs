@@ -789,6 +789,18 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         var inputTokens = Int(d, "input_tokens");
         var outputTokens = Int(d, "output_tokens");
         var cachedInputTokens = Int(d, "cache_read_input_tokens");
+        d.TryGetProperty("prompt_cache", out var cache);
+        PromptCacheUsage? promptCache = null;
+        if (cache.ValueKind == JsonValueKind.Object)
+        {
+            try { promptCache = cache.Deserialize<PromptCacheUsage>(JsonSerializerOptions.Web); }
+            catch (JsonException) { /* Optional usage must not break a session read. */ }
+        }
+        // Older Codex stores retained the reported totals, but updated their two fields independently.
+        if (cache.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+            && provider.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            && PromptCacheCounts.From(inputTokens, cachedInputTokens) is { } legacyCodex)
+            promptCache = new(legacyCodex, Partial: true);
         var reportedCost = Dbl(d, "cost_usd");
         var hasUsage = inputTokens.GetValueOrDefault() > 0 || outputTokens.GetValueOrDefault() > 0;
         // Codex subscription sessions may report no monetary charge (or a literal zero). Their
@@ -830,6 +842,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             InputTokens = inputTokens,
             OutputTokens = outputTokens,
             CachedInputTokens = cachedInputTokens,
+            PromptCache = promptCache,
             // Older OpenCode snapshots stored ACP current context usage only in input_tokens.
             ContextTokens = Int(d, "context_tokens")
                 ?? (provider.Equals("opencode", StringComparison.OrdinalIgnoreCase) ? inputTokens : null),

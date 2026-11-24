@@ -294,6 +294,7 @@ public class OpenCodeSessionService
             MessageCount = record.MessageCount,
             CostUsd = record.CostUsd,
             InputTokens = record.InputTokens,
+            PromptCache = record.PromptCache,
             OutputTokens = record.OutputTokens,
             ContextWindow = record.ContextWindow,
             Effort = record.Effort,
@@ -481,6 +482,7 @@ public class OpenCodeSessionService
                     }
                 }
                 session.AcpSessionId = existingSessionId;
+                RefreshPromptCache(session);
             }
             else
             {
@@ -695,6 +697,7 @@ public class OpenCodeSessionService
             }
             else
                 await ReconcileCompletedTurn(session);
+            RefreshPromptCache(session);
             session.Info.Status = "Idle";
             TryFetchOpenCodeTitle(session);
             PersistSessionRecord(session.Info);
@@ -1847,6 +1850,21 @@ public class OpenCodeSessionService
         _jobTracker.MarkCompleted(session.Info.JobId.Value, resultJson: resultJson, costUsd: session.Info.CostUsd);
     }
 
+    private void RefreshPromptCache(ManagedSession session)
+    {
+        if (session.AcpSessionId is not { } nativeSessionId) return;
+        try
+        {
+            session.Info.PromptCache = _nativeSessionReader.ReadPromptCache(nativeSessionId);
+        }
+        catch (Exception ex)
+        {
+            if (session.Info.PromptCache is { } previous)
+                session.Info.PromptCache = previous with { Partial = true, LatestRequest = null };
+            _log($"[OpenCode] Prompt cache unavailable for {session.Info.Id}: {ex.GetType().Name}", null);
+        }
+    }
+
     private void PersistSessionRecord(OpenCodeSessionInfo info)
     {
         var record = new OpenCodeSessionRecord
@@ -1866,6 +1884,7 @@ public class OpenCodeSessionService
             MessageCount = info.MessageCount,
             CostUsd = info.CostUsd,
             InputTokens = info.InputTokens,
+            PromptCache = info.PromptCache,
             OutputTokens = info.OutputTokens,
             ContextWindow = info.ContextWindow,
             JobId = info.JobId,
@@ -2486,6 +2505,7 @@ public class OpenCodeSessionService
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
+        PromptCache = r.PromptCache,
         OutputTokens = r.OutputTokens,
         JobId = r.JobId,
         OpenCodeSessionId = r.OpenCodeSessionId,

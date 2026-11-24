@@ -34,6 +34,7 @@ public class CodexSessionStore : ICodexSessionStore
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
+        PromptCache = r.PromptCache,
         OutputTokens = r.OutputTokens,
         CacheReadInputTokens = r.CachedInputTokens,
         ContextTokens = r.ContextTokens,
@@ -135,6 +136,7 @@ public class CodexSessionStore : ICodexSessionStore
             existing.MessageCount = record.MessageCount;
             existing.CostUsd = record.CostUsd;
             existing.InputTokens = record.InputTokens;
+            existing.PromptCache = record.PromptCache;
             existing.OutputTokens = record.OutputTokens;
             existing.CachedInputTokens = record.CachedInputTokens;
             existing.ContextTokens = record.ContextTokens;

@@ -229,6 +229,7 @@ internal sealed class CodexSessionJobLifecycle
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
+        PromptCache = r.PromptCache,
         OutputTokens = r.OutputTokens,
         CachedInputTokens = r.CachedInputTokens,
         ContextTokens = r.ContextTokens,

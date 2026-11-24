@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
+using RedCompute.Core.Sessions;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -84,6 +85,55 @@ public sealed class RedLeafSessionReaderTests
         Assert.Equal(inputTokens, info.InputTokens);
         Assert.Equal(expectedContextTokens, info.ContextTokens);
         Assert.Equal(1_000_000, info.ContextWindow);
+    }
+
+    [Theory]
+    [InlineData("codex", null, 7_606_144L)]
+    [InlineData("opencode", null, null)]
+    [InlineData("claude", null, null)]
+    [InlineData("opencode", """{"session":{"inputTokens":24552,"cachedInputTokens":24320},"partial":true,"latestRequest":{"inputTokens":12294,"cachedInputTokens":12160}}""", 24_320L)]
+    [InlineData("codex", """{"session":null}""", null)]
+    public async Task PromptCacheUsesStoredComparableCountsWithoutReadingTranscript(
+        string provider, string? promptCache, long? cachedTokens)
+    {
+        var data = new Dictionary<string, object?>
+        {
+            ["session_id"] = "session-1",
+            ["provider"] = provider,
+            ["input_tokens"] = 7_797_030,
+            ["cache_read_input_tokens"] = 7_606_144,
+            ["cost_usd"] = 0.003,
+            ["context_tokens"] = 12_325,
+            ["context_window"] = 1_000_000,
+        };
+        using var cache = promptCache is null ? null : JsonDocument.Parse(promptCache);
+        if (cache != null)
+            data["prompt_cache"] = cache.RootElement;
+
+        var handler = new SessionHandler(JsonSerializer.Serialize(data));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://redleaf/") };
+        var config = new RedComputeConfig { RedLeafUrl = "http://redleaf" };
+        var log = new Action<string, Guid?>((_, _) => { });
+        var quality = new QualityModeService(config, log, new ProviderConfigService(config, log));
+        var reader = new RedLeafSessionReader(http, quality);
+
+        var (info, _) = await reader.GetSessionInfoAsync("session-1");
+
+        Assert.NotNull(info);
+        Assert.Equal(cachedTokens, info.PromptCache?.Session?.CachedInputTokens);
+        if (provider == "codex" && cachedTokens != null)
+            Assert.True(info.PromptCache!.Partial);
+        Assert.Equal(0.003, info.CostUsd);
+        Assert.False(info.CostEstimated);
+        Assert.Equal(12_325, info.ContextTokens);
+        Assert.Equal(1_000_000, info.ContextWindow);
+        if (provider == "opencode" && cache != null)
+        {
+            Assert.True(info.PromptCache!.Partial);
+            Assert.Equal(new PromptCacheCounts(24_552, 24_320), info.PromptCache.Session);
+            Assert.Equal(new PromptCacheCounts(12_294, 12_160), info.PromptCache.LatestRequest);
+        }
+        Assert.All(handler.Requests, path => Assert.StartsWith("/api/entities", path));
     }
 
     [Fact]

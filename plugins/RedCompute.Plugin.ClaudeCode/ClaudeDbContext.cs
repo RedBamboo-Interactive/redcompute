@@ -3,6 +3,8 @@ using System.IO;
 using Microsoft.EntityFrameworkCore;
 using RedCompute.Core.Storage;
 
+using System.Text.Json;
+
 namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeDbContext : DbContext
@@ -128,7 +130,7 @@ public class ClaudeDbContext : DbContext
             alter.ExecuteNonQuery();
         }
 
-        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson", "ForkTargetJson",
+        foreach (var column in new[] { "UserId", "UserName", "UserAvatarUrl", "BackgroundTasksJson", "PromptCache", "ForkTargetJson",
                      "AccessLevel", "MaxAccessLevel", "AccessLevelBeforePlan", "AccessLevelSource" })
         {
             if (columns.Contains(column)) continue;
@@ -244,6 +246,9 @@ public class ClaudeDbContext : DbContext
         modelBuilder.Entity<ClaudeSessionRecord>(entity =>
         {
             entity.HasKey(s => s.Id);
+            entity.Property(s => s.PromptCache).HasConversion(
+                value => JsonSerializer.Serialize(value, (JsonSerializerOptions?)null),
+                value => JsonSerializer.Deserialize<RedCompute.Core.Sessions.PromptCacheUsage>(value, (JsonSerializerOptions?)null));
             entity.Property(s => s.StartedAt).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));

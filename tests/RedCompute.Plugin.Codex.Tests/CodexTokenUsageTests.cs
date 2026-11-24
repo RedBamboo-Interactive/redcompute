@@ -55,6 +55,27 @@ public class CodexTokenUsageTests
     }
 
     [Fact]
+    public void ApplyUsage_KeepsSessionAndLastRequestSeparateAndPreservesMeasuredZero()
+    {
+        var info = Session();
+        using var full = JsonDocument.Parse("""
+            {"tokenUsage": {
+              "total": {"inputTokens": 7797030, "cachedInputTokens": 7606144},
+              "last": {"inputTokens": 1024, "cachedInputTokens": 0, "cacheWriteInputTokens": 512}
+            }}
+            """);
+        CodexInteractiveService.ApplyUsage(info, full.RootElement);
+        Assert.Equal(new PromptCacheUsage(new(7_797_030, 7_606_144), LatestRequest: new(1024, 0)), info.PromptCache);
+
+        using var partial = JsonDocument.Parse("""
+            {"tokenUsage": {"total": {"inputTokens": 7800000}, "last": {"inputTokens": 10}}}
+            """);
+        CodexInteractiveService.ApplyUsage(info, partial.RootElement);
+        Assert.Null(info.PromptCache!.Session);
+        Assert.Null(info.PromptCache.LatestRequest);
+    }
+
+    [Fact]
     public void ModelTokenPricing_PricesCachedInputSeparatelyFromUncachedInput()
     {
         var pricing = new ModelTokenPricing(

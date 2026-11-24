@@ -319,6 +319,7 @@ public class RelayServer
                 output_tokens = snap.OutputTokens,
                 cache_read_input_tokens = snap.CacheReadInputTokens,
                 cache_creation_input_tokens = snap.CacheCreationInputTokens,
+                prompt_cache = snap.PromptCache,
                 context_tokens = snap.ContextTokens,
                 context_window = snap.ContextWindow,
                 effort = snap.Effort,

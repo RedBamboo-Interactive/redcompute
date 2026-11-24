@@ -1,3 +1,5 @@
+using RedCompute.Core.Sessions;
+
 namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeSessionRecord
@@ -17,6 +19,7 @@ public class ClaudeSessionRecord
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
     public int? InputTokens { get; set; }
+    public PromptCacheUsage? PromptCache { get; set; }
     public int? OutputTokens { get; set; }
     public int? CacheReadInputTokens { get; set; }
     public int? CacheCreationInputTokens { get; set; }

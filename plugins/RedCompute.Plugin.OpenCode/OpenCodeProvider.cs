@@ -347,6 +347,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         MessageCount = s.MessageCount,
         CostUsd = s.CostUsd,
         InputTokens = s.InputTokens,
+        PromptCache = s.PromptCache,
         OutputTokens = s.OutputTokens,
         ContextTokens = s.InputTokens,
         ContextWindow = s.ContextWindow,

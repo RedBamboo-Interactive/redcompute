@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
 
@@ -31,6 +32,7 @@ internal interface IOpenCodeNativeSessionReader
 {
     OpenCodeNativeMessageVisibility GetMessageVisibility(string sessionId, string messageId);
     IReadOnlyList<OpenCodeNativePart> GetCompletedAssistantParts(string sessionId);
+    PromptCacheUsage? ReadPromptCache(string sessionId);
 }
 
 /// <summary>
@@ -102,6 +104,51 @@ internal sealed class OpenCodeNativeSessionReader : IOpenCodeNativeSessionReader
         }
 
         return parts;
+    }
+
+    public PromptCacheUsage? ReadPromptCache(string sessionId)
+    {
+        // One native step-finish per provider call. Assistant messages only retain the last
+        // step's token counts, so they cannot replace these records. Fetch numbers only.
+        var rows = Query("""
+            SELECT json_extract(data, '$.tokens.input') AS fresh,
+                   json_extract(data, '$.tokens.cache.read') AS cached,
+                   json_extract(data, '$.tokens.cache.write') AS written,
+                   json_extract(data, '$.tokens.total') AS total,
+                   json_extract(data, '$.tokens.output') AS output,
+                   json_extract(data, '$.tokens.reasoning') AS reasoning
+            FROM part
+            WHERE session_id = $session AND json_extract(data, '$.type') = 'step-finish'
+            ORDER BY time_created DESC, id DESC
+            """, new Dictionary<string, object?> { ["$session"] = sessionId });
+
+        static PromptCacheCounts? Measured(IReadOnlyDictionary<string, object?> row)
+        {
+            // OpenCode defaults an omitted cache-read count to zero. Only positive
+            // readings establish provider cache evidence in these native records.
+            if (row["fresh"] is not long fresh || fresh is < 0 or > int.MaxValue
+                || row["cached"] is not long read || read is <= 0 or > int.MaxValue
+                || row["written"] is not long written || written is < 0 or > int.MaxValue)
+                return null;
+            var input = fresh + read + written;
+            // When OpenCode retained an upstream total, reject a split produced by
+            // a missing or inconsistent input count rather than reporting a false hit rate.
+            if (row["total"] is long total && row["output"] is long output && row["reasoning"] is long reasoning
+                && (output < 0 || reasoning < 0 || total < input || total - input - output != reasoning))
+                return null;
+            return new(input, read);
+        }
+
+        long input = 0, cached = 0;
+        foreach (var row in rows)
+        {
+            if (Measured(row) is not { } measured) continue;
+            input += measured.InputTokens;
+            cached += measured.CachedInputTokens;
+        }
+
+        // Native records cannot prove coverage for unreported counts or unrecorded requests.
+        return input == 0 ? null : new(new(input, cached), Partial: true, LatestRequest: Measured(rows[0]));
     }
 
     private IReadOnlyList<IReadOnlyDictionary<string, object?>> Query(string sql, IReadOnlyDictionary<string, object?> parameters)

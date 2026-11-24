@@ -432,6 +432,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         MessageCount = s.MessageCount,
         CostUsd = s.CostUsd,
         InputTokens = s.InputTokens,
+        PromptCache = s.PromptCache,
         OutputTokens = s.OutputTokens,
         CachedInputTokens = (s.CacheReadInputTokens ?? 0) + (s.CacheCreationInputTokens ?? 0) > 0
             ? (s.CacheReadInputTokens ?? 0) + (s.CacheCreationInputTokens ?? 0) : null,

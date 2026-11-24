@@ -584,6 +584,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         MessageCount = s.MessageCount,
         CostUsd = s.CostUsd,
         InputTokens = s.InputTokens,
+        PromptCache = s.PromptCache ?? (PromptCacheCounts.From(s.InputTokens, s.CachedInputTokens) is { } historical
+            ? new(historical, Partial: true) : null),
         OutputTokens = s.OutputTokens,
         CachedInputTokens = s.CachedInputTokens,
         ContextTokens = s.ContextTokens,

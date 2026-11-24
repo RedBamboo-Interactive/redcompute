@@ -1290,6 +1290,10 @@ public partial class ClaudeSessionService
             MessageCount = sessionRecord.MessageCount,
             CostUsd = sessionRecord.CostUsd,
             InputTokens = sessionRecord.InputTokens,
+            PromptCache = sessionRecord.PromptCache
+                ?? (sessionRecord.MessageCount > 0 || sessionRecord.InputTokens.HasValue || sessionRecord.CostUsd > 0
+                    ? new(null, Partial: true)
+                    : null),
             OutputTokens = sessionRecord.OutputTokens,
             CacheReadInputTokens = sessionRecord.CacheReadInputTokens,
             CacheCreationInputTokens = sessionRecord.CacheCreationInputTokens,
@@ -2159,6 +2163,7 @@ public partial class ClaudeSessionService
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
+        PromptCache = r.PromptCache,
         OutputTokens = r.OutputTokens,
         CacheReadInputTokens = r.CacheReadInputTokens,
         CacheCreationInputTokens = r.CacheCreationInputTokens,
@@ -4373,7 +4378,9 @@ public partial class ClaudeSessionService
         var evtType = evt.TryGetProperty("type", out var et) ? et.GetString() : null;
         if (evtType != "message_start") return;
         if (!evt.TryGetProperty("message", out var msg)) return;
-        if (!msg.TryGetProperty("usage", out var usage)) return;
+        msg.TryGetProperty("usage", out var usage);
+        session.LatestPromptCacheRequest = ReadPromptCacheCounts(usage);
+        if (usage.ValueKind != JsonValueKind.Object) return;
 
         var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
         var cacheRead = usage.TryGetProperty("cache_read_input_tokens", out var cr) ? cr.GetInt32() : 0;
@@ -4386,8 +4393,45 @@ public partial class ClaudeSessionService
         }
     }
 
+    internal static PromptCacheCounts? ReadPromptCacheCounts(JsonElement usage)
+    {
+        static int? Count(JsonElement usage, string name) =>
+            usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty(name, out var field)
+            && field.ValueKind == JsonValueKind.Number && field.TryGetInt32(out var count) && count >= 0
+                ? count
+                : null;
+
+        // Claude's input field excludes both cache buckets. Cache creation is an input cost,
+        // but only reads count toward a hit.
+        if (Count(usage, "input_tokens") is not { } fresh
+            || Count(usage, "cache_read_input_tokens") is not { } read
+            || Count(usage, "cache_creation_input_tokens") is not { } written)
+            return null;
+        return new((long)fresh + read + written, read);
+    }
+
+    internal static PromptCacheUsage AccumulatePromptCache(PromptCacheUsage? prior, JsonElement usage)
+    {
+        var cache = prior ?? new(null);
+        if (ReadPromptCacheCounts(usage) is not { } measured)
+            return cache with { Partial = true };
+        if (measured.InputTokens == 0) return cache;
+        var previous = cache.Session;
+        return cache with
+        {
+            Session = new((previous?.InputTokens ?? 0) + measured.InputTokens,
+                (previous?.CachedInputTokens ?? 0) + measured.CachedInputTokens),
+        };
+    }
+
     private void ParseTokenUsage(JsonElement root, ManagedSession session)
     {
+        root.TryGetProperty("usage", out var promptUsage);
+        session.Info.PromptCache = AccumulatePromptCache(session.Info.PromptCache, promptUsage) with
+        {
+            LatestRequest = session.LatestPromptCacheRequest,
+        };
+        session.LatestPromptCacheRequest = null;
         if (root.TryGetProperty("usage", out var usage))
         {
             int turnInput = 0, turnCacheRead = 0, turnCacheWrite = 0;
@@ -4632,6 +4676,7 @@ public partial class ClaudeSessionService
                 MessageCount = info.MessageCount,
                 CostUsd = info.CostUsd,
                 InputTokens = info.InputTokens,
+                PromptCache = info.PromptCache,
                 OutputTokens = info.OutputTokens,
                 CacheReadInputTokens = info.CacheReadInputTokens,
                 CacheCreationInputTokens = info.CacheCreationInputTokens,
@@ -4797,6 +4842,7 @@ public partial class ClaudeSessionService
         // turn boundaries (status/error result, user message, answer) so the
         // next turn mints a fresh one.
         public string? CurrentAssistantUid { get; set; }
+        public PromptCacheCounts? LatestPromptCacheRequest { get; set; }
         // Streamed text/thinking blocks awaiting phase or block-stop settlement.
         public ClaudeTextBlockTracker TextBlocks { get; } = new();
         // Background tasks (subagents, background shells) of this CLI process.

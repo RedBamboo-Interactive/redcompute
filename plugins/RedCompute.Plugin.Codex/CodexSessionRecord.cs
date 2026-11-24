@@ -1,5 +1,7 @@
 using RedCompute.PluginSdk;
 
+using RedCompute.Core.Sessions;
+
 namespace RedCompute.Plugin.Codex;
 
 public class CodexSessionRecord
@@ -16,6 +18,7 @@ public class CodexSessionRecord
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
     public int? InputTokens { get; set; }
+    public PromptCacheUsage? PromptCache { get; set; }
     public int? OutputTokens { get; set; }
     public int? CachedInputTokens { get; set; }
     public int? ContextTokens { get; set; }

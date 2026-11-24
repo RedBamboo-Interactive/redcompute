@@ -1,3 +1,5 @@
+using RedCompute.Core.Sessions;
+
 namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeSessionInfo
@@ -24,6 +26,7 @@ public class OpenCodeSessionInfo
     public int MessageCount { get; set; }
     public double? CostUsd { get; set; }
     public int? InputTokens { get; set; }
+    public PromptCacheUsage? PromptCache { get; set; }
     public int? OutputTokens { get; set; }
     public int? ContextWindow { get; set; }
     public Guid? JobId { get; set; }

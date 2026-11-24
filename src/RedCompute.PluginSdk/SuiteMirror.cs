@@ -31,6 +31,7 @@ public sealed class AiSessionSnapshot
     public int? OutputTokens { get; init; }
     public int? CacheReadInputTokens { get; init; }
     public int? CacheCreationInputTokens { get; init; }
+    public PromptCacheUsage? PromptCache { get; init; }
     public int? ContextTokens { get; init; }
     public int? ContextWindow { get; init; }
     public string? Effort { get; init; }

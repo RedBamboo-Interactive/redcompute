@@ -1511,9 +1511,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// Reads <c>thread/tokenUsage/updated</c>, whose shape is
     /// <c>{tokenUsage: {total: {...}, last: {...}, modelContextWindow}}</c>.
     ///
-    /// <c>total</c> is cumulative across the thread and <c>last</c> is just the most recent turn —
-    /// the session counters want the cumulative one. Note <c>turn/completed</c> carries no usage at
-    /// all, so this notification is the only source.
+    /// <c>total</c> is cumulative across the thread. <c>last</c> is one provider response,
+    /// including for turns that call the model multiple times.
     /// </summary>
     private static void ApplyUsage(ManagedSession session, JsonElement p) =>
         ApplyUsage(session.Info, p);
@@ -1529,6 +1528,11 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             if (Int(total, "cachedInputTokens") is { } c) info.CachedInputTokens = c;
         }
 
+        usage.TryGetProperty("last", out var lastUsage);
+        var sessionCache = ReadCacheCounts(total);
+        var latestCache = ReadCacheCounts(lastUsage);
+        info.PromptCache = new(sessionCache, LatestRequest: latestCache);
+
         // `total` is cumulative billing usage across the thread. `last.totalTokens` is the
         // active model invocation's actual working set, which is what the context-fill meter needs.
         if (usage.TryGetProperty("last", out var last) &&
@@ -1539,6 +1543,15 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         // so trust it over anything a quality mode declares.
         if (Int(usage, "modelContextWindow") is { } w) info.ContextWindow = w;
     }
+
+    private static PromptCacheCounts? ReadCacheCounts(JsonElement usage) =>
+        PromptCacheCounts.From(Long(usage, "inputTokens"), Long(usage, "cachedInputTokens"));
+
+    private static long? Long(JsonElement value, string name) =>
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var field)
+        && field.ValueKind == JsonValueKind.Number && field.TryGetInt64(out var count)
+            ? count
+            : null;
 
     private static int? Int(JsonElement e, string name) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v)
@@ -2257,6 +2270,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             MessageCount = info.MessageCount,
             CostUsd = info.CostUsd,
             InputTokens = info.InputTokens,
+            PromptCache = info.PromptCache,
             OutputTokens = info.OutputTokens,
             CachedInputTokens = info.CachedInputTokens,
             ContextTokens = info.ContextTokens,
@@ -2305,6 +2319,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
+        PromptCache = r.PromptCache,
         OutputTokens = r.OutputTokens,
         CachedInputTokens = r.CachedInputTokens,
         ContextTokens = r.ContextTokens,

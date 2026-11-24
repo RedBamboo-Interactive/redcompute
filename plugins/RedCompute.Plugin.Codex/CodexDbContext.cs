@@ -3,6 +3,8 @@ using System.IO;
 using Microsoft.EntityFrameworkCore;
 using RedCompute.Core.Storage;
 
+using System.Text.Json;
+
 namespace RedCompute.Plugin.Codex;
 
 public class CodexDbContext : DbContext
@@ -54,7 +56,7 @@ public class CodexDbContext : DbContext
                      {
                          "ThreadId TEXT", "Effort TEXT", "QualityTier TEXT", "ProviderEntity TEXT", "RepositoryId TEXT", "Source TEXT",
                          "ProcessId INTEGER", "LastActivity TEXT", "ContextTokens INTEGER",
-                         "ContextWindow INTEGER",
+                         "ContextWindow INTEGER", "PromptCache TEXT",
                          "UserId TEXT", "UserName TEXT", "UserAvatarUrl TEXT",
                          "DeveloperInstructions TEXT", "ScratchDirectory TEXT",
                          "ExecutionProfile TEXT NOT NULL DEFAULT 'default'",
@@ -125,6 +127,9 @@ public class CodexDbContext : DbContext
         modelBuilder.Entity<CodexSessionRecord>(entity =>
         {
             entity.HasKey(s => s.Id);
+            entity.Property(s => s.PromptCache).HasConversion(
+                value => JsonSerializer.Serialize(value, (JsonSerializerOptions?)null),
+                value => JsonSerializer.Deserialize<RedCompute.Core.Sessions.PromptCacheUsage>(value, (JsonSerializerOptions?)null));
             entity.Property(s => s.StartedAt).HasConversion(
                 v => v.ToString("O"),
                 v => DateTimeOffset.Parse(v));

@@ -36,6 +36,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
+        PromptCache = r.PromptCache,
         OutputTokens = r.OutputTokens,
         // ACP usage_update.used is current context usage. The record keeps it in InputTokens.
         ContextTokens = r.InputTokens,
@@ -117,6 +118,7 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.MessageCount = record.MessageCount;
             existing.CostUsd = record.CostUsd;
             existing.InputTokens = record.InputTokens;
+            existing.PromptCache = record.PromptCache;
             existing.OutputTokens = record.OutputTokens;
             existing.ContextWindow = record.ContextWindow;
             existing.JobId = record.JobId;

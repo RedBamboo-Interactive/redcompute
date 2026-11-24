@@ -136,6 +136,15 @@ public sealed class SessionInfoLookupTests : IDisposable
         var sessions = typeof(OpenCodeSessionService).GetField("_sessions", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(service)!;
         sessions.GetType().GetMethod("TryAdd")!.Invoke(sessions, ["opencode-live", managed]);
 
+        var cache = new PromptCacheUsage(new(240_000, 217_000), Partial: true, LatestRequest: new(12_000, 11_000));
+        managed.Info.PromptCache = cache;
+        var saved = store.FindSession("large")!;
+        saved.PromptCache = cache;
+        store.SaveSession(saved);
+        Assert.Null(provider.GetSessionInfo("empty")!.PromptCache);
+        Assert.Equal(cache, provider.GetSessionInfo("large")!.PromptCache);
+        Assert.Equal(cache, provider.GetSessionInfo("opencode-live")!.PromptCache);
+
         AssertEquivalent(provider, counter, ["empty", "large", "errored", "dismissed", "opencode-live"]);
         AssertUnknown(provider, counter, ["missing", "", "claude-only", "codex-only"]);
         Assert.Equal(LargeTranscript, provider.GetSession("large").History.Count);
@@ -281,6 +290,7 @@ public sealed class SessionInfoLookupTests : IDisposable
     {
         public OpenCodeNativeMessageVisibility GetMessageVisibility(string sessionId, string messageId) => OpenCodeNativeMessageVisibility.Visible;
         public IReadOnlyList<OpenCodeNativePart> GetCompletedAssistantParts(string sessionId) => [];
+        public RedCompute.Core.Sessions.PromptCacheUsage? ReadPromptCache(string sessionId) => null;
     }
 
     /// <summary>Forwards every call to the real store and counts transcript reads.</summary>

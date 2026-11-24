@@ -180,6 +180,53 @@ public sealed class OpenCodeTranscriptProjectionTests
         }
     }
 
+    [Fact]
+    public void NativePromptCacheUsesWeightedStepCountsAndKeepsUnknownRequestsOut()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"opencode-cache-{Guid.NewGuid():N}.db");
+        try
+        {
+            CreateNativeDb(dbPath);
+            var reader = new OpenCodeNativeSessionReader(dbPath);
+            Assert.Null(reader.ReadPromptCache("session-1"));
+
+            using var connection = new SqliteConnection($"Data Source={dbPath};Pooling=False");
+            connection.Open();
+            Insert(connection, "part", "cache-1", "session-1", "build-message", 9,
+                """{"type":"step-finish","tokens":{"input":20,"cache":{"read":30,"write":50}}}""");
+            Insert(connection, "part", "cache-2", "session-1", "build-message", 10,
+                """{"type":"step-finish","tokens":{"input":110,"output":2,"reasoning":3,"total":205,"cache":{"read":80,"write":10}}}""");
+            Insert(connection, "part", "cache-other", "unrelated", "build-message", 11,
+                """{"type":"step-finish","tokens":{"input":0,"cache":{"read":500,"write":0}}}""");
+            Insert(connection, "part", "cache-invalid", "session-1", "build-message", 12,
+                """{"type":"step-finish","tokens":{"input":100,"cache":{"read":20}}}""");
+
+            var cache = Assert.IsType<RedCompute.Core.Sessions.PromptCacheUsage>(reader.ReadPromptCache("session-1"));
+            Assert.True(cache.Partial);
+            Assert.Equal(new RedCompute.Core.Sessions.PromptCacheCounts(300, 110), cache.Session);
+            Assert.Null(cache.LatestRequest);
+
+            // A restored thread can append another request. Re-reading the cumulative
+            // snapshot neither loses prior steps nor counts them twice.
+            Insert(connection, "part", "cache-resume", "session-1", "build-message", 13,
+                """{"type":"step-finish","tokens":{"input":25,"cache":{"read":5,"write":0}}}""");
+            var resumed = Assert.IsType<RedCompute.Core.Sessions.PromptCacheUsage>(reader.ReadPromptCache("session-1"));
+            Assert.Equal(new RedCompute.Core.Sessions.PromptCacheCounts(330, 115), resumed.Session);
+            Assert.Equal(new RedCompute.Core.Sessions.PromptCacheCounts(30, 5), resumed.LatestRequest);
+
+            Insert(connection, "part", "cache-ambiguous", "session-1", "build-message", 14,
+                """{"type":"step-finish","tokens":{"input":1000,"cache":{"read":0,"write":0}}}""");
+            var latestUnknown = Assert.IsType<RedCompute.Core.Sessions.PromptCacheUsage>(reader.ReadPromptCache("session-1"));
+            Assert.Equal(resumed.Session, latestUnknown.Session);
+            Assert.Null(latestUnknown.LatestRequest);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            File.Delete(dbPath);
+        }
+    }
+
     private static void CreateNativeDb(string dbPath)
     {
         using var connection = new SqliteConnection($"Data Source={dbPath}");

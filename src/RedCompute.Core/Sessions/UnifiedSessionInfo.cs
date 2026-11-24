@@ -40,6 +40,7 @@ public class UnifiedSessionInfo
     public int? InputTokens { get; set; }
     public int? OutputTokens { get; set; }
     public int? CachedInputTokens { get; set; }
+    public PromptCacheUsage? PromptCache { get; set; }
     public int? ContextTokens { get; set; }
     public int? ContextWindow { get; set; }
     public string? Effort { get; set; }

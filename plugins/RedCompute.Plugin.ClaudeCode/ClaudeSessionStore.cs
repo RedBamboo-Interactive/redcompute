@@ -94,6 +94,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
         MessageCount = r.MessageCount,
         CostUsd = r.CostUsd,
         InputTokens = r.InputTokens,
+        PromptCache = r.PromptCache,
         OutputTokens = r.OutputTokens,
         CacheReadInputTokens = r.CacheReadInputTokens,
         CacheCreationInputTokens = r.CacheCreationInputTokens,
@@ -214,6 +215,7 @@ public class ClaudeSessionStore : IClaudeSessionStore
             existing.MessageCount = record.MessageCount;
             existing.CostUsd = record.CostUsd;
             existing.InputTokens = record.InputTokens;
+            existing.PromptCache = record.PromptCache;
             existing.OutputTokens = record.OutputTokens;
             existing.CacheReadInputTokens = record.CacheReadInputTokens;
             existing.CacheCreationInputTokens = record.CacheCreationInputTokens;

@@ -291,6 +291,7 @@ public sealed class OpenCodeCheckpointTests
         public IReadOnlyList<OpenCodeNativePart> Parts = [];
         public OpenCodeNativeMessageVisibility GetMessageVisibility(string sessionId, string messageId) => OpenCodeNativeMessageVisibility.Visible;
         public IReadOnlyList<OpenCodeNativePart> GetCompletedAssistantParts(string sessionId) => Parts;
+        public RedCompute.Core.Sessions.PromptCacheUsage? ReadPromptCache(string sessionId) => null;
     }
     private sealed class Store : IOpenCodeSessionStore
     {
