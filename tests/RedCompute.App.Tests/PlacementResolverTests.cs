@@ -140,6 +140,22 @@ public sealed class PlacementResolverTests : IDisposable
         Assert.Equal((expected, code), (result.Error!.Status, result.Error.Code));
     }
 
+    /// <summary>The probe asks for an Agent that cannot exist: the route's own refusal says the route is there; nothing is allocated or mounted.</summary>
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, """{"error":"agent_not_found","message":"No Agent"}""", true)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, """{"error":"workspace_unavailable","message":"VFS down"}""", true)]
+    [InlineData(HttpStatusCode.OK, """{"workspace":{"kind":"none"}}""", true)]
+    [InlineData(HttpStatusCode.NotFound, "", false)]
+    [InlineData(HttpStatusCode.NotFound, """{"error":"not_found"}""", false)]
+    [InlineData(HttpStatusCode.InternalServerError, "boom", false)]
+    public async Task The_probe_says_whether_the_kernel_resolves_placements(HttpStatusCode status, string body, bool answers)
+    {
+        var kernel = new Kernel((_, _) => (status, body));
+
+        Assert.Equal(answers, await new KernelPlacementClient(kernel.Client()).ProbeAsync());
+        Assert.Equal("""{"workspace":{"agentId":"00000000-0000-0000-0000-000000000000"}}""", Assert.Single(kernel.Requests).Body);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.UnprocessableEntity, """{"error":"validation_failed","message":"owner"}""", 422, "validation_failed")]
     [InlineData(HttpStatusCode.ServiceUnavailable, """{"error":"scratch_unavailable","message":"S: not mapped"}""", 503, "scratch_unavailable")]

@@ -35,6 +35,11 @@ public class CapabilityConfig
     public string? Icon { get; set; }
     public string? Color { get; set; }
     public string? ActiveProvider { get; set; }
+    /// <summary>
+    /// The node new work of this capability runs on when a request names none and its placement does not
+    /// decide it (placement routing, step three): a node id from <c>GET /nodes</c>, or null for node zero.
+    /// </summary>
+    public string? DefaultNodeId { get; set; }
     public Dictionary<string, ProviderConfig> Providers { get; set; } = new();
 }
 

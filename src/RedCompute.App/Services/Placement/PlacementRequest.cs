@@ -32,12 +32,17 @@ public enum PlacementRoute
 /// </summary>
 /// <param name="NodeId">A registry node id, the alias <c>local</c>, or null to route (2.3).</param>
 /// <param name="ScratchAs">What the caller does with the scratch folder: env (default), add-dir or cwd.</param>
+/// <param name="References">
+/// Entities the work may read, by id: each a repository (checkout, branch, subPath) or an Agent workspace.
+/// Validated and resolved to read-only paths in the session's placement document; nothing is mounted.
+/// </param>
 public sealed record PlacementRequest(
     string? NodeId,
     WorkspacePlacement? Workspace,
     RepositoryPlacement? Repository,
     ScratchPlacement? Scratch,
-    string ScratchAs = PlacementRequest.ScratchAsEnv)
+    string ScratchAs = PlacementRequest.ScratchAsEnv,
+    IReadOnlyList<PlacementReference>? References = null)
 {
     /// <summary>The body member that carries it.</summary>
     public const string Member = "placement";
@@ -65,7 +70,27 @@ public sealed record PlacementRequest(
             json["scratch"] = new JsonObject { ["owner"] = Scratch.Owner, ["executionKey"] = Scratch.ExecutionKey };
             json["scratchAs"] = ScratchAs;
         }
+        if (References is { Count: > 0 })
+            json["references"] = new JsonArray(References.Select(reference => (JsonNode)reference.ToJson()).ToArray());
         return json;
+    }
+}
+
+/// <summary>
+/// One entity the work may read: exactly one of an Agent workspace or a repository checkout (the same
+/// member shapes as the placement's own). Read-only by design.
+/// </summary>
+public sealed record PlacementReference(WorkspacePlacement? Workspace, RepositoryPlacement? Repository)
+{
+    public JsonObject ToJson()
+    {
+        if (Workspace is not null)
+            return new JsonObject { ["workspace"] = new JsonObject { ["agentId"] = Workspace.AgentId.ToString("D") } };
+        var repository = new JsonObject { ["repositoryId"] = Repository!.RepositoryId.ToString("D") };
+        if (Repository.CheckoutId is { } checkout) repository["checkoutId"] = checkout.ToString("D");
+        if (Repository.Branch is not null) repository["branch"] = Repository.Branch;
+        if (Repository.SubPath is not null) repository["subPath"] = Repository.SubPath;
+        return new JsonObject { ["repository"] = repository };
     }
 }
 
@@ -130,7 +155,9 @@ public static class PlacementParser
 {
     private const int MaxTextLength = 512;
 
-    private static readonly string[] TopMembers = ["nodeId", "workspace", "repository", "scratch", "scratchAs"];
+    private const int MaxReferences = 16;
+
+    private static readonly string[] TopMembers = ["nodeId", "workspace", "repository", "scratch", "scratchAs", "references"];
 
     /// <summary>
     /// Reads <c>placement</c> from a request body. Absent or null is no placement (true, null). A
@@ -176,9 +203,10 @@ public static class PlacementParser
         }
 
         if (!TryText(value, "nodeId", "placement.nodeId", required: false, out var nodeId, out error)) return false;
-        if (!TryWorkspace(value, out var workspace, out error)) return false;
-        if (!TryRepository(value, out var repository, out error)) return false;
+        if (!TryWorkspace(value, "placement", out var workspace, out error)) return false;
+        if (!TryRepository(value, "placement", out var repository, out error)) return false;
         if (!TryScratch(value, out var scratch, out error)) return false;
+        if (!TryReferences(value, out var references, out error)) return false;
         if (!TryText(value, "scratchAs", "placement.scratchAs", required: false, out var scratchAs, out error)) return false;
 
         if (workspace is not null && repository is not null)
@@ -199,7 +227,7 @@ public static class PlacementParser
                     "cwd makes the scratch folder the working directory, so it cannot be combined with a workspace or a repository"));
         }
 
-        placement = new PlacementRequest(nodeId, workspace, repository, scratch, scratchAs ?? PlacementRequest.ScratchAsEnv);
+        placement = new PlacementRequest(nodeId, workspace, repository, scratch, scratchAs ?? PlacementRequest.ScratchAsEnv, references);
         return true;
     }
 
@@ -271,31 +299,31 @@ public static class PlacementParser
     private static PlacementError NodeNotFound(string requested) => new(StatusCodes.Status404NotFound, "node_not_found",
         $"No node has the id '{requested}'", NodeId: requested);
 
-    private static bool TryWorkspace(JsonElement placement, out WorkspacePlacement? workspace, out PlacementError? error)
+    private static bool TryWorkspace(JsonElement placement, string prefix, out WorkspacePlacement? workspace, out PlacementError? error)
     {
         workspace = null;
         error = null;
-        if (!TryObject(placement, "workspace", ["agentId"], out var value, out error)) return false;
+        if (!TryObject(placement, prefix, "workspace", ["agentId"], out var value, out error)) return false;
         if (value is not { } element) return true;
-        if (!TryGuid(element, "agentId", "placement.workspace.agentId", required: true, out var agentId, out error)) return false;
+        if (!TryGuid(element, "agentId", $"{prefix}.workspace.agentId", required: true, out var agentId, out error)) return false;
         workspace = new WorkspacePlacement(agentId!.Value);
         return true;
     }
 
-    private static bool TryRepository(JsonElement placement, out RepositoryPlacement? repository, out PlacementError? error)
+    private static bool TryRepository(JsonElement placement, string prefix, out RepositoryPlacement? repository, out PlacementError? error)
     {
         repository = null;
         error = null;
-        if (!TryObject(placement, "repository", ["repositoryId", "checkoutId", "branch", "subPath"], out var value, out error))
+        if (!TryObject(placement, prefix, "repository", ["repositoryId", "checkoutId", "branch", "subPath"], out var value, out error))
             return false;
         if (value is not { } element) return true;
-        if (!TryGuid(element, "repositoryId", "placement.repository.repositoryId", required: true, out var repositoryId, out error)
-            || !TryGuid(element, "checkoutId", "placement.repository.checkoutId", required: false, out var checkoutId, out error)
-            || !TryText(element, "branch", "placement.repository.branch", required: false, out var branch, out error)
-            || !TryText(element, "subPath", "placement.repository.subPath", required: false, out var subPath, out error))
+        if (!TryGuid(element, "repositoryId", $"{prefix}.repository.repositoryId", required: true, out var repositoryId, out error)
+            || !TryGuid(element, "checkoutId", $"{prefix}.repository.checkoutId", required: false, out var checkoutId, out error)
+            || !TryText(element, "branch", $"{prefix}.repository.branch", required: false, out var branch, out error)
+            || !TryText(element, "subPath", $"{prefix}.repository.subPath", required: false, out var subPath, out error))
             return false;
         if (subPath is not null && SubPathProblem(subPath) is { } problem)
-            return Fail(out error, PlacementError.Invalid("placement.repository.subPath", problem));
+            return Fail(out error, PlacementError.Invalid($"{prefix}.repository.subPath", problem));
         repository = new RepositoryPlacement(repositoryId!.Value, checkoutId, branch, subPath);
         return true;
     }
@@ -304,12 +332,45 @@ public static class PlacementParser
     {
         scratch = null;
         error = null;
-        if (!TryObject(placement, "scratch", ["owner", "executionKey"], out var value, out error)) return false;
+        if (!TryObject(placement, "placement", "scratch", ["owner", "executionKey"], out var value, out error)) return false;
         if (value is not { } element) return true;
         if (!TryText(element, "owner", "placement.scratch.owner", required: true, out var owner, out error)
             || !TryText(element, "executionKey", "placement.scratch.executionKey", required: true, out var key, out error))
             return false;
         scratch = new ScratchPlacement(owner!, key!);
+        return true;
+    }
+
+    /// <summary>
+    /// <c>references</c>: an array of at most 16 objects, each exactly one of <c>workspace</c> or
+    /// <c>repository</c> (the placement's own member shapes).
+    /// </summary>
+    private static bool TryReferences(JsonElement placement, out IReadOnlyList<PlacementReference>? references, out PlacementError? error)
+    {
+        references = null;
+        error = null;
+        if (!placement.TryGetProperty("references", out var array) || array.ValueKind == JsonValueKind.Null) return true;
+        if (array.ValueKind != JsonValueKind.Array)
+            return Fail(out error, PlacementError.Invalid("placement.references", "must be an array"));
+        if (array.GetArrayLength() > MaxReferences)
+            return Fail(out error, PlacementError.Invalid("placement.references", $"may hold at most {MaxReferences} references"));
+        var list = new List<PlacementReference>();
+        var index = 0;
+        foreach (var item in array.EnumerateArray())
+        {
+            var prefix = $"placement.references[{index++}]";
+            if (item.ValueKind != JsonValueKind.Object)
+                return Fail(out error, PlacementError.Invalid(prefix, "must be an object"));
+            foreach (var property in item.EnumerateObject())
+                if (property.Name is not ("workspace" or "repository"))
+                    return Fail(out error, PlacementError.Invalid($"{prefix}.{property.Name}", "is not a reference member"));
+            if (!TryWorkspace(item, prefix, out var workspace, out error)) return false;
+            if (!TryRepository(item, prefix, out var repository, out error)) return false;
+            if ((workspace is null) == (repository is null))
+                return Fail(out error, PlacementError.Invalid(prefix, "must name exactly one of workspace or repository"));
+            list.Add(new PlacementReference(workspace, repository));
+        }
+        references = list.Count == 0 ? null : list;
         return true;
     }
 
@@ -329,16 +390,16 @@ public static class PlacementParser
         return null;
     }
 
-    private static bool TryObject(JsonElement parent, string name, string[] members, out JsonElement? value, out PlacementError? error)
+    private static bool TryObject(JsonElement parent, string prefix, string name, string[] members, out JsonElement? value, out PlacementError? error)
     {
         value = null;
         error = null;
         if (!parent.TryGetProperty(name, out var element) || element.ValueKind == JsonValueKind.Null) return true;
         if (element.ValueKind != JsonValueKind.Object)
-            return Fail(out error, PlacementError.Invalid($"placement.{name}", "must be an object"));
+            return Fail(out error, PlacementError.Invalid($"{prefix}.{name}", "must be an object"));
         foreach (var property in element.EnumerateObject())
             if (!members.Contains(property.Name, StringComparer.Ordinal))
-                return Fail(out error, PlacementError.Invalid($"placement.{name}.{property.Name}", $"is not a placement.{name} member"));
+                return Fail(out error, PlacementError.Invalid($"{prefix}.{name}.{property.Name}", $"is not a {prefix}.{name} member"));
         value = element;
         return true;
     }

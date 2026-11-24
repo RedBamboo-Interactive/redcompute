@@ -96,6 +96,20 @@ public sealed class RepositoryPlacementResolver
     }
 
     /// <summary>
+    /// The nodes that hold a checkout of the repository (design 2.3, step two): a checkout without a node id
+    /// is on the legacy node (null in the list). Empty while the repository has no checkout entities.
+    /// </summary>
+    public async Task<Resolution<IReadOnlyList<string?>>> CheckoutNodesAsync(Guid repositoryId, CancellationToken ct = default)
+    {
+        var listed = await ListCheckoutsAsync(repositoryId, ct);
+        if (listed.Error is not null) return new(null, listed.Error);
+        IReadOnlyList<string?> nodes = listed.Entities!
+            .Where(c => !string.Equals(c.Text("status"), "archived", StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.Text("node_id")).Distinct(StringComparer.Ordinal).ToList();
+        return Resolution<IReadOnlyList<string?>>.Of(nodes);
+    }
+
+    /// <summary>
     /// The checkout on this node: the named one (it must belong to the repository and be on this node),
     /// else the one active checkout entity on this node, else, while the repository has none, its
     /// <c>local_path</c> on the legacy node.

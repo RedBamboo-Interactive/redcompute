@@ -82,6 +82,18 @@ public sealed class KernelPlacementClient : IWorkspaceResolver, IHostScratch, IS
 
     internal KernelPlacementClient(HttpClient http) => _http = http;
 
+    /// <summary>
+    /// Whether the kernel's resolve route exists, without allocating or mounting anything: asks for the
+    /// workspace of an Agent that cannot exist. The route's own refusal (<c>agent_not_found</c>, or
+    /// <c>workspace_unavailable</c>) says it is there; a 404 without a code, an unreachable kernel or a
+    /// malformed answer say it is not (<see cref="PlacementAuthority"/> then keeps stage A).
+    /// </summary>
+    public async Task<bool> ProbeAsync(CancellationToken ct = default)
+    {
+        var answer = await ResolveAsync(new WorkspacePlacement(Guid.Empty), ct);
+        return answer.Ok || answer.Error is { Code: "agent_not_found" or "workspace_unavailable" };
+    }
+
     public async Task<Resolution<WorkspaceResolution>> ResolveAsync(WorkspacePlacement workspace, CancellationToken ct = default)
     {
         var (answer, error) = await PostAsync(new JsonObject

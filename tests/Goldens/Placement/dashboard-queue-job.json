@@ -1,0 +1,27 @@
+{
+  "jobInput": {
+    "model": null,
+    "prompt": "Queue job from the dashboard",
+    "provider": "claude-code",
+    "timeout": 600,
+    "workingDir": null
+  },
+  "provider": {
+    "environment": null,
+    "method": "ExecuteAsync",
+    "model": null,
+    "providerId": "claude-code",
+    "providerParams": {
+      "accessLevel": "auto",
+      "userId": "owner"
+    },
+    "timeout": 600,
+    "workingDir": null
+  },
+  "request": {
+    "prompt": "Queue job from the dashboard",
+    "timeout": 600
+  },
+  "route": "/ai-session/execute",
+  "status": 200
+}

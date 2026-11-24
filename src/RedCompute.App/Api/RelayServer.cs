@@ -158,11 +158,15 @@ public class RelayServer
         // same body also names the running commit (see PingInfo); `version` is unchanged.
         var ping = PingInfo.Create(RedComputeServiceDescriptor.ServiceDisplayName,
             RedComputeServiceDescriptor.AppVersion, System.Reflection.Assembly.GetEntryAssembly());
+        PlacementAuthority? placementAuthority = null;
         _app.Use(async (ctx, next) =>
         {
             if (HttpMethods.IsGet(ctx.Request.Method) && ctx.Request.Path == "/ping")
             {
-                await ctx.Response.WriteAsJsonAsync(ping);
+                // placement.v1 only while the kernel's resolve route answers (design 8.3 item 4).
+                await ctx.Response.WriteAsJsonAsync(placementAuthority is { Active: true }
+                    ? ping with { Features = placementAuthority.Features }
+                    : ping);
                 return;
             }
             await next();
@@ -411,10 +415,15 @@ public class RelayServer
         // Stage A of placement by reference: starts that send placement beside their legacy fields are
         // resolved through the kernel (workspace, scratch) and RedLeaf's repository entities, compared, counted.
         var kernelPlacement = new KernelPlacementClient(_config.RedLeafUrl, redLeafJwt);
-        var placementShadow = new PlacementShadow(
-            new PlacementResolver(_nodes, kernelPlacement, kernelPlacement,
-                new RepositoryPlacementResolver(_config.RedLeafUrl, redLeafJwt)),
+        var placementResolver = new PlacementResolver(_nodes, kernelPlacement, kernelPlacement,
+            new RepositoryPlacementResolver(_config.RedLeafUrl, redLeafJwt),
+            () => _config.Capabilities.GetValueOrDefault(UnifiedSessionEndpoints.SessionCapability)?.DefaultNodeId);
+        var placementShadow = new PlacementShadow(placementResolver,
             new PlacementShadowStore(Path.Combine(ComputeStorage.Current.DataRoot, PlacementShadowStore.FileName)), _log);
+        // Stage B: authoritative only while the kernel resolves placements (probed at boot and rechecked).
+        placementAuthority = new PlacementAuthority(placementResolver, kernelPlacement.ProbeAsync, _log);
+        var authorityLoop = placementAuthority;
+        _ = DetachedWork.Start(() => authorityLoop.RunAsync(ct));
         PlacementEndpoints.Map(registry, placementShadow.Status);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
@@ -474,7 +483,7 @@ public class RelayServer
                 else
                     broadcaster.Broadcast("session.updated", session);
             },
-            _nodes, placementShadow);
+            _nodes, placementShadow, placementAuthority);
         SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access);
         SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
         CliVersionEndpoints.Map(registry, _registry);

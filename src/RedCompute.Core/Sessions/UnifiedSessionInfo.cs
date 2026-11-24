@@ -20,6 +20,13 @@ public class UnifiedSessionInfo
     /// session started with path fields only, which includes every session older than placement.
     /// </summary>
     public JsonObject? Placement { get; set; }
+    /// <summary>
+    /// Display only, set on the start response when placement decided where the session runs, never stored:
+    /// <c>{cwd, scratchDir, references: [{kind, id, checkoutId?, branch?, path, access: "read"}]}</c>. The
+    /// references are the read-only folders of <c>placement.references</c>; nothing is mounted for them.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JsonObject? PlacementResolved { get; set; }
     public Guid? RepositoryId { get; set; }
     public SessionStatus Status { get; set; }
     public string? StopReason { get; set; }

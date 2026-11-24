@@ -2,6 +2,7 @@ using System.IO;
 using System.Net.Http;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Auth;
@@ -65,6 +66,7 @@ public static class UnifiedSessionEndpoints
     private static Action<UnifiedSessionInfo>? _titleChanged;
     private static INodeRegistry? _nodes;
     private static PlacementShadow? _shadow;
+    private static PlacementAuthority? _authority;
     /// <summary>The node sessions start on: node zero's host (the shared local host without a registry).</summary>
     private static IExecutionHost _host = LocalExecutionHost.Shared;
 
@@ -86,7 +88,8 @@ public static class UnifiedSessionEndpoints
         Func<UnifiedSessionInfo, JobRecord, CancellationToken, Task>? mirrorConfidential = null,
         SessionAccessService? access = null,
         SessionTitleStore? titles = null, Action<UnifiedSessionInfo>? titleChanged = null,
-        INodeRegistry? nodes = null, PlacementShadow? placementShadow = null)
+        INodeRegistry? nodes = null, PlacementShadow? placementShadow = null,
+        PlacementAuthority? placementAuthority = null)
     {
         // Without a policy source (tests, hosts with no RedLeaf) the contract's no-record defaults
         // apply: auto (ask where the provider has no auto), Full disabled.
@@ -107,6 +110,7 @@ public static class UnifiedSessionEndpoints
         _nodes = nodes;
         _host = nodes?.HostFor(null) ?? LocalExecutionHost.Shared;
         _shadow = placementShadow;
+        _authority = placementAuthority;
 
         bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
             => ComputeResourceAccess.CanReadSession(
@@ -378,8 +382,28 @@ public static class UnifiedSessionEndpoints
             // references are stored with the session.
             if (ReadPlacement(body, PlacementRoute.Session, conversationOnly, ctx.User, out var placement) is { } placementError)
                 return placementError;
+            // Stage B: while the kernel resolves placements, the placement decides and the legacy fields are compared.
+            ResolvedPlacement? resolvedPlacement = null;
+            if (placement is not null && !conversationOnly && _authority is { Active: true } authority)
+            {
+                var resolution = await authority.ResolveAsync(placement, PlacementRoute.Session, ctx.User, ctx.RequestAborted);
+                if (!resolution.Ok) return resolution.Error!.ToResult();
+                resolvedPlacement = resolution.Value;
+            }
 
             var projectPath = body.TryGetProperty("projectPath", out var pp) ? pp.GetString() : null;
+            if (resolvedPlacement is not null)
+            {
+                var sentRepository = body.TryGetProperty("repositoryId", out var sentRepositoryValue)
+                    && sentRepositoryValue.ValueKind == JsonValueKind.String ? sentRepositoryValue.GetString() : null;
+                var sentScratch = body.TryGetProperty("scratchDir", out var sentScratchValue)
+                    && sentScratchValue.ValueKind == JsonValueKind.String ? sentScratchValue.GetString() : null;
+                if (PlacementAuthority.Conflicts(resolvedPlacement,
+                        new LegacyPlacement(projectPath, sentScratch, sentRepository, null, null), PlacementRoute.Session,
+                        _host.PathRules) is { } conflict)
+                    return conflict.ToResult();
+                if (resolvedPlacement.WorkingDirectory is { } placedDirectory) projectPath = placedDirectory;
+            }
             if (conversationOnly)
             {
                 if (!string.IsNullOrWhiteSpace(projectPath)
@@ -393,7 +417,12 @@ public static class UnifiedSessionEndpoints
                 return Error(422, "validation_failed", "projectPath is required");
 
             RepositoryReference? repository = null;
-            if (body.TryGetProperty("repositoryId", out var repositoryValue)
+            if (resolvedPlacement?.Repository is { } placedRepository)
+            {
+                // Resolved by reference on its node: its checkout, branch worktree and main-only rule were checked there.
+                repository = new RepositoryReference(placedRepository.RepositoryId, placedRepository.Name, projectPath!);
+            }
+            else if (body.TryGetProperty("repositoryId", out var repositoryValue)
                 && repositoryValue.ValueKind != JsonValueKind.Null)
             {
                 if (repositoryValue.ValueKind != JsonValueKind.String
@@ -414,7 +443,13 @@ public static class UnifiedSessionEndpoints
             }
 
             string? scratchDirectory = conversationOnly ? projectPath : null;
-            if (!conversationOnly && body.TryGetProperty("scratchDir", out var scratchValue)
+            if (resolvedPlacement?.ScratchDirectory is { } placedScratch)
+            {
+                if (!SessionScratch.TryResolveDirectory(_host, placedScratch, out scratchDirectory))
+                    return new PlacementError(503, "scratch_unavailable", "The placement's scratch folder is not available on this node")
+                        .ToResult();
+            }
+            else if (!conversationOnly && body.TryGetProperty("scratchDir", out var scratchValue)
                 && scratchValue.ValueKind != JsonValueKind.Null)
             {
                 if (scratchValue.ValueKind != JsonValueKind.String
@@ -558,11 +593,14 @@ public static class UnifiedSessionEndpoints
             if (keepResident) jobTracker.SetKeepResident(jobId, true);
             // Stage A: compared off the request path, counted, never used. A conversation-only session's
             // workspace is RedCompute's own on both paths, so there is nothing to compare.
-            if (placement is not null && !conversationOnly)
+            if (placement is not null && !conversationOnly && resolvedPlacement is null)
                 _shadow?.Observe(placement, PlacementRoute.Session, provenance.Origin.App.Id,
                     new LegacyPlacement(projectPath, scratchDirectory,
-                        repository is null ? null : repositoryValue.GetString(), null, null),
+                        repository is null || !body.TryGetProperty("repositoryId", out var shadowRepository)
+                            ? null
+                            : shadowRepository.GetString(), null, null),
                     _host.PathRules, ctx.User);
+            if (resolvedPlacement is not null) session.PlacementResolved = ResolvedDocument(resolvedPlacement);
 
             return Results.Json(WithNode(SessionAccessService.Overlay(session, provider), _nodes));
         })
@@ -2306,6 +2344,24 @@ public static class UnifiedSessionEndpoints
                 }
             }
 
+            // Stage B: while the kernel resolves placements, the placement decides and the legacy fields are compared.
+            ResolvedPlacement? resolvedPlacement = null;
+            if (placement is not null && _authority is { Active: true } authority)
+            {
+                var resolution = await authority.ResolveAsync(placement, PlacementRoute.Execute, ctx.User, ctx.RequestAborted);
+                if (!resolution.Ok) return resolution.Error!.ToResult();
+                resolvedPlacement = resolution.Value;
+                var sentAddDirs = providerParams.TryGetValue("addDirs", out var sentDirs) && sentDirs is string[] dirs ? dirs : null;
+                if (PlacementAuthority.Conflicts(resolvedPlacement!,
+                        new LegacyPlacement(workingDir, null, null, sentAddDirs, legacyEnvironment), PlacementRoute.Execute,
+                        _host.PathRules) is { } conflict)
+                    return conflict.ToResult();
+                if (resolvedPlacement!.WorkingDirectory is { } placedDirectory) workingDir = placedDirectory;
+                if (resolvedPlacement.AddDirs is { Count: > 0 } placedDirs)
+                    providerParams["addDirs"] = PlacementAuthority.MergeAddDirs(sentAddDirs, placedDirs, _host.PathRules);
+                env = PlacementAuthority.WithScratch(env, resolvedPlacement.ScratchEnvironment);
+            }
+
             // qualityTier supplies effort when not given explicitly (q.Effort already prefers an explicit effort).
             if (!string.IsNullOrWhiteSpace(q.Effort))
                 providerParams["effort"] = q.Effort;
@@ -2413,7 +2469,7 @@ public static class UnifiedSessionEndpoints
             jobTracker.StartInvocation(job.Id, provenance);
             log($"[{provider.ProviderId}] Execute job {job.Id} started (model={model ?? "default"})", job.Id);
             // Stage A: compared off the request path, counted, never used; the job input above has no placement.
-            if (placement is not null)
+            if (placement is not null && resolvedPlacement is null)
                 _shadow?.Observe(placement, PlacementRoute.Execute, provenance.Origin.App.Id,
                     new LegacyPlacement(workingDir, null, null,
                         providerParams.TryGetValue("addDirs", out var legacyAddDirs) && legacyAddDirs is string[] dirs ? dirs : null,
@@ -3323,19 +3379,46 @@ public static class UnifiedSessionEndpoints
         return null;
     }
 
+    /// <summary>
+    /// The display document of a start that placement decided (never stored): the folders it resolved to, and
+    /// each <c>placement.references</c> entry as a read-only folder. Nothing is mounted for a reference.
+    /// </summary>
+    internal static JsonObject ResolvedDocument(ResolvedPlacement resolved)
+    {
+        var document = new JsonObject { ["cwd"] = resolved.WorkingDirectory, ["scratchDir"] = resolved.ScratchDirectory };
+        if (resolved.References is { Count: > 0 })
+            document["references"] = new JsonArray(resolved.References.Select(reference =>
+            {
+                var item = new JsonObject { ["kind"] = reference.Kind, ["id"] = reference.Id.ToString("D") };
+                if (reference.CheckoutId is { } checkout) item["checkoutId"] = checkout.ToString("D");
+                if (reference.Branch is not null) item["branch"] = reference.Branch;
+                item["path"] = reference.Path;
+                item["access"] = "read";
+                return (JsonNode)item;
+            }).ToArray());
+        return document;
+    }
+
     /// <summary>The capability these routes serve, as a 422 <c>provider_unavailable_on_node</c> names it.</summary>
     internal const string SessionCapability = "ai-session";
 
     /// <summary>Discovery text for <c>placement</c> on the session and execute routes.</summary>
     internal const string PlacementDescription =
         "Where the work runs, by reference (ids, never paths): {nodeId, workspace: {agentId}, repository: {repositoryId, checkoutId?, branch?, subPath?}, "
-        + "scratch: {owner, executionKey}, scratchAs: env|add-dir|cwd}. nodeId is a /nodes id or 'local'; null or absent routes to this node. "
+        + "scratch: {owner, executionKey}, scratchAs: env|add-dir|cwd, references: [{workspace: {agentId}} | {repository: {repositoryId, checkoutId?, branch?, subPath?}}]}. "
+        + "nodeId is a /nodes id or 'local'; null or absent routes (the repository's only checkout node, then the capability's defaultNodeId, then node zero). "
         + "At most one of workspace or repository; scratchAs needs scratch, add-dir is execute-only, cwd excludes workspace and repository; "
         + "conversation-only sessions take nodeId only. Unknown members and malformed values are 422 validation_failed naming the member "
-        + "in fields; an unknown node, or one the caller may not use (a remote node is its owner's and admins'; an Agent counts as its person), is 404 node_not_found with nodeId. Accepted and validated today; the legacy path fields "
-        + "(projectPath, repositoryId, scratchDir, workingDir, env, addDirs) still decide where the work runs, so send both until "
-        + "GET /ping lists the placement.v1 feature. A start that sends both is resolved by reference in the background and "
-        + "compared with them (GET /placement/shadow-status).";
+        + "in fields; an unknown node, or one the caller may not use (a remote node is its owner's and admins'; an Agent counts as its person), is 404 node_not_found with nodeId. "
+        + "While GET /ping lists the placement.v1 feature the placement decides where the work runs: its working folder, scratch, scratch variables and addDirs are what the "
+        + "provider gets, and the legacy path fields (projectPath, repositoryId, scratchDir, workingDir, env, addDirs) are optional; any of them sent beside it "
+        + "must name the same place or the start is 409 placement_conflict (fields names which, never the paths). A field the placement does not decide stays the legacy field's "
+        + "(a placement with only a nodeId still needs projectPath or workingDir). Refusals: 404 repository_not_found / agent_not_found / reference_not_found, 409 repository_inactive / "
+        + "checkout_not_on_node / checkout_ambiguous / project_path_missing / worktree_not_found / main_only / node_offline / node_not_eligible, 422 validation_failed / provider_unavailable_on_node, "
+        + "503 placement_resolution_unavailable / workspace_unavailable / scratch_unavailable. references are read-only entities the work may look at: each is validated and resolved "
+        + "to a folder on the node, nothing is mounted for it, and a session start answers them in placementResolved.references [{kind, id, checkoutId?, branch?, path, access: read}]; "
+        + "one that is unknown, inactive, on another node or unreadable is the same 404 reference_not_found. Without the feature (an older kernel) the legacy fields decide and a start "
+        + "that sends both is only compared (GET /placement/shadow-status).";
 
     /// <summary>
     /// The execute result document. <c>isolation</c> is what the provider reports it applied to this

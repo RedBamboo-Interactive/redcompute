@@ -34,6 +34,16 @@ public class PingCommitContractTests
     }
 
     [Fact]
+    public void Ping_lists_features_only_when_there_are_some()
+    {
+        var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        Assert.False(JsonSerializer.SerializeToElement(PingInfo.Create("RedCompute", "0.2.0", null), web).TryGetProperty("features", out _));
+
+        var json = JsonSerializer.SerializeToElement(PingInfo.Create("RedCompute", "0.2.0", null) with { Features = ["placement.v1"] }, web);
+        Assert.Equal(["placement.v1"], json.GetProperty("features").EnumerateArray().Select(f => f.GetString()).ToArray());
+    }
+
+    [Fact]
     public void Ping_without_a_commit_serializes_commit_as_null()
     {
         var json = JsonSerializer.SerializeToElement(PingInfo.Create("RedCompute", "0.2.0", null),

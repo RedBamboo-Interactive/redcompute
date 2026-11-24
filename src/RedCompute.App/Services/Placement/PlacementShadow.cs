@@ -190,7 +190,7 @@ public sealed class PlacementShadow
     }
 
     /// <summary>Null when neither side names a directory; an empty list and none are equivalent.</summary>
-    private static string? CompareLists(IReadOnlyList<string>? used, IReadOnlyList<string>? placed, IHostPathRules rules)
+    internal static string? CompareLists(IReadOnlyList<string>? used, IReadOnlyList<string>? placed, IHostPathRules rules)
     {
         if (used is null && placed is null) return null;
         if ((used?.Count ?? 0) == 0 && (placed?.Count ?? 0) == 0)
@@ -200,7 +200,7 @@ public sealed class PlacementShadow
     }
 
     /// <summary>The scratch variables only (a caller's other variables are not placement); null when neither side sets one.</summary>
-    private static string? CompareEnvironment(IReadOnlyDictionary<string, string>? used,
+    internal static string? CompareEnvironment(IReadOnlyDictionary<string, string>? used,
         IReadOnlyDictionary<string, string>? placed, IHostPathRules rules)
     {
         string? Value(IReadOnlyDictionary<string, string>? env, string name)

@@ -7,9 +7,13 @@ namespace RedCompute.App.Services;
 /// The body of <c>GET /ping</c>: the AppHost shape (<c>ok</c>, <c>service</c>, <c>version</c>)
 /// plus <c>commit</c>, the 40-hex commit after '+' in the entry assembly's
 /// AssemblyInformationalVersion (null when absent). Release Manager compares it with
-/// origin/main to list commits that have not run live yet.
+/// origin/main to list commits that have not run live yet. <c>features</c> lists the contracts this running
+/// RedCompute honours that a caller has to detect (<c>placement.v1</c>, while the kernel resolves placements);
+/// it is absent from the body of a build with none.
 /// </summary>
-public sealed record PingInfo(bool Ok, string Service, string Version, string? Commit)
+public sealed record PingInfo(bool Ok, string Service, string Version, string? Commit,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? Features = null)
 {
     private static readonly Regex CommitPattern = new(@"\+([0-9a-fA-F]{40})(?![0-9a-zA-Z])", RegexOptions.Compiled);
 

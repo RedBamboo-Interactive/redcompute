@@ -51,9 +51,11 @@ namespace RedCompute.App.Tests;
 /// </para>
 /// </summary>
 [Collection("Unified session endpoint mapping")]
-public sealed class PlacementEquivalenceTests : IDisposable
+public sealed partial class PlacementEquivalenceTests : IDisposable
 {
     internal const string RepositoryId = "7e1e0000-0000-4000-8000-000000000001";
+    internal const string InactiveRepositoryId = "7e1e0000-0000-4000-8000-000000000002";
+    internal const string CheckoutId = "7e1e0000-0000-4000-8000-0000000000c1";
     private const string SessionId = "placement-session";
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), "redcompute-placement", Guid.NewGuid().ToString("N"));
@@ -195,11 +197,11 @@ public sealed class PlacementEquivalenceTests : IDisposable
 
     /// <summary>What the provider was handed for <paramref name="body"/>, recorded under the fixture's legacy request.</summary>
     private async Task<JsonNode> CaptureAsync(PlacementCase fixture, string body, INodeRegistry? nodes = null,
-        PlacementShadow? shadow = null)
+        PlacementShadow? shadow = null, PlacementAuthority? authority = null)
     {
         var recorder = new RecordingProvider();
         var result = await InvokeAsync(fixture, jobs => recorder.Jobs = jobs, recorder.Providers(), body: body, nodes: nodes,
-            shadow: shadow);
+            shadow: shadow, authority: authority);
 
         Assert.True(result.Status is 200 or 202, $"{result.Status} {result.Response}");
         var capture = new JsonObject
@@ -367,9 +369,15 @@ public sealed class PlacementEquivalenceTests : IDisposable
     {
         public int Calls;
 
+        /// <summary>The kernel cannot be reached.</summary>
+        public bool Fail;
+
+        private static PlacementError Down => new(503, "placement_resolution_unavailable", "Placement resolution is unavailable: down");
+
         public Task<Resolution<WorkspaceResolution>> ResolveAsync(WorkspacePlacement workspace, CancellationToken ct = default)
         {
             Interlocked.Increment(ref Calls);
+            if (Fail) return Task.FromResult(new Resolution<WorkspaceResolution>(null, Down));
             return Task.FromResult(Resolution<WorkspaceResolution>.Of(mounted
                 ? new(WorkspaceResolution.Mounted, Path.Combine(root, "workspace"))
                 : new(WorkspaceResolution.None, null)));
@@ -378,6 +386,7 @@ public sealed class PlacementEquivalenceTests : IDisposable
         public Task<Resolution<ScratchAllocation>> PrepareAsync(ScratchPlacement scratch, CancellationToken ct = default)
         {
             Interlocked.Increment(ref Calls);
+            if (Fail) return Task.FromResult(new Resolution<ScratchAllocation>(null, Down));
             var path = Path.Combine(root, "scratch");
             return Task.FromResult(Resolution<ScratchAllocation>.Of(new(path,
                 PlacementShadow.ScratchVariables.ToDictionary(name => name, _ => path))));
@@ -496,7 +505,7 @@ public sealed class PlacementEquivalenceTests : IDisposable
     private async Task<(int Status, string Response, string? JobInput)> InvokeAsync(PlacementCase fixture,
         Action<IJobTracker> jobsReady, Dictionary<string, IBackendProvider>? providers,
         Func<IJobTracker, ClaudeCodeProvider>? claude = null, string? body = null, INodeRegistry? nodes = null,
-        PlacementShadow? shadow = null)
+        PlacementShadow? shadow = null, PlacementAuthority? authority = null, ClaimsPrincipal? caller = null)
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
         var dbPath = Path.Combine(f.Root, "jobs.db");
@@ -522,7 +531,7 @@ public sealed class PlacementEquivalenceTests : IDisposable
         });
         UnifiedSessionEndpoints.Map(new EndpointRegistry(app), registry, jobs, (_, _) => { }, f.Config,
             attachmentStore: f.Attachments, inputQueue: f.Service(), repositoryValidator: repositories, nodes: nodes,
-            placementShadow: shadow);
+            placementShadow: shadow, placementAuthority: authority);
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
             .Single(e => e.RoutePattern.RawText == fixture.Route
                 && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains("POST"));
@@ -530,7 +539,7 @@ public sealed class PlacementEquivalenceTests : IDisposable
         var ctx = new DefaultHttpContext
         {
             RequestServices = app.Services,
-            User = jwt.ValidateToken(jwt.GenerateAccessToken("owner", "owner@test", "Owner", ["operator"]))!,
+            User = caller ?? jwt.ValidateToken(jwt.GenerateAccessToken("owner", "owner@test", "Owner", ["operator"]))!,
         };
         ctx.SetEndpoint(endpoint);
         ctx.Request.Method = "POST";
@@ -594,12 +603,29 @@ public sealed class PlacementEquivalenceTests : IDisposable
                 {
                     Content = new StringContent("""{"items":[],"total":0}""", Encoding.UTF8, "application/json"),
                 });
+            var entityId = request.RequestUri.AbsolutePath[(request.RequestUri.AbsolutePath.LastIndexOf('/') + 1)..];
+            if (entityId != RepositoryId && entityId != CheckoutId && entityId != InactiveRepositoryId)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            if (request.RequestUri.AbsolutePath.EndsWith(CheckoutId, StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new
+                    {
+                        id = CheckoutId,
+                        typeSlug = "repository-checkout",
+                        name = "songes checkout",
+                        data = JsonSerializer.Serialize(new { repository = RepositoryId, path = localPath, status = "active" }),
+                    }), Encoding.UTF8, "application/json"),
+                });
             var body = new
             {
-                id = RepositoryId,
+                id = entityId,
                 typeSlug = "repository",
                 name = "songes",
-                data = JsonSerializer.Serialize(new { status = "active", local_path = localPath, branch_work = "allowed" }),
+                data = JsonSerializer.Serialize(new
+                {
+                    status = entityId == InactiveRepositoryId ? "archived" : "active", local_path = localPath, branch_work = "allowed",
+                }),
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
