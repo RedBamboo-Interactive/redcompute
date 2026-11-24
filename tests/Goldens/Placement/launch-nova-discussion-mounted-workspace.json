@@ -13,7 +13,10 @@
     "--permission-prompt-tool",
     "stdio",
     "--thinking-display",
-    "summarized"
+    "summarized",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}"
   ],
   "containment": "session:claude-code",
   "createNoWindow": true,
