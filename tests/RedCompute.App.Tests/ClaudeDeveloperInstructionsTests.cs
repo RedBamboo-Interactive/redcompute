@@ -38,6 +38,7 @@ public sealed class ClaudeDeveloperInstructionsTests : IDisposable
         "--allow-dangerously-skip-permissions",
         "--permission-prompt-tool", "stdio",
         "--thinking-display", "summarized",
+        "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
     ];
 
     private readonly string _root = Path.Combine(

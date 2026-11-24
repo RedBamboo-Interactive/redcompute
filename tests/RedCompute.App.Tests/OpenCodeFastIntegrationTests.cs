@@ -94,7 +94,10 @@ public sealed class OpenCodeFastIntegrationTests
             },
         });
         var service = new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path },
-            new MemoryJobTracker(), new MemoryStore(), (_, _) => { });
+            new MemoryJobTracker(), new MemoryStore(), (_, _) => { })
+        {
+            ReadEnabledMcpServers = _ => Task.FromResult(Array.Empty<string>()),
+        };
         OpenCodeSessionInfo? info = null;
         try
         {
