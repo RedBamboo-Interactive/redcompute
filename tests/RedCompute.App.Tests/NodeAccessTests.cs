@@ -211,6 +211,62 @@ public sealed class NodeAccessTests : IAsyncLifetime
         Assert.Equal(200, (await GenerateAsync(LocalDefault(), new { nodeId = "local" })).Status);
     }
 
+    /// <summary>
+    /// Stage B resolves a placement before anything else, so the visibility rule has to hold there too: two
+    /// owners, an admin, an Agent and the rest ask for the same remote nodes, and a node a caller may not place
+    /// on answers exactly like an id that does not exist, on both routes, before any reference is read.
+    /// </summary>
+    [Fact]
+    public async Task The_authoritative_resolution_hides_a_node_the_caller_may_not_use_exactly_like_an_unknown_id()
+    {
+        var resolver = new PlacementResolver(_nodes, null, null, null);
+        var authority = new PlacementAuthority(resolver, null, (_, _) => { });
+        foreach (var route in new[] { PlacementRoute.Session, PlacementRoute.Execute })
+            foreach (var (who, caller, _, places) in Callers())
+            {
+                var unknown = await ResolveAsync(authority, Unknown, route, caller);
+                Assert.Equal((404, "node_not_found"), (unknown.Status, unknown.Code));
+                foreach (var id in Remote)
+                {
+                    var answer = await ResolveAsync(authority, id, route, caller);
+                    if (places.Contains(id))
+                        Assert.True(answer.Status != 404, $"{who}: {route} on {id} was {answer.Status} {answer.Body}");
+                    else
+                        Assert.True(SameAsUnknown(answer, id, unknown), $"{who}: {route} on {id} answered {answer.Status} {answer.Body}, unlike an unknown id");
+                }
+                Assert.Equal(LocalId, (await authority.ResolveAsync(new PlacementRequest("local", null, null, null), route, caller, default)).Value?.NodeId);
+            }
+    }
+
+    private async Task<Answer> ResolveAsync(PlacementAuthority authority, string nodeId, PlacementRoute route, ClaimsPrincipal? caller)
+    {
+        var resolution = await authority.ResolveAsync(new PlacementRequest(nodeId, null, null, null), route, caller, default);
+        var context = NewContext(caller);
+        await (resolution.Error ?? throw new InvalidOperationException($"{nodeId} resolved")).ToResult().ExecuteAsync(context);
+        return await ReadAsync(context);
+    }
+
+    /// <summary>Routing a start with no node (design 2.3): the default node is used only when the caller may place on it and it can run work; otherwise node zero.</summary>
+    [Fact]
+    public async Task A_start_without_a_node_goes_to_the_default_node_only_when_the_caller_may_use_it_and_it_can_run_work()
+    {
+        foreach (var (configured, expected) in new (string? Configured, string Expected)[]
+                 {
+                     (null, LocalId), (LocalId, LocalId), ("local", LocalId),
+                     (Unknown, LocalId),    // not a node
+                     (Others, LocalId),     // someone else's
+                     (OwnOffline, LocalId), // the caller's, but it cannot run work now
+                     (Own, LocalId),        // the caller's and linked, but an agent without runtime.v1: not eligible
+                 })
+        {
+            var resolver = new PlacementResolver(_nodes, null, null, null, () => configured);
+            var resolved = await resolver.ResolveAsync(new PlacementRequest(null, null, null, null), PlacementRoute.Session,
+                User(Owner), default);
+            Assert.True(resolved.Ok, $"{configured}: {resolved.Error?.Code}");
+            Assert.Equal(expected, resolved.Value!.NodeId);
+        }
+    }
+
     [Fact]
     public async Task Capability_start_and_stop_apply_the_rule_and_without_a_node_mean_node_zero_as_before()
     {
