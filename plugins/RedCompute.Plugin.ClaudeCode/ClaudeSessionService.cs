@@ -1147,10 +1147,10 @@ public partial class ClaudeSessionService
         }
 
         var arguments = new List<string>();
+        var environment = LaunchEnvironment(scratchDirectory, id, deliveredAsOneMessage);
         PopulateSessionArgs(arguments, info.PermissionMode, model: model, effort: effort,
-            developerInstructions: developerInstructions);
-        var spec = CliSpec(claudePath, arguments, _host.Path(projectPath),
-            LaunchEnvironment(scratchDirectory, id, deliveredAsOneMessage), SessionOwner);
+            developerInstructions: developerInstructions, leafMcpUrl: LeafMcpGateway.UrlFor(environment));
+        var spec = CliSpec(claudePath, arguments, _host.Path(projectPath), environment, SessionOwner);
 
         IHostProcess process;
         try
@@ -1315,13 +1315,13 @@ public partial class ClaudeSessionService
         };
 
         var arguments = new List<string>();
+        var environment = LaunchEnvironment(sessionRecord.ScratchDirectory, sessionRecord.Id, sessionRecord.DeliveredAsOneMessage);
         PopulateSessionArgs(arguments, info.PermissionMode,
             string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
             sessionRecord.Model, sessionRecord.Effort,
-            sessionRecord.DeveloperInstructions);
+            sessionRecord.DeveloperInstructions, LeafMcpGateway.UrlFor(environment));
         AddForkArgs(arguments, forkTarget);
-        var spec = CliSpec(claudePath, arguments, _host.Path(sessionRecord.ProjectPath),
-            LaunchEnvironment(sessionRecord.ScratchDirectory, sessionRecord.Id, sessionRecord.DeliveredAsOneMessage), SessionOwner);
+        var spec = CliSpec(claudePath, arguments, _host.Path(sessionRecord.ProjectPath), environment, SessionOwner);
 
         IHostProcess process;
         try
@@ -2314,10 +2314,42 @@ public partial class ClaudeSessionService
         string? pathEnvironment)
         => CliLocators.Claude(host, configuredPath, applicationData, pathEnvironment);
 
-    private static string BuildSessionMcpConfig() => EmptyMcpConfig;
+    /// <summary>
+    /// The session's MCP configuration: only RedLeaf's gateway, as <c>leaf</c>, when the launch holds an
+    /// execution token, else none. The header names the token variable, which the CLI expands from the
+    /// process environment (verified on 2.1.329), so the token never reaches the command line.
+    /// </summary>
+    /// <summary>Servers in the CLI's init report other than Leaf's gateway: with strict config there must be none.</summary>
+    internal static IReadOnlyList<string> UnexpectedMcpServers(JsonElement init)
+        => init.TryGetProperty("mcp_servers", out var servers) && servers.ValueKind == JsonValueKind.Array
+            ? servers.EnumerateArray()
+                .Select(server => server.ValueKind == JsonValueKind.Object && server.TryGetProperty("name", out var name) ? name.GetString() : null)
+                .Where(name => name is not null && name != LeafMcpGateway.ServerName)
+                .Select(name => name!)
+                .ToList()
+            : [];
+
+    internal static string BuildSessionMcpConfig(string? leafMcpUrl)
+        => leafMcpUrl is null
+            ? EmptyMcpConfig
+            : new System.Text.Json.Nodes.JsonObject
+            {
+                ["mcpServers"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    [LeafMcpGateway.ServerName] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["type"] = "http",
+                        ["url"] = leafMcpUrl,
+                        ["headers"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["Authorization"] = "Bearer ${" + LeafMcpGateway.TokenVariable + "}",
+                        },
+                    },
+                },
+            }.ToJsonString();
 
     private void PopulateSessionArgs(List<string> arguments, string permissionMode, string? resumeClaudeSessionId = null,
-        string? model = null, string? effort = null, string? developerInstructions = null)
+        string? model = null, string? effort = null, string? developerInstructions = null, string? leafMcpUrl = null)
     {
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
             "--input-format", "stream-json", "--include-partial-messages", "--replay-user-messages",
@@ -2343,9 +2375,9 @@ public partial class ClaudeSessionService
             "--thinking-display", "summarized" })
             arguments.Add(arg);
 
-        // Use Leaf's empty MCP configuration for start, resume and recovery. Strict mode also
-        // prevents this CLI from loading the signed-in account's claude.ai connectors.
-        arguments.AddRange(["--strict-mcp-config", "--mcp-config", BuildSessionMcpConfig()]);
+        // Only Leaf's MCP gateway (or nothing, without a token) for start, resume and recovery. Strict
+        // mode keeps this CLI from loading the signed-in account's claude.ai connectors and user servers.
+        arguments.AddRange(["--strict-mcp-config", "--mcp-config", BuildSessionMcpConfig(leafMcpUrl)]);
 
         // Blank means unset: the provider config ships "Model": "", and a "--model ''" launch
         // fails every turn with "model: String should have at least 1 character".
@@ -2951,6 +2983,8 @@ public partial class ClaudeSessionService
                     ? tools.EnumerateArray().Count(tool => tool.ValueKind == JsonValueKind.String
                         && tool.GetString()!.StartsWith("mcp__", StringComparison.Ordinal)) : (int?)null;
                 _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode}, MCP servers: {mcpServerCount?.ToString() ?? "unknown"}, MCP tools: {mcpToolCount?.ToString() ?? "unknown"})", null);
+                if (UnexpectedMcpServers(root) is { Count: > 0 } unexpected)
+                    _log($"[Claude] Session {session.Info.Id} reports MCP servers Leaf did not configure: {string.Join(", ", unexpected)}", null);
                 return;
             }
 

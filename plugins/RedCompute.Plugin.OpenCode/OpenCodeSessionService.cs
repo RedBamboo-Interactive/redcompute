@@ -451,7 +451,7 @@ public class OpenCodeSessionService
             }, timeoutSeconds: 60);
 
             JsonElement sessionResult;
-            var sessionMcpServers = BuildSessionMcpServers();
+            var sessionMcpServers = BuildSessionMcpServers(environment);
             if (existingSessionId != null)
             {
                 SeedKnownNativeParts(session, existingSessionId);
@@ -2542,7 +2542,24 @@ public class OpenCodeSessionService
     /// </summary>
     internal const string PermissionEnvironment = "OPENCODE_PERMISSION";
 
-    private static object[] BuildSessionMcpServers() => [];
+    /// <summary>
+    /// The ACP session's MCP servers: only RedLeaf's gateway, as <c>leaf</c> over streamable HTTP, when the
+    /// launch holds a suite token, else none. ACP headers take literal values, so the token goes in this
+    /// stdio request, never on a command line or in OpenCode's config; native servers stay suppressed.
+    /// </summary>
+    internal static object[] BuildSessionMcpServers(IReadOnlyDictionary<string, string> environment)
+        => LeafMcpGateway.UrlFor(environment) is { } url && LeafMcpGateway.TokenFor(environment) is { } token
+            ?
+            [
+                new
+                {
+                    type = "http",
+                    name = LeafMcpGateway.ServerName,
+                    url,
+                    headers = new[] { new { name = "Authorization", value = "Bearer " + token } },
+                },
+            ]
+            : [];
 
     private async Task SuppressInheritedMcpAsync(HostSpawnSpec spec, IDictionary<string, string> environment)
     {

@@ -16,14 +16,14 @@
     "summarized",
     "--strict-mcp-config",
     "--mcp-config",
-    "{\"mcpServers\":{}}",
+    "{\"mcpServers\":{\"leaf\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:18804/api/mcp\",\"headers\":{\"Authorization\":\"Bearer ${REDLEAF_EXECUTION_TOKEN}\"}}}}",
     "--model",
     "claude-golden-model",
     "--effort",
     "high"
   ],
   "cli": "claude",
-  "commandLine": "\"<root>\\cli\\claude.exe\" --output-format stream-json --verbose --input-format stream-json --include-partial-messages --replay-user-messages --permission-mode acceptEdits --allow-dangerously-skip-permissions --permission-prompt-tool stdio --thinking-display summarized --strict-mcp-config --mcp-config \"{\\\"mcpServers\\\":{}}\" --model claude-golden-model --effort high",
+  "commandLine": "\"<root>\\cli\\claude.exe\" --output-format stream-json --verbose --input-format stream-json --include-partial-messages --replay-user-messages --permission-mode acceptEdits --allow-dangerously-skip-permissions --permission-prompt-tool stdio --thinking-display summarized --strict-mcp-config --mcp-config \"{\\\"mcpServers\\\":{\\\"leaf\\\":{\\\"type\\\":\\\"http\\\",\\\"url\\\":\\\"http://127.0.0.1:18804/api/mcp\\\",\\\"headers\\\":{\\\"Authorization\\\":\\\"Bearer ${REDLEAF_EXECUTION_TOKEN}\\\"}}}}\" --model claude-golden-model --effort high",
   "containment": "session:claude-code",
   "cwd": "<root>\\project",
   "environmentChanges": {

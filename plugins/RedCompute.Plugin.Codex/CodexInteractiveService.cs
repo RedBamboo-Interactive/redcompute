@@ -542,12 +542,14 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     private async Task<CodexAppServerConnection> ConnectAsync(string sessionId, string projectPath,
         string? scratchDirectory, bool suiteAccess, Action spawned)
     {
+        var environment = SessionScratch.Environment(scratchDirectory, suiteAccess, sessionId);
         var conn = await CodexAppServerConnection.StartAsync(
             _config.CodexPath, projectPath, _log,
-            SessionScratch.Environment(scratchDirectory, suiteAccess, sessionId),
+            environment,
             launchProcess: LaunchAppServerProcess,
             spawned: spawned,
             host: _host);
+        conn.LeafMcpUrl = LeafMcpGateway.UrlFor(environment);
         conn.Notification += (method, p) => OnNotification(sessionId, method, p);
         conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);
         conn.Exited += code => OnExited(sessionId, code);
@@ -1054,11 +1056,11 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         if (result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("config", out var config)
             || config.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException("Codex did not report its effective configuration.");
-        return BuildThreadConfig(info, config);
+        return BuildThreadConfig(info, config, conn.LeafMcpUrl);
     }
 
     internal static Dictionary<string, object> BuildThreadConfig(CodexSessionInfo info,
-        JsonElement effectiveConfig = default)
+        JsonElement effectiveConfig = default, string? leafMcpUrl = null)
     {
         // Apps and plugins can add servers independently of the mcp_servers table.
         var config = new Dictionary<string, object>
@@ -1070,18 +1072,34 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
         var servers = effectiveConfig.ValueKind == JsonValueKind.Object
             && effectiveConfig.TryGetProperty("mcp_servers", out var inherited) ? inherited : default;
-        config["mcp_servers"] = BuildSessionMcpConfig(servers);
+        config["mcp_servers"] = BuildSessionMcpConfig(servers, leafMcpUrl);
         return config;
     }
 
-    private static Dictionary<string, JsonObject> BuildSessionMcpConfig(JsonElement inheritedServers)
-        => inheritedServers.ValueKind switch
+    /// <summary>
+    /// Every inherited server switched off, then only RedLeaf's gateway, as <c>leaf</c>, when the thread's
+    /// app-server holds a suite token. Codex reads the bearer from the named environment variable, so the
+    /// token is never part of the thread configuration. A user-level server that happens to be called leaf
+    /// is replaced, never kept.
+    /// </summary>
+    private static Dictionary<string, JsonObject> BuildSessionMcpConfig(JsonElement inheritedServers, string? leafMcpUrl)
+    {
+        var servers = inheritedServers.ValueKind switch
         {
             JsonValueKind.Object => inheritedServers.EnumerateObject().ToDictionary(
                 server => server.Name, _ => new JsonObject { ["enabled"] = false }),
             JsonValueKind.Null or JsonValueKind.Undefined => new(),
             _ => throw new InvalidOperationException("Codex reported an invalid MCP configuration."),
         };
+        if (leafMcpUrl is not null)
+            servers[LeafMcpGateway.ServerName] = new JsonObject
+            {
+                ["url"] = leafMcpUrl,
+                ["bearer_token_env_var"] = LeafMcpGateway.TokenVariable,
+                ["enabled"] = true,
+            };
+        return servers;
+    }
 
     private async Task VerifyThreadMcpAsync(CodexAppServerConnection conn, string threadId,
         Dictionary<string, object> threadConfig)

@@ -111,6 +111,30 @@ public sealed class CodexConversationProfileTests
     }
 
     [Fact]
+    public void A_token_bearing_thread_gets_only_leafs_gateway_by_env_var_and_replaces_an_inherited_leaf()
+    {
+        using var inherited = JsonDocument.Parse("""
+            {"mcp_servers":{"global":{"command":"example"},"leaf":{"command":"impostor","enabled":true}}}
+            """);
+        var info = Session(SessionExecutionProfile.ConversationOnly);
+        var config = CodexInteractiveService.BuildThreadConfig(info, inherited.RootElement, "http://127.0.0.1:18804/api/mcp");
+
+        var mcp = JsonSerializer.SerializeToElement(CodexInteractiveService.BuildThreadStartParams(info, config))
+            .GetProperty("config").GetProperty("mcp_servers");
+        Assert.False(mcp.GetProperty("global").GetProperty("enabled").GetBoolean());
+        var leaf = mcp.GetProperty(LeafMcpGateway.ServerName);
+        Assert.True(leaf.GetProperty("enabled").GetBoolean());
+        Assert.Equal("http://127.0.0.1:18804/api/mcp", leaf.GetProperty("url").GetString());
+        Assert.Equal("REDLEAF_EXECUTION_TOKEN", leaf.GetProperty("bearer_token_env_var").GetString());
+        Assert.False(leaf.TryGetProperty("command", out _));
+
+        // No token (conversation-only launches get none): no gateway either.
+        var without = JsonSerializer.SerializeToElement(CodexInteractiveService.BuildThreadStartParams(info,
+            CodexInteractiveService.BuildThreadConfig(info, inherited.RootElement))).GetProperty("config").GetProperty("mcp_servers");
+        Assert.False(without.GetProperty("leaf").GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
     public void ConversationInputAllowsTextAndRejectsAttachments()
     {
         Assert.True(CodexInteractiveService.IsConversationInputAllowed([

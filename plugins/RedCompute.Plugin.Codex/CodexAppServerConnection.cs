@@ -48,6 +48,9 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
     public int ProcessId { get; }
     public JsonElement InitializeResult { get; private set; }
 
+    /// <summary>RedLeaf's MCP gateway for this app-server's threads, when its environment holds a suite token.</summary>
+    public string? LeafMcpUrl { get; set; }
+
     private CodexAppServerConnection(IHostProcess process, Action<string, Guid?> log)
     {
         _process = process;
