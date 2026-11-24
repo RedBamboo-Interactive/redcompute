@@ -43,6 +43,34 @@ public sealed class ForwardFaultTests(ITestOutputHelper output)
             Assert.True(_connections > Seeds, $"{schedule}: no connection was ever lost, so the schedule did not reach the forwards");
     }
 
+    /// <summary>
+    /// Regression for the flake "WS failed though the session was kept: upstream_failed (Only one usage of each socket
+    /// address)": the fake runtime's WebSocket pair was a loopback TCP connection per seed, so a long or loaded run (the
+    /// Nightly's whole-solution test pass) ran the machine out of ephemeral ports and the node reported the runtime's
+    /// failed connect, correctly, as upstream_failed. The pair must not touch the network at all.
+    /// </summary>
+    [Fact]
+    public async Task The_fake_runtimes_websocket_pair_uses_no_tcp_connection()
+    {
+        const int pairs = 300;
+        var before = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections().Length;
+        for (var i = 0; i < pairs; i++)
+        {
+            var (client, server) = await SocketPair.CreateAsync(CancellationToken.None);
+            await client.SendAsync(new byte[] { 1, 2, 3 }, WebSocketMessageType.Binary, true, CancellationToken.None);
+            var buffer = new byte[16];
+            var result = await server.ReceiveAsync(buffer, CancellationToken.None);
+            Assert.Equal(3, result.Count);
+            await client.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+            Assert.Equal(WebSocketMessageType.Close, (await server.ReceiveAsync(buffer, CancellationToken.None)).MessageType);
+            client.Dispose();
+            server.Dispose();
+        }
+        var after = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections().Length;
+        // A TCP pair leaves one or two entries each (TIME_WAIT): 300 pairs would add at least 300. Other processes add noise, not hundreds.
+        Assert.True(after - before < pairs / 3, $"{after - before} new TCP connections for {pairs} WebSocket pairs");
+    }
+
     [Fact]
     public async Task Forward_exchanges_fail_link_reset_promptly_when_the_server_restarts()
     {
@@ -250,7 +278,7 @@ public sealed class ForwardFaultTests(ITestOutputHelper output)
                 var code = Code(error);
                 if (code is null) return "WRONG untyped failure: " + error;
                 if (DateTime.UtcNow - started > Deadline + TimeSpan.FromSeconds(1)) return $"WRONG {code} after the deadline";
-                return code;
+                return code + " [" + error.GetType().Name + ": " + error.Message + (error.InnerException is { } inner ? " <- " + inner.Message : "") + "]";
             }
         }
 

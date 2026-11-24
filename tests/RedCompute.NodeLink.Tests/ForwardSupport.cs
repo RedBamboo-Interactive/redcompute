@@ -235,19 +235,122 @@ internal sealed class SeededStream(int seed, long length, TimeSpan chunkDelay = 
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
-/// <summary>Two WebSockets joined over a loopback TCP connection (a real WS framing, no HTTP handshake).</summary>
+/// <summary>
+/// Two WebSockets joined over an in-memory duplex stream (a real WS framing, no HTTP handshake). It used a loopback TCP
+/// connection per pair, which made every seed of the fault family spend two ephemeral ports (TIME_WAIT for minutes): a
+/// long or loaded run exhausted them and the fake runtime failed with "Only one usage of each socket address", which
+/// the node correctly reported as upstream_failed. The pipe is bounded like a socket buffer, and a close is a graceful EOF.
+/// </summary>
 internal static class SocketPair
 {
-    public static async Task<(WebSocket Client, WebSocket Server)> CreateAsync(CancellationToken ct)
+    public static Task<(WebSocket Client, WebSocket Server)> CreateAsync(CancellationToken ct)
     {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var client = new TcpClient();
-        var accept = listener.AcceptTcpClientAsync(ct).AsTask();
-        await client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, ct);
-        var server = await accept;
-        return (WebSocket.CreateFromStream(client.GetStream(), isServer: false, null, TimeSpan.FromSeconds(30)),
-            WebSocket.CreateFromStream(server.GetStream(), isServer: true, null, TimeSpan.FromSeconds(30)));
+        ct.ThrowIfCancellationRequested();
+        var up = new BytePipe();
+        var down = new BytePipe();
+        return Task.FromResult((
+            WebSocket.CreateFromStream(new DuplexStream(down, up), isServer: false, null, TimeSpan.FromSeconds(30)),
+            WebSocket.CreateFromStream(new DuplexStream(up, down), isServer: true, null, TimeSpan.FromSeconds(30))));
+    }
+
+    private sealed class BytePipe
+    {
+        private const int Capacity = 64 * 1024;
+        private readonly object _lock = new();
+        private readonly Queue<byte> _bytes = new();
+        private TaskCompletionSource _changed = New();
+        private bool _completed;
+
+        private static TaskCompletionSource New() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private void Pulse()
+        {
+            var old = _changed;
+            _changed = New();
+            old.TrySetResult();
+        }
+
+        public void Complete()
+        {
+            lock (_lock)
+            {
+                _completed = true;
+                Pulse();
+            }
+        }
+
+        public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
+        {
+            while (data.Length > 0)
+            {
+                Task wait;
+                lock (_lock)
+                {
+                    if (_completed) throw new IOException("The pipe is closed.");
+                    var room = Capacity - _bytes.Count;
+                    if (room > 0)
+                    {
+                        var take = Math.Min(room, data.Length);
+                        foreach (var b in data.Span[..take]) _bytes.Enqueue(b);
+                        data = data[take..];
+                        Pulse();
+                        continue;
+                    }
+                    wait = _changed.Task;
+                }
+                await wait.WaitAsync(ct);
+            }
+        }
+
+        public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
+        {
+            if (buffer.Length == 0) return 0;
+            while (true)
+            {
+                Task wait;
+                lock (_lock)
+                {
+                    if (_bytes.Count > 0)
+                    {
+                        var take = Math.Min(buffer.Length, _bytes.Count);
+                        for (var i = 0; i < take; i++) buffer.Span[i] = _bytes.Dequeue();
+                        Pulse();
+                        return take;
+                    }
+                    if (_completed) return 0;
+                    wait = _changed.Task;
+                }
+                await wait.WaitAsync(ct);
+            }
+        }
+    }
+
+    private sealed class DuplexStream(BytePipe read, BytePipe write) : Stream
+    {
+        private int _disposed;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override void Write(byte[] buffer, int offset, int count) => WriteAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => read.ReadAsync(buffer, ct);
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => write.WriteAsync(buffer, ct);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                write.Complete(); // the peer reads what is queued, then EOF
+                read.Complete();
+            }
+            base.Dispose(disposing);
+        }
     }
 }
 

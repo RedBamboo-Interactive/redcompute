@@ -283,6 +283,54 @@ public sealed class ForwardTests
         await Wait.UntilAsync(() => rig.Host.OpenExchanges == 0 && rig.Client.OpenExchanges == 0, what: "both tables to empty");
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    public async Task A_websocket_survives_connection_cuts_while_the_link_session_resumes(int cutEvery)
+    {
+        // Transport faults alone never lose the session, so the WS stream must stay complete and in order (ForwardFaultTests'
+        // invariant), however often the connection is cut mid-stream. The cuts are injected, not left to timing.
+        await using var rig = await StartAsync();
+        const int count = 40;
+        using var socket = await rig.Client.ConnectWebSocketAsync(FakeRuntime.Runtime, "/ws", $"seed=11&count={count}");
+        var sent = new List<byte[]>();
+        for (var i = 0; i < count; i++)
+        {
+            var message = FakeRuntime.WsMessage(11, 8, i);
+            sent.Add(message);
+            await socket.SendAsync(message, WebSocketMessageType.Binary, true, CancellationToken.None);
+            if (cutEvery > 0 && i % cutEvery == 0)
+            {
+                await rig.Pair.Client.DropConnectionAsync();
+                await rig.Pair.OnlineAsync();
+            }
+        }
+        var buffer = new byte[64 * 1024];
+        for (var i = 0; i < count; i++)
+        {
+            var message = new MemoryStream();
+            WebSocketReceiveResult result;
+            do
+            {
+                result = await socket.ReceiveAsync(buffer, CancellationToken.None);
+                Assert.Equal(WebSocketMessageType.Binary, result.MessageType);
+                message.Write(buffer, 0, result.Count);
+            } while (!result.EndOfMessage);
+            Assert.Equal(FakeRuntime.WsMessage(11, 7, i), message.ToArray());
+            if (cutEvery > 0 && i % cutEvery == 0)
+            {
+                await rig.Pair.Client.DropConnectionAsync();
+                await rig.Pair.OnlineAsync();
+            }
+        }
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        var received = rig.Runtime.WsReceived["11"];
+        lock (received) Assert.Equal(sent, received);
+        await Wait.UntilAsync(() => rig.Host.OpenExchanges == 0 && rig.Client.OpenExchanges == 0, what: "both tables to empty");
+        Assert.True(cutEvery == 0 || rig.Pair.Client.ResumedConnections > 0, "the connection was never resumed");
+    }
+
     [Fact]
     public async Task A_websocket_message_is_at_most_16_MiB_and_a_refused_handshake_is_typed()
     {
