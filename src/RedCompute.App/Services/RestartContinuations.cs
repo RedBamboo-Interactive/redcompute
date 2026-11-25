@@ -23,8 +23,9 @@ namespace RedCompute.App.Services;
 /// that exact item, at the session's persisted access level. Its idempotency key is the session and
 /// its stop, so a second boot, or a second pass, admits nothing new. The registrations move to the
 /// continuation, so the supervisor still hears the completion, now with trigger restart-continuation.
-/// Sessions owned by a Nova discussion carry no durable prompt registration and keep Nova's own
-/// RestartRecovery waker; nothing here touches them.
+/// A planned drain that found the session idle and stopped it cleanly cut nothing, whatever
+/// registration is still armed: Orchestrated Nova discussions register every prompt, and one
+/// re-armed by background work that ended without waking a turn stays armed until it settles.
 /// </remarks>
 internal sealed class RestartContinuations
 {
@@ -89,6 +90,11 @@ internal sealed class RestartContinuations
 
             var planned = _checkpoint?.Sessions.FirstOrDefault(s => s.SessionId == sessionId
                 && string.Equals(s.Provider, info.Provider, StringComparison.OrdinalIgnoreCase));
+            // The drain saw this session idle and stopped it cleanly: the restart cut nothing. A
+            // registration still armed here waits for a turn that never came (background work that
+            // ended without waking one), so a continuation would only tell the session to resume work
+            // it had finished (Nova discussions f0f57b1c and 8978cdde, 2026-11-25).
+            if (planned is { ForcedStop: false, WorkState: SessionWorkStates.Idle }) continue;
             var key = $"{Trigger}:{sessionId}:{stoppedAt.UtcDateTime.ToString("O", CultureInfo.InvariantCulture)}";
             var uid = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..32].ToLowerInvariant();
             var text = Text(info, stoppedAt, planned, _checkpoint?.RunId);

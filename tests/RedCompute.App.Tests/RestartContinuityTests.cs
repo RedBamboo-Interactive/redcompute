@@ -266,6 +266,31 @@ public sealed class RestartContinuityTests
     }
 
     [Fact]
+    public async Task A_session_the_drain_found_idle_is_not_continued_even_with_a_registration_still_armed()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var now = DateTimeOffset.UtcNow;
+        var (callbacks, _) = await DeliveredPrompt(f, () => now);
+        // The turn ended with background work running, so the registration re-armed for the turn
+        // that work would wake; the work then ended without waking one (f0f57b1c, 2026-11-25).
+        await EndTurn(f, callbacks, Running());
+        f.Runtime.Info.BackgroundTasks = [];
+        f.Runtime.Info.Status = SessionStatus.Stopped;
+        f.Runtime.Info.StopReason = SessionStopReasons.MaintenanceRestart;
+        f.Runtime.Info.StoppedAt = now;
+        Assert.NotEmpty(await callbacks.AwaitingCompletionAsync());
+
+        var checkpoint = new PlannedRestartData("run-1", now,
+            [new PlannedRestartSession("test", "session", null) { WorkState = SessionWorkStates.Idle }]);
+        var continuations = new RestartContinuations(callbacks, f.Store, f.Service().AdmitAsync, _ => f.Runtime.Info,
+            checkpoint, now, (_, _) => { });
+
+        Assert.Equal(0, await continuations.RunOnceAsync());
+        Assert.Single(await f.Store.ListAsync("session", "owner", true));
+        Assert.Equal(0, f.Runtime.Resumes);
+    }
+
+    [Fact]
     public async Task An_unplanned_restart_is_continued_and_says_so()
     {
         using var f = new SessionRecoveryTests.Fixture("orphaned_on_restart");
