@@ -42,6 +42,38 @@ public sealed class LeafMcpGatewayLaunchTests
         Assert.Equal(ClaudeSessionService.EmptyMcpConfig, ClaudeSessionService.BuildSessionMcpConfig(null));
     }
 
+    // An Automation's ai-session run is an agent one-shot without a tools grant. It used to get no MCP flags
+    // at all, so the CLI loaded the user's and the account's servers (Laurent's claude.ai connectors).
+    [Fact]
+    public void An_agent_oneshot_without_a_tools_grant_gets_the_strict_session_composition()
+    {
+        var bare = new List<string>();
+        ClaudeSessionService.AddAgentArgs(bare, null, null, 50, tools: null, allowedTools: ["Read"], addDirs: null,
+            accessLevel: "full");
+        Assert.Contains("--strict-mcp-config", bare);
+        Assert.Equal(ClaudeSessionService.EmptyMcpConfig, ValueAfter(bare, "--mcp-config"));
+
+        var withToken = new List<string>();
+        ClaudeSessionService.AddAgentArgs(withToken, null, null, 50, tools: null, allowedTools: ["Read"], addDirs: null,
+            accessLevel: "full", leafMcpUrl: LeafMcpGateway.UrlFor(WithToken));
+        Assert.Contains("--strict-mcp-config", withToken);
+        Assert.Equal(ClaudeSessionService.BuildSessionMcpConfig("http://127.0.0.1:18804/api/mcp"), ValueAfter(withToken, "--mcp-config"));
+        Assert.DoesNotContain(withToken, arg => arg.Contains("secret-token-value", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_tools_grant_keeps_the_agent_oneshot_empty_even_with_a_token()
+    {
+        var args = new List<string>();
+        ClaudeSessionService.AddAgentArgs(args, null, null, 1, tools: ["Read"], allowedTools: null, addDirs: null,
+            accessLevel: "full", leafMcpUrl: LeafMcpGateway.UrlFor(WithToken));
+
+        Assert.Single(args, "--strict-mcp-config");
+        Assert.Equal(ClaudeSessionService.EmptyMcpConfig, ValueAfter(args, "--mcp-config"));
+    }
+
+    private static string ValueAfter(List<string> args, string flag) => args[args.IndexOf(flag) + 1];
+
     [Fact]
     public void Claude_flags_any_server_it_reports_that_leaf_did_not_configure()
     {

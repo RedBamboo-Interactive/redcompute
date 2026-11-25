@@ -157,6 +157,22 @@ public sealed class LaunchGoldenSeamTests : IDisposable
         VerifyHosted(golden, "claude.LaunchAgentProcess");
     }
 
+    // How an Automation's ai-session runs: no tools grant, pre-approvals only, a suite token and RedLeaf's URL.
+    [Fact]
+    public async Task Claude_agent_automation()
+    {
+        var service = Claude(new ClaudeDeveloperInstructionsTests.MemoryStore());
+        await service.ExecuteAgentAsync("golden prompt", null, _project, "claude-golden-model", null, 50,
+            null, ["Read", "Write"], [_scratch], 60, CancellationToken.None,
+            env: new Dictionary<string, string>
+            {
+                ["REDLEAF_EXECUTION_TOKEN"] = Token,
+                ["REDLEAF_URL"] = "http://127.0.0.1:18804",
+            },
+            accessLevel: "full");
+        VerifyHosted("A-claude-agent-automation", "claude.LaunchAgentProcess");
+    }
+
     [Fact]
     public async Task Claude_fork_probe()
     {

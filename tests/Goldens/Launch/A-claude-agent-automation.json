@@ -1,0 +1,45 @@
+{
+  "argumentList": [
+    "--print",
+    "golden prompt",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--max-turns",
+    "50",
+    "--dangerously-skip-permissions",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{\"leaf\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:18804/api/mcp\",\"headers\":{\"Authorization\":\"Bearer ${REDLEAF_EXECUTION_TOKEN}\"}}}}",
+    "--thinking-display",
+    "summarized",
+    "--model",
+    "claude-golden-model",
+    "--allowed-tools",
+    "Read,Write",
+    "--add-dir",
+    "<root>\\scratch"
+  ],
+  "containment": "session:claude-code-agent",
+  "createNoWindow": true,
+  "encoding": {
+    "stderr": "utf-8/preamble=3",
+    "stdin": "utf-8/preamble=0",
+    "stdout": "utf-8/preamble=3"
+  },
+  "environmentChanges": {
+    "REDLEAF_EXECUTION_TOKEN": "golden-execution-token",
+    "REDLEAF_URL": "http://127.0.0.1:18804"
+  },
+  "environmentTouched": true,
+  "fileName": "<root>\\cli\\claude.exe",
+  "redirect": {
+    "stderr": true,
+    "stdin": true,
+    "stdout": true
+  },
+  "seam": "claude.LaunchAgentProcess",
+  "useShellExecute": false,
+  "workingDirectory": "<root>\\project"
+}

@@ -425,6 +425,7 @@ public partial class ClaudeSessionService
         {
             var args = DockerExecHelper.ExecArguments(container!, "claude", workingDir, env);
             var cliArgs = new List<string>();
+            // In a container the gateway's loopback URL is not RedLeaf: strict and empty.
             AddAgentArgs(cliArgs, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel);
             if (useCliArg) { var idx = cliArgs.IndexOf("--print"); if (idx >= 0) cliArgs.Insert(idx + 1, prompt); }
             args.AddRange(cliArgs);
@@ -434,7 +435,8 @@ public partial class ClaudeSessionService
         {
             var fileName = ResolveClaudePath()!;
             var args = new List<string>();
-            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel);
+            AddAgentArgs(args, model, effort, maxTurns, tools, allowedTools, addDirs, accessLevel,
+                LeafMcpGateway.UrlFor(env));
             if (useCliArg) { var idx = args.IndexOf("--print"); if (idx >= 0) args.Insert(idx + 1, prompt); }
             spec = CliSpec(fileName, args,
                 string.IsNullOrWhiteSpace(workingDir) ? null : _host.Path(workingDir), env, AgentOwner);
@@ -563,8 +565,12 @@ public partial class ClaudeSessionService
     /// only file tools can be pre-approved, so a caller cannot pre-approve Bash or the network past
     /// its level (at auto the classifier still decides those).
     /// </param>
+    /// <param name="leafMcpUrl">
+    /// RedLeaf's MCP gateway for a launch that holds a suite token (<see cref="LeafMcpGateway.UrlFor"/>), else null.
+    /// </param>
     internal static void AddAgentArgs(List<string> args, string? model, string? effort,
-        int maxTurns, string[]? tools, string[]? allowedTools, string[]? addDirs, string? accessLevel = null)
+        int maxTurns, string[]? tools, string[]? allowedTools, string[]? addDirs, string? accessLevel = null,
+        string? leafMcpUrl = null)
     {
         args.AddRange(["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
         args.AddRange(["--max-turns", maxTurns.ToString()]);
@@ -598,10 +604,14 @@ public partial class ClaudeSessionService
             // repopulating the tool surface for narrow reviewer jobs.
             args.Add("--tools");
             args.Add(string.Join(',', tools));
-            args.Add("--strict-mcp-config");
-            args.Add("--mcp-config");
-            args.Add(EmptyMcpConfig);
         }
+        // Every launch gets the strict composition (P0). Without --strict-mcp-config the CLI loads the
+        // user's and the account's servers: an Automation run (no tools grant) started with Laurent's
+        // claude.ai connectors. A tools grant keeps it empty; otherwise it is the session's: only leaf
+        // when the launch holds a suite token, else nothing.
+        args.Add("--strict-mcp-config");
+        args.Add("--mcp-config");
+        args.Add(tools is not null ? EmptyMcpConfig : BuildSessionMcpConfig(leafMcpUrl));
         // Opus 4.7+ and Fable 5 default thinking.display to "omitted", so thinking blocks
         // stream with an empty body (signature only). Request "summarized" to restore the
         // visible reasoning text. Harmless on 4.6 (already its default) and ignored when
