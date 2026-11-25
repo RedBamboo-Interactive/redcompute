@@ -173,8 +173,15 @@ events Created:{"status":"Queued"},Started:{"status":"Running"},Completed:{}
         using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
         using var response = await _client.PostAsync(async ? "/image-gen/generate?async=true" : "/image-gen/generate", content);
         var answer = await response.Content.ReadAsStringAsync();
-        var request = Assert.Single(_provider.Requests);
-        if (async) await _jobs.WaitForTerminalAsync(request.JobId!.Value, TimeSpan.FromSeconds(10));
+        // An async generate answers once the job is queued; the provider runs it afterwards. Wait for the job
+        // the answer names before reading what the provider received, or a loaded machine finds it not yet called.
+        if (async)
+        {
+            var queued = JsonDocument.Parse(answer).RootElement.GetProperty("jobId").GetGuid();
+            Assert.True(await _jobs.WaitForTerminalAsync(queued, TimeSpan.FromSeconds(10)), $"job {queued} did not end within 10 s");
+        }
+        JobRequest request;
+        lock (_provider.Requests) request = Assert.Single(_provider.Requests);
         var job = _jobs.GetJob(request.JobId!.Value)!;
 
         var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
