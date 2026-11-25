@@ -279,6 +279,36 @@ public sealed class LinkSessionTests
     }
 
     [Fact]
+    public async Task A_revoke_landing_between_the_admission_check_and_the_entry_lookup_leaves_the_server_nothing()
+    {
+        // Deterministic form of the race above: the revoke runs exactly after the handshake's first revoked check,
+        // finds no entry to remove, and the handshake then adds one. It must refuse 4403 and remove that entry.
+        LinkServer? linkServer = null;
+        linkServer = new LinkServer(new LinkServerOptions
+        {
+            ServerEpoch = "seam",
+            HandlerFactory = _ => new TestLinkHandler(),
+            Link = LinkPair.FastOptions,
+            AfterAdmissionCheck = id => linkServer!.RevokeAsync(id),
+        });
+        await using var _ = linkServer;
+        var (node, server) = LinkPipe.Create();
+        var run = Task.Run(() => linkServer.RunAsync(server, LinkPair.NodeId, CancellationToken.None));
+        await node.SendAsync(LinkHandshake.HelloFrame(new LinkHello(LinkPair.NodeId, LinkProtocol.Supported,
+            new AgentInfo("0.1.0", "linux", "x64"), [])), CancellationToken.None);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var closed = await Assert.ThrowsAsync<LinkClosedException>(async () =>
+        {
+            while (true) await node.ReceiveAsync(timeout.Token);
+        });
+        Assert.Equal(LinkCloseCodes.Revoked, closed.Code);
+        Assert.Null(await run.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.True(linkServer.IsRevoked(LinkPair.NodeId));
+        Assert.Null(linkServer.FindSession(LinkPair.NodeId));
+        Assert.Empty(linkServer.NodeIds);
+    }
+
+    [Fact]
     public async Task A_corrupt_frame_closes_the_link_with_4400_and_the_node_resumes()
     {
         await using var pair = new LinkPair().Start();

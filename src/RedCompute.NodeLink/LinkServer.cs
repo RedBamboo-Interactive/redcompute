@@ -25,6 +25,9 @@ public sealed class LinkServerOptions
     /// connection with its code. Null runs every link in plaintext.
     /// </summary>
     public Func<ILinkTransport, string, CancellationToken, Task<ILinkTransport>>? Secure { get; init; }
+
+    /// <summary>Test seam: runs right after a handshake's first revoked check, before it looks up or adds the node's entry.</summary>
+    internal Func<string, Task>? AfterAdmissionCheck { get; init; }
 }
 
 /// <summary>
@@ -126,6 +129,7 @@ public sealed class LinkServer : IAsyncDisposable
                 $"Agent {hello.Agent.Version} is older than the minimum {policy.Minimum}.", _options.Protocol.Min, _options.Protocol.Max));
 
         if (IsRevoked(boundNodeId)) return await RefuseRevokedAsync(transport);
+        if (_options.AfterAdmissionCheck is { } afterCheck) await afterCheck(boundNodeId);
 
         var entry = _nodes.GetOrAdd(boundNodeId, _ => new NodeEntry());
         Task<LinkDisconnect> pump;
@@ -137,7 +141,13 @@ public sealed class LinkServer : IAsyncDisposable
         {
             // A revoke may have landed since the check above, and may have removed this very entry (no later
             // revoke could reach a session left on it): it is the revoked set, read under the gate, that decides.
-            if (IsRevoked(boundNodeId)) return await RefuseRevokedAsync(transport);
+            if (IsRevoked(boundNodeId))
+            {
+                // A revoke that landed after the check above found no entry to remove, so the one this handshake
+                // added is its to remove (never one that holds a session: that is the revoke's, under this gate).
+                if (entry.Session is null) ((ICollection<KeyValuePair<string, NodeEntry>>)_nodes).Remove(new(boundNodeId, entry));
+                return await RefuseRevokedAsync(transport);
+            }
             if (!_nodes.TryGetValue(boundNodeId, out var current) || !ReferenceEquals(current, entry))
             {
                 // Removed by a shutdown: nothing may attach to an entry the server no longer tracks.
