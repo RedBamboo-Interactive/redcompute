@@ -23,7 +23,7 @@ namespace RedCompute.App.Tests;
 /// now (<see cref="ISessionProvider.GetSessionInfo"/>). The suite runs it small; set
 /// <c>REDCOMPUTE_BENCH_MESSAGES=5000</c> for the 20 x 5 000 figures.
 /// </summary>
-[Collection("Plugin database path")]
+[Collection(SessionInfoLookupBenchmarkCollection.Name)]
 public sealed class SessionInfoLookupBenchmarkTests(ITestOutputHelper output) : IDisposable
 {
     private const int Sessions = 20;
@@ -185,4 +185,14 @@ public sealed class SessionInfoLookupBenchmarkTests(ITestOutputHelper output) : 
             catch (TargetInvocationException ex) when (ex.InnerException is not null) { throw ex.InnerException; }
         }
     }
+}
+
+// Measure() counts GC.GetTotalAllocatedBytes(precise: true), which is process-wide: whatever another collection
+// allocates in parallel lands in the "after" figure (Nightly 85d4bb48 failed at 3.8x against the 5x bound). A
+// non-parallel collection runs alone, after every parallel one, which also keeps it clear of every other test that
+// moves ClaudeDbContext.DbPath.
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class SessionInfoLookupBenchmarkCollection
+{
+    public const string Name = "Session info lookup benchmark";
 }
