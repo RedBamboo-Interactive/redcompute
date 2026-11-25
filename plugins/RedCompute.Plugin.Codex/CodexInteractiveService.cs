@@ -1046,7 +1046,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                     Core.Sessions.SessionAccessNotices.LaunchNote(level, info.Unattended))
                 : info.DeveloperInstructions;
 
-    private static async Task<Dictionary<string, object>> ReadThreadConfigAsync(
+    internal static async Task<Dictionary<string, object>> ReadThreadConfigAsync(
         CodexAppServerConnection conn, CodexSessionInfo info)
     {
         // Ask the app-server to resolve the same cwd and trusted config layers as the thread.
@@ -1082,6 +1082,9 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// token is never part of the thread configuration. A user-level server that happens to be called leaf
     /// is replaced, never kept.
     /// </summary>
+    /// <summary>Codex's <c>AppToolApproval</c> word (auto, prompt, writes, approve; codex-cli 0.170.0) for "run without asking".</summary>
+    internal const string LeafMcpToolApprovalMode = "approve";
+
     private static Dictionary<string, JsonObject> BuildSessionMcpConfig(JsonElement inheritedServers, string? leafMcpUrl)
     {
         var servers = inheritedServers.ValueKind switch
@@ -1097,6 +1100,12 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 ["url"] = leafMcpUrl,
                 ["bearer_token_env_var"] = LeafMcpGateway.TokenVariable,
                 ["enabled"] = true,
+                // The gateway decides every call itself: read tools are served, write and purchase tools
+                // are refused until a person approves them in RedLeaf. Without this, Codex asks first
+                // through mcpServer/elicitation/request for any tool not marked read-only, and this
+                // service declines unhandled server requests (which must stay, for every other server),
+                // so leaf_mcp_call failed as "user rejected MCP tool call" before reaching the gateway.
+                ["default_tools_approval_mode"] = LeafMcpToolApprovalMode,
             };
         return servers;
     }

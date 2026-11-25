@@ -127,6 +127,10 @@ public sealed class CodexConversationProfileTests
         Assert.Equal("http://127.0.0.1:18804/api/mcp", leaf.GetProperty("url").GetString());
         Assert.Equal("REDLEAF_EXECUTION_TOKEN", leaf.GetProperty("bearer_token_env_var").GetString());
         Assert.False(leaf.TryGetProperty("command", out _));
+        // Leaf's tools run without Codex's own approval prompt (the gateway decides each call);
+        // no other server is given that, so everything else still asks and is still declined.
+        Assert.Equal("approve", leaf.GetProperty("default_tools_approval_mode").GetString());
+        Assert.False(mcp.GetProperty("global").TryGetProperty("default_tools_approval_mode", out _));
 
         // No token (conversation-only launches get none): no gateway either.
         var without = JsonSerializer.SerializeToElement(CodexInteractiveService.BuildThreadStartParams(info,
