@@ -344,6 +344,39 @@ public sealed class SessionRecoveryTests
         await Assert.ThrowsAsync<SessionInputQueueStoreException>(() => service.SupersedeVerificationAsync("session", attempted.Id, "owner", target, replacement, default));
     }
 
+    [Theory]
+    [InlineData("maintenance_restart")]
+    [InlineData("orphaned_on_restart")]
+    [InlineData("idle_timeout")]
+    public async Task An_empty_queue_on_a_checkpointed_session_reports_nothing_blocked(string reason)
+    {
+        using var f = new Fixture(reason);
+        var service = f.Service();
+
+        var idle = await service.GetSummaryAsync("session", "owner");
+        Assert.Equal("empty", idle.State);
+        Assert.Null(idle.BlockedReason);
+
+        // Waiting input still names what it waits for.
+        await f.Store.EnqueueAsync(f.Submission());
+        var waiting = await service.GetSummaryAsync("session", "owner");
+        Assert.Equal("waiting_for_session", waiting.State);
+        Assert.Equal(reason, waiting.BlockedReason);
+    }
+
+    [Theory]
+    [InlineData("user_stopped")]
+    [InlineData("project_path_missing")]
+    public async Task An_empty_queue_on_a_session_that_will_not_resume_keeps_its_stop_reason(string reason)
+    {
+        using var f = new Fixture(reason);
+
+        var summary = await f.Service().GetSummaryAsync("session", "owner");
+
+        Assert.Equal("empty", summary.State);
+        Assert.Equal(reason, summary.BlockedReason);
+    }
+
     [Fact]
     public async Task Cancelled_or_failed_stop_does_not_leave_hidden_intent_and_failed_resume_retains_real_stop()
     {

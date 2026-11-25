@@ -408,6 +408,10 @@ public sealed class SessionInputQueueService
             {
                 SessionStatus.Active => "active_turn",
                 SessionStatus.Starting => "session_starting",
+                // A checkpointed session resumes on its next input, so with nothing queued it blocks
+                // nothing: reporting its stop reason here kept "maintenance_restart" on idle
+                // discussions long after the restart (8978cdde, 2026-11-25).
+                SessionStatus.Stopped when items.Count == 0 && SessionStopReasons.IsAutoResumable(info.StopReason) => null,
                 SessionStatus.Stopped => info.StopReason ?? "session_stopped",
                 SessionStatus.Error => info.StopReason ?? "session_error",
                 _ => null,
