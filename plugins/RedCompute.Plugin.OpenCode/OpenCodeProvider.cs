@@ -15,6 +15,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
 {
     private readonly string _capabilitySlug;
     private readonly OpenCodeSessionService _opencode;
+    private readonly OpenCodeModelCatalog _models;
     private readonly OpenCodeSessionStore _store;
     private readonly object _injectionGate = new();
     private readonly IJobTracker _jobTracker;
@@ -79,15 +80,17 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,
             acceleratorAdmission: acceleratorAdmission, host: host, resolveSharedProfile: resolveSharedProfile);
+        _models = new OpenCodeModelCatalog(_opencode.ResolveOpenCodePath, log, new ProcessCliCommandRunner(host));
         WireEvents();
     }
 
     /// <summary>Test seam: a provider over an existing service and store, as the Claude and Codex providers have.</summary>
     internal OpenCodeProvider(string capabilitySlug, OpenCodeSessionService opencode, OpenCodeSessionStore store,
-        IJobTracker jobTracker, Action<string, Guid?> log)
+        IJobTracker jobTracker, Action<string, Guid?> log, OpenCodeModelCatalog? models = null)
     {
         _capabilitySlug = capabilitySlug;
         _opencode = opencode;
+        _models = models ?? new OpenCodeModelCatalog(() => null, log); // tests never spawn the real CLI
         _store = store;
         _jobTracker = jobTracker;
         _log = log;
@@ -106,7 +109,12 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         };
     }
 
-    public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
+    public Task<bool> StartAsync(CancellationToken ct = default)
+    {
+        // Warm the model list without holding up start: GetAvailableModels serves only the cache.
+        _ = _models.PrimeAsync(CancellationToken.None);
+        return Task.FromResult(true);
+    }
     public Task StopAsync(CancellationToken ct = default) => _opencode.StopAllAsync();
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
     public string? GetProxyTargetUrl() => null;
@@ -311,13 +319,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         return result;
     }
 
-    public List<ModelInfo> GetAvailableModels() =>
-    [
-        new() { Id = "anthropic/claude-sonnet-4-20250514", Name = "Claude Sonnet 4", Fast = false },
-        new() { Id = "anthropic/claude-opus-4-20250514", Name = "Claude Opus 4", Fast = false },
-        new() { Id = "openai/gpt-4o", Name = "GPT-4o", Fast = true },
-        new() { Id = "google/gemini-2.5-pro", Name = "Gemini 2.5 Pro", Fast = false },
-    ];
+    /// <summary>What this machine's OpenCode reports (<c>opencode models</c>), from a ten-minute cache; empty until known.</summary>
+    public List<ModelInfo> GetAvailableModels() => [.. _models.Cached];
 
     // --- ISessionProvider: Process Management ---
 
