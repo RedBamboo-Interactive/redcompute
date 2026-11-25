@@ -11,7 +11,7 @@ using RedCompute.PluginSdk.Hosting;
 namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
-    IIdleSessionParkingProvider, ICliVersionManagedProvider
+    IIdleSessionParkingProvider, ICliVersionManagedProvider, IProviderWarmup
 {
     private readonly string _capabilitySlug;
     private readonly OpenCodeSessionService _opencode;
@@ -109,12 +109,14 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         };
     }
 
-    public Task<bool> StartAsync(CancellationToken ct = default)
-    {
-        // Warm the model list without holding up start: GetAvailableModels serves only the cache.
-        _ = _models.PrimeAsync(CancellationToken.None);
-        return Task.FromResult(true);
-    }
+    public Task<bool> StartAsync(CancellationToken ct = default) => Task.FromResult(true);
+
+    /// <summary>
+    /// Fills the model list from <c>opencode models</c>. The host warms every provider, not only the default one
+    /// that it starts: OpenCode is usually selectable beside the default, and its list is served from this cache.
+    /// The CLI is resolved and spawned on the thread pool, never on the caller.
+    /// </summary>
+    public Task WarmAsync(CancellationToken ct = default) => Task.Run(() => _models.PrimeAsync(ct), ct);
     public Task StopAsync(CancellationToken ct = default) => _opencode.StopAllAsync();
     public Task<BackendStatus> GetStatusAsync(CancellationToken ct = default) => Task.FromResult(BackendStatus.Running);
     public string? GetProxyTargetUrl() => null;

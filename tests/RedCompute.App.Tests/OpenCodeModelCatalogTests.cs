@@ -84,6 +84,28 @@ public sealed class OpenCodeModelCatalogTests
         Assert.DoesNotContain("anthropic/claude-sonnet-4-20250514", ids);
     }
 
+    // The host starts only the default provider (Codex), so the list has to fill from warm-up, not from StartAsync:
+    // after a restart the first read used to come back empty (25 Nov 2026).
+    [Fact]
+    public async Task Warm_up_fills_the_list_before_anything_reads_it_and_start_runs_no_cli()
+    {
+        var runner = new Runner(new CliCommandResult(0, Listing, ""));
+        var catalog = new OpenCodeModelCatalog(() => "opencode", (_, _) => { }, runner);
+        var service = new OpenCodeSessionService(new OpenCodeConfig(), new MemoryJobTracker(), new OpenCodeSessionStore(), (_, _) => { },
+            new OpenCodeNativeSessionReader(Path.Combine(Path.GetTempPath(), $"opencode-none-{Guid.NewGuid():N}.db")));
+        var provider = new OpenCodeProvider("ai-session", service, new OpenCodeSessionStore(),
+            new MemoryJobTracker(), (_, _) => { }, catalog);
+
+        Assert.True(await provider.StartAsync());
+        Assert.Empty(runner.Commands);
+
+        await ((IProviderWarmup)provider).WarmAsync();
+
+        Assert.Equal(OpenCodeModelCatalog.Parse(Listing).Select(model => model.Id),
+            ((ISessionProvider)provider).GetAvailableModels().Select(model => model.Id));
+        Assert.Single(runner.Commands);
+    }
+
     [Fact]
     public async Task Reading_an_empty_cache_starts_one_refresh_without_waiting_for_it()
     {

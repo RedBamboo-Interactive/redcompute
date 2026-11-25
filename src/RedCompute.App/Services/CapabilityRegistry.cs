@@ -77,6 +77,23 @@ public class CapabilityRegistry
                     yield return t;
     }
 
+    /// <summary>
+    /// Warms every registered provider that implements <see cref="IProviderWarmup"/>, the capability's default or not
+    /// (start-up starts only the default). One failure is logged and never stops the others.
+    /// </summary>
+    public Task WarmProvidersAsync(Action<string> log, CancellationToken ct = default)
+        => WarmAsync(FindProviders<IProviderWarmup>().Distinct<IProviderWarmup>(ReferenceEqualityComparer.Instance), log, ct);
+
+    public static Task WarmAsync(IEnumerable<IProviderWarmup> providers, Action<string> log, CancellationToken ct = default)
+        => Task.WhenAll(providers.Select(async provider =>
+        {
+            try { await provider.WarmAsync(ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                log($"[App] Warm-up failed for {provider.GetType().Name}: {ex.Message}");
+            }
+        }));
+
     public async Task StopAll(string? sessionStopReason = null)
     {
         if (!string.IsNullOrWhiteSpace(sessionStopReason))

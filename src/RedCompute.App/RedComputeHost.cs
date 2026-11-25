@@ -160,6 +160,7 @@ public static class RedComputeHost
         HardwareMonitor.Start(Registry, Nodes.LocalHost);
         await StartRelayServer();
         _ = DetachedWork.Start(ProbeRunningBackends);
+        _ = DetachedWork.Start(() => Registry.WarmProvidersAsync(message => Log(message)));
     }
 
     public static async Task StopAsync()
@@ -328,6 +329,8 @@ public static class RedComputeHost
                     }
                 }
                 entry.Providers[providerName] = replacement;
+                if (replacement is IProviderWarmup warmup)
+                    _ = DetachedWork.Start(() => CapabilityRegistry.WarmAsync([warmup], message => Log(message)));
                 if (entry.DefaultProviderName == providerName && !entry.IsManuallyDisabled)
                 {
                     try { await replacement.StartAsync(); }
