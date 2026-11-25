@@ -851,6 +851,49 @@ public sealed class JobAuditTests : IDisposable
 
     private RedComputeDbContext Db() => new(_database);
 
+    // 2026-11-25: Nova's archive reconciler signs each session stop for the discussion's owner, a
+    // person or the system. The stop endpoint gates on CanReadSession, so a stop signed for one
+    // owner never reaches another owner's session, the system's included.
+    [Fact]
+    public void A_stop_signed_for_one_owner_cannot_reach_another_owners_session()
+    {
+        static UnifiedSessionInfo Session(string owner) => new()
+        {
+            Id = "17f072f40808",
+            Provider = "claude-code",
+            ProjectName = "Nova",
+            ProjectPath = "C:\\Nova",
+            Status = SessionStatus.Idle,
+            StartedAt = DateTimeOffset.UtcNow,
+            UserId = owner,
+            OwnerAgentId = "agent-nova",
+        };
+
+        Assert.True(ComputeResourceAccess.CanReadSession(Agent("agent-nova", "user-a"), Session("user-a")));
+        Assert.False(ComputeResourceAccess.CanReadSession(Agent("agent-nova", "user-a"), Session("user-b")));
+        Assert.False(ComputeResourceAccess.CanReadSession(Agent("agent-nova", "user-a"), Session("system")));
+        Assert.True(ComputeResourceAccess.CanReadSession(SystemAgent("agent-nova"), Session("system")));
+        Assert.False(ComputeResourceAccess.CanReadSession(SystemAgent("agent-nova"), Session("user-a")));
+    }
+
+    /// <summary>An Agent's execution signed for the system beneficiary, as RedLeaf's gateway signs it.</summary>
+    private static DefaultHttpContext SystemAgent(string agentId)
+    {
+        var context = Context([
+            new Claim("sub", "system"),
+            new Claim("client_id", "nova"),
+            new Claim(ExecutionIdentityClaims.TokenUseClaim, ExecutionIdentityClaims.TokenUse),
+        ]);
+        context.Items[ExecutionIdentityClaims.HttpContextItemKey] = new ExecutionIdentity(
+            ExecutionIdentity.CurrentSchemaVersion,
+            Guid.NewGuid().ToString(),
+            new ExecutionAppIdentity("nova", "Nova"),
+            new ExecutionActorIdentity("agent", "nova", "Nova", agentId),
+            new ExecutionBeneficiaryIdentity("system"),
+            []);
+        return context;
+    }
+
     private static DefaultHttpContext Context(IEnumerable<Claim> claims)
     {
         var context = new DefaultHttpContext();
