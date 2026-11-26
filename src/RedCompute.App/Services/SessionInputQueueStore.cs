@@ -1377,6 +1377,8 @@ public sealed partial class SessionInputQueueStore
             ("RequestedDeliveryPolicy", "TEXT NULL"), ("DeliveryReason", "TEXT NULL"),
             ("DeliveryOrdinal", "INTEGER NULL"), ("TurnId", "TEXT NULL"), ("InterruptResult", "TEXT NULL"),
             ("InferenceChangeJson", "TEXT NULL"), ("BindingChangeJson", "TEXT NULL"), ("BindingMoveJson", "TEXT NULL"),
+            // A pre-upgrade remote delivery lease may already have issued its prompt.
+            ("RemoteSendMayHaveStarted", "INTEGER NOT NULL DEFAULT 1"),
         })
         {
             if (columns.Contains(column)) continue;

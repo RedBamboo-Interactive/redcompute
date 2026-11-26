@@ -96,6 +96,7 @@ public sealed partial class SessionInputQueueStore
         claim.CommandText = """
             UPDATE SessionQueuedInputs
             SET State='Delivering', LeaseOwner=$remote, LeaseExpiresAt=NULL,
+                RemoteSendMayHaveStarted=CASE WHEN State='Pending' THEN 0 ELSE RemoteSendMayHaveStarted END,
                 AttemptCount=AttemptCount+CASE WHEN State='Pending' THEN 1 ELSE 0 END, UpdatedAt=$now
             WHERE Id=$id AND (State='Pending' OR (State='Delivering' AND LeaseOwner=$remote))
             """;
@@ -106,6 +107,47 @@ public sealed partial class SessionInputQueueStore
         var claimed = await GetCoreAsync(connection, transaction, scope.LogicalSessionId, head.Id, scope.OwnerId, ct);
         await transaction.CommitAsync(ct);
         return claimed;
+    }
+
+    internal async Task<bool> HasUnsettledControllerRemoteDispatchAsync(string sessionId, CancellationToken ct)
+    {
+        await using var connection = Open();
+        await using var read = connection.CreateCommand();
+        read.CommandText = """
+            SELECT EXISTS(
+                SELECT 1 FROM SessionQueuedInputs
+                WHERE SessionId=$session AND State='Delivering' AND LeaseOwner=$remote AND RemoteSendMayHaveStarted=1
+            )
+            """;
+        Add(read, "$session", sessionId);
+        Add(read, "$remote", ControllerRemoteLease);
+        return await read.ExecuteScalarAsync(ct) is 1L;
+    }
+
+    // The worker records the send boundary before asking the node to accept input. A lost reply or
+    // controller restart then leaves conservative, durable evidence of a potentially issued prompt.
+    internal async Task<bool> MarkControllerRemoteDispatchIssuedAsync(ControllerRemoteSession binding, string itemId,
+        CancellationToken ct)
+    {
+        var scope = binding.Scope;
+        await using var connection = Open();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        var current = await ReadBindingSnapshotAsync(connection, transaction, scope.LogicalSessionId, ct);
+        if (current?.Active.Native.Remote != binding || current.Active.Generation != scope.Generation) return false;
+
+        await using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = """
+            UPDATE SessionQueuedInputs SET RemoteSendMayHaveStarted=1
+            WHERE Id=$id AND SessionId=$session AND OwnerUserId=$owner AND State='Delivering' AND LeaseOwner=$remote
+            """;
+        Add(update, "$id", itemId);
+        Add(update, "$session", scope.LogicalSessionId);
+        Add(update, "$owner", scope.OwnerId);
+        Add(update, "$remote", ControllerRemoteLease);
+        if (await update.ExecuteNonQueryAsync(ct) != 1) return false;
+        await transaction.CommitAsync(ct);
+        return true;
     }
 
     internal async Task<bool> CompleteControllerRemoteInputAsync(SessionInputQueueItem item, SessionTurnSummary turn,

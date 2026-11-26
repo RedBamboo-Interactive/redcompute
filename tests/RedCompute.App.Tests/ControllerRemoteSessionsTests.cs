@@ -124,6 +124,34 @@ public sealed class ControllerRemoteSessionsTests : IDisposable
         Assert.Contains(scope.LogicalSessionId, await store.GetRunnableSessionIdsAsync());
     }
 
+    [Fact]
+    public async Task An_offline_inspection_lease_does_not_prove_a_prompt_was_dispatched()
+    {
+        using var fixture = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var scope = new SessionRuntimeScope(Placement.NodeId, Placement.RuntimeId, "remote-logical", 0, "owner", Placement.Workspace);
+        var binding = new ControllerRemoteSession(scope, Placement, Preview, Thread);
+        var store = fixture.Store;
+        await store.ReserveControllerRemoteStartAsync(scope, Placement, Preview, default);
+        await store.CommitControllerRemoteStartAsync(binding, default);
+        var first = (await store.EnqueueAsync(fixture.Submission("first") with { SessionId = scope.LogicalSessionId })).Item;
+        var next = (await store.EnqueueAsync(fixture.Submission("next") with { SessionId = scope.LogicalSessionId })).Item;
+        var claimed = await store.ClaimControllerRemoteInputAsync(binding, first.Id, default);
+        Assert.NotNull(claimed);
+
+        store = new SessionInputQueueStore(fixture.Config, fixture.Attachments);
+        Assert.False(await store.HasUnsettledControllerRemoteDispatchAsync(scope.LogicalSessionId, default));
+        Assert.False(await store.MarkControllerRemoteDispatchIssuedAsync(binding, next.Id, default));
+        Assert.False(await store.MarkControllerRemoteDispatchIssuedAsync(binding with { Scope = scope with { Generation = 1 } }, first.Id, default));
+        Assert.True(await store.MarkControllerRemoteDispatchIssuedAsync(binding, first.Id, default));
+        Assert.True(await store.MarkControllerRemoteDispatchIssuedAsync(binding, first.Id, default));
+
+        store = new SessionInputQueueStore(fixture.Config, fixture.Attachments);
+        Assert.True(await store.HasUnsettledControllerRemoteDispatchAsync(scope.LogicalSessionId, default));
+        await store.MarkDeliveredAsync([claimed], first.MessageUid);
+        Assert.False(await store.HasUnsettledControllerRemoteDispatchAsync(scope.LogicalSessionId, default));
+        Assert.Equal(next.Id, (await store.GetHeadAsync(scope.LogicalSessionId))!.Id);
+    }
+
     private SessionInputQueueStore Queue()
     {
         Directory.CreateDirectory(_root);

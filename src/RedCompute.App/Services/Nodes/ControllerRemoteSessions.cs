@@ -140,6 +140,8 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
         {
             // When the destination is parked, replay renews authority on its exact accepted
             // input. The guest compares the input ID and full payload digest before dispatch.
+            if (!await queue.MarkControllerRemoteDispatchIssuedAsync(binding, item.Id, ct))
+                return null;
             var receipt = await SendInputAsync(caller, scope.LogicalSessionId, item.MessageUid, text, ct);
             if (status.Receipt is { } inspected && receipt != inspected)
                 throw new ControllerRemoteSessionException(502, "remote_input_receipt_mismatch");
