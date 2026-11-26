@@ -6,9 +6,11 @@ namespace RedCompute.Core.Storage;
 /// <summary>
 /// The one way RedCompute replaces a file it must find intact after a power cut. The new bytes go to a temporary file
 /// beside the target, reach the disk (write-through and a flush), and only then are renamed over the target; on Linux
-/// the folder is flushed too, so the rename itself survives. A power cut therefore leaves the old file or the new one,
-/// never the zero-filled file NTFS and ext4 leave after a rename whose data was still in the cache (N23: a torn
-/// <c>long-lived-processes.json</c> rolled a data move back).
+/// the folder is flushed too. A power cut therefore never leaves the zero-filled file NTFS and ext4 leave after a rename
+/// whose data was still in the cache (N23: a torn <c>long-lived-processes.json</c> rolled a data move back). Windows
+/// does not promise that the rename itself reached the disk (RedLeaf N29: a marker's rename was lost on a real power
+/// cut), so a cut can also leave the old file, or, for a first write, no file and the whole temporary beside it, which
+/// a reader at start takes back with <see cref="TryRecover"/>.
 /// </summary>
 public static class DurableFile
 {
@@ -108,8 +110,9 @@ public static class DurableFile
     }
 
     /// <summary>
-    /// Flushes a folder's entries to the disk (Linux). Windows makes the rename itself durable, so there is nothing to do
-    /// there. Best effort: a file system that refuses is reported to <see cref="DiagnosticLog"/> and left alone.
+    /// Flushes a folder's entries to the disk (Linux). Windows has no equivalent for a folder, and nothing there promises
+    /// that a rename reached the disk: <see cref="TryRecover"/> covers the rename a cut lost. Best effort: a file system
+    /// that refuses is reported to <see cref="DiagnosticLog"/> and left alone.
     /// </summary>
     public static void SyncDirectory(string directory)
     {
@@ -134,6 +137,68 @@ public static class DurableFile
         {
             DiagnosticLog?.Invoke($"Flushing {directory} is not possible here: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// For a reader at start, while this process is the only writer of <paramref name="path"/>: when the file is missing
+    /// but a temporary of this writer is beside it (<c>&lt;name&gt;.&lt;32 hex&gt;.tmp</c>), the power cut lost the rename
+    /// that would have published it. The newest temporary that is not torn and that <paramref name="isWhole"/> accepts
+    /// (the caller's own parse) is published as the file. A present file is never replaced, and every other temporary is
+    /// left exactly as it is. Never call it where another writer may still own a temporary: a temporary is complete only
+    /// once its writer flushed it. Returns what was recovered, for the log, or null when nothing was. Never throws for a
+    /// file that cannot be read or moved.
+    /// </summary>
+    public static string? TryRecover(string path, Func<byte[], bool> isWhole)
+    {
+        var full = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(full)!;
+        var name = Path.GetFileName(full);
+        List<FileInfo> temporaries;
+        try
+        {
+            if (File.Exists(full) || !Directory.Exists(directory)) return null;
+            temporaries = new DirectoryInfo(directory).EnumerateFiles(name + ".*.tmp")
+                .Where(file => IsTemporaryOf(name, file.Name))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+
+        foreach (var temporary in temporaries)
+        {
+            byte[] bytes;
+            try { bytes = File.ReadAllBytes(temporary.FullName); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+            if (bytes.Length == 0 || !bytes.AsSpan().ContainsAnyExcept((byte)0)) continue;
+            bool whole;
+            // The caller's parse decides; a parse that throws has said no.
+            try { whole = isWhole(bytes); }
+            catch (Exception) { whole = false; }
+            if (!whole) continue;
+            try
+            {
+                File.Move(temporary.FullName, full, overwrite: false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return null;
+            }
+            SyncDirectory(directory);
+            var recovered = $"Recovered {full} from {temporary.Name}: a power cut lost the rename that would have put it in place.";
+            DiagnosticLog?.Invoke(recovered);
+            return recovered;
+        }
+        return null;
+    }
+
+    private static bool IsTemporaryOf(string name, string candidate)
+    {
+        const int Hex = 32;
+        if (candidate.Length != name.Length + 1 + Hex + 4) return false;
+        if (!candidate.StartsWith(name + ".", StringComparison.Ordinal) || !candidate.EndsWith(".tmp", StringComparison.Ordinal)) return false;
+        foreach (var c in candidate.AsSpan(name.Length + 1, Hex))
+            if (!char.IsAsciiHexDigitLower(c)) return false;
+        return true;
     }
 
     private static string TempPathFor(string full) => $"{full}.{Guid.NewGuid():N}.tmp";

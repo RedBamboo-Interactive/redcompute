@@ -109,6 +109,11 @@ public sealed class StoredPathRebaseRunner
 
     private RebaseStatus? ReadRecorded()
     {
+        // Read only on the start path, where this runner is the file's only writer and never has a write in flight: a first
+        // record whose rename a power cut lost is taken back from its temporary.
+        if (DurableFile.TryRecover(_statePath, bytes => JsonSerializer.Deserialize<RebaseStatus>(bytes, JsonOptions) is { State.Length: > 0 })
+            is { } recovered)
+            _log($"[Rebase] {recovered}");
         try
         {
             if (!File.Exists(_statePath)) return null;

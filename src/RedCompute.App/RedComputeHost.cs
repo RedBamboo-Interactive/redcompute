@@ -139,7 +139,7 @@ public static class RedComputeHost
         if (ConfigManager.Config.AutoStartDocker)
             _ = DetachedWork.Start(() => DockerDesktopService.EnsureRunningAsync(s => Log(s)));
 
-        var plannedRestart = PlannedRestartCheckpoint.LoadForStartup();
+        var plannedRestart = PlannedRestartCheckpoint.LoadForStartup(log: message => Log(message));
         var recovered = JobTracker.RecoverOrphanedJobs(PlannedRestartCheckpoint.JobIds());
         if (recovered > 0)
             Log($"[App] Marked {recovered} orphaned job(s) as failed (interrupted by restart)");

@@ -40,12 +40,17 @@ public static class PlannedRestartCheckpoint
         DurableFile.WriteAllText(target, JsonSerializer.Serialize(checkpoint, JsonOptions));
     }
 
+    /// <param name="log">Told when a checkpoint whose rename a power cut lost was taken back from its temporary.</param>
     public static PlannedRestartData? LoadForStartup(
         string? path = null,
         DateTimeOffset? now = null,
-        TimeSpan? maximumAge = null)
+        TimeSpan? maximumAge = null,
+        Action<string>? log = null)
     {
         var target = Path.GetFullPath(path ?? DefaultPath);
+        // Every write is a first write (Consume deletes the file), so a lost rename leaves no file and the whole temporary.
+        // This process is the only writer now: the one that wrote it was stopped by the handoff.
+        if (DurableFile.TryRecover(target, IsWhole) is { } recovered) log?.Invoke($"[App] {recovered}");
         PlannedRestartData? checkpoint = null;
         try
         {
@@ -74,6 +79,9 @@ public static class PlannedRestartCheckpoint
         Interlocked.Exchange(ref _current, checkpoint);
         return checkpoint;
     }
+
+    private static bool IsWhole(byte[] bytes)
+        => JsonSerializer.Deserialize<PlannedRestartData>(bytes, JsonOptions) is { RunId.Length: > 0, Sessions: not null };
 
     public static bool ContainsSession(string provider, string sessionId)
         => Current?.Sessions.Any(session =>
