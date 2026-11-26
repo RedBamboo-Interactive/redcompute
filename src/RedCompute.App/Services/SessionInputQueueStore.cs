@@ -1316,6 +1316,15 @@ public sealed partial class SessionInputQueueStore
             );
             CREATE INDEX IF NOT EXISTS IX_SessionTurns_Open ON SessionTurns(SessionId, EndedAt);
             CREATE TABLE IF NOT EXISTS SessionQueueCounters (Name TEXT PRIMARY KEY NOT NULL, Value INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS RemoteSessionLifecycleCommands (
+                NodeId TEXT NOT NULL, RuntimeId TEXT NOT NULL, LogicalSessionId TEXT NOT NULL, Generation INTEGER NOT NULL,
+                RequestId TEXT NOT NULL, Operation TEXT NOT NULL, OwnerId TEXT NOT NULL, AccessScope TEXT NOT NULL,
+                PayloadDigest TEXT NOT NULL, Status INTEGER NULL, Body BLOB NULL,
+                PRIMARY KEY(NodeId, RuntimeId, LogicalSessionId, Generation, RequestId)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS UX_RemoteSessionLifecycleCommands_Start
+                ON RemoteSessionLifecycleCommands(NodeId, RuntimeId, LogicalSessionId, Generation)
+                WHERE Operation = 'Start';
             CREATE TABLE IF NOT EXISTS SessionThreadBindings (
                 SessionId TEXT PRIMARY KEY NOT NULL,
                 ActiveGeneration INTEGER NOT NULL,

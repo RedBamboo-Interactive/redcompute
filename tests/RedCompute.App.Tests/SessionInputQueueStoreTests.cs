@@ -2,6 +2,7 @@ using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
 using Microsoft.Data.Sqlite;
+using RedCompute.NodeLink;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -44,6 +45,56 @@ public sealed class SessionInputQueueStoreTests : IDisposable
         Assert.Single(items);
         Assert.Equal(admitted.Item.Id, items[0].Id);
     }
+
+    [Fact]
+    public async Task Remote_start_reservation_and_exact_receipt_survive_reopening_the_queue()
+    {
+        var (_, first) = Stores();
+        var start = RemoteLifecycleStart();
+        var reserved = await first.ReserveRemoteLifecycleAsync(start);
+        Assert.Equal(RemoteLifecycleState.Reserved, reserved.State);
+        Assert.Null(reserved.Receipt);
+
+        var (_, reopened) = Stores();
+        Assert.Equal(RemoteLifecycleState.Pending, (await reopened.ReserveRemoteLifecycleAsync(start)).State);
+        Assert.Equal(RemoteLifecycleState.Conflict,
+            (await reopened.ReserveRemoteLifecycleAsync(start with { RequestId = "another-start" })).State);
+        Assert.Equal(RemoteLifecycleState.Conflict,
+            (await reopened.ReserveRemoteLifecycleAsync(start with { Payload = "changed"u8.ToArray() })).State);
+        Assert.Equal(RemoteLifecycleState.Conflict,
+            (await reopened.ReserveRemoteLifecycleAsync(start with { Scope = start.Scope with { OwnerId = "other" } })).State);
+
+        var runtimeReceipt = new RemoteLifecycleReceipt(201, """{"runtimeSessionId":"durable","nativeThreadId":"native"}"""u8.ToArray());
+        Assert.True(await reopened.CompleteRemoteLifecycleAsync(start, runtimeReceipt));
+        Assert.False(await first.CompleteRemoteLifecycleAsync(start, new RemoteLifecycleReceipt(409, [])));
+
+        var (_, restarted) = Stores();
+        var replay = await restarted.ReserveRemoteLifecycleAsync(start with { ExpiresAtUnixSeconds = 1 });
+        Assert.Equal(RemoteLifecycleState.Completed, replay.State);
+        Assert.Equal(runtimeReceipt.Status, replay.Receipt!.Status);
+        Assert.Equal(runtimeReceipt.Body, replay.Receipt.Body);
+    }
+
+    [Fact]
+    public async Task Remote_lifecycle_receipts_cannot_cross_runtime_or_generation()
+    {
+        var (_, queue) = Stores();
+        var start = RemoteLifecycleStart();
+        Assert.Equal(RemoteLifecycleState.Reserved, (await queue.ReserveRemoteLifecycleAsync(start)).State);
+        Assert.False(await queue.CompleteRemoteLifecycleAsync(start with { Scope = start.Scope with { RuntimeId = "two" } },
+            new RemoteLifecycleReceipt(201, [])));
+        Assert.Equal(RemoteLifecycleState.Reserved, (await queue.ReserveRemoteLifecycleAsync(
+            start with { Scope = start.Scope with { Generation = 1 } })).State);
+        Assert.Equal(RemoteLifecycleState.Conflict, (await queue.ReserveRemoteLifecycleAsync(
+            start with { Operation = SessionRuntimeOperation.Resume })).State);
+        Assert.Equal(RemoteLifecycleState.Reserved, (await queue.ReserveRemoteLifecycleAsync(
+            start with { RequestId = "resume", Operation = SessionRuntimeOperation.Resume })).State);
+    }
+
+    private static SessionRuntimeGrant RemoteLifecycleStart() =>
+        new(new SessionRuntimeScope("node-a", "runtime-a", "logical-a", 0L, "owner-a", "workspace-a"),
+            SessionRuntimeOperation.Start, "start", 0L, "{}"u8.ToArray(), []);
+
 
     [Fact]
     public async Task IdempotencyReturnsOriginalAndRejectsConflictingPayload()
