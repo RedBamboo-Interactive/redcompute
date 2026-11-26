@@ -34,6 +34,16 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         var paired = true;
         var runtime = OpenRuntime();
 
+        var preview = await runtime.ApplyAsync(SessionRuntimeOperation.Inspect,
+            Grant(controller, SessionRuntimeOperation.Inspect, "preview", new("abc123", "probe")));
+        Assert.Equal(200, preview.Status);
+        using var placement = JsonDocument.Parse(preview.Body);
+        Assert.Equal("codex", placement.RootElement.GetProperty("providerId").GetString());
+        Assert.Equal("abc123", placement.RootElement.GetProperty("revision").GetString());
+        Assert.Equal("ask", placement.RootElement.GetProperty("maxAccessLevel").GetString());
+        Assert.False(placement.RootElement.TryGetProperty("projectPath", out _));
+        Assert.Equal(0, probe.Starts);
+
         var unknown = await runtime.ApplyAsync(SessionRuntimeOperation.Start, Grant(stranger, SessionRuntimeOperation.Start, "start", start));
         Assert.Equal(403, unknown.Status);
         var stale = await runtime.ApplyAsync(SessionRuntimeOperation.Start,
@@ -112,10 +122,16 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
             revision = "abc123", providerInstanceId = "probe", runtimeSessionId = thread.RuntimeSessionId,
             nativeThreadId = thread.NativeThreadId, inputUid = "prompt-one",
         });
+        queue.MarkTurnActive(thread.RuntimeSessionId);
+        queue.CloseTurn(thread.RuntimeSessionId, new SessionTurnEnd("Stopped", SessionStopReasons.MaintenanceRestart,
+            SessionTurnOutcomes.Interrupted, DateTimeOffset.UtcNow, 0));
         var inspected = await runtime.ApplyAsync(SessionRuntimeOperation.Inspect, inspect);
         Assert.Equal(200, inspected.Status);
         using var state = JsonDocument.Parse(inspected.Body);
         Assert.Equal("delivered", state.RootElement.GetProperty("state").GetString());
+        var turn = state.RootElement.GetProperty("turn");
+        Assert.Equal("prompt-one", turn.GetProperty("turnId").GetString());
+        Assert.Equal(SessionTurnOutcomes.Interrupted, turn.GetProperty("outcome").GetString());
 
         probe.Record(1, "user", "prompt-one", "One prompt");
         probe.Record(2, "assistant", "reply-one", "One reply");

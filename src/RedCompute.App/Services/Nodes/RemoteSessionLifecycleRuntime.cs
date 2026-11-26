@@ -48,9 +48,12 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         {
             return Error(400, "invalid_lifecycle_request");
         }
+        var inspectPlacement = operation == SessionRuntimeOperation.Inspect
+            && request is { RuntimeSessionId: null, NativeThreadId: null, InputUid: null };
         if (request is null || string.IsNullOrWhiteSpace(request.Revision) || string.IsNullOrWhiteSpace(request.ProviderInstanceId)
-            || (operation == SessionRuntimeOperation.Start
+            || (operation == SessionRuntimeOperation.Start || inspectPlacement
                 ? request.RuntimeSessionId is not null || request.NativeThreadId is not null
+                  || inspectPlacement && (request.Model is not null || request.Effort is not null)
                 : string.IsNullOrWhiteSpace(request.RuntimeSessionId) || string.IsNullOrWhiteSpace(request.NativeThreadId)
                   || request.Model is not null || request.Effort is not null))
             return Error(400, "invalid_lifecycle_request");
@@ -63,7 +66,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
 
             var isRead = operation is SessionRuntimeOperation.Inspect or SessionRuntimeOperation.ReadEvents
                 or SessionRuntimeOperation.AcknowledgeEvents;
-            var workspace = isRead && configuredWorkspace is not null
+            var workspace = isRead && !inspectPlacement && configuredWorkspace is not null
                 ? configuredWorkspace(grant.Scope, request) : await resolve(grant.Scope, request, ct);
             if (workspace is null || workspace.OwnerId != grant.Scope.OwnerId || workspace.Reference != grant.Scope.AccessScope
                 || workspace.Revision != request.Revision || workspace.ProviderInstanceId != request.ProviderInstanceId
@@ -75,6 +78,19 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                 || !workspace.Provider.SupportedAccessLevels.Contains(workspace.Access.AccessLevel!)
                 || SessionAccessLevels.Rank(workspace.Access.AccessLevel!) > SessionAccessLevels.Rank(workspace.Access.MaxAccessLevel!))
                 return Error(422, "runtime_provider_unavailable");
+
+            if (inspectPlacement)
+                return Reply(200, new
+                {
+                    nodeId = grant.Scope.NodeId,
+                    runtimeId = grant.Scope.RuntimeId,
+                    workspace = workspace.Reference,
+                    workspace.Revision,
+                    workspace.ProviderInstanceId,
+                    providerId = workspace.Provider.ProviderId,
+                    workspace.Access.AccessLevel,
+                    workspace.Access.MaxAccessLevel,
+                });
 
             if (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume or SessionRuntimeOperation.Park))
             {
@@ -223,8 +239,10 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                 return inspection is null ? Reply(200, new { state = "absent" })
                     : Reply(200, new
                     {
-                        state = inspection.DeliveryState?.ToString().ToLowerInvariant() ?? "unknown",
+                        state = inspection.ErrorCode == "delivery_outcome_unknown" ? "unknown"
+                            : inspection.DeliveryState?.ToString().ToLowerInvariant() ?? "unknown",
                         receipt = inspection.Receipt,
+                        turn = queue.GetTurn(thread.RuntimeSessionId, inspection.Receipt.TurnId)?.Summary,
                         errorCode = inspection.ErrorCode,
                     });
             case SessionRuntimeOperation.ReadEvents:
