@@ -97,6 +97,130 @@ public sealed class SessionInputQueueStoreTests : IDisposable
 
 
     [Fact]
+    public async Task Remote_input_replays_the_same_receipt_after_the_queue_row_expires()
+    {
+        var (_, queue) = Stores();
+        var first = RemoteInput("input-one", "hello");
+        var second = RemoteInput("input-two", "follow-up");
+
+        var receipt = await queue.EnqueueRemoteInputAsync(first.Grant, first.Submission);
+        var next = await queue.EnqueueRemoteInputAsync(second.Grant, second.Submission);
+        Assert.Equal("input-one", receipt.TurnId);
+        Assert.Equal("input-two", next.TurnId);
+        Assert.NotEqual(receipt.QueueItemId, next.QueueItemId);
+        Assert.Equal(SessionInputQueueState.Pending,
+            (await queue.ReadRemoteInputAsync(first.Grant.Scope, first.Grant.RequestId))!.DeliveryState);
+
+        var batch = await queue.ClaimBatchAsync("session-a", "worker", TimeSpan.FromMinutes(1));
+        Assert.Equal(receipt.QueueItemId, Assert.Single(batch).Id);
+        Assert.Equal(receipt.TurnId, batch[0].TurnId);
+        await queue.MarkDeliveredAsync(batch, receipt.TurnId);
+        Assert.Equal(1, await queue.CleanupTerminalAsync(TimeSpan.Zero));
+
+        var (_, reopened) = Stores();
+        Assert.Null(await reopened.GetAsync("session-a", receipt.QueueItemId, "owner-a"));
+        var replay = await reopened.EnqueueRemoteInputAsync(first.Grant with { ExpiresAtUnixSeconds = 1 }, first.Submission);
+        Assert.Equal(receipt, replay);
+        var inspected = await reopened.ReadRemoteInputAsync(first.Grant.Scope, first.Grant.RequestId);
+        Assert.NotNull(inspected);
+        Assert.Equal(receipt, inspected.Receipt);
+        Assert.Equal(SessionInputQueueState.Delivered, inspected.DeliveryState);
+        Assert.Null(await reopened.ReadRemoteInputAsync(first.Grant.Scope with { OwnerId = "other" }, first.Grant.RequestId));
+        Assert.Null(await reopened.ReadRemoteInputAsync(first.Grant.Scope with { Generation = 9 }, first.Grant.RequestId));
+        var error = await Assert.ThrowsAsync<SessionInputQueueStoreException>(() => reopened.EnqueueRemoteInputAsync(
+            first.Grant with { Payload = "changed"u8.ToArray() }, first.Submission));
+        Assert.Equal("idempotency_conflict", error.Code);
+        Assert.Equal(next.QueueItemId, Assert.Single(await reopened.ListAsync("session-a", "owner-a", true)).Id);
+    }
+
+    [Fact]
+    public async Task Persistence_failure_rolls_back_the_remote_queue_item_and_receipt()
+    {
+        var (attachments, queue) = Stores();
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = attachments.DatabasePath, Pooling = false }.ToString());
+        await connection.OpenAsync();
+        await using var fault = connection.CreateCommand();
+        fault.CommandText = """
+            CREATE TRIGGER RejectRemoteInputReceipt BEFORE INSERT ON RemoteSessionInputReceipts
+            BEGIN SELECT RAISE(ABORT, 'fixture receipt write failed'); END;
+            """;
+        await fault.ExecuteNonQueryAsync();
+
+        var input = RemoteInput("input-one", "hello");
+        await Assert.ThrowsAsync<SqliteException>(() => queue.EnqueueRemoteInputAsync(input.Grant, input.Submission));
+        Assert.Empty(await queue.ListAsync("session-a", "owner-a", true));
+        Assert.Null(await queue.ReadRemoteInputAsync(input.Grant.Scope, input.Grant.RequestId));
+
+        fault.CommandText = "DROP TRIGGER RejectRemoteInputReceipt";
+        await fault.ExecuteNonQueryAsync();
+        var receipt = await queue.EnqueueRemoteInputAsync(input.Grant, input.Submission);
+        Assert.Equal(receipt.QueueItemId, Assert.Single(await queue.ListAsync("session-a", "owner-a", true)).Id);
+    }
+
+    private static (SessionRuntimeGrant Grant, SessionInputQueueSubmission Submission) RemoteInput(string uid, string text)
+    {
+        var scope = new SessionRuntimeScope("node-a", "runtime-a", "logical-a", 0, "owner-a", "workspace-a");
+        return (new(scope, SessionRuntimeOperation.SendInput, uid, 0, System.Text.Encoding.UTF8.GetBytes(text), []),
+            Submission(text) with { MessageUid = uid, IdempotencyKey = uid });
+    }
+
+
+    [Fact]
+    public async Task Remote_event_reconnect_replays_ordered_records_and_ack_deduplicates_after_reopening()
+    {
+        var (_, queue) = Stores();
+        var scope = RemoteInput("input-one", "hello").Grant.Scope;
+        var one = new RemoteSessionEvent("event-one", "input-one", "input-one", "first"u8.ToArray());
+        var two = new RemoteSessionEvent("event-two", "input-one", "input-one", "second"u8.ToArray());
+        Assert.Equal(1, (await queue.AppendRemoteEventAsync(scope, one)).Sequence);
+        Assert.Equal(2, (await queue.AppendRemoteEventAsync(scope, two)).Sequence);
+        Assert.Equal(1, (await queue.AppendRemoteEventAsync(scope, one)).Sequence);
+
+        var (_, reopened) = Stores();
+        var firstPage = await reopened.ReadRemoteEventsAsync(scope, 0, 1);
+        Assert.False(firstPage.Gap);
+        Assert.Equal(0, firstPage.AcknowledgedThrough);
+        Assert.Equal(2, firstPage.LastSequence);
+        Assert.Equal("event-one", Assert.Single(firstPage.Events).Event.EventId);
+        Assert.Equal((long?)1, await reopened.AcknowledgeRemoteEventsAsync(scope, 1));
+        Assert.Null(await reopened.AcknowledgeRemoteEventsAsync(scope, 3));
+        Assert.Equal((long?)1, await reopened.AcknowledgeRemoteEventsAsync(scope, 0));
+
+        var (_, reconnected) = Stores();
+        Assert.True((await reconnected.ReadRemoteEventsAsync(scope, 0, 10)).Gap);
+        var replay = await reconnected.ReadRemoteEventsAsync(scope, 1, 10);
+        Assert.Equal(1, replay.AcknowledgedThrough);
+        Assert.Equal("event-two", Assert.Single(replay.Events).Event.EventId);
+        Assert.Equal(1, (await reconnected.AppendRemoteEventAsync(scope, one)).Sequence);
+        Assert.Equal(2, (await reconnected.ReadRemoteEventsAsync(scope, 1, 10)).LastSequence);
+        var conflict = await Assert.ThrowsAsync<SessionInputQueueStoreException>(() =>
+            reconnected.AppendRemoteEventAsync(scope, one with { Body = "changed"u8.ToArray() }));
+        Assert.Equal("remote_event_conflict", conflict.Code);
+        Assert.Empty((await reconnected.ReadRemoteEventsAsync(scope with { OwnerId = "other" }, 0, 10)).Events);
+    }
+
+
+    [Fact]
+    public async Task Remote_event_spool_bounds_pages_and_releases_capacity_only_after_ack()
+    {
+        var (_, queue) = Stores();
+        var scope = RemoteInput("input-one", "hello").Grant.Scope;
+        var body = new byte[256 * 1024];
+        for (var i = 1; i <= 16; i++)
+            Assert.Equal(i, (await queue.AppendRemoteEventAsync(scope, new($"event-{i}", null, null, body))).Sequence);
+
+        var overflow = await Assert.ThrowsAsync<SessionInputQueueStoreException>(() =>
+            queue.AppendRemoteEventAsync(scope, new("event-17", null, null, body)));
+        Assert.Equal("remote_event_backpressure", overflow.Code);
+        var page = await queue.ReadRemoteEventsAsync(scope, 0, 100);
+        Assert.Equal(new long[] { 1, 2, 3, 4 }, page.Events.Select(e => e.Sequence));
+        Assert.Equal(16, page.LastSequence);
+        Assert.Equal((long?)1, await queue.AcknowledgeRemoteEventsAsync(scope, 1));
+        Assert.Equal(17, (await queue.AppendRemoteEventAsync(scope, new("event-17", null, null, body))).Sequence);
+    }
+
+
+    [Fact]
     public async Task IdempotencyReturnsOriginalAndRejectsConflictingPayload()
     {
         var (_, queue) = Stores();

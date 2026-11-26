@@ -99,12 +99,17 @@ public sealed partial class SessionInputQueueStore
 
     private static void BindRemoteLifecycleScope(SqliteCommand command, SessionRuntimeScope scope)
     {
+        BindRemoteSessionKey(command, scope);
+        Add(command, "$owner", scope.OwnerId);
+        Add(command, "$access", scope.AccessScope);
+    }
+
+    private static void BindRemoteSessionKey(SqliteCommand command, SessionRuntimeScope scope)
+    {
         Add(command, "$node", scope.NodeId);
         Add(command, "$runtime", scope.RuntimeId);
         Add(command, "$logical", scope.LogicalSessionId);
         Add(command, "$generation", scope.Generation);
-        Add(command, "$owner", scope.OwnerId);
-        Add(command, "$access", scope.AccessScope);
     }
 
     private static void CheckRemoteLifecycleOperation(SessionRuntimeOperation operation)

@@ -75,6 +75,48 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         Assert.Equal(1, probe.Starts);
         Assert.Equal(1, probe.Resumes);
 
+        var input = TurnCommand(SessionRuntimeOperation.SendInput, "prompt-one", new
+        {
+            revision = "abc123", providerInstanceId = "probe", runtimeSessionId = thread.RuntimeSessionId,
+            nativeThreadId = thread.NativeThreadId, inputUid = "prompt-one", text = "One prompt",
+        });
+        var admitted = await runtime.ApplyAsync(SessionRuntimeOperation.SendInput, input);
+        Assert.Equal(202, admitted.Status);
+        Assert.Equal(admitted.Body, (await OpenRuntime().ApplyAsync(SessionRuntimeOperation.SendInput, input)).Body);
+        var receipt = JsonSerializer.Deserialize<RemoteInputReceipt>(admitted.Body, Json)!;
+        Assert.Equal("prompt-one", receipt.TurnId);
+
+        var queue = Store();
+        var batch = await queue.ClaimBatchAsync(thread.RuntimeSessionId, "fixture", TimeSpan.FromMinutes(1));
+        Assert.Equal("One prompt", Assert.Single(batch).DisplayContent);
+        await queue.MarkDeliveredAsync(batch, receipt.TurnId);
+        var inspect = TurnCommand(SessionRuntimeOperation.Inspect, "inspect", new
+        {
+            revision = "abc123", providerInstanceId = "probe", runtimeSessionId = thread.RuntimeSessionId,
+            nativeThreadId = thread.NativeThreadId, inputUid = "prompt-one",
+        });
+        var inspected = await runtime.ApplyAsync(SessionRuntimeOperation.Inspect, inspect);
+        Assert.Equal(200, inspected.Status);
+        using var state = JsonDocument.Parse(inspected.Body);
+        Assert.Equal("delivered", state.RootElement.GetProperty("state").GetString());
+
+        await queue.AppendRemoteEventAsync(scope, new("record-one", receipt.TurnId, receipt.InputUid, "event"u8.ToArray()));
+        var readEvents = TurnCommand(SessionRuntimeOperation.ReadEvents, "events", new
+        {
+            revision = "abc123", providerInstanceId = "probe", runtimeSessionId = thread.RuntimeSessionId,
+            nativeThreadId = thread.NativeThreadId, afterSeq = 0, limit = 1,
+        });
+        var page = await runtime.ApplyAsync(SessionRuntimeOperation.ReadEvents, readEvents);
+        Assert.Equal(200, page.Status);
+        Assert.Equal(1, Assert.Single(JsonSerializer.Deserialize<RemoteSessionEventPage>(page.Body, Json)!.Events).Sequence);
+        var acknowledge = TurnCommand(SessionRuntimeOperation.AcknowledgeEvents, "ack", new
+        {
+            revision = "abc123", providerInstanceId = "probe", runtimeSessionId = thread.RuntimeSessionId,
+            nativeThreadId = thread.NativeThreadId, throughSeq = 1,
+        });
+        Assert.Equal(200, (await runtime.ApplyAsync(SessionRuntimeOperation.AcknowledgeEvents, acknowledge)).Status);
+        Assert.Equal(409, (await runtime.ApplyAsync(SessionRuntimeOperation.ReadEvents, readEvents)).Status);
+
         var park = Grant(controller, SessionRuntimeOperation.Park, "park", resume);
         var parked = await runtime.ApplyAsync(SessionRuntimeOperation.Park, park);
         Assert.Equal(200, parked.Status);
@@ -82,16 +124,25 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         Assert.Equal(parked.Body, (await OpenRuntime().ApplyAsync(SessionRuntimeOperation.Park, park)).Body);
         Assert.Equal(1, probe.Parks);
 
-        RemoteSessionLifecycleRuntime OpenRuntime()
+        SessionInputQueueStore Store()
         {
             Directory.CreateDirectory(_root);
             var attachments = new InputAttachmentStore(_config, Path.Combine(_root, "bytes"), Path.Combine(_root, "input.db"));
-            return new(new SessionInputQueueStore(_config, attachments),
+            return new(_config, attachments);
+        }
+
+        RemoteSessionLifecycleRuntime OpenRuntime()
+        {
+            return new(Store(),
                 () => new("node", "sessions", controller.PublicKey),
                 (_, _, _) => Task.FromResult<RemoteSessionRuntimeWorkspace?>(new("owner", "workspace", "abc123",
                     _root, "probe", provider, new(SessionAccessLevels.Ask, SessionAccessLevels.Ask))),
                 TimeProvider.System);
         }
+
+        SessionRuntimeGrant TurnCommand(SessionRuntimeOperation operation, string id, object payload) =>
+            SessionRuntimeGrant.Issue(controller, scope, operation, id, DateTimeOffset.UtcNow.AddSeconds(30),
+                JsonSerializer.SerializeToUtf8Bytes(payload, Json));
 
         SessionRuntimeGrant Grant(NoiseKeyPair key, SessionRuntimeOperation operation, string id, RemoteSessionLifecycleRequest payload) =>
             SessionRuntimeGrant.Issue(key, scope, operation, id, DateTimeOffset.UtcNow.AddSeconds(30),

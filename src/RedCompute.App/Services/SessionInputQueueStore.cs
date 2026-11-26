@@ -326,6 +326,16 @@ public sealed partial class SessionInputQueueStore
     }
     public async Task<SessionInputQueueAdmission> EnqueueAsync(SessionInputQueueSubmission submission, CancellationToken ct = default)
     {
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var admission = await EnqueueCoreAsync(connection, transaction, submission, ct);
+        await transaction.CommitAsync(ct);
+        return admission;
+    }
+
+    private async Task<SessionInputQueueAdmission> EnqueueCoreAsync(SqliteConnection connection, SqliteTransaction transaction,
+        SessionInputQueueSubmission submission, CancellationToken ct)
+    {
         var now = DateTimeOffset.UtcNow;
         var id = "q_" + Guid.NewGuid().ToString("N");
         var inputJson = JsonSerializer.Serialize(submission.Input, JsonOptions);
@@ -346,9 +356,6 @@ public sealed partial class SessionInputQueueStore
         var provenanceScope = ComputeProvenanceScope(submission.Provenance);
         var fingerprint = ComputeFingerprint(submission, attachmentsJson, provenanceScope);
 
-        await using var connection = Open();
-        using var transaction = connection.BeginTransaction(deferred: false);
-
         if (!string.IsNullOrWhiteSpace(submission.IdempotencyKey))
         {
             var existing = await FindByIdempotencyAsync(connection, transaction, submission.SessionId,
@@ -357,7 +364,6 @@ public sealed partial class SessionInputQueueStore
             {
                 if (!string.Equals(existing.Value.Fingerprint, fingerprint, StringComparison.Ordinal))
                     throw new SessionInputQueueStoreException("idempotency_conflict", "The idempotency key was already used for a different input");
-                transaction.Commit();
                 return new SessionInputQueueAdmission(existing.Value.Item, true);
             }
         }
@@ -442,7 +448,6 @@ public sealed partial class SessionInputQueueStore
         sequenceCommand.Transaction = transaction;
         sequenceCommand.CommandText = "SELECT last_insert_rowid()";
         var sequence = Convert.ToInt64(await sequenceCommand.ExecuteScalarAsync(ct));
-        await transaction.CommitAsync(ct);
         var item = new SessionInputQueueItem(sequence, id, submission.IdempotencyKey, submission.SessionId, submission.OwnerUserId,
             submission.Input, submission.DisplayContent, submission.MetadataJson, submission.Provenance,
             provenanceScope, submission.DeliveryPolicy, SessionInputQueueState.Pending, submission.MessageUid,
@@ -1325,6 +1330,27 @@ public sealed partial class SessionInputQueueStore
             CREATE UNIQUE INDEX IF NOT EXISTS UX_RemoteSessionLifecycleCommands_Start
                 ON RemoteSessionLifecycleCommands(NodeId, RuntimeId, LogicalSessionId, Generation)
                 WHERE Operation = 'Start';
+            CREATE TABLE IF NOT EXISTS RemoteSessionInputReceipts (
+                NodeId TEXT NOT NULL, RuntimeId TEXT NOT NULL, LogicalSessionId TEXT NOT NULL, Generation INTEGER NOT NULL,
+                InputUid TEXT NOT NULL, OwnerId TEXT NOT NULL, AccessScope TEXT NOT NULL, PayloadDigest TEXT NOT NULL,
+                RuntimeSessionId TEXT NOT NULL, QueueItemId TEXT NOT NULL UNIQUE, FinalState TEXT NULL, FinalErrorCode TEXT NULL,
+                PRIMARY KEY(NodeId, RuntimeId, LogicalSessionId, Generation, InputUid)
+            );
+            CREATE TRIGGER IF NOT EXISTS PreserveRemoteInputReceiptBeforeCleanup
+                BEFORE DELETE ON SessionQueuedInputs WHEN OLD.State IN ('Delivered','Cancelled')
+                BEGIN
+                    UPDATE RemoteSessionInputReceipts SET FinalState=OLD.State, FinalErrorCode=OLD.ErrorCode
+                    WHERE QueueItemId=OLD.Id;
+                END;
+            CREATE TABLE IF NOT EXISTS RemoteSessionEvents (
+                NodeId TEXT NOT NULL, RuntimeId TEXT NOT NULL, LogicalSessionId TEXT NOT NULL, Generation INTEGER NOT NULL,
+                OwnerId TEXT NOT NULL, AccessScope TEXT NOT NULL, Sequence INTEGER NOT NULL, EventId TEXT NOT NULL,
+                TurnId TEXT NULL, InputUid TEXT NULL, PayloadDigest TEXT NOT NULL, Body BLOB NULL,
+                PRIMARY KEY(NodeId, RuntimeId, LogicalSessionId, Generation, Sequence),
+                UNIQUE(NodeId, RuntimeId, LogicalSessionId, Generation, EventId)
+            );
+            CREATE INDEX IF NOT EXISTS IX_RemoteSessionEvents_Acknowledged
+                ON RemoteSessionEvents(NodeId, RuntimeId, LogicalSessionId, Generation, Sequence) WHERE Body IS NULL;
             CREATE TABLE IF NOT EXISTS SessionThreadBindings (
                 SessionId TEXT PRIMARY KEY NOT NULL,
                 ActiveGeneration INTEGER NOT NULL,
