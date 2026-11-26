@@ -19,6 +19,38 @@ public sealed class CodexTurnCompletionTests
         Assert.Equal("auto", value.GetProperty("summary").GetString());
     }
 
+    [Fact]
+    public void Updated_effort_is_used_by_the_next_turn_and_survives_loading_the_same_thread()
+    {
+        var harness = new NotificationHarness();
+        harness.Info.ThreadId = "thread-1";
+        harness.Info.Model = "test-model";
+        harness.Info.Effort = "low";
+        harness.Start("turn-1");
+
+        var inFlight = harness.TurnParameters();
+        Assert.True(harness.SetInferenceSettings("test-model", "high"));
+        Assert.Equal("low", inFlight.GetProperty("effort").GetString());
+
+        var next = harness.TurnParameters();
+        Assert.Equal("high", next.GetProperty("effort").GetString());
+        Assert.Equal("thread-1", next.GetProperty("threadId").GetString());
+        Assert.Equal("test-model", next.GetProperty("model").GetString());
+
+        var reopened = new CodexInteractiveService(new CodexConfig(), harness.Store,
+            null!, null!, null!, null!, null!, () => null, (_, _) => { });
+        var record = Assert.IsType<CodexSessionInfo>(reopened.GetSessionInfo("session-1"));
+        Assert.Equal("high", record.Effort);
+        Assert.Equal("thread-1", record.ThreadId);
+        Assert.Equal("test-model", record.Model);
+        Assert.True(harness.SetInferenceSettings("second-model", "medium"));
+        Assert.Equal("test-model", inFlight.GetProperty("model").GetString());
+        var afterChange = harness.TurnParameters();
+        Assert.Equal("thread-1", afterChange.GetProperty("threadId").GetString());
+        Assert.Equal("second-model", afterChange.GetProperty("model").GetString());
+        Assert.Equal("medium", afterChange.GetProperty("effort").GetString());
+    }
+
     [Theory]
     // Below Full the sandbox is what Ask means: project writes, no network, never unsandboxed.
     [InlineData("danger-full-access", "ask", "workspaceWrite", false)]
@@ -399,6 +431,8 @@ public sealed class CodexTurnCompletionTests
         public void Item(string method, string type, string phase, string text) => Notify(method, new { item = new { id = "item-1", type, phase, text } });
         public void Complete(string status = "completed", string? error = null) => Notify("turn/completed", new { turn = new { status, error, items = Array.Empty<object>() } });
         public void SetInterrupt() => _sessionType.GetProperty("InterruptRequested")!.SetValue(_session, true);
+        public bool SetInferenceSettings(string? model, string? effort) => _service.TrySetInferenceSettings(Info.Id, model, effort);
+        public JsonElement TurnParameters() => JsonSerializer.SerializeToElement(_service.BuildTurnStartParams(Info, []));
         public CodexSessionInfo Info => (CodexSessionInfo)_sessionType.GetProperty("Info")!.GetValue(_session)!;
     }
 
@@ -407,8 +441,9 @@ public sealed class CodexTurnCompletionTests
         public List<CodexMessageRecord> Messages { get; } = [];
         public List<CodexSessionRecord> GetActiveSessions() => [];
         public List<CodexSessionRecord> GetSessionsWithStopReason(string status, string stopReason) => [];
-        public void SaveSession(CodexSessionRecord record) { }
-        public CodexSessionRecord? FindSession(string sessionId) => null;
+        public void SaveSession(CodexSessionRecord record) => _record = record;
+        private CodexSessionRecord? _record;
+        public CodexSessionRecord? FindSession(string sessionId) => _record?.Id == sessionId ? _record : null;
         public CodexSessionRecord? FindSessionByJobId(Guid jobId) => null;
         public List<CodexSessionRecord> GetSessionsWithoutJobs() => [];
         public List<CodexSessionRecord> GetRecentSessions(HashSet<string> excludeIds, int limit = 20, bool includeDismissed = false) => [];

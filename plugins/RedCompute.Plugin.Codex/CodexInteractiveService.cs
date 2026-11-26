@@ -39,6 +39,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
         /// <summary>Id of the in-flight turn, needed by turn/interrupt.</summary>
         public string? ActiveTurnId { get; set; }
+        public string? TurnModel { get; set; }
         // A sent message whose provider turn is not known yet. Rollback needs it to find the turn.
         public string? PendingTurnUid { get; set; }
 
@@ -748,6 +749,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         session.HasCompletedFinalAnswer = false;
         session.InterruptRequested = false;
         session.PendingTurnUid = messageUid;
+        session.TurnModel = info.Model;
 
         var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
         _store.AddMessage(new CodexMessageRecord
@@ -822,7 +824,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 "unsupported_input", "Conversation-only sessions accept text input only");
         if (input.Any(p => p.LegacyImage is not null || p.Attachment?.Kind == "image"))
         {
-            var support = GetImageAttachmentSupport(info.Model, _catalog.Cached);
+            var support = GetImageAttachmentSupport(session.TurnModel, _catalog.Cached);
             if (!support.Supported)
                 return SessionInputDeliveryResult.Rejected(
                     "image_attachments_not_supported", support.Reason ?? "The model does not support image input");
@@ -1632,10 +1634,14 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// <c>total</c> is cumulative across the thread. <c>last</c> is one provider response,
     /// including for turns that call the model multiple times.
     /// </summary>
-    private static void ApplyUsage(ManagedSession session, JsonElement p) =>
-        ApplyUsage(session.Info, p);
+    private static void ApplyUsage(ManagedSession session, JsonElement p)
+    {
+        var info = session.Info;
+        lock (info.PersistenceGate)
+            ApplyUsage(info, p, updateContext: session.TurnModel == info.Model);
+    }
 
-    internal static void ApplyUsage(CodexSessionInfo info, JsonElement p)
+    internal static void ApplyUsage(CodexSessionInfo info, JsonElement p, bool updateContext = true)
     {
         if (!p.TryGetProperty("tokenUsage", out var usage)) return;
 
@@ -1653,13 +1659,13 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
         // `total` is cumulative billing usage across the thread. `last.totalTokens` is the
         // active model invocation's actual working set, which is what the context-fill meter needs.
-        if (usage.TryGetProperty("last", out var last) &&
+        if (updateContext && usage.TryGetProperty("last", out var last) &&
             Int(last, "totalTokens") is { } contextTokens)
             info.ContextTokens = contextTokens;
 
         // The real window for this model on this account — smaller than the published spec figure,
         // so trust it over anything a quality mode declares.
-        if (Int(usage, "modelContextWindow") is { } w) info.ContextWindow = w;
+        if (updateContext && Int(usage, "modelContextWindow") is { } w) info.ContextWindow = w;
     }
 
     private static PromptCacheCounts? ReadCacheCounts(JsonElement usage) =>
@@ -1991,6 +1997,50 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         record.AccessLevelBeforePlan = state.AccessLevelBeforePlan;
         record.Unattended = state.Unattended;
         record.AccessLevelSource = state.AccessLevelSource;
+        _store.SaveSession(record);
+        return true;
+    }
+
+    internal bool TrySetInferenceSettings(string sessionId, string? model, string? effort)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+        {
+            var info = session.Info;
+            lock (info.PersistenceGate)
+            {
+                var previous = (info.Model, info.Effort, info.QualityTier, info.ContextWindow, info.ContextTokens);
+                if (model != info.Model)
+                {
+                    info.Model = model;
+                    info.QualityTier = null;
+                    info.ContextWindow = null;
+                    info.ContextTokens = null;
+                }
+                info.Effort = effort;
+                try
+                {
+                    Persist(info);
+                }
+                catch
+                {
+                    (info.Model, info.Effort, info.QualityTier, info.ContextWindow, info.ContextTokens) = previous;
+                    throw;
+                }
+            }
+            SessionUpdated?.Invoke(info);
+            return true;
+        }
+
+        var record = _store.FindSession(sessionId);
+        if (record is null || string.IsNullOrWhiteSpace(record.ThreadId)) return false;
+        if (model != record.Model)
+        {
+            record.Model = model;
+            record.QualityTier = null;
+            record.ContextWindow = null;
+            record.ContextTokens = null;
+        }
+        record.Effort = effort;
         _store.SaveSession(record);
         return true;
     }
@@ -2360,6 +2410,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         return _store.FindSession(sessionId) is { } record ? ToInfo(record) : null;
     }
 
+    internal string? InputModel(CodexSessionInfo info, bool activeTurn)
+        => activeTurn && _sessions.TryGetValue(info.Id, out var session) && info.Status == "Active"
+            ? session.TurnModel : info.Model;
+
     public bool IsLive(string sessionId) => _sessions.ContainsKey(sessionId);
 
     public async Task StopAllAsync()
@@ -2372,52 +2426,55 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
     private void Persist(CodexSessionInfo info)
     {
-        var record = new CodexSessionRecord
+        lock (info.PersistenceGate)
         {
-            Id = info.Id,
-            ProjectName = info.ProjectName,
-            ProjectPath = info.ProjectPath,
-            Placement = info.Placement,
-            ScratchDirectory = info.ScratchDirectory,
-            HistoryMode = info.HistoryMode,
-            RepositoryId = info.RepositoryId,
-            Status = info.Status,
-            StartedAt = info.StartedAt,
-            Model = info.Model,
-            Title = info.Title,
-            MessageCount = info.MessageCount,
-            CostUsd = info.CostUsd,
-            InputTokens = info.InputTokens,
-            PromptCache = info.PromptCache,
-            OutputTokens = info.OutputTokens,
-            CachedInputTokens = info.CachedInputTokens,
-            ContextTokens = info.ContextTokens,
-            JobId = info.JobId,
-            ThreadId = info.ThreadId,
-            ProcessId = info.ProcessId,
-            LastActivity = info.LastActivity,
-            Effort = info.Effort,
-            QualityTier = info.QualityTier,
-            ProviderEntity = info.ProviderEntity,
-            DeveloperInstructions = info.DeveloperInstructions,
-            ExecutionProfile = info.ExecutionProfile,
-            AccessLevel = info.AccessLevel,
-            MaxAccessLevel = info.MaxAccessLevel,
-            AccessLevelBeforePlan = info.AccessLevelBeforePlan,
-            Unattended = info.Unattended,
-            AccessLevelSource = info.AccessLevelSource,
-            Source = info.Source,
-            ContextWindow = info.ContextWindow,
-            UserId = info.UserId,
-            UserName = info.UserName,
-            UserAvatarUrl = info.UserAvatarUrl,
-            StopReason = info.StopReason,
-            StoppedAt = info.StoppedAt,
-        };
-        _store.SaveSession(record);
-        // The store stamped the row's node at insert and keeps it after: the info reports that.
-        info.NodeId = record.NodeId;
-        info.Placement = record.Placement;
+            var record = new CodexSessionRecord
+            {
+                Id = info.Id,
+                ProjectName = info.ProjectName,
+                ProjectPath = info.ProjectPath,
+                Placement = info.Placement,
+                ScratchDirectory = info.ScratchDirectory,
+                HistoryMode = info.HistoryMode,
+                RepositoryId = info.RepositoryId,
+                Status = info.Status,
+                StartedAt = info.StartedAt,
+                Model = info.Model,
+                Title = info.Title,
+                MessageCount = info.MessageCount,
+                CostUsd = info.CostUsd,
+                InputTokens = info.InputTokens,
+                PromptCache = info.PromptCache,
+                OutputTokens = info.OutputTokens,
+                CachedInputTokens = info.CachedInputTokens,
+                ContextTokens = info.ContextTokens,
+                JobId = info.JobId,
+                ThreadId = info.ThreadId,
+                ProcessId = info.ProcessId,
+                LastActivity = info.LastActivity,
+                Effort = info.Effort,
+                QualityTier = info.QualityTier,
+                ProviderEntity = info.ProviderEntity,
+                DeveloperInstructions = info.DeveloperInstructions,
+                ExecutionProfile = info.ExecutionProfile,
+                AccessLevel = info.AccessLevel,
+                MaxAccessLevel = info.MaxAccessLevel,
+                AccessLevelBeforePlan = info.AccessLevelBeforePlan,
+                Unattended = info.Unattended,
+                AccessLevelSource = info.AccessLevelSource,
+                Source = info.Source,
+                ContextWindow = info.ContextWindow,
+                UserId = info.UserId,
+                UserName = info.UserName,
+                UserAvatarUrl = info.UserAvatarUrl,
+                StopReason = info.StopReason,
+                StoppedAt = info.StoppedAt,
+            };
+            _store.SaveSession(record);
+            // The store stamped the row's node at insert and keeps it after: the info reports that.
+            info.NodeId = record.NodeId;
+            info.Placement = record.Placement;
+        }
     }
 
     private static CodexSessionInfo ToInfo(CodexSessionRecord r) => new()

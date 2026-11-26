@@ -12,7 +12,7 @@ namespace RedCompute.Plugin.Codex;
 
 public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEventSource, IJobExtendedProvider,
     ISessionProvider, IIdleSessionParkingProvider, IImageAttachmentSupportProvider, IProviderUsageSource,
-    ICliVersionManagedProvider
+    ICliVersionManagedProvider, ISessionInferenceSettings
 {
     private readonly string _capabilitySlug;
     private readonly CodexSessionService _codex;
@@ -71,6 +71,23 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     public IReadOnlyList<string> SupportedAccessLevels { get; } = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Auto, Core.Sessions.SessionAccessLevels.Full];
     public Core.Sessions.SessionAccessState? GetAccessState(string sessionId) => _interactive.GetAccessState(sessionId);
     public bool SetAccessState(string sessionId, Core.Sessions.SessionAccessState state) => _interactive.SetAccessState(sessionId, state);
+
+    public async Task<SessionInferenceOptions> GetInferenceOptionsAsync(string sessionId, CancellationToken ct)
+    {
+        var info = GetSessionInfo(sessionId);
+        if (info is null || string.IsNullOrWhiteSpace(info.ProviderSessionId))
+            return new(info?.Model, info?.Effort, []);
+
+        var models = await _models.GetAsync(ct: ct);
+        var current = info.Model ?? models.FirstOrDefault(m => m.IsDefault)?.Id;
+        return new(current, info.Effort,
+            models.Where(m => !m.Hidden || m.Id == current)
+                .Select(m => new SessionInferenceModel(m.Id, m.DisplayName, m.DefaultReasoningEffort,
+                    m.SupportedReasoningEfforts.Select(e => e.Id).ToArray())).ToArray());
+    }
+
+    public bool TrySetInferenceSettings(string sessionId, string? model, string? effort)
+        => _interactive.TrySetInferenceSettings(sessionId, model, effort);
 
     public string? LastStartError => Volatile.Read(ref _lastStartError) ?? _interactive.LastStartError;
     public string? LastStartErrorCode => Volatile.Read(ref _lastStartError) is null ? _interactive.LastStartErrorCode : null;
@@ -333,13 +350,16 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     }
 
     public ImageAttachmentSupport GetImageAttachmentSupport(string sessionId)
+        => GetImageAttachmentSupport(sessionId, activeTurn: false);
+
+    public ImageAttachmentSupport GetImageAttachmentSupport(string sessionId, bool activeTurn)
     {
         var info = _interactive.GetSessionInfo(sessionId);
         return info is null
             ? new(false, $"Session '{sessionId}' was not found")
             : SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
                 ? new(false, "Conversation-only sessions accept text input only")
-            : CodexInteractiveService.GetImageAttachmentSupport(info.Model, _models.Cached);
+            : CodexInteractiveService.GetImageAttachmentSupport(_interactive.InputModel(info, activeTurn), _models.Cached);
     }
 
     /// <summary>

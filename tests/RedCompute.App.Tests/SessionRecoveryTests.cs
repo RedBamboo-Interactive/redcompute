@@ -522,11 +522,11 @@ public sealed class SessionRecoveryTests
             ScratchDirectory.Delete(Root);
         }
     }
-    public interface ITestProvider : ISessionProvider, IBackendProvider { }
+    public interface ITestProvider : ISessionProvider, IBackendProvider, ISessionInferenceSettings { }
     public class RuntimeProvider : DispatchProxy
     {
         internal UnifiedSessionInfo Info = new() { Id = "session", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner", Status = SessionStatus.Stopped, StoppedAt = DateTimeOffset.UtcNow };
-        internal int Resumes, Deliveries, Restores;
+        internal int Resumes, Deliveries, Restores, InferenceWrites;
         internal bool RestoreResult = true, Missing;
         internal SessionStatus ResumedStatus = SessionStatus.Idle;
         internal SessionInputDeliveryResult Result = SessionInputDeliveryResult.Accepted();
@@ -544,6 +544,14 @@ public sealed class SessionRecoveryTests
                 case "get_ProviderId": return "test";
                 case "get_ProviderDisplayName": return "Test";
                 case nameof(ISessionProvider.GetSession): return Missing ? ((UnifiedSessionInfo?)null, (List<UnifiedMessageRecord>?)null) : (Info, new List<UnifiedMessageRecord>());
+                case nameof(ISessionInferenceSettings.GetInferenceOptionsAsync):
+                    return Task.FromResult(new SessionInferenceOptions(Info.Model, Info.Effort, [
+                        new("model-a", "Model A", "low", ["low", "high"]),
+                        new("model-b", "Model B", "medium", ["medium", "high"]),
+                    ]));
+                case nameof(ISessionInferenceSettings.TrySetInferenceSettings):
+                    InferenceWrites++;
+                    Info.Model = (string?)args![1]; Info.Effort = (string?)args[2]; return true;
                 case nameof(ISessionProvider.RestoreSession):
                     Restores++; if (RestoreResult) Info.Dismissed = false; return RestoreResult;
                 case nameof(ISessionProvider.GetBackgroundTasks): return (IReadOnlyList<BackgroundTaskInfo>)[];

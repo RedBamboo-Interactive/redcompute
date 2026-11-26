@@ -321,6 +321,8 @@ public interface ISessionProvider
 public interface IImageAttachmentSupportProvider
 {
     ImageAttachmentSupport GetImageAttachmentSupport(string sessionId);
+    ImageAttachmentSupport GetImageAttachmentSupport(string sessionId, bool activeTurn)
+        => GetImageAttachmentSupport(sessionId);
 }
 
 public sealed record ImageAttachmentSupport(bool Supported, string? Reason = null);

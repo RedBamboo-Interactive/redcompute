@@ -22,6 +22,7 @@ public class CodexSessionInfo
     public Guid? RepositoryId { get; set; }
     public string Status { get; set; } = "Starting";
     public DateTimeOffset StartedAt { get; init; }
+    internal object PersistenceGate { get; } = new();
     public string? Model { get; set; }
     public string? Title { get; set; }
     public int MessageCount { get; set; }

@@ -1265,6 +1265,102 @@ public static class UnifiedSessionEndpoints
             return Results.Json(new ErrorResponse { Error = "not_found", Message = $"No session for job '{jobId}'" }, statusCode: 404);
         });
 
+        endpoints.MapGet("/ai-session/sessions/{id}/inference-settings",
+            "Read the session's selected model, reasoning effort and supported choices.",
+            async (HttpContext ctx, string id) =>
+        {
+            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            if (info is null) return Error(404, "not_found", "Session not found");
+            if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
+            if (provider is not ISessionInferenceSettings settings)
+                return Error(422, "inference_settings_unsupported", "This session's provider cannot change inference settings");
+
+            return Results.Json(await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted));
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id");
+
+        endpoints.MapPut("/ai-session/sessions/{id}/inference-settings",
+            "Set model or reasoning effort for subsequent turns on the same provider thread. Authorized Agents and people can change it. "
+            + "Send model, effort, or both. A new model keeps a compatible effort and otherwise uses its default. "
+            + "The active turn keeps its settings. If there is undelivered input, returns 409 input_queued so that input retains its settings.",
+            async (HttpContext ctx, string id) =>
+        {
+            var (_, initial) = FindSessionAcrossProviders(registry, id);
+            if (initial is null) return Error(404, "not_found", "Session not found");
+            if (!CanReadSession(ctx, initial)) return ComputeResourceAccess.SessionDenied(initial);
+
+            JsonElement body;
+            try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
+            catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
+
+            if (body.ValueKind != JsonValueKind.Object)
+                return Error(422, "invalid_inference_settings", "Send a model or reasoning effort");
+
+            var modelProvided = body.TryGetProperty("model", out var modelValue);
+            var effortProvided = body.TryGetProperty("effort", out var effortValue);
+            if ((!modelProvided && !effortProvided) || (modelProvided && !IsSettingString(modelValue))
+                || (effortProvided && !IsSettingString(effortValue)))
+                return Error(422, "invalid_inference_settings", "model and effort must be nonempty strings when supplied");
+
+            var model = modelProvided ? modelValue.GetString() : null;
+            var effort = effortProvided ? effortValue.GetString() : null;
+            IResult? result = null;
+            await _inputQueue.WithSessionLockAsync(id, async () =>
+            {
+                var (provider, info) = FindSessionAcrossProviders(registry, id);
+                if (info is null)
+                {
+                    result = Error(404, "not_found", "Session not found");
+                    return;
+                }
+                if (!CanReadSession(ctx, info))
+                {
+                    result = ComputeResourceAccess.SessionDenied(info);
+                    return;
+                }
+                if (provider is not ISessionInferenceSettings settings)
+                {
+                    result = Error(422, "inference_settings_unsupported", "This session's provider cannot change inference settings");
+                    return;
+                }
+
+                var options = await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted);
+                var selected = options.Models.FirstOrDefault(candidate => candidate.Id == (model ?? options.Model));
+                if (selected is null)
+                {
+                    result = Error(422, "unsupported_model", "Choose a model available to this session's provider");
+                    return;
+                }
+                if (effort is not null && !selected.SupportedEfforts.Contains(effort, StringComparer.Ordinal))
+                {
+                    result = Error(422, "unsupported_effort", "Choose a reasoning effort supported by the selected model");
+                    return;
+                }
+
+                var nextEffort = effort ?? (selected.Id == options.Model
+                    || (options.Effort is { } currentEffort && selected.SupportedEfforts.Contains(currentEffort, StringComparer.Ordinal))
+                    ? options.Effort : selected.DefaultEffort);
+                if (selected.Id == options.Model && nextEffort == options.Effort)
+                {
+                    result = Results.Json(options);
+                    return;
+                }
+                if (await _inputQueue.HasQueuedInputAsync(id, ctx.RequestAborted))
+                {
+                    result = Error(409, "input_queued", "This session has pending input. Change its settings after that input is delivered.");
+                    return;
+                }
+
+                result = settings.TrySetInferenceSettings(id, modelProvided ? selected.Id : info.Model, nextEffort)
+                    ? Results.Json(options with { Model = selected.Id, Effort = nextEffort })
+                    : Error(409, "inference_change_unavailable", "This session could not change its inference settings");
+            }, ctx.RequestAborted);
+            return result!;
+        })
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
+            .WithParam("model", "string", location: ParamLocation.Body, description: "A model id from the session's inference options")
+            .WithParam("effort", "string", location: ParamLocation.Body, description: "A level supported by the selected model");
+
         endpoints.MapPost("/ai-session/sessions/{id}/message",
             "Durably admit a user message, then deliver according to its policy. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
         {
@@ -1377,7 +1473,12 @@ public static class UnifiedSessionEndpoints
                     return Error(422, "image_attachments_not_supported", $"Provider '{provider.ProviderId}' does not support image attachments");
                 if (referenced.Any(a => a.Kind == "image") && provider is IImageAttachmentSupportProvider sessionImageSupport)
                 {
-                    var support = sessionImageSupport.GetImageAttachmentSupport(id);
+                    var steer = info.Status == SessionStatus.Active
+                        && provider.Capabilities.HasFlag(SessionCapabilities.SupportsSteering)
+                        && body.TryGetProperty("delivery", out var requested)
+                        && requested.ValueKind == JsonValueKind.String && requested.GetString() == "steer-current";
+                    var support = steer ? sessionImageSupport.GetImageAttachmentSupport(id, activeTurn: true)
+                        : sessionImageSupport.GetImageAttachmentSupport(id);
                     if (!support.Supported)
                         return Error(422, "image_attachments_not_supported", support.Reason ?? $"Session '{id}' does not support image attachments");
                 }
@@ -3234,6 +3335,9 @@ public static class UnifiedSessionEndpoints
             ? matching.FirstOrDefault()
             : matching.FirstOrDefault(candidate => candidate.GetSessionInfo(sessionId) is not null);
     }
+
+    private static bool IsSettingString(JsonElement value)
+        => value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString());
 
     /// <summary>
     /// The owning provider and the session's metadata; never reads the transcript. Each provider
