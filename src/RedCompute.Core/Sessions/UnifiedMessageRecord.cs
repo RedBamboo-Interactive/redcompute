@@ -4,6 +4,7 @@ public class UnifiedMessageRecord
 {
     public long Id { get; set; }
     public required string SessionId { get; set; }
+    public string? Provider { get; set; }
     public required string Role { get; set; }
     public required string EventType { get; set; }
     public string? Content { get; set; }

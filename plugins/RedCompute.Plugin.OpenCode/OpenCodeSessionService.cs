@@ -190,7 +190,9 @@ public partial class OpenCodeSessionService
             return null;
         }
 
-        var id = Guid.NewGuid().ToString("N")[..12];
+        var handoff = SessionHandoffScope.Current;
+        var id = handoff?.RuntimeSessionId ?? Guid.NewGuid().ToString("N")[..12];
+        developerInstructions = handoff?.WithInstructions(developerInstructions) ?? developerInstructions;
         var info = new OpenCodeSessionInfo
         {
             Id = id,
@@ -313,7 +315,8 @@ public partial class OpenCodeSessionService
             UserId = record.UserId,
             UserName = record.UserName,
             UserAvatarUrl = record.UserAvatarUrl,
-            DeveloperInstructions = record.DeveloperInstructions,
+            DeveloperInstructions = SessionHandoffScope.For(record.Id)?.WithInstructions(record.DeveloperInstructions)
+                ?? record.DeveloperInstructions,
             AccessLevel = record.AccessLevel,
             MaxAccessLevel = record.MaxAccessLevel,
             AccessLevelBeforePlan = record.AccessLevelBeforePlan,
@@ -324,7 +327,7 @@ public partial class OpenCodeSessionService
         var (session, error) = await SpawnAcpSession(
             info, record.ProjectPath, record.OpenCodeSessionId,
             scratchDirectory: record.ScratchDirectory,
-            developerInstructions: record.DeveloperInstructions);
+            developerInstructions: info.DeveloperInstructions);
         if (session == null)
         {
             LastStartError = error;

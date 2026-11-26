@@ -687,6 +687,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             {
                 Id = id,
                 SessionId = Str(d, "session_id") ?? sessionId,
+                Provider = Str(d, "provider"),
                 Role = Str(d, "role") ?? "",
                 EventType = Str(d, "event_type") ?? "",
                 Content = Str(d, "content"),

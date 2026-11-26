@@ -5,6 +5,7 @@
 // 4. From a session with a fresh signed bearer, run the verify phase with the same statePath.
 // LEAF_PLAYWRIGHT_MODULE can point to the workspace's Playwright installation.
 // LEAF_BROWSER_STORAGE_STATE is an already authenticated human Playwright state in scratch.
+// Set LEAF_VERIFY_HARNESS=1 to require the provider switch and return in this same run.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -118,9 +119,11 @@ function assertTranscript(messages, sent) {
       .filter(({ message }) => message.role === "user" && message.messageUid === entry.uid);
     assert.equal(matches.length, 1, "Expected exactly one user record for " + entry.marker);
     assert.ok(matches[0].message.content.includes(entry.marker));
+    if (entry.provider) assert.equal(matches[0].message.provider, entry.provider);
     const nextUser = messages.findIndex((message, index) => index > matches[0].index && message.role === "user");
     const reply = messages.slice(matches[0].index + 1, nextUser < 0 ? undefined : nextUser)
-      .some(record => record.role === "assistant" && record.content?.includes(entry.marker));
+      .some(record => record.role === "assistant" && record.content?.includes(entry.marker)
+        && (!entry.provider || record.provider === entry.provider));
     assert.ok(reply, "Missing reply for " + entry.marker);
     return matches[0].index;
   });
@@ -221,15 +224,16 @@ async function modalChanges(context, fixture, initial, desiredModel) {
   }
 }
 
-async function stageBoundary(fixture, target) {
+async function stageBoundary(fixture, target, harness) {
   const current = await settings(fixture);
   const first = await message(fixture, "before-boundary", target);
-  const operation = await apply(fixture, { effort: effortChoice(current) }, "restart-boundary", false);
+  const change = harness ? { provider: "codex" } : { effort: effortChoice(current) };
+  const operation = await apply(fixture, change, "restart-boundary", false);
   const last = await message(fixture, "after-boundary");
   const entries = await Promise.all([first, operation, last].map(entry => readItem(fixture, entry.id)));
   assert.ok(entries.every(entry => entry.state === "pending"), "Expected all three items to wait for the exact restart");
   assert.ok(entries[0].sequence < entries[1].sequence && entries[1].sequence < entries[2].sequence);
-  fixture.boundary = { previous: selection(current), first, operation, last };
+  fixture.boundary = { previous: selection(current), first, operation, last, originalProvider: harness ? current.provider : null };
 }
 
 async function discover() {
@@ -279,12 +283,17 @@ async function prepare(requestPath, statePath) {
       assert.ok(!attempt || /^[a-zA-Z0-9-]{1,20}$/.test(attempt), "Invalid LEAF_VERIFY_ATTEMPT label");
       const fixture = await createFixture(provider, attempt ? request.runId + "-" + attempt : request.runId);
       const before = await settings(fixture);
+      const harness = process.env.LEAF_VERIFY_HARNESS === "1" && provider === "claude-code";
+      if (harness) {
+        assert.equal(before.provider, "claude-code");
+        assert.ok(before.providers?.some(option => option.id === "codex"), "Server did not offer a Codex harness switch");
+      }
       const thinking = await apply(fixture, { effort: effortChoice(before) }, "api-thinking");
       await verifyTurn(fixture, "api-thinking", thinking);
       const model = await apply(fixture, { model: modelChoice(await settings(fixture)) }, "api-model");
       await verifyTurn(fixture, "api-model", model);
       await modalChanges(context, fixture, model, before.model);
-      await stageBoundary(fixture, { service: "redcompute", runId: request.runId });
+      await stageBoundary(fixture, { service: "redcompute", runId: request.runId }, harness);
       fixtures.push(fixture);
       await fs.writeFile(partialPath + ".new", JSON.stringify({ runId: request.runId, requestPath, fixtures }));
       await fs.rename(partialPath + ".new", partialPath);
@@ -296,6 +305,55 @@ async function prepare(requestPath, statePath) {
   await fs.writeFile(statePath, JSON.stringify(state, null, 2), { flag: "wx" });
   console.log(JSON.stringify({ statePath, runId: state.runId, fixtures: fixtures.map(({ provider, discussionId, sessionId }) =>
     ({ provider, discussionId, sessionId })) }));
+}
+
+async function verifyHarnessReturn(fixture, change) {
+  const { first, last, originalProvider } = fixture.boundary;
+  const prepared = change.metadata.applied.native;
+  assert.equal(prepared.target.providerId, "codex");
+  assert.notEqual(prepared.nativeThreadId, fixture.nativeId);
+  const active = await idle(fixture);
+  assert.equal(active.session.provider, "codex");
+  assert.equal(active.session.providerSessionId, prepared.nativeThreadId);
+  const chronological = [...fixture.sent, { ...first, provider: originalProvider }, { ...last, provider: "codex" }];
+
+  await eventually("mixed history after the first switch", async () => {
+    try { assertTranscript((await snapshot(fixture)).messages, chronological); return true; }
+    catch (error) { if (!(error instanceof assert.AssertionError)) throw error; return false; }
+  });
+
+  const storageState = process.env.LEAF_BROWSER_STORAGE_STATE;
+  assert.ok(storageState, "LEAF_BROWSER_STORAGE_STATE is required for the modal provider return");
+  const { chromium } = require(process.env.LEAF_PLAYWRIGHT_MODULE || "playwright");
+  const browserEnvironment = { ...process.env };
+  delete browserEnvironment.REDLEAF_EXECUTION_TOKEN;
+  const browser = await chromium.launch({ headless: true, env: browserEnvironment });
+  try {
+    const context = await browser.newContext({ storageState, viewport: { width: 1440, height: 1000 } });
+    const page = await context.newPage();
+    await page.goto(leaf + "/apps/nova/chat/" + encodeURIComponent(fixture.discussionId), { waitUntil: "domcontentloaded" });
+    await page.locator('[data-slot="session-info-trigger"]').click({ timeout: 30_000 });
+    const dialog = page.getByRole("dialog").filter({ has: page.locator('[data-slot="session-info-hero"]') });
+    await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
+    const provider = dialog.getByRole("combobox", { name: "Provider" });
+    assert.equal(await provider.inputValue(), "codex");
+    await provider.selectOption(originalProvider);
+    await eventually("modal provider return", async () => (await settings(fixture)).provider === originalProvider);
+  } finally {
+    await browser.close();
+  }
+  const returned = await idle(fixture);
+  assert.equal(returned.session.provider, originalProvider);
+  assert.equal(returned.session.providerSessionId, fixture.nativeId);
+  const sent = await message(fixture, "after-harness-return");
+  await terminal(fixture, sent.id);
+  await idle(fixture);
+  await eventually("Claude to Codex to Claude history", async () => {
+    try { assertTranscript((await snapshot(fixture)).messages, [...chronological, { ...sent, provider: originalProvider }]); return true; }
+    catch (error) { if (!(error instanceof assert.AssertionError)) throw error; return false; }
+  });
+  console.log(JSON.stringify({ discussionId: fixture.discussionId, sessionId: fixture.sessionId,
+    providers: [originalProvider, "codex", originalProvider], originalNativeId: fixture.nativeId, codexNativeId: prepared.nativeThreadId }));
 }
 
 async function verify(state) {
@@ -314,6 +372,11 @@ async function verify(state) {
     assert.equal(later.deliveredMessageUid, last.uid);
     assert.equal(change.turnId ?? null, null);
     assert.equal(change.deliveredMessageUid ?? null, null);
+    if (fixture.boundary.originalProvider) {
+      assert.equal(change.kind, "execution-binding");
+      await verifyHarnessReturn(fixture, change);
+      continue;
+    }
     assert.deepEqual(change.metadata.applied, { ...previous, ...operation.change });
     await idle(fixture);
     await eventually("complete ordered transcript after restart", async () => {

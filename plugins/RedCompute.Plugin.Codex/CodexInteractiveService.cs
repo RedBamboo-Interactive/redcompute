@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using RedCompute.Core.Jobs;
@@ -265,7 +267,9 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         Core.Sessions.SessionAccessState? access = null,
         string? placement = null)
     {
-        var id = Guid.NewGuid().ToString("N")[..12];
+        var handoff = SessionHandoffScope.Current;
+        var id = handoff?.RuntimeSessionId ?? Guid.NewGuid().ToString("N")[..12];
+        developerInstructions = handoff?.WithInstructions(developerInstructions) ?? developerInstructions;
         // Before the launch gate. A conversation-only session's scratch is its isolated workspace, as given;
         // a start that cannot happen gets no unit.
         var scratch = !SessionExecutionProfile.IsConversationOnly(executionProfile) && ProjectPathExists(projectPath)
@@ -400,11 +404,12 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             && ProjectPathExists(record.ProjectPath)
                 ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, sessionId, record.ScratchDirectory, _log)
                 : null;
-        return await RunSessionLaunchAsync(spawned => ResumeSessionCoreAsync(sessionId, provenance, scratch, spawned));
+        var handoff = SessionHandoffScope.For(sessionId);
+        return await RunSessionLaunchAsync(spawned => ResumeSessionCoreAsync(sessionId, provenance, scratch, spawned, handoff));
     }
 
     private async Task<CodexSessionInfo?> ResumeSessionCoreAsync(
-        string sessionId, JobProvenance? provenance, SessionScratchChoice? scratch, Action spawned)
+        string sessionId, JobProvenance? provenance, SessionScratchChoice? scratch, Action spawned, SessionHandoff? handoff)
     {
         SetStartFailure(null, null);
         if (_sessions.TryGetValue(sessionId, out var live)) return live.Info;
@@ -444,11 +449,12 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             info.WritableScratchDirectory = await ResolveWritableScratchAsync(info, conn.InitializeResult,
                 () => _jobLifecycle.GetCreationProvenance(info));
             var threadConfig = await ReadThreadConfigAsync(conn, info);
+            JsonElement openedThread;
             try
             {
-                var resumedThread = await conn.SendRequestAsync(
+                openedThread = await conn.SendRequestAsync(
                     "thread/resume", BuildThreadResumeParams(info, threadConfig), timeoutSeconds: 60);
-                info.HistoryMode = HistoryModeOf(resumedThread) ?? info.HistoryMode;
+                info.HistoryMode = HistoryModeOf(openedThread) ?? info.HistoryMode;
             }
             catch (Exception ex) when (CanRecreateMissingEmptyRollout(record, ex))
             {
@@ -465,9 +471,12 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                     null);
                 info.ThreadId = replacementThreadId;
                 info.HistoryMode = HistoryModeOf(started);
+                openedThread = started;
             }
 
             await VerifyThreadMcpAsync(conn, info.ThreadId ?? persistedThreadId, threadConfig);
+            if (handoff is not null)
+                await InjectHandoffAsync(conn, openedThread, info.ThreadId ?? persistedThreadId, handoff);
             info.ProcessId = conn.ProcessId;
             info.Status = "Idle";
             info.StopReason = null;
@@ -509,6 +518,63 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             _log($"[Codex] Failed to resume {sessionId}: {ex.Message}", null);
             return null;
         }
+    }
+
+    private async Task InjectHandoffAsync(CodexAppServerConnection connection, JsonElement opened,
+        string threadId, SessionHandoff handoff)
+    {
+        if (!opened.TryGetProperty("thread", out var thread) || Str(thread, "path") is not { } path
+            || !_host.PathRules.IsPathFullyQualified(path))
+            throw new InvalidOperationException("Codex did not expose the native rollout for the prepared handoff.");
+
+        var marker = "RedCompute handoff operation " + handoff.OperationId + "\n";
+        var rollout = _host.Path(path);
+        if (_host.Files.FileExists(rollout))
+        {
+            using var stream = _host.Files.OpenRead(rollout, FileShare.ReadWrite | FileShare.Delete);
+            const int maxTailBytes = 512 * 1024;
+            var size = (int)Math.Min(stream.Length, maxTailBytes);
+            stream.Position = stream.Length - size;
+            var tail = new byte[size];
+            await stream.ReadExactlyAsync(tail);
+            if (HasNativeHandoffReceipt(Encoding.UTF8.GetString(tail), marker)) return;
+        }
+
+        // This resident Codex build reuses its stored developer prompt on thread/resume.
+        // Append a native developer item to refresh the context without creating a turn.
+        await connection.SendRequestAsync("thread/inject_items", new
+        {
+            threadId,
+            items = new[]
+            {
+                new { type = "message", role = "developer", content = new[]
+                {
+                    new { type = "input_text", text = marker + handoff.WithInstructions(null) },
+                } },
+            },
+        }, timeoutSeconds: 30);
+    }
+
+    internal static bool HasNativeHandoffReceipt(string rolloutTail, string marker)
+    {
+        foreach (var line in rolloutTail.Split('\n'))
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var record = document.RootElement;
+                if (Str(record, "type") != "response_item" || !record.TryGetProperty("payload", out var item)
+                    || Str(item, "type") != "message" || Str(item, "role") != "developer"
+                    || !item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                    continue;
+                if (content.EnumerateArray().Any(part => Str(part, "type") == "input_text"
+                    && Str(part, "text")?.StartsWith(marker, StringComparison.Ordinal) == true))
+                    return true;
+            }
+            catch (JsonException) { /* the bounded tail may start inside a native record */ }
+        }
+        return false;
     }
 
     internal static bool CanRecreateMissingEmptyRollout(

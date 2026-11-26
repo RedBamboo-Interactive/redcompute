@@ -1089,7 +1089,11 @@ public partial class ClaudeSessionService
         var access = SessionAccessScope.Current;
         var deliveredAsOneMessage = SessionDeliveryScope.DeliveredAsOneMessage;
         var placement = SessionPlacementScope.Current;
-        var id = Guid.NewGuid().ToString("N")[..12];
+        var handoff = SessionHandoffScope.Current;
+        var id = handoff?.RuntimeSessionId ?? Guid.NewGuid().ToString("N")[..12];
+        developerInstructions = handoff?.WithInstructions(developerInstructions) ?? developerInstructions;
+        var nativeId = handoff is null ? null : new Guid(System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(handoff.OperationId)).AsSpan(0, 16)).ToString();
         // Before the launch gate, which is held for the whole launch. A start that cannot happen gets no unit.
         var scratch = _host.Files.DirectoryExists(_host.Path(projectPath))
             ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, id, scratchDirectory, _log)
@@ -1097,7 +1101,7 @@ public partial class ClaudeSessionService
         return await LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
             id, projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratch, confidential,
-            developerInstructions, access, deliveredAsOneMessage, placement)), ct);
+            developerInstructions, access, deliveredAsOneMessage, placement, nativeId)), ct);
     }
 
     private ClaudeSessionInfo? StartSessionCore(string id, string projectPath, string? model, string? userId,
@@ -1105,7 +1109,7 @@ public partial class ClaudeSessionService
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         SessionScratchChoice scratch, bool confidential,
         string? developerInstructions, Core.Sessions.SessionAccessState? access,
-        bool deliveredAsOneMessage = false, string? placement = null)
+        bool deliveredAsOneMessage = false, string? placement = null, string? nativeId = null)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -1141,6 +1145,7 @@ public partial class ClaudeSessionService
             Effort = effort,
             QualityTier = qualityTier,
             ProviderEntity = providerEntity,
+            ClaudeSessionId = nativeId,
             DeveloperInstructions = developerInstructions,
             DeliveredAsOneMessage = deliveredAsOneMessage,
             Placement = placement,
@@ -1156,7 +1161,8 @@ public partial class ClaudeSessionService
             _log("[Claude] Could not find 'claude' CLI on PATH", null);
             return null;
         }
-        if (DeveloperInstructionLaunchError(claudePath, developerInstructions) is { } instructionError)
+        var handoffFile = PrepareHandoffInstructionsFile(id, developerInstructions);
+        if (handoffFile is null && DeveloperInstructionLaunchError(claudePath, developerInstructions) is { } instructionError)
         {
             LastStartError = instructionError;
             _log($"[Claude] {instructionError}", null);
@@ -1166,7 +1172,8 @@ public partial class ClaudeSessionService
         var arguments = new List<string>();
         var environment = LaunchEnvironment(scratch.Launch, id, deliveredAsOneMessage);
         PopulateSessionArgs(arguments, info.PermissionMode, model: model, effort: effort,
-            developerInstructions: developerInstructions, leafMcpUrl: LeafMcpGateway.UrlFor(environment));
+            developerInstructions: handoffFile is null ? developerInstructions : null,
+            leafMcpUrl: LeafMcpGateway.UrlFor(environment), handoffFile: handoffFile, newNativeId: nativeId);
         var spec = CliSpec(claudePath, arguments, _host.Path(projectPath), environment, SessionOwner);
 
         IHostProcess process;
@@ -1226,6 +1233,7 @@ public partial class ClaudeSessionService
     public async Task<ClaudeSessionInfo?> ResumeSessionAsync(string sessionId,
         JobProvenance? provenance = null, CancellationToken ct = default)
     {
+        var handoff = SessionHandoffScope.For(sessionId);
         // Before the launch gate, which is held for the whole launch; the core still decides whether it resumes.
         var scratch = !_sessions.ContainsKey(sessionId)
             && _sessionStore.FindSession(sessionId) is { } record
@@ -1233,11 +1241,11 @@ public partial class ClaudeSessionService
                 ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, sessionId, record.ScratchDirectory, _log)
                 : null;
         return await LaunchGate.RunWhenInstallIdleAsync(
-            () => Task.FromResult(ResumeSessionCore(sessionId, provenance, scratch)), ct);
+            () => Task.FromResult(ResumeSessionCore(sessionId, provenance, scratch, handoff)), ct);
     }
 
     private ClaudeSessionInfo? ResumeSessionCore(string sessionId, JobProvenance? provenance,
-        SessionScratchChoice? scratch)
+        SessionScratchChoice? scratch, SessionHandoff? handoff)
     {
         if (_sessions.ContainsKey(sessionId))
         {
@@ -1283,7 +1291,9 @@ public partial class ClaudeSessionService
         }
         // A session created with developer instructions must never be relaunched without them:
         // resuming bare would silently drop the caller's security boundary.
-        if (DeveloperInstructionLaunchError(claudePath, sessionRecord.DeveloperInstructions) is { } instructionError)
+        var developerInstructions = handoff?.WithInstructions(sessionRecord.DeveloperInstructions) ?? sessionRecord.DeveloperInstructions;
+        var handoffFile = PrepareHandoffInstructionsFile(sessionId, developerInstructions);
+        if (handoffFile is null && DeveloperInstructionLaunchError(claudePath, developerInstructions) is { } instructionError)
         {
             LastStartError = instructionError;
             _log($"[Claude] {instructionError}", null);
@@ -1329,7 +1339,7 @@ public partial class ClaudeSessionService
             Effort = sessionRecord.Effort,
             QualityTier = sessionRecord.QualityTier,
             ProviderEntity = sessionRecord.ProviderEntity,
-            DeveloperInstructions = sessionRecord.DeveloperInstructions,
+            DeveloperInstructions = developerInstructions,
             DeliveredAsOneMessage = sessionRecord.DeliveredAsOneMessage,
             Source = sessionRecord.Source,
             UserId = sessionRecord.UserId,
@@ -1343,10 +1353,12 @@ public partial class ClaudeSessionService
 
         var arguments = new List<string>();
         var environment = LaunchEnvironment(scratch.Launch, sessionRecord.Id, sessionRecord.DeliveredAsOneMessage);
-        PopulateSessionArgs(arguments, info.PermissionMode,
-            string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
-            sessionRecord.Model, sessionRecord.Effort,
-            sessionRecord.DeveloperInstructions, LeafMcpGateway.UrlFor(environment));
+        var storedNativeId = string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId;
+        var emptyPreparedThread = storedNativeId is not null && handoffFile is not null && sessionRecord.MessageCount == 0
+            && ClaudeTranscriptPaths.FindTranscript(_host, sessionRecord.ProjectPath, storedNativeId) is null;
+        PopulateSessionArgs(arguments, info.PermissionMode, emptyPreparedThread ? null : storedNativeId,
+            sessionRecord.Model, sessionRecord.Effort, handoffFile is null ? developerInstructions : null,
+            LeafMcpGateway.UrlFor(environment), handoffFile, newNativeId: emptyPreparedThread ? storedNativeId : null);
         AddForkArgs(arguments, forkTarget);
         var spec = CliSpec(claudePath, arguments, _host.Path(sessionRecord.ProjectPath), environment, SessionOwner);
 
@@ -2380,7 +2392,8 @@ public partial class ClaudeSessionService
             }.ToJsonString();
 
     private void PopulateSessionArgs(List<string> arguments, string permissionMode, string? resumeClaudeSessionId = null,
-        string? model = null, string? effort = null, string? developerInstructions = null, string? leafMcpUrl = null)
+        string? model = null, string? effort = null, string? developerInstructions = null, string? leafMcpUrl = null,
+        string? handoffFile = null, string? newNativeId = null)
     {
         foreach (var arg in new[] { "--output-format", "stream-json", "--verbose",
             "--input-format", "stream-json", "--include-partial-messages", "--replay-user-messages",
@@ -2431,11 +2444,25 @@ public partial class ClaudeSessionService
             arguments.Add("--append-system-prompt");
             arguments.Add(developerInstructions);
         }
+        if (handoffFile is not null)
+            arguments.AddRange(["--append-system-prompt-file", handoffFile, "--system-prompt-snapshot", "off"]);
         if (resumeClaudeSessionId != null)
         {
             arguments.Add("--resume");
             arguments.Add(resumeClaudeSessionId);
         }
+        else if (newNativeId is not null)
+            arguments.AddRange(["--session-id", newNativeId]);
+    }
+
+    private string? PrepareHandoffInstructionsFile(string sessionId, string? instructions)
+    {
+        if (!SessionHandoff.HasHandoff(instructions)) return null;
+        var directory = _host.PathRules.Combine(_host.Platform.ComputeDataRoot, "plugins", "claude-code", "instructions");
+        _host.Files.CreateDirectory(_host.Path(directory));
+        var path = _host.PathRules.Combine(directory, sessionId + ".md");
+        _host.Files.WriteAllText(_host.Path(path), instructions!, new UTF8Encoding(false));
+        return path;
     }
 
     /// <summary>The CLI 2.1.318 permission mode for an access level. Unknown or legacy (null) is ask.</summary>
