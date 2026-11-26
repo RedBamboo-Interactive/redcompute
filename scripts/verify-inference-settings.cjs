@@ -81,7 +81,7 @@ async function apply(fixture, change, step, wait = true) {
   const route = settingRoute(fixture);
   const key = fixture.key + "-" + step;
   const preview = await api(compute, route + "?validateOnly=true", { method: "PUT", body: change });
-  assert.equal(preview.operation, null);
+  assert.equal(preview.operation ?? null, null);
   assert.ok(preview.proposed);
   for (const [name, value] of Object.entries(change)) assert.equal(preview.proposed[name], value);
   const accepted = await api(compute, route, { method: "PUT", body: change, key, status: [200, 202] });
@@ -92,8 +92,8 @@ async function apply(fixture, change, step, wait = true) {
   if (!wait) return { id, change };
   const done = await terminal(fixture, id);
   assert.equal(done.kind, "inference-settings");
-  assert.equal(done.turnId, null);
-  assert.equal(done.deliveredMessageUid, null);
+  assert.equal(done.turnId ?? null, null);
+  assert.equal(done.deliveredMessageUid ?? null, null);
   for (const [name, value] of Object.entries(change)) assert.equal(done.metadata.applied[name], value);
   assert.deepEqual(selection(await settings(fixture)), done.metadata.applied);
   return done.metadata.applied;
@@ -151,9 +151,12 @@ async function createFixture(provider, runId) {
     const repository = repositories.find(item => item.slug?.startsWith("redcompute-") && item.path)
       ?? repositories.find(item => item.path);
     assert.ok(repository?.id, "An existing registered repository is required for the Code fixture");
+    const catalogue = (await api(compute, "/ai-session/models?provider=" + provider)).models;
+    const model = catalogue[0]?.id;
+    assert.ok(model, "The installed Codex catalogue must offer a model for the Code fixture");
     const created = await api(compute, "/ai-session/sessions", {
       method: "POST",
-      body: { provider, repositoryId: repository.id, projectPath: repository.path },
+      body: { provider, model, repositoryId: repository.id, projectPath: repository.path },
     });
     assert.ok(created.id);
     const fixture = { provider, key, sessionId: created.id, sent: [] };
@@ -192,7 +195,8 @@ async function modalChanges(context, fixture, initial, desiredModel) {
       ? "/apps/codered/sessions/" + encodeURIComponent(fixture.sessionId)
       : "/apps/nova/chat/" + encodeURIComponent(fixture.discussionId);
     await page.goto(leaf + url, { waitUntil: "domcontentloaded" });
-    await page.locator('[data-slot="session-info-trigger"]').click({ timeout: 30_000 });
+    await page.locator('[data-slot="panel-header"]').getByRole("button", { name: "Conversation actions", exact: true }).click({ timeout: 30_000 });
+    await page.getByRole("menuitem", { name: /^Info\b/ }).click();
     const dialog = page.getByRole("dialog").filter({ has: page.locator('[data-slot="session-info-hero"]') });
     await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
     const model = dialog.getByRole("combobox", { name: "Model" });
@@ -255,11 +259,25 @@ async function prepare(requestPath, statePath) {
   const browserEnvironment = { ...process.env };
   delete browserEnvironment.REDLEAF_EXECUTION_TOKEN;
   const browser = await chromium.launch({ headless: true, env: browserEnvironment });
-  const fixtures = [];
+  const providers = ["claude-code", "codex"];
+  const partialPath = statePath + ".partial";
+  let fixtures = [];
   try {
+    try {
+      const partial = await readJson(partialPath);
+      assert.equal(partial.runId, request.runId);
+      assert.equal(partial.requestPath, requestPath);
+      assert.ok(partial.fixtures.length <= providers.length);
+      assert.deepEqual(partial.fixtures.map(fixture => fixture.provider), providers.slice(0, partial.fixtures.length));
+      fixtures = partial.fixtures;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
     const context = await browser.newContext({ storageState, viewport: { width: 1440, height: 1000 } });
-    for (const provider of ["claude-code", "codex"]) {
-      const fixture = await createFixture(provider, request.runId);
+    for (const provider of providers.slice(fixtures.length)) {
+      const attempt = process.env.LEAF_VERIFY_ATTEMPT;
+      assert.ok(!attempt || /^[a-zA-Z0-9-]{1,20}$/.test(attempt), "Invalid LEAF_VERIFY_ATTEMPT label");
+      const fixture = await createFixture(provider, attempt ? request.runId + "-" + attempt : request.runId);
       const before = await settings(fixture);
       const thinking = await apply(fixture, { effort: effortChoice(before) }, "api-thinking");
       await verifyTurn(fixture, "api-thinking", thinking);
@@ -268,6 +286,8 @@ async function prepare(requestPath, statePath) {
       await modalChanges(context, fixture, model, before.model);
       await stageBoundary(fixture, { service: "redcompute", runId: request.runId });
       fixtures.push(fixture);
+      await fs.writeFile(partialPath + ".new", JSON.stringify({ runId: request.runId, requestPath, fixtures }));
+      await fs.rename(partialPath + ".new", partialPath);
     }
   } finally {
     await browser.close();
@@ -292,8 +312,8 @@ async function verify(state) {
     assert.ok(Date.parse(change.completedAt) <= Date.parse(later.completedAt));
     assert.equal(earlier.deliveredMessageUid, first.uid);
     assert.equal(later.deliveredMessageUid, last.uid);
-    assert.equal(change.turnId, null);
-    assert.equal(change.deliveredMessageUid, null);
+    assert.equal(change.turnId ?? null, null);
+    assert.equal(change.deliveredMessageUid ?? null, null);
     assert.deepEqual(change.metadata.applied, { ...previous, ...operation.change });
     await idle(fixture);
     await eventually("complete ordered transcript after restart", async () => {
@@ -334,4 +354,4 @@ async function main() {
   console.log(JSON.stringify({ runId: state.runId, deployment: admission.state }));
 }
 
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+main().catch(error => { console.error(error.stack); process.exitCode = 1; });
