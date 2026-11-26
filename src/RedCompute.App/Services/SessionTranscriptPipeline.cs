@@ -16,7 +16,7 @@ namespace RedCompute.App.Services;
 /// Providers may keep their local resume stores, but payload persistence and
 /// browser transport are decided here exactly once.
 /// </summary>
-public sealed class SessionTranscriptPipeline
+public sealed partial class SessionTranscriptPipeline
 {
     internal const string StreamEventType = "session.stream";
     internal const int MaxImagePayloadBytes = 25 * 1024 * 1024;

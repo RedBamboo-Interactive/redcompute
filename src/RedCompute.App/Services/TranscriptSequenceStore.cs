@@ -8,6 +8,9 @@ using RedCompute.Core.Storage;
 namespace RedCompute.App.Services;
 
 internal readonly record struct TranscriptStamp(string Epoch, long Sequence);
+internal readonly record struct RemoteTranscriptBinding(string NodeId, string RuntimeId, long Generation);
+internal readonly record struct RemoteTranscriptRecord(long Sequence, string EventId, string PayloadDigest);
+internal readonly record struct RemoteTranscriptReservation(TranscriptStamp Stamp, bool Persisted);
 
 /// <summary>
 /// What a reader needs to project durable records into the session's current epoch: the epoch, the
@@ -44,7 +47,7 @@ internal interface ITranscriptSequenceStore
 /// happens before each event leaves the central transcript pipeline, so a
 /// restart can skip sequence values but can never reuse them.
 /// </summary>
-internal sealed class TranscriptSequenceStore : ITranscriptSequenceStore
+internal sealed partial class TranscriptSequenceStore : ITranscriptSequenceStore
 {
     private readonly string _connectionString;
     private readonly object _gate = new();
@@ -152,23 +155,27 @@ internal sealed class TranscriptSequenceStore : ITranscriptSequenceStore
     {
         lock (_gate)
         {
-            var key = $"{provider}\n{sessionId}";
-            var epoch = TranscriptOrdering.Epoch(provider, sessionId);
             using var connection = Open();
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                INSERT INTO TranscriptCursors (SessionKey, Epoch, LastSequence)
-                VALUES ($key, $epoch, 1)
-                ON CONFLICT(SessionKey) DO UPDATE SET
-                    LastSequence = TranscriptCursors.LastSequence + 1
-                RETURNING Epoch, LastSequence;
-                """;
-            command.Parameters.AddWithValue("$key", key);
-            command.Parameters.AddWithValue("$epoch", epoch);
-            using var reader = command.ExecuteReader();
-            if (!reader.Read()) throw new InvalidOperationException("Transcript sequence allocation returned no row");
-            return new TranscriptStamp(reader.GetString(0), reader.GetInt64(1));
+            return Advance(connection, null, provider, sessionId);
         }
+    }
+
+    private static TranscriptStamp Advance(SqliteConnection connection, SqliteTransaction? transaction, string provider, string sessionId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO TranscriptCursors (SessionKey, Epoch, LastSequence)
+            VALUES ($key, $epoch, 1)
+            ON CONFLICT(SessionKey) DO UPDATE SET
+                LastSequence = TranscriptCursors.LastSequence + 1
+            RETURNING Epoch, LastSequence;
+            """;
+        command.Parameters.AddWithValue("$key", $"{provider}\n{sessionId}");
+        command.Parameters.AddWithValue("$epoch", TranscriptOrdering.Epoch(provider, sessionId));
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) throw new InvalidOperationException("Transcript sequence allocation returned no row");
+        return new(reader.GetString(0), reader.GetInt64(1));
     }
 
     private void EnsureSchema()
@@ -180,6 +187,13 @@ internal sealed class TranscriptSequenceStore : ITranscriptSequenceStore
                 SessionKey TEXT PRIMARY KEY,
                 Epoch TEXT NOT NULL,
                 LastSequence INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS TranscriptRemoteRecords (
+                SessionKey TEXT NOT NULL, NodeId TEXT NOT NULL, RuntimeId TEXT NOT NULL, Generation INTEGER NOT NULL,
+                EventSequence INTEGER NOT NULL, EventId TEXT NOT NULL, PayloadDigest TEXT NOT NULL,
+                Epoch TEXT NOT NULL, CanonicalSequence INTEGER NOT NULL, Persisted INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (SessionKey, NodeId, RuntimeId, Generation, EventSequence),
+                UNIQUE (SessionKey, NodeId, RuntimeId, Generation, EventId)
             );
             CREATE TABLE IF NOT EXISTS TranscriptRotations (
                 SessionKey TEXT NOT NULL,

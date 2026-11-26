@@ -76,6 +76,48 @@ public sealed class TranscriptMirrorOrderTests
     }
 
     [Fact]
+    public async Task Remote_replay_reserves_the_same_canonical_id_and_waits_for_redleaf_to_ack_after_restart()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start(loseFirstRecordAcknowledgement: true);
+        using var fixture = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var path = fixture.Attachments.DatabasePath;
+        var binding = new RemoteTranscriptBinding("node-remote", "registered-runtime", 0);
+        var first = Record(1, "event-one", "first", "user");
+        var second = Record(2, "event-two", "second", "assistant");
+        var page = new RemoteSessionEventPage(0, 2, false, [first, second]);
+        var sequences = new TranscriptSequenceStore(path);
+        var before = redLeaf.Pipeline(sequences: sequences);
+
+        Assert.Throws<HttpRequestException>(() => before.ImportRemoteReplay("claude-code", "logical", "codex", "native", binding, page));
+        Assert.Equal(0, sequences.RemotePersistedThrough("claude-code", "logical", binding));
+        Assert.Equal(["text:1"], redLeaf.Arrivals);
+        var firstWrite = Assert.Single(redLeaf.RecordPosts).ExternalId;
+
+        var reopened = new TranscriptSequenceStore(path);
+        var after = redLeaf.Pipeline(sequences: reopened);
+        Assert.Equal(2, after.ImportRemoteReplay("claude-code", "logical", "codex", "native", binding, page));
+        Assert.Equal(2, reopened.RemotePersistedThrough("claude-code", "logical", binding));
+        Assert.Equal(["text:1", "text:2"], redLeaf.Arrivals);
+        Assert.Equal(["logical", "logical"], redLeaf.Data.Select(row => row.GetProperty("session_id").GetString()));
+        Assert.Equal(["codex", "codex"], redLeaf.Data.Select(row => row.GetProperty("provider").GetString()));
+        Assert.Equal(3, redLeaf.RecordPosts.Count);
+        Assert.Equal(firstWrite, redLeaf.RecordPosts.ToArray()[1].ExternalId);
+
+        Assert.Equal(2, after.ImportRemoteReplay("claude-code", "logical", "codex", "native", binding, page));
+        Assert.Equal(3, redLeaf.RecordPosts.Count);
+        Assert.Throws<InvalidOperationException>(() =>
+            after.ImportRemoteReplay("claude-code", "logical", "codex", "native", binding, new(3, 3, false, [])));
+        Assert.Equal(3, redLeaf.RecordPosts.Count);
+
+        static SequencedRemoteSessionEvent Record(long sequence, string eventId, string content, string role) =>
+            new(sequence, new(eventId, "input-one", "input-one", JsonSerializer.SerializeToUtf8Bytes(new UnifiedMessageRecord
+            {
+                Id = sequence, SessionId = "native", Role = role, EventType = "text", Content = content,
+                MessageUid = role == "user" ? "input-one" : "response-one", Timestamp = DateTimeOffset.UnixEpoch,
+            }, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+    }
+
+    [Fact]
     public async Task MirroredToolUseIsStoredBeforeItsFastSynchronousResult()
     {
         await using var redLeaf = await FakeRedLeaf.Start();
@@ -342,8 +384,8 @@ public sealed class TranscriptMirrorOrderTests
 
         private FakeRedLeaf(WebApplication server) => _server = server;
 
-        public SessionTranscriptPipeline Pipeline(SessionBindingTranscriptRoutes? bindings = null) =>
-            new(_client, new WebSocketBroadcaster(), (_, _) => { }, null, new Sequences(), bindings);
+        public SessionTranscriptPipeline Pipeline(SessionBindingTranscriptRoutes? bindings = null, ITranscriptSequenceStore? sequences = null) =>
+            new(_client, new WebSocketBroadcaster(), (_, _) => { }, null, sequences ?? new Sequences(), bindings);
 
         public SessionTranscriptPipeline Pipeline(FrameSocket frames) =>
             new(_client, frames.Broadcaster, (_, _) => { }, null, new Sequences());

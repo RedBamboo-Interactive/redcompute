@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using RedCompute.App.Services;
 using RedCompute.Core.Sessions;
 using Xunit;
@@ -24,6 +25,67 @@ public sealed class TranscriptSequenceStoreTests : IDisposable
         Assert.Equal(3, three.Sequence);
         Assert.Equal(one.Epoch, three.Epoch);
     }
+
+    [Fact]
+    public void Remote_receipts_reuse_the_canonical_record_and_ack_only_persisted_prefixes_after_restart()
+    {
+        var path = Path.Combine(_directory, "remote.db");
+        var binding = new RemoteTranscriptBinding("node-a", "runtime-a", 0);
+        var one = RemoteRecord(1, "event-one", "first"u8);
+        var two = RemoteRecord(2, "event-two", "second"u8);
+        var store = new TranscriptSequenceStore(path);
+        var local = store.Next("codex", "session");
+        var reserved = store.ReserveRemote("codex", "session", binding, one);
+        Assert.Equal(2, reserved.Stamp.Sequence);
+        Assert.Equal(local.Epoch, reserved.Stamp.Epoch);
+        Assert.False(reserved.Persisted);
+        Assert.Equal(0, store.RemotePersistedThrough("codex", "session", binding));
+        Assert.Throws<InvalidOperationException>(() => store.ReserveRemote("codex", "session", binding, two));
+
+        // Simulate a process restart after the canonical append was sent, before its outcome was checkpointed.
+        var reopened = new TranscriptSequenceStore(path);
+        Assert.Equal(reserved, reopened.ReserveRemote("codex", "session", binding, one));
+        Assert.Equal(0, reopened.RemotePersistedThrough("codex", "session", binding));
+        Assert.Throws<InvalidOperationException>(() => reopened.CompleteRemote("codex", "session", binding, one, local));
+        Assert.True(reopened.CompleteRemote("codex", "session", binding, one, reserved.Stamp));
+        Assert.False(reopened.CompleteRemote("codex", "session", binding, one, reserved.Stamp));
+
+        var reconnected = new TranscriptSequenceStore(path);
+        var retry = reconnected.ReserveRemote("codex", "session", binding, one);
+        Assert.True(retry.Persisted);
+        Assert.Equal(reserved.Stamp, retry.Stamp);
+        Assert.Equal(1, reconnected.RemotePersistedThrough("codex", "session", binding));
+        var next = reconnected.ReserveRemote("codex", "session", binding, two);
+        Assert.Equal(3, next.Stamp.Sequence);
+        Assert.Equal(local.Epoch, next.Stamp.Epoch);
+        Assert.Equal(1, reconnected.RemotePersistedThrough("codex", "session", binding));
+        Assert.Throws<InvalidOperationException>(() =>
+            reconnected.ReserveRemote("codex", "session", binding, one with { EventId = "different" }));
+        Assert.Throws<InvalidOperationException>(() =>
+            reconnected.ReserveRemote("codex", "session", binding, RemoteRecord(1, "event-one", "changed"u8)));
+        Assert.Throws<InvalidOperationException>(() =>
+            reconnected.ReserveRemote("codex", "session", binding, two with { EventId = one.EventId }));
+    }
+
+    [Fact]
+    public void Remote_binding_generation_starts_a_new_source_prefix_in_the_same_canonical_epoch()
+    {
+        var store = new TranscriptSequenceStore(Path.Combine(_directory, "generation.db"));
+        var before = new RemoteTranscriptBinding("node-a", "runtime-a", 0);
+        var after = new RemoteTranscriptBinding("node-b", "runtime-b", 1);
+        var one = RemoteRecord(1, "event-one", "first"u8);
+        var original = store.ReserveRemote("codex", "session", before, one);
+        Assert.True(store.CompleteRemote("codex", "session", before, one, original.Stamp));
+
+        var next = store.ReserveRemote("codex", "session", after, one);
+        Assert.Equal(original.Stamp.Epoch, next.Stamp.Epoch);
+        Assert.Equal(original.Stamp.Sequence + 1, next.Stamp.Sequence);
+        Assert.Equal(0, store.RemotePersistedThrough("codex", "session", after));
+        Assert.Equal(1, store.RemotePersistedThrough("codex", "session", before));
+    }
+
+    private static RemoteTranscriptRecord RemoteRecord(long sequence, string eventId, ReadOnlySpan<byte> payload) =>
+        new(sequence, eventId, Convert.ToHexString(SHA256.HashData(payload)));
 
     [Fact]
     public void SessionsHaveIndependentStableEpochsAndSequences()
