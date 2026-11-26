@@ -11,7 +11,7 @@ using RedCompute.PluginSdk.Hosting;
 namespace RedCompute.Plugin.OpenCode;
 
 public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
-    IIdleSessionParkingProvider, ICliVersionManagedProvider, IProviderWarmup
+    IIdleSessionParkingProvider, ICliVersionManagedProvider, IProviderWarmup, ISessionInferenceSettings
 {
     private readonly string _capabilitySlug;
     private readonly OpenCodeSessionService _opencode;
@@ -54,6 +54,13 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     public IReadOnlyList<PendingSessionQuestion> GetPendingQuestions(string sessionId) => _opencode.GetPendingQuestions(sessionId);
     public QuestionAnswerResult SubmitQuestionAnswer(string sessionId, SessionQuestionAnswer answer)
         => _opencode.SubmitQuestionAnswer(sessionId, answer);
+
+    public bool RequiresIdleForInferenceChanges => true;
+    public bool RequiresResidentForInferenceChanges => true;
+    public Task<SessionInferenceOptions> GetInferenceOptionsAsync(string sessionId, CancellationToken ct)
+        => Task.FromResult(_opencode.GetInferenceOptions(sessionId));
+    public Task<bool> TrySetInferenceSettingsAsync(string sessionId, string? model, string? effort, CancellationToken ct)
+        => _opencode.TrySetInferenceSettingsAsync(sessionId, model, effort, ct);
 
     public string? LastStartError => _opencode.LastStartError;
     public string? LastStartErrorCode => _opencode.LastStartErrorCode;

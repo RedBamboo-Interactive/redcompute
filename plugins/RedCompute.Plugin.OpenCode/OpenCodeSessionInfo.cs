@@ -1,4 +1,5 @@
 using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk;
 
 namespace RedCompute.Plugin.OpenCode;
 
@@ -32,6 +33,8 @@ public class OpenCodeSessionInfo
     public Guid? JobId { get; set; }
     public string? OpenCodeSessionId { get; set; }
     public string? Effort { get; set; }
+    internal SessionInferenceModel[]? InferenceModels { get; set; }
+    internal bool InferenceSettingsPinned { get; set; }
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }
     public string? Source { get; set; }

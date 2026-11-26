@@ -208,6 +208,32 @@ public sealed class SessionInferenceSettingsEndpointTests
         Assert.Equal(SessionInputQueueState.Delivered, (await f.Store.GetAsync("session", id, "owner"))?.State);
     }
 
+    [Fact]
+    public async Task A_parked_native_control_resumes_with_authority_and_records_the_confirmed_default()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Runtime.Info.Model = "model-a";
+        f.Runtime.Info.Effort = "low";
+        f.Runtime.InferenceRequiresResident = true;
+        f.Runtime.NativeDefaultEffort = "medium";
+        await using var app = Map(f);
+
+        var (status, body) = await CallAsync(app, "PUT", new { model = "model-b" }, "owner");
+        Assert.Equal(202, status);
+        var id = body.GetProperty("operation").GetProperty("id").GetString()!;
+        Assert.Equal(0, f.Runtime.InferenceWrites);
+
+        await f.Service().ProcessSessionAsync("session", default);
+        Assert.Equal(1, f.Runtime.Resumes);
+        Assert.True(f.Runtime.ResumeHadFreshIdentity);
+        Assert.Equal(1, f.Runtime.InferenceWrites);
+        Assert.Equal(0, f.Runtime.Deliveries);
+        var exact = await CallAsync(app, "GET", null, "owner");
+        Assert.Equal("model-b", exact.Body.GetProperty("model").GetString());
+        Assert.Equal("medium", exact.Body.GetProperty("effort").GetString());
+        Assert.Equal(SessionInputQueueState.Delivered, (await f.Store.GetAsync("session", id, "owner"))?.State);
+    }
+
     private static WebApplication Map(SessionRecoveryTests.Fixture f)
     {
         var app = WebApplication.CreateSlimBuilder().Build();

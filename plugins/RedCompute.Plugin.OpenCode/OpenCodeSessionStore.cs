@@ -114,6 +114,9 @@ public class OpenCodeSessionStore : IOpenCodeSessionStore
             existing.StoppedAt = record.StoppedAt;
             existing.StartedAt = record.StartedAt;
             existing.Model = record.Model;
+            existing.Effort = record.Effort;
+            existing.InferenceModelsJson = record.InferenceModelsJson;
+            existing.InferenceSettingsPinned = record.InferenceSettingsPinned;
             existing.Title = record.Title;
             existing.MessageCount = record.MessageCount;
             existing.CostUsd = record.CostUsd;

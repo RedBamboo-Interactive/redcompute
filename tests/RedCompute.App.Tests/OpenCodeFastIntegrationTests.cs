@@ -125,6 +125,60 @@ public sealed class OpenCodeFastIntegrationTests
     }
 
     [WindowsFact("Uses the OpenCode stand-in process and Windows session containment")]
+    public async Task Confirmed_thinking_is_restored_on_the_same_native_session_after_parking()
+    {
+        using var probe = new ProbeHarness("opencode-inference-resume");
+        static JsonNode Configuration(string effort) => JsonNode.Parse($$"""
+            {"sessionId":"native-id","configOptions":[
+              {"id":"model","currentValue":"probe/model","options":[{"value":"probe/model"}]},
+              {"id":"effort","currentValue":"{{effort}}","options":[{"value":"low"},{"value":"high"}]}
+            ]}
+            """)!;
+        var path = probe.Install("opencode", new JsonObject
+        {
+            ["rpc"] = new JsonObject
+            {
+                ["results"] = new JsonObject
+                {
+                    ["session/new"] = Configuration("low"),
+                    ["session/load"] = Configuration("low"),
+                    ["session/set_config_option"] = Configuration("high"),
+                },
+            },
+        });
+        var store = new MemoryStore();
+        var service = new OpenCodeSessionService(new OpenCodeConfig { OpenCodePath = path },
+            new MemoryJobTracker(), store, (_, _) => { })
+        {
+            ReadEnabledMcpServers = _ => Task.FromResult(Array.Empty<string>()),
+        };
+        OpenCodeSessionInfo? started = null;
+        try
+        {
+            await probe.RunAsync(async () => started = await service.StartSession(probe.Root, null, null, null, null,
+                null, null, null, null, null, null, null, Provenance()));
+            Assert.NotNull(started);
+            Assert.Equal("low", started.Effort);
+            Assert.True(await service.TrySetInferenceSettingsAsync(started.Id, null, "high", default));
+            Assert.Equal("high", store.FindSession(started.Id)?.Effort);
+
+            Assert.True(await service.TryParkIdleSessionAsync(started.Id, SessionStopReasons.IdleTimeout));
+            Assert.Equal("high", service.GetInferenceOptions(started.Id).Effort);
+            OpenCodeSessionInfo? resumed = null;
+            await probe.RunAsync(async () => resumed = await service.ResumeSession(started.Id, Provenance()));
+            Assert.NotNull(resumed);
+            Assert.Equal(started.Id, resumed.Id);
+            Assert.Equal("native-id", resumed.OpenCodeSessionId);
+            Assert.Equal("high", resumed.Effort);
+            Assert.Empty(store.GetMessages(started.Id));
+        }
+        finally
+        {
+            if (started is not null) await service.StopSession(started.Id);
+        }
+    }
+
+    [WindowsFact("Uses the OpenCode stand-in process and Windows session containment")]
     public async Task Managed_cli_refuses_install_during_a_oneshot_without_a_stream_key()
     {
         using var probe = new ProbeHarness("opencode-cli-exec");

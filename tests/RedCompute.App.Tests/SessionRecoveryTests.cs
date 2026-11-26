@@ -527,7 +527,8 @@ public sealed class SessionRecoveryTests
     {
         internal UnifiedSessionInfo Info = new() { Id = "session", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner", Status = SessionStatus.Stopped, StoppedAt = DateTimeOffset.UtcNow };
         internal int Resumes, Deliveries, Restores, InferenceWrites;
-        internal bool RestoreResult = true, Missing, InferenceRequiresIdle;
+        internal bool RestoreResult = true, Missing, InferenceRequiresIdle, InferenceRequiresResident;
+        internal string? NativeDefaultEffort;
         internal SessionStatus ResumedStatus = SessionStatus.Idle;
         internal SessionInputDeliveryResult Result = SessionInputDeliveryResult.Accepted();
         internal Action<JobProvenance>? OnResume;
@@ -545,14 +546,17 @@ public sealed class SessionRecoveryTests
                 case "get_ProviderDisplayName": return "Test";
                 case nameof(ISessionProvider.GetSession): return Missing ? ((UnifiedSessionInfo?)null, (List<UnifiedMessageRecord>?)null) : (Info, new List<UnifiedMessageRecord>());
                 case "get_RequiresIdleForInferenceChanges": return InferenceRequiresIdle;
+                case "get_RequiresResidentForInferenceChanges": return InferenceRequiresResident;
                 case nameof(ISessionInferenceSettings.GetInferenceOptionsAsync):
                     return Task.FromResult(new SessionInferenceOptions(Info.Model, Info.Effort, [
                         new("model-a", "Model A", "low", ["low", "high"]),
-                        new("model-b", "Model B", "medium", ["medium", "high"]),
+                        new("model-b", "Model B", NativeDefaultEffort is null ? "medium" : null, ["medium", "high"]),
                     ]));
                 case nameof(ISessionInferenceSettings.TrySetInferenceSettingsAsync):
                     InferenceWrites++;
-                    Info.Model = (string?)args![1]; Info.Effort = (string?)args[2]; return Task.FromResult(true);
+                    Info.Model = (string?)args![1];
+                    Info.Effort = (string?)args[2] ?? NativeDefaultEffort;
+                    return Task.FromResult(true);
                 case nameof(ISessionProvider.RestoreSession):
                     Restores++; if (RestoreResult) Info.Dismissed = false; return RestoreResult;
                 case nameof(ISessionProvider.GetBackgroundTasks): return (IReadOnlyList<BackgroundTaskInfo>)[];

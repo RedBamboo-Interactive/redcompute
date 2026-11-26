@@ -1336,7 +1336,9 @@ public static class UnifiedSessionEndpoints
                 var waitingForIdle = settings.RequiresIdleForInferenceChanges
                     && (info.Status is SessionStatus.Active or SessionStatus.Starting
                         || SessionWorkStates.RunningBackgroundTasks(provider.GetBackgroundTasks(id)) > 0);
-                var wouldQueue = waitingForIdle || !string.IsNullOrWhiteSpace(idempotencyKey) || queue.IsDeliveryPaused
+                var needsResume = settings.RequiresResidentForInferenceChanges && info.Status == SessionStatus.Stopped
+                    && SessionStopReasons.IsAutoResumable(info.StopReason);
+                var wouldQueue = waitingForIdle || needsResume || !string.IsNullOrWhiteSpace(idempotencyKey) || queue.IsDeliveryPaused
                     || await queue.HasQueuedInputAsync(id, ctx.RequestAborted);
                 var choice = SessionInferenceSettings.Resolve(projected, change);
                 if (choice.Error is not null && (validateOnly || string.IsNullOrWhiteSpace(idempotencyKey)))

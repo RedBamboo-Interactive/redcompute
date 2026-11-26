@@ -25,6 +25,8 @@ public class OpenCodeSessionRecord
     public bool Dismissed { get; set; }
     public string? OpenCodeSessionId { get; set; }
     public string? Effort { get; set; }
+    public string? InferenceModelsJson { get; set; }
+    public bool InferenceSettingsPinned { get; set; }
     public string? QualityTier { get; set; }
     public string? ProviderEntity { get; set; }
     public string? Source { get; set; }

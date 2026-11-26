@@ -700,16 +700,20 @@ public sealed class SessionInputQueueService
             if (_deliveryPaused() || HasStopIntent(sessionId)) return;
             // Stop/resume endpoints cross this same gate. Re-read provider state after authorization.
             var (_, current) = FindSession(sessionId);
-            // A settings change is already a safe-boundary operation. A recoverable stopped
-            // session can persist it before the following prompt resumes the provider.
-            if (head.InferenceChange is { } change)
+            var inferenceChange = head.InferenceChange;
+            if (inferenceChange is not null)
             {
-                if (provider is ISessionInferenceSettings { RequiresIdleForInferenceChanges: true }
+                var settings = provider as ISessionInferenceSettings;
+                if (settings?.RequiresIdleForInferenceChanges == true
                     && SessionWorkStates.RunningBackgroundTasks(provider.GetBackgroundTasks(sessionId)) > 0) return;
-                if (current?.Status == SessionStatus.Idle ||
-                    (restart && current?.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(current.StopReason)))
-                    await ApplyInferenceChangeAsync(provider, current!, head, change, ct);
-                return;
+                // A provider that can confirm settings while parked does not need to start a process.
+                if (restart && current?.Status == SessionStatus.Stopped
+                    && SessionStopReasons.IsAutoResumable(current.StopReason)
+                    && settings?.RequiresResidentForInferenceChanges != true)
+                {
+                    await ApplyInferenceChangeAsync(provider, current, head, inferenceChange, ct);
+                    return;
+                }
             }
             if (restart)
             {
@@ -753,6 +757,11 @@ public sealed class SessionInputQueueService
             else if (callerMatches) await _store.AuthorizePendingScopeAsync(head, ct);
             if (_deliveryPaused() || HasStopIntent(sessionId)) return;
             if ((await _store.GetHeadAsync(sessionId, ct))?.Id != head.Id) return;
+            if (inferenceChange is not null)
+            {
+                await ApplyInferenceChangeAsync(provider, restart ? info : current!, head, inferenceChange, ct);
+                return;
+            }
             if (DeploymentVerificationTarget.FromMetadata(head.MetadataJson) is { } exactTarget)
             {
                 var state = _deploymentTarget?.Invoke(exactTarget) ?? new("unknown", "deployment_target_unknown");

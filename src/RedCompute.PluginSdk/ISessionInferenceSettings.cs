@@ -10,6 +10,9 @@ public interface ISessionInferenceSettings
 
     /// <summary>Whether applying settings while the provider is working can affect the current turn.</summary>
     bool RequiresIdleForInferenceChanges => false;
+
+    /// <summary>Whether a recoverable parked session must resume before confirming the choice.</summary>
+    bool RequiresResidentForInferenceChanges => false;
 }
 
 public sealed record SessionInferenceOptions(string? Model, string? Effort, IReadOnlyList<SessionInferenceModel> Models);

@@ -35,7 +35,8 @@ internal static class SessionInferenceSettings
             return choice;
 
         var model = change.Model is null ? session.Model : choice.Options.Model;
-        return await settings.TrySetInferenceSettingsAsync(session.Id, model, choice.Options.Effort, ct)
-            ? choice : new(current, "inference_change_unavailable", "This session could not change its inference settings", true);
+        if (!await settings.TrySetInferenceSettingsAsync(session.Id, model, choice.Options.Effort, ct))
+            return new(current, "inference_change_unavailable", "This session could not change its inference settings", true);
+        return new(await settings.GetInferenceOptionsAsync(session.Id, CancellationToken.None));
     }
 }

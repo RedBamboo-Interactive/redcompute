@@ -13,7 +13,7 @@ using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.Plugin.OpenCode;
 
-public class OpenCodeSessionService
+public partial class OpenCodeSessionService
 {
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     private readonly ConcurrentDictionary<string, IHostProcess> _runningProcesses = new();
@@ -83,6 +83,8 @@ public class OpenCodeSessionService
         public object TurnStateLock { get; } = new();
         public SemaphoreSlim AdmissionLock { get; } = new(1, 1);
         public bool IsLoadingHistory { get; set; }
+        public bool InferenceStateUnknown { get; set; }
+        public IReadOnlySet<string>? InferenceModelScope { get; init; }
         public ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> PendingRequests { get; } = new();
         // session/request_permission calls parked as permission cards, keyed by request id.
         public ConcurrentDictionary<string, PendingPermission> PendingPermissions { get; } = new();
@@ -205,6 +207,7 @@ public class OpenCodeSessionService
             UserName = userName,
             UserAvatarUrl = userAvatarUrl,
             QualityTier = qualityTier,
+            Effort = effort,
             ProviderEntity = providerEntity,
             DeveloperInstructions = developerInstructions,
             // Not started through RedCompute's access rules: ask, the fail-closed level.
@@ -221,7 +224,6 @@ public class OpenCodeSessionService
 
         info.Status = "Idle";
         info.ProcessId = session.Process.Id;
-        info.Effort = effort;
 
         var inputJson = JsonSerializer.Serialize(new
         {
@@ -303,6 +305,8 @@ public class OpenCodeSessionService
             OutputTokens = record.OutputTokens,
             ContextWindow = record.ContextWindow,
             Effort = record.Effort,
+            InferenceModels = ReadInferenceModels(record.InferenceModelsJson),
+            InferenceSettingsPinned = record.InferenceSettingsPinned,
             QualityTier = record.QualityTier,
             ProviderEntity = record.ProviderEntity,
             Source = record.Source,
@@ -386,11 +390,14 @@ public class OpenCodeSessionService
         // The variables set over the inherited environment, in the order they were always set.
         var environment = NewEnvironment(_host);
         var profile = info.ProviderEntity is { } reference ? _resolveSharedProfile?.Invoke(reference) : null;
+        if (info.InferenceSettingsPinned && info.ProviderEntity is not null && profile is null)
+            return (null, "The OpenCode Provider for the saved inference settings is unavailable.");
         var resolvedModel = model ?? _config.Model;
         if (profile is not null)
         {
             effort ??= info.Effort;
-            var applied = OpenCodeProviderProfile.Apply(_host, environment, profile, model ?? info.Model, effort);
+            var applied = OpenCodeProviderProfile.Apply(_host, environment, profile, model ?? info.Model,
+                info.InferenceSettingsPinned ? null : effort);
             if (applied.Error is not null) return (null, applied.Error);
             resolvedModel = applied.Model;
         }
@@ -436,7 +443,10 @@ public class OpenCodeSessionService
         process.StandardInput.NewLine = "\n";
 
         var cts = new CancellationTokenSource();
-        var session = new ManagedSession(info, process, cts);
+        var session = new ManagedSession(info, process, cts)
+        {
+            InferenceModelScope = info.ProviderEntity is null ? null : DeclaredInferenceModels(profile),
+        };
 
         process.EnableRaisingEvents = true;
         process.Exited += (_, _) => OnProcessExited(info.Id);
@@ -459,6 +469,7 @@ public class OpenCodeSessionService
             }, timeoutSeconds: 60);
 
             JsonElement sessionResult;
+            SessionInferenceOptions? initialOptions = null;
             var sessionMcpServers = BuildSessionMcpServers(environment);
             if (existingSessionId != null)
             {
@@ -512,24 +523,14 @@ public class OpenCodeSessionService
 
                 if (!string.IsNullOrEmpty(resolvedModel) && session.AcpSessionId != null)
                 {
-                    await SendRequest(session, "session/set_config_option", new
-                    {
-                        sessionId = session.AcpSessionId,
-                        configId = "model",
-                        value = resolvedModel,
-                    });
+                    initialOptions = ParseInferenceOptions(await SetConfigAsync(session, "model", resolvedModel));
                 }
 
                 if (profile is null && !string.IsNullOrEmpty(effort) && session.AcpSessionId != null)
                 {
                     try
                     {
-                        await SendRequest(session, "session/set_config_option", new
-                        {
-                            sessionId = session.AcpSessionId,
-                            configId = "effort",
-                            value = effort,
-                        });
+                        initialOptions = ParseInferenceOptions(await SetConfigAsync(session, "effort", effort)) ?? initialOptions;
                     }
                     catch (Exception ex) { _log($"[OpenCode] Failed to set effort for {info.Id}: {ex.Message}", null); }
                 }
@@ -549,25 +550,31 @@ public class OpenCodeSessionService
                 }
             }
 
-            if (profile is not null && !string.IsNullOrWhiteSpace(effort) && session.AcpSessionId is { } acpSessionId)
+            if (existingSessionId is not null && info.InferenceSettingsPinned && info.Model is { } recordedModel)
             {
-                await SendRequest(session, "session/set_config_option", new
+                session.InferenceStateUnknown = true;
+                var confirmed = await SelectInferenceOptionsAsync(session, recordedModel, info.Effort);
+                if (confirmed is null || confirmed.Effort != info.Effort)
+                    throw new InvalidOperationException("OpenCode could not restore the saved inference settings.");
+                AcceptInferenceOptions(info, confirmed);
+                session.InferenceStateUnknown = false;
+            }
+            else
+            {
+                if (profile is not null && !string.IsNullOrWhiteSpace(effort) && session.AcpSessionId is not null)
+                    initialOptions = ParseInferenceOptions(await SetConfigAsync(session, "effort", effort)) ?? initialOptions;
+                if ((initialOptions ?? ParseInferenceOptions(sessionResult)) is { } options)
+                    AcceptInferenceOptions(info, options);
+                else
                 {
-                    sessionId = acpSessionId,
-                    configId = "effort",
-                    value = effort,
-                });
+                    if (sessionResult.TryGetProperty("_meta", out var meta)
+                        && meta.TryGetProperty("opencode", out var oc)
+                        && oc.TryGetProperty("modelId", out var modelId))
+                        info.Model = modelId.GetString();
+                    if (!string.IsNullOrEmpty(resolvedModel) && (existingSessionId == null || profile is not null))
+                        info.Model = resolvedModel;
+                }
             }
-
-            if (sessionResult.TryGetProperty("_meta", out var meta)
-                && meta.TryGetProperty("opencode", out var oc)
-                && oc.TryGetProperty("modelId", out var modelId))
-            {
-                info.Model = modelId.GetString();
-            }
-
-            if (!string.IsNullOrEmpty(resolvedModel) && (existingSessionId == null || profile is not null))
-                info.Model = resolvedModel;
 
             _sessions[info.Id] = session;
             return (session, null);
@@ -590,7 +597,7 @@ public class OpenCodeSessionService
         IAsyncDisposable? acceleratorLease = null;
         try
         {
-            if (session.Info.Status != "Idle") return false;
+            if (session.Info.Status != "Idle" || !await RestoreInferenceBeforeInputAsync(session)) return false;
 
             try
             {
@@ -953,13 +960,11 @@ public class OpenCodeSessionService
         var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         session.PendingRequests[requestId] = tcs;
 
-        await WriteJsonLine(session, new { jsonrpc = "2.0", id = requestId, method, @params });
-
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(session.Cts.Token);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-
         try
         {
+            await WriteJsonLine(session, new { jsonrpc = "2.0", id = requestId, method, @params });
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
             return await tcs.Task.WaitAsync(timeoutCts.Token);
         }
         catch (OperationCanceledException) when (!session.Cts.Token.IsCancellationRequested)
@@ -1902,6 +1907,8 @@ public class OpenCodeSessionService
             JobId = info.JobId,
             OpenCodeSessionId = info.OpenCodeSessionId,
             Effort = info.Effort,
+            InferenceModelsJson = info.InferenceModels is { } options ? JsonSerializer.Serialize(options) : null,
+            InferenceSettingsPinned = info.InferenceSettingsPinned,
             QualityTier = info.QualityTier,
             ProviderEntity = info.ProviderEntity,
             Source = info.Source,
@@ -2522,6 +2529,8 @@ public class OpenCodeSessionService
         JobId = r.JobId,
         OpenCodeSessionId = r.OpenCodeSessionId,
         Effort = r.Effort,
+        InferenceModels = ReadInferenceModels(r.InferenceModelsJson),
+        InferenceSettingsPinned = r.InferenceSettingsPinned,
         QualityTier = r.QualityTier,
         ProviderEntity = r.ProviderEntity,
         Source = r.Source,
