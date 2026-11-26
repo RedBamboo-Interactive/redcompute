@@ -1,13 +1,20 @@
+using System.Reflection;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services;
+using RedCompute.App.Services.SessionBindings;
+using RedCompute.Core.Capabilities;
+using RedCompute.Core.Configuration;
+using RedCompute.Core.Providers;
 using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -234,16 +241,89 @@ public sealed class SessionInferenceSettingsEndpointTests
         Assert.Equal(SessionInputQueueState.Delivered, (await f.Store.GetAsync("session", id, "owner"))?.State);
     }
 
-    private static WebApplication Map(SessionRecoveryTests.Fixture f)
+    [Fact]
+    public async Task Signed_provider_preview_apply_and_replay_use_the_existing_queue()
     {
-        var app = WebApplication.CreateSlimBuilder().Build();
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Paused = true;
+        var claude = Harness("claude-code", "session", "model-a");
+        var codex = Harness("codex", "other-session", "model-b");
+        f.Registry.Register("ai-session", new CapabilityDefinition { Slug = "ai-session", DisplayName = "Test" },
+            new CapabilityConfig(), new Dictionary<string, IBackendProvider>
+            {
+                ["installed-claude"] = claude, ["installed-codex"] = codex,
+            }, "installed-claude");
+        await using var app = Map(f, bindings: true);
+
+        var options = await CallAsync(app, "GET", null, "owner");
+        Assert.Equal("claude-code", options.Body.GetProperty("provider").GetString());
+        Assert.Contains(options.Body.GetProperty("providers").EnumerateArray(), item => item.GetProperty("id").GetString() == "codex");
+
+        var change = new { provider = "codex" };
+        var unsigned = await CallAsync(app, "PUT", change, "owner");
+        Assert.Equal(403, unsigned.Status);
+        Assert.Equal("binding_signed_identity_required", unsigned.Body.GetProperty("error").GetString());
+
+        var preview = await CallAsync(app, "PUT", change, "owner", validateOnly: true, signed: true);
+        Assert.Equal(200, preview.Status);
+        Assert.True(preview.Body.GetProperty("wouldQueue").GetBoolean());
+        Assert.Equal("codex", preview.Body.GetProperty("proposed").GetProperty("provider").GetString());
+        Assert.Null(await f.Store.GetHeadAsync("session"));
+
+        var earlier = (await f.Store.EnqueueAsync(f.Submission("earlier"))).Item;
+        var accepted = await CallAsync(app, "PUT", change, "owner", key: "switch", signed: true);
+        Assert.True(accepted.Status == 202, $"Expected a queued Provider change, received {accepted.Status}: {accepted.Body}");
+        var id = accepted.Body.GetProperty("operation").GetProperty("id").GetString()!;
+        var item = Assert.IsType<SessionInputQueueItem>(await f.Store.GetAsync("session", id, "owner"));
+        Assert.Equal("installed-codex", item.BindingChange?.Destination.ProviderInstanceId);
+        Assert.Equal("model-b", item.BindingChange?.Destination.Model);
+        Assert.Equal(0, item.BindingChange?.ExpectedGeneration);
+        Assert.Equal(earlier.Id, (await f.Store.GetHeadAsync("session"))?.Id);
+
+        var replay = await CallAsync(app, "PUT", change, "owner", key: "switch", signed: true);
+        Assert.Equal(id, replay.Body.GetProperty("operation").GetProperty("id").GetString());
+        var conflict = await CallAsync(app, "PUT", new { provider = "opencode" }, "owner", key: "switch", signed: true);
+        Assert.Equal("idempotency_conflict", conflict.Body.GetProperty("error").GetString());
+        var blocked = await CallAsync(app, "PUT", new { effort = "high" }, "owner", signed: true);
+        Assert.Equal("input_queued", blocked.Body.GetProperty("error").GetString());
+    }
+
+    public interface IBindingTestProvider : SessionRecoveryTests.ITestProvider, IIdleSessionParkingProvider;
+
+    private static IBindingTestProvider Harness(string provider, string id, string model)
+    {
+        var harness = DispatchProxy.Create<IBindingTestProvider, SessionRecoveryTests.RuntimeProvider>();
+        var runtime = (SessionRecoveryTests.RuntimeProvider)(object)harness;
+        runtime.Info = new()
+        {
+            Id = id, Provider = provider, ProjectName = "Test", ProjectPath = ".", UserId = "owner",
+            Status = SessionStatus.Idle, ProviderSessionId = "native-" + provider, Model = model,
+        };
+        runtime.ExtraCapabilities = SessionCapabilities.PersistentSessions;
+        return harness;
+    }
+
+    private static WebApplication Map(SessionRecoveryTests.Fixture f, bool bindings = false)
+    {
+        var builder = WebApplication.CreateSlimBuilder();
+        var queue = f.Service();
+        if (bindings)
+        {
+            var options = new JwtOptions { SigningKey = "provider-admission-tests-secret-1234567890123456789" };
+            var jwt = new JwtService(options);
+            builder.Services.AddSingleton(options);
+            builder.Services.AddSingleton<IExecutionTokenIssuer>(new ExecutionTokenIssuer(jwt, options));
+            queue.BindingCommands = new(f.Registry, new(f.Store));
+            queue.BindingHistory = new("http://127.0.0.1:1", jwt, null!);
+        }
+        var app = builder.Build();
         UnifiedSessionEndpoints.Map(new EndpointRegistry(app), f.Registry, null!, (_, _) => { }, f.Config,
-            attachmentStore: f.Attachments, inputQueue: f.Service());
+            attachmentStore: f.Attachments, inputQueue: queue);
         return app;
     }
 
     private static async Task<(int Status, JsonElement Body)> CallAsync(
-        WebApplication app, string method, object? body, string subject, bool validateOnly = false, string? key = null)
+        WebApplication app, string method, object? body, string subject, bool validateOnly = false, string? key = null, bool signed = false)
     {
         const string pattern = "/ai-session/sessions/{id}/inference-settings";
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
@@ -268,6 +348,7 @@ public sealed class SessionInferenceSettingsEndpointTests
             ctx.Request.Body = new MemoryStream(bytes);
         }
         ctx.Response.Body = new MemoryStream();
+        using var scope = signed ? ExecutionContextScope.Push(identity) : null;
         await endpoint.RequestDelegate!(ctx);
         ctx.Response.Body.Position = 0;
         using var json = await JsonDocument.ParseAsync(ctx.Response.Body);

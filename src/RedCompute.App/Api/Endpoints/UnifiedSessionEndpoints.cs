@@ -129,10 +129,11 @@ public static class UnifiedSessionEndpoints
         // only after the next session.updated event.
         UnifiedSessionInfo WithLiveCapabilities(UnifiedSessionInfo session)
         {
+            var (provider, binding) = inputQueue.BindingCommands?.IsBound(session.Id) == true ? FindSession(session.Id)
+                : (FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id), null);
+            if (binding is not null) session = session.WithActiveBinding(binding);
             // A rename or requested title update outranks the provider's own title everywhere.
             _titles?.Apply(session);
-            var provider = inputQueue.BindingCommands?.IsBound(session.Id) == true ? FindSession(session.Id).Provider
-                : FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id);
             session.SupportsSteering = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsSteering) == true;
             session.SupportsRollback = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsRollback) == true
                 && provider.SupportsRollback(session.Id);
@@ -379,9 +380,7 @@ public static class UnifiedSessionEndpoints
                 allSessions.RemoveAll(s => s.Source == excludeSource);
 
             allSessions.RemoveAll(session => !CanReadSession(ctx, session));
-            foreach (var session in allSessions) WithLiveCapabilities(session);
-
-            return Results.Json(allSessions);
+            return Results.Json(allSessions.Select(WithLiveCapabilities).ToArray());
         })
             .WithParam("limit", "integer", description: "Max sessions to return", defaultValue: 20, location: ParamLocation.Query)
             .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query)
@@ -409,8 +408,7 @@ public static class UnifiedSessionEndpoints
                 return Error(503, "redleaf_unavailable", $"RedLeaf is required for session reads: {ex.Message}");
             }
 
-            foreach (var session in items) WithLiveCapabilities(session);
-            return Results.Json(new { items, nextOffset });
+            return Results.Json(new { items = items.Select(WithLiveCapabilities).ToArray(), nextOffset });
         })
             .WithParam("limit", "integer", description: "Stored rows to scan for this page (clamped to 500)", defaultValue: 50, location: ParamLocation.Query)
             .WithParam("offset", "integer", description: "nextOffset from the previous page", defaultValue: 0, location: ParamLocation.Query)
@@ -1481,7 +1479,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("effort", "string", location: ParamLocation.Body, description: "A level supported by the selected model")
             .WithParam("provider", "string", location: ParamLocation.Body, description: "Send a provider id from GET providers in its own signed write. The queued switch retains the logical session and transcript.")
             .WithParam("validateOnly", "boolean", location: ParamLocation.Query, defaultValue: false,
-                description: "Preview proposed model and effort and whether the operation would queue. Does not persist or enqueue.")
+                description: "Preview the proposed Model, Thinking, or Provider and whether it would queue. Does not persist or enqueue.")
             .WithParam("X-Idempotency-Key", "string", location: ParamLocation.Header,
                 description: "Queue a retry-safe change. Same key and body return the original receipt. Same key with a different body returns 409.")
             .WithResponse(InferenceSettingsResponseSchema);
@@ -1769,7 +1767,7 @@ public static class UnifiedSessionEndpoints
 
         endpoints.MapGet("/ai-session/sessions/{id}/input-queue/{itemId}",
             "Get an exact AI Session queue receipt using the id returned by message admission or PUT inference-settings. "
-            + "A delivered inference-settings receipt records the effective model and Thinking in metadata.applied. "
+            + "A delivered inference-settings receipt records Model and Thinking in metadata.applied. A delivered execution-binding receipt records the committed Provider and native thread there. "
             + "A failed receipt returns its error and whether it can be retried.",
             async (HttpContext ctx, string id, string itemId) =>
         {

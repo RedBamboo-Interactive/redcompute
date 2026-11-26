@@ -4,7 +4,8 @@ public sealed record BindingTarget(string ProviderId, string ProviderInstanceId,
 
 public sealed record QueuedBindingChange(long ExpectedGeneration, BindingTarget Destination);
 
-internal sealed record NativeSessionBinding(string RuntimeSessionId, string NativeThreadId, BindingTarget Target);
+internal sealed record NativeSessionBinding(string RuntimeSessionId, string NativeThreadId, BindingTarget Target,
+    DateTimeOffset? StartedAt = null);
 
 internal sealed record SessionBinding(long Generation, NativeSessionBinding Native, long HistoryThrough);
 

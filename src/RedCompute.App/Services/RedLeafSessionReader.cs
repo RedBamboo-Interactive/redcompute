@@ -199,7 +199,8 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             using var entityReply = await GetBindingJsonAsync(query, bearer, ct);
             var entities = entityReply.RootElement.GetProperty("items");
             if (entities.GetArrayLength() != 1 || Str(entities[0], "id") is not { } entityId)
-                throw new InvalidOperationException("The authorized logical session transcript is unavailable.");
+                throw new HttpRequestException("The authorized logical session transcript is unavailable.",
+                    null, System.Net.HttpStatusCode.NotFound);
 
             var records = $"api/streams/session-messages/records?entity_id={Uri.EscapeDataString(entityId)}&order=desc&limit={limit}";
             if (after is not null) records += $"&after_id={after.Value}";
@@ -846,6 +847,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         if (sessionId == null) return null;
 
         var provider = Str(d, "provider") ?? "";
+        var activeProvider = Str(d, "active_provider") ?? provider;
         var model = Str(d, "model");
         var inputTokens = Int(d, "input_tokens");
         var outputTokens = Int(d, "output_tokens");
@@ -859,7 +861,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         }
         // Older Codex stores retained the reported totals, but updated their two fields independently.
         if (cache.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
-            && provider.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            && activeProvider.Equals("codex", StringComparison.OrdinalIgnoreCase)
             && PromptCacheCounts.From(inputTokens, cachedInputTokens) is { } legacyCodex)
             promptCache = new(legacyCodex, Partial: true);
         var reportedCost = Dbl(d, "cost_usd");
@@ -868,7 +870,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         // token usage still has an API-equivalent value, which is the useful number for suite
         // statistics. Never replace a positive provider-reported charge.
         var shouldEstimateCost = !reportedCost.HasValue
-            || (provider.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            || (activeProvider.Equals("codex", StringComparison.OrdinalIgnoreCase)
                 && reportedCost <= 0
                 && hasUsage);
         var estimatedCost = shouldEstimateCost

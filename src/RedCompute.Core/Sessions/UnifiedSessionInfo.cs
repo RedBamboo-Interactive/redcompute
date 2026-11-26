@@ -6,7 +6,8 @@ public class UnifiedSessionInfo
 {
     private string _id = null!;
     public required string Id { get => _id; init => _id = value; }
-    public required string Provider { get; init; }
+    private string _provider = null!;
+    public required string Provider { get => _provider; init => _provider = value; }
     [System.Text.Json.Serialization.JsonIgnore]
     public string? TranscriptProvider { get; private set; }
 
@@ -23,6 +24,29 @@ public class UnifiedSessionInfo
         view.NativeRuntimeId = NativeRuntimeId ?? Id;
         return view;
     }
+    /// <summary>Present the committed runtime while retaining the durable logical session metadata.</summary>
+    public UnifiedSessionInfo WithActiveBinding(UnifiedSessionInfo active)
+    {
+        if (active.Id != Id || active.TranscriptProvider is null)
+            throw new ArgumentException("Expected the active binding of this logical session.", nameof(active));
+
+        var view = (UnifiedSessionInfo)MemberwiseClone();
+        view._provider = active.Provider;
+        view.TranscriptProvider = active.TranscriptProvider;
+        view.NativeRuntimeId = active.NativeRuntimeId;
+        view.ProviderEntity = active.ProviderEntity;
+        view.ProviderSessionId = active.ProviderSessionId;
+        view.NodeId = active.NodeId;
+        view.JobId = active.JobId;
+        view.Model = active.Model;
+        view.Effort = active.Effort;
+        view.QualityTier = active.QualityTier;
+        view.Status = active.Status;
+        view.StopReason = active.StopReason;
+        view.StoppedAt = active.StoppedAt;
+        return view;
+    }
+
     public string? ProviderEntity { get; set; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }

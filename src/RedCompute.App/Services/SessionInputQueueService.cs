@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using RedBamboo.AppHost.WebSockets;
+using System.Net;
+using System.Net.Http;
 using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
@@ -728,7 +730,7 @@ public sealed class SessionInputQueueService
                     return;
                 }
                 var initial = previous ?? new NativeSessionBinding(sessionId, current.ProviderSessionId!,
-                    new(current.Provider, instance!, binding.Destination.NodeId, current.Model ?? "", current.Effort));
+                    new(current.Provider, instance!, binding.Destination.NodeId, current.Model ?? "", current.Effort), current.StartedAt);
                 var creation = current.JobId is { } sourceJob ? _jobTracker.GetJob(sourceJob)?.CreationProvenance : null;
                 if (current.Confidential && creation is null)
                 {
@@ -738,7 +740,17 @@ public sealed class SessionInputQueueService
                 }
                 var runtime = new LocalSessionBindingRuntime(commands, reader, current, head,
                     authority!.AccessToken!, InvocationProvenance(head), creation);
-                var switched = await new SessionBindingSwitch(_store, runtime).ApplyAsync(head, initial, ct);
+                SessionBindingMove? switched;
+                try { switched = await new SessionBindingSwitch(_store, runtime).ApplyAsync(head, initial, ct); }
+                catch (HttpRequestException ex)
+                {
+                    var denied = ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized
+                        or HttpStatusCode.NotFound;
+                    var code = denied ? "binding_history_unavailable_to_caller" : "binding_handoff_unavailable";
+                    await _store.BlockPendingAsync(head, code, !denied, ct);
+                    await PublishAsync(sessionId, [head.Id], "blocked", ct, errorCode: code);
+                    return;
+                }
                 if (switched?.State == BindingMoveState.Rejected)
                     await PublishAsync(sessionId, [head.Id], "failed", ct, errorCode: switched.Error);
                 if (switched?.State == BindingMoveState.Committed)

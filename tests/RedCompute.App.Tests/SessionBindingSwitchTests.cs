@@ -78,6 +78,11 @@ public sealed class SessionBindingSwitchTests
         Assert.Equal(Logical, info?.Id);
         Assert.Equal("claude-code", info?.Provider);
         Assert.Equal("codex", info?.TranscriptProvider);
+        var stored = old.GetSessionInfo(Original.RuntimeSessionId)!.AsLogicalSession(Logical, "codex");
+        var listed = stored.WithActiveBinding(info!);
+        Assert.Equal("claude-code", listed.Provider);
+        Assert.Equal("codex", listed.TranscriptProvider);
+        Assert.Equal("codex", stored.Provider);
         Assert.Equal((null, null), commands.Find(destination.RuntimeSessionId));
         Assert.Null(commands.ProjectEvent(old.GetSessionInfo(Original.RuntimeSessionId)!));
         Assert.Equal(Logical, commands.ProjectEvent(next.GetSessionInfo(destination.RuntimeSessionId)!)?.Id);

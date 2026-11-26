@@ -527,6 +527,7 @@ public sealed class SessionRecoveryTests
     {
         internal UnifiedSessionInfo Info = new() { Id = "session", Provider = "test", ProjectName = "Test", ProjectPath = ".", UserId = "owner", Status = SessionStatus.Stopped, StoppedAt = DateTimeOffset.UtcNow };
         internal int Resumes, Deliveries, Restores, InferenceWrites;
+        internal SessionCapabilities ExtraCapabilities;
         internal bool RestoreResult = true, Missing, InferenceRequiresIdle, InferenceRequiresResident;
         internal string? NativeDefaultEffort;
         internal SessionStatus ResumedStatus = SessionStatus.Idle;
@@ -541,9 +542,12 @@ public sealed class SessionRecoveryTests
         {
             switch (method!.Name)
             {
-                case "get_Capabilities": return SessionCapabilities.Resume | SessionCapabilities.SendMessage;
-                case "get_ProviderId": return "test";
-                case "get_ProviderDisplayName": return "Test";
+                case "get_Capabilities": return SessionCapabilities.Resume | SessionCapabilities.SendMessage | ExtraCapabilities;
+                case "get_ProviderId": return Info.Provider;
+                case "get_ProviderDisplayName": return Info.Provider == "test" ? "Test" : Info.Provider;
+                case "get_SupportedAccessLevels": return (IReadOnlyList<string>)[SessionAccessLevels.Ask];
+                case nameof(ISessionProvider.GetAvailableModels):
+                    return new List<ModelInfo> { new() { Id = Info.Model ?? "model-a", Name = Info.Provider } };
                 case nameof(ISessionProvider.GetSession): return Missing ? ((UnifiedSessionInfo?)null, (List<UnifiedMessageRecord>?)null) : (Info, new List<UnifiedMessageRecord>());
                 case "get_RequiresIdleForInferenceChanges": return InferenceRequiresIdle;
                 case "get_RequiresResidentForInferenceChanges": return InferenceRequiresResident;

@@ -1,7 +1,7 @@
 {
   "slug": "ai-session",
   "displayName": "AI Session",
-  "description": "Persistent AI sessions with model and Thinking controls, validation, and durable change receipts",
+  "description": "Persistent AI sessions with Model, Thinking, and eligible Provider changes, validation, and durable receipts",
   "icon": "ph ph-terminal-window",
   "color": "#EC4899",
   "category": "ai"

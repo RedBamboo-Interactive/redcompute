@@ -294,6 +294,7 @@ public class RelayServer
             _lastSessionSnapshots[SessionConfidentialityKey(snap.Provider, snap.Id)] = snap;
             var address = bindingRoutes.Resolve(snap.Provider, snap.Id);
             if (address is null) return;
+            var startedAt = bindingRoutes.Binding(address.SessionId)?.Threads[0].Native.StartedAt ?? snap.StartedAt;
             // An explicit title (rename or requested update) outranks the provider's title.
             var explicitTitle = titles.Get(address.SessionId);
             var (mirroredName, titleSource) = SessionTitleStore.ForMirror(
@@ -323,7 +324,7 @@ public class RelayServer
                 repository = snap.RepositoryId,
                 status = snap.Status,
                 stop_reason = snap.StopReason,
-                started_at = snap.StartedAt.ToString("O"),
+                started_at = startedAt.ToString("O"),
                 model = snap.Model,
                 external_session_id = snap.ExternalSessionId,
                 message_count = snap.MessageCount,
