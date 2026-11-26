@@ -186,6 +186,28 @@ public sealed class SessionInferenceSettingsEndpointTests
         Assert.Empty(await f.Store.ClaimSteerBatchAsync("session", "test", TimeSpan.FromMinutes(1)));
     }
 
+    [Fact]
+    public async Task A_harness_that_controls_its_live_process_waits_for_its_first_idle_boundary()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Runtime.Info.Status = SessionStatus.Active;
+        f.Runtime.Info.Model = "model-a";
+        f.Runtime.Info.Effort = "low";
+        f.Runtime.InferenceRequiresIdle = true;
+        await using var app = Map(f);
+
+        var (status, body) = await CallAsync(app, "PUT", new { effort = "high" }, "owner");
+        Assert.Equal(202, status);
+        var id = body.GetProperty("operation").GetProperty("id").GetString()!;
+        Assert.Equal("low", f.Runtime.Info.Effort);
+        Assert.Equal(0, f.Runtime.InferenceWrites);
+
+        f.Runtime.Info.Status = SessionStatus.Idle;
+        await f.Service().ProcessSessionAsync("session", default);
+        Assert.Equal("high", f.Runtime.Info.Effort);
+        Assert.Equal(SessionInputQueueState.Delivered, (await f.Store.GetAsync("session", id, "owner"))?.State);
+    }
+
     private static WebApplication Map(SessionRecoveryTests.Fixture f)
     {
         var app = WebApplication.CreateSlimBuilder().Build();

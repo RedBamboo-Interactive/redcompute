@@ -704,6 +704,8 @@ public sealed class SessionInputQueueService
             // session can persist it before the following prompt resumes the provider.
             if (head.InferenceChange is { } change)
             {
+                if (provider is ISessionInferenceSettings { RequiresIdleForInferenceChanges: true }
+                    && SessionWorkStates.RunningBackgroundTasks(provider.GetBackgroundTasks(sessionId)) > 0) return;
                 if (current?.Status == SessionStatus.Idle ||
                     (restart && current?.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(current.StopReason)))
                     await ApplyInferenceChangeAsync(provider, current!, head, change, ct);
@@ -855,7 +857,7 @@ public sealed class SessionInputQueueService
                 var current = await settings.GetInferenceOptionsAsync(info.Id, ct);
                 if (_deliveryPaused() || HasStopIntent(info.Id)) return;
                 ct.ThrowIfCancellationRequested();
-                var result = SessionInferenceSettings.Apply(settings, info, current, change);
+                var result = await SessionInferenceSettings.ApplyAsync(settings, info, current, change, ct);
                 (error, message, retryable) = (result.Error, result.Message, result.Retryable);
                 if (error is null) applied = new(result.Options.Model, result.Options.Effort);
             }

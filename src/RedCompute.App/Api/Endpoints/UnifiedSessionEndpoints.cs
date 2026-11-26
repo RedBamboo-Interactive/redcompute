@@ -1333,7 +1333,10 @@ public static class UnifiedSessionEndpoints
                 foreach (var operation in pending.Where(item => item.State == SessionInputQueueState.Pending))
                     projected = SessionInferenceSettings.Resolve(projected, operation.InferenceChange!).Options;
 
-                var wouldQueue = !string.IsNullOrWhiteSpace(idempotencyKey) || queue.IsDeliveryPaused
+                var waitingForIdle = settings.RequiresIdleForInferenceChanges
+                    && (info.Status is SessionStatus.Active or SessionStatus.Starting
+                        || SessionWorkStates.RunningBackgroundTasks(provider.GetBackgroundTasks(id)) > 0);
+                var wouldQueue = waitingForIdle || !string.IsNullOrWhiteSpace(idempotencyKey) || queue.IsDeliveryPaused
                     || await queue.HasQueuedInputAsync(id, ctx.RequestAborted);
                 var choice = SessionInferenceSettings.Resolve(projected, change);
                 if (choice.Error is not null && (validateOnly || string.IsNullOrWhiteSpace(idempotencyKey)))
@@ -1348,7 +1351,7 @@ public static class UnifiedSessionEndpoints
                 }
                 if (!wouldQueue)
                 {
-                    var applied = SessionInferenceSettings.Apply(settings, info, options, change);
+                    var applied = await SessionInferenceSettings.ApplyAsync(settings, info, options, change, ctx.RequestAborted);
                     result = applied.Error is null ? InferenceSettingsResponse(applied.Options, pending)
                         : Error(409, applied.Error, applied.Message!);
                     return;

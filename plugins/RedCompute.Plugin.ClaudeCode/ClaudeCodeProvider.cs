@@ -12,7 +12,7 @@ namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
     IIdleSessionParkingProvider,
-    IProviderUsageSource, ICliVersionManagedProvider
+    IProviderUsageSource, ICliVersionManagedProvider, ISessionInferenceSettings
 {
     private readonly string _capabilitySlug;
     private readonly ClaudeSessionService _claude;
@@ -397,6 +397,14 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
             result.Success ? SessionIsolation.VerifiedToolFree : null,
             result.Success ? "claude-empty-init-tools" : null);
     }
+
+    public bool RequiresIdleForInferenceChanges => true;
+
+    public Task<SessionInferenceOptions> GetInferenceOptionsAsync(string sessionId, CancellationToken ct)
+        => _claude.GetInferenceOptionsAsync(sessionId, ct);
+
+    public Task<bool> TrySetInferenceSettingsAsync(string sessionId, string? model, string? effort, CancellationToken ct)
+        => _claude.TrySetInferenceSettingsAsync(sessionId, model, effort, ct);
 
     public List<ModelInfo> GetAvailableModels() =>
     [

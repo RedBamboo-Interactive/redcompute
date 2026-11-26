@@ -86,8 +86,8 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
                     m.SupportedReasoningEfforts.Select(e => e.Id).ToArray())).ToArray());
     }
 
-    public bool TrySetInferenceSettings(string sessionId, string? model, string? effort)
-        => _interactive.TrySetInferenceSettings(sessionId, model, effort);
+    public Task<bool> TrySetInferenceSettingsAsync(string sessionId, string? model, string? effort, CancellationToken ct)
+        => Task.FromResult(_interactive.TrySetInferenceSettings(sessionId, model, effort));
 
     public string? LastStartError => Volatile.Read(ref _lastStartError) ?? _interactive.LastStartError;
     public string? LastStartErrorCode => Volatile.Read(ref _lastStartError) is null ? _interactive.LastStartErrorCode : null;

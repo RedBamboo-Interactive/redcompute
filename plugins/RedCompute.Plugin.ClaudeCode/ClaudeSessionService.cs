@@ -1425,6 +1425,10 @@ public partial class ClaudeSessionService
             return false;
         }
 
+        // A lost native confirmation must not let a prompt run at settings the session never accepted.
+        if (session.InferenceStateUnknown && !await RestoreInferenceBeforeInputAsync(session))
+            return false;
+
         try
         {
             var content = SessionInputFormatting.UserText(input);
@@ -1805,7 +1809,7 @@ public partial class ClaudeSessionService
                 $"Background task '{taskId}' is not known to the running session");
 
         var requestId = $"stop-task-{Guid.NewGuid():N}";
-        var response = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ControlResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         session.PendingControlRequests[requestId] = response;
         try
         {
@@ -1830,7 +1834,7 @@ public partial class ClaudeSessionService
             session.PendingControlRequests.TryRemove(requestId, out _);
             return new(BackgroundTaskStopStatus.Failed, "The CLI did not confirm the stop request");
         }
-        return await response.Task is { } error
+        return (await response.Task).Error is { } error
             ? new(BackgroundTaskStopStatus.Failed, error)
             : BackgroundTaskStopResult.Accepted();
     }
@@ -3239,7 +3243,7 @@ public partial class ClaudeSessionService
     {
         foreach (var pending in session.PendingControlRequests.Keys)
             if (session.PendingControlRequests.TryRemove(pending, out var response))
-                response.TrySetResult(ProcessEndedControlError);
+                response.TrySetResult(new(ProcessEndedControlError));
 
         var lost = session.BackgroundTasks.MarkAllLost(DateTimeOffset.UtcNow);
         foreach (var task in lost)
@@ -3271,7 +3275,8 @@ public partial class ClaudeSessionService
                 _log($"[Claude] Control request {reqId} succeeded", null);
             }
             if (reqId is not null && session.PendingControlRequests.TryRemove(reqId, out var pending))
-                pending.TrySetResult(error);
+                pending.TrySetResult(new(error ?? (subtype == "success" ? null : "Malformed control response"),
+                    resp.TryGetProperty("response", out var payload) ? payload.Clone() : default));
         }
     }
 
@@ -3894,6 +3899,8 @@ public partial class ClaudeSessionService
     /// <summary>How long a live switch waits for the CLI's control_response before it counts as refused.</summary>
     internal TimeSpan PermissionModeConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
+    private sealed record ControlResponse(string? Error, JsonElement Payload = default, bool Uncertain = false);
+
     private const string ProcessEndedControlError = "The Claude process ended";
 
     /// <summary>
@@ -3904,7 +3911,7 @@ public partial class ClaudeSessionService
     private async Task<string?> SendPermissionModeAsync(ManagedSession session, string mode)
     {
         var requestId = $"perm-{++session.ControlRequestCounter}";
-        var response = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ControlResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         session.PendingControlRequests[requestId] = response;
         try
         {
@@ -3928,7 +3935,7 @@ public partial class ClaudeSessionService
             // nothing, so put it back to the mode of the level the session really holds.
             _ = response.Task.ContinueWith(late =>
             {
-                if (late.Result is not null || !_sessions.TryGetValue(session.Info.Id, out var current)
+                if (late.Result.Error is not null || !_sessions.TryGetValue(session.Info.Id, out var current)
                     || !ReferenceEquals(current, session)) return;
                 var expected = PermissionModeFor(session.Info.Access.AccessLevel);
                 if (expected == mode) return;
@@ -3938,7 +3945,7 @@ public partial class ClaudeSessionService
             return $"Claude Code did not confirm the change within {PermissionModeConfirmTimeout.TotalSeconds:0} seconds.";
         }
 
-        return await response.Task switch
+        return (await response.Task).Error switch
         {
             null => null,
             ProcessEndedControlError => "The Claude process ended before it confirmed the change.",
@@ -4932,8 +4939,11 @@ public partial class ClaudeSessionService
         public TurnOrigin? PendingLiveTurnOrigin { get; set; }
         public (string Uid, TurnOrigin Origin)? DurableTurnOrigin { get; set; }
         // Outbound control requests awaiting their control_response (stop_task, set_permission_mode), keyed by request_id.
-        // The result is the CLI's error, or null on success.
-        public ConcurrentDictionary<string, TaskCompletionSource<string?>> PendingControlRequests { get; } = new();
+        // The response carries the CLI error or an optional structured success payload.
+        public ConcurrentDictionary<string, TaskCompletionSource<ControlResponse>> PendingControlRequests { get; } = new();
+        public SemaphoreSlim InferenceCatalogGate { get; } = new(1, 1);
+        public ClaudeInferenceModel[]? InferenceModels { get; set; }
+        public volatile bool InferenceStateUnknown;
         // Serializes access-level switches (route changes, plan exits, init reconciles) so each
         // compares against the mode the last one left, and records only what the CLI confirmed.
         public SemaphoreSlim AccessGate { get; } = new(1, 1);

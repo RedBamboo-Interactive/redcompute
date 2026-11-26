@@ -27,16 +27,15 @@ internal static class SessionInferenceSettings
         });
     }
 
-    internal static Choice Apply(ISessionInferenceSettings settings, UnifiedSessionInfo session,
-        SessionInferenceOptions current, QueuedInferenceChange change)
+    internal static async Task<Choice> ApplyAsync(ISessionInferenceSettings settings, UnifiedSessionInfo session,
+        SessionInferenceOptions current, QueuedInferenceChange change, CancellationToken ct)
     {
         var choice = Resolve(current, change);
         if (choice.Error is not null || (current.Model == choice.Options.Model && current.Effort == choice.Options.Effort))
             return choice;
 
         var model = change.Model is null ? session.Model : choice.Options.Model;
-        return settings.TrySetInferenceSettings(session.Id, model, choice.Options.Effort)
+        return await settings.TrySetInferenceSettingsAsync(session.Id, model, choice.Options.Effort, ct)
             ? choice : new(current, "inference_change_unavailable", "This session could not change its inference settings", true);
     }
 }
-
