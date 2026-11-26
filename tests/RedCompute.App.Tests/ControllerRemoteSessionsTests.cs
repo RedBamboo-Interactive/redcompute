@@ -88,6 +88,39 @@ public sealed class ControllerRemoteSessionsTests : IDisposable
         Assert.Equal([SessionRuntimeOperation.Inspect], commands);
     }
 
+    [Fact]
+    public async Task A_remote_delivery_stays_the_fifo_head_across_a_controller_restart()
+    {
+        using var fixture = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var scope = new SessionRuntimeScope(Placement.NodeId, Placement.RuntimeId, "remote-logical", 0, "owner", Placement.Workspace);
+        var binding = new ControllerRemoteSession(scope, Placement, Preview, Thread);
+        var store = fixture.Store;
+        await store.ReserveControllerRemoteStartAsync(scope, Placement, Preview, default);
+        await store.CommitControllerRemoteStartAsync(binding, default);
+        var first = (await store.EnqueueAsync(fixture.Submission("first") with { SessionId = scope.LogicalSessionId })).Item;
+        var second = (await store.EnqueueAsync(fixture.Submission("second") with { SessionId = scope.LogicalSessionId })).Item;
+
+        Assert.Null(await store.ClaimControllerRemoteInputAsync(binding with { Scope = scope with { OwnerId = "different" } }, default));
+        var admitted = await store.ClaimControllerRemoteInputAsync(binding, default);
+        Assert.Equal(first.Id, admitted!.Id);
+        Assert.Equal(SessionInputQueueState.Delivering, admitted.State);
+        Assert.Equal(1, admitted.AttemptCount);
+
+        store = new SessionInputQueueStore(fixture.Config, fixture.Attachments);
+        Assert.Equal(0, await store.RecoverExpiredLeasesAsync());
+        Assert.Contains(scope.LogicalSessionId, await store.GetRunnableSessionIdsAsync());
+        var again = await store.ClaimControllerRemoteInputAsync(binding, default);
+        Assert.Equal(first.Id, again!.Id);
+        Assert.Equal(1, again.AttemptCount);
+        var cancel = await Assert.ThrowsAsync<SessionInputQueueStoreException>(() => store.CancelAsync(scope.LogicalSessionId, first.Id, "owner"));
+        Assert.Equal("delivery_in_progress", cancel.Code);
+        Assert.Equal(SessionInputQueueState.Pending, (await store.GetAsync(scope.LogicalSessionId, second.Id, "owner"))!.State);
+
+        await store.MarkDeliveredAsync([again], first.MessageUid);
+        Assert.Equal(second.Id, (await store.ClaimControllerRemoteInputAsync(binding, default))!.Id);
+        Assert.Contains(scope.LogicalSessionId, await store.GetRunnableSessionIdsAsync());
+    }
+
     private SessionInputQueueStore Queue()
     {
         Directory.CreateDirectory(_root);

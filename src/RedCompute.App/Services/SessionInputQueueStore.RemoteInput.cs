@@ -5,7 +5,8 @@ using RedCompute.NodeLink;
 namespace RedCompute.App.Services;
 
 internal sealed record RemoteInputReceipt(string QueueItemId, string InputUid, string TurnId);
-internal sealed record RemoteInputInspection(RemoteInputReceipt Receipt, SessionInputQueueState? DeliveryState, string? ErrorCode);
+internal sealed record RemoteInputInspection(RemoteInputReceipt Receipt, SessionInputQueueState? DeliveryState,
+    string? ErrorCode, string PayloadDigest);
 
 public sealed partial class SessionInputQueueStore
 {
@@ -90,7 +91,8 @@ public sealed partial class SessionInputQueueStore
         await using var connection = Open();
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT receipt.QueueItemId, COALESCE(input.State, receipt.FinalState), COALESCE(input.ErrorCode, receipt.FinalErrorCode)
+            SELECT receipt.QueueItemId, COALESCE(input.State, receipt.FinalState),
+                COALESCE(input.ErrorCode, receipt.FinalErrorCode), receipt.PayloadDigest
             FROM RemoteSessionInputReceipts receipt
             LEFT JOIN SessionQueuedInputs input ON input.Id=receipt.QueueItemId
             WHERE receipt.NodeId=$node AND receipt.RuntimeId=$runtime AND receipt.LogicalSessionId=$logical
@@ -101,6 +103,7 @@ public sealed partial class SessionInputQueueStore
         await using var result = await command.ExecuteReaderAsync(ct);
         if (!await result.ReadAsync(ct)) return null;
         var state = result.IsDBNull(1) ? (SessionInputQueueState?)null : Enum.Parse<SessionInputQueueState>(result.GetString(1));
-        return new(new(result.GetString(0), inputUid, inputUid), state, result.IsDBNull(2) ? null : result.GetString(2));
+        return new(new(result.GetString(0), inputUid, inputUid), state,
+            result.IsDBNull(2) ? null : result.GetString(2), result.GetString(3));
     }
 }

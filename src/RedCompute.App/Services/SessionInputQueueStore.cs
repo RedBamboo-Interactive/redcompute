@@ -990,8 +990,10 @@ public sealed partial class SessionInputQueueStore
         var cmd = connection.CreateCommand();
         cmd.CommandText = """
             SELECT DISTINCT SessionId FROM SessionQueuedInputs
-            WHERE State = 'Pending' AND (NextAttemptAt IS NULL OR NextAttemptAt <= $now OR NextAttemptAt > $horizon)
+            WHERE (State='Pending' OR (State='Delivering' AND LeaseOwner=$remote))
+              AND (NextAttemptAt IS NULL OR NextAttemptAt <= $now OR NextAttemptAt > $horizon)
             """;
+        Add(cmd, "$remote", ControllerRemoteLease);
         Add(cmd, "$now", DateTimeOffset.UtcNow.ToString("O"));
         Add(cmd, "$horizon", DateTimeOffset.UtcNow.Add(MaxScheduleHorizon).ToString("O"));
         var ids = new List<string>();
@@ -1009,8 +1011,10 @@ public sealed partial class SessionInputQueueStore
             SET State = 'Failed', UpdatedAt = $now, ErrorCode = 'delivery_outcome_unknown',
                 ErrorMessage = 'RedCompute restarted before provider delivery was acknowledged',
                 ErrorRetryable = 1, LeaseOwner = NULL, LeaseExpiresAt = NULL
-            WHERE State = 'Delivering' AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= $now OR LeaseExpiresAt > $horizon)
+            WHERE State='Delivering' AND COALESCE(LeaseOwner,'')!=$remote
+              AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= $now OR LeaseExpiresAt > $horizon)
             """;
+        Add(cmd, "$remote", ControllerRemoteLease);
         Add(cmd, "$now", DateTimeOffset.UtcNow.ToString("O"));
         Add(cmd, "$horizon", DateTimeOffset.UtcNow.Add(MaxScheduleHorizon).ToString("O"));
         return await cmd.ExecuteNonQueryAsync(ct);

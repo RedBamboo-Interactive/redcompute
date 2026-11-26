@@ -18,6 +18,13 @@ internal sealed record RemoteSessionPlacementPreview(string NodeId, string Runti
 internal sealed record ControllerRemoteSession(SessionRuntimeScope Scope, RemoteSessionPlacement Placement,
     RemoteSessionPlacementPreview Preview, RemoteSessionLifecycleThread Thread);
 
+internal sealed record RemoteSessionInputStatus(string State, RemoteInputReceipt? Receipt, SessionTurnSummary? Turn,
+    string? ErrorCode, string? PayloadDigest);
+
+internal sealed record ControllerRemoteInputAdvance(string ItemId, string State, bool TranscriptChanged, string? ErrorCode = null);
+
+internal sealed record RemoteReplayProgress(long Through, bool Changed, bool CaughtUp);
+
 internal sealed class ControllerRemoteSessionException(int status, string code) : Exception(code)
 {
     public int Status { get; } = status;
@@ -68,14 +75,86 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
 
         var thread = session.Thread;
         var resumed = await ApplyAsync<RemoteSessionLifecycleThread>(caller, session.Scope, SessionRuntimeOperation.Resume,
-            key, new(thread.Revision, thread.ProviderInstanceId, RuntimeSessionId: thread.RuntimeSessionId,
-                NativeThreadId: thread.NativeThreadId, Fence: Fence(session.Preview)), HttpStatusCode.OK, ct);
+            key, ThreadRequest(thread) with { Fence = Fence(session.Preview) }, HttpStatusCode.OK, ct);
         if (resumed != thread)
             throw new ControllerRemoteSessionException(502, "remote_thread_mismatch");
         return session;
     }
 
-    internal async Task<long> PollTranscriptAsync(ClaimsPrincipal caller, string logicalId,
+    internal async Task<RemoteInputReceipt> SendInputAsync(ClaimsPrincipal caller, string logicalId, string inputUid,
+        string text, CancellationToken ct)
+    {
+        if (!Identifier(inputUid) || string.IsNullOrWhiteSpace(text) || text.Length > SessionRuntimeGrant.MaxPayloadBytes)
+            throw new ControllerRemoteSessionException(422, "invalid_remote_input");
+        var (_, session) = await ReadOwnedAsync(caller, logicalId, ct);
+        var receipt = await ApplyAsync<RemoteInputReceipt>(caller, session.Scope, SessionRuntimeOperation.SendInput,
+            inputUid, InputRequest(session, inputUid, text),
+            HttpStatusCode.Accepted, ct);
+        if (!MatchesInput(receipt, inputUid))
+            throw new ControllerRemoteSessionException(502, "remote_input_receipt_mismatch");
+        return receipt;
+    }
+
+    internal async Task<RemoteSessionInputStatus> InspectInputAsync(ClaimsPrincipal caller, string logicalId, string inputUid,
+        CancellationToken ct)
+    {
+        if (!Identifier(inputUid))
+            throw new ControllerRemoteSessionException(422, "invalid_remote_input");
+        var (_, session) = await ReadOwnedAsync(caller, logicalId, ct);
+        var status = await ApplyAsync<RemoteSessionInputStatus>(caller, session.Scope, SessionRuntimeOperation.Inspect,
+            inputUid, ThreadRequest(session.Thread) with { InputUid = inputUid }, HttpStatusCode.OK, ct);
+        var valid = status.State switch
+        {
+            "absent" => status.Receipt is null && status.Turn is null && status.ErrorCode is null && status.PayloadDigest is null,
+            "pending" or "delivering" or "failed" or "delivered" or "cancelled" or "unknown" =>
+                status.Receipt is { } receipt && MatchesInput(receipt, inputUid)
+                && status.PayloadDigest is { Length: 64 } && status.PayloadDigest.All(char.IsAsciiHexDigitUpper)
+                && (status.Turn is null || status.Turn.TurnId == receipt.TurnId),
+            _ => false,
+        };
+        return valid ? status : throw new ControllerRemoteSessionException(502, "remote_input_receipt_mismatch");
+    }
+
+    internal async Task<ControllerRemoteInputAdvance?> AdvanceInputAsync(ClaimsPrincipal caller, ControllerRemoteSession binding,
+        SessionTranscriptPipeline transcript, CancellationToken ct)
+    {
+        var scope = binding.Scope;
+        if (NodeAccess.Subject(caller) != scope.OwnerId)
+            throw new ControllerRemoteSessionException(404, "session_not_found");
+        var item = await queue.ClaimControllerRemoteInputAsync(binding, ct);
+        if (item is null) return null;
+
+        var text = item.Input[0].Value;
+        var status = await InspectInputAsync(caller, scope.LogicalSessionId, item.MessageUid, ct);
+        if (status.PayloadDigest is { } digest && digest != Convert.ToHexString(SHA256.HashData(
+                JsonSerializer.SerializeToUtf8Bytes(InputRequest(binding, item.MessageUid, text), Json))))
+            throw new ControllerRemoteSessionException(409, "idempotency_conflict");
+        if (status.State == "absent" || status.State == "pending"
+            && status.ErrorCode?.StartsWith("recovery_", StringComparison.Ordinal) == true)
+        {
+            // When the destination is parked, replay renews authority on its exact accepted
+            // input. The guest compares the input ID and full payload digest before dispatch.
+            var receipt = await SendInputAsync(caller, scope.LogicalSessionId, item.MessageUid, text, ct);
+            if (status.Receipt is { } inspected && receipt != inspected)
+                throw new ControllerRemoteSessionException(502, "remote_input_receipt_mismatch");
+        }
+
+        var replay = await PollTranscriptAsync(caller, scope.LogicalSessionId, transcript, ct);
+        if (status.State == "delivered" && status.Turn is { Outcome: not null, EndedAt: not null } && replay.CaughtUp)
+        {
+            await queue.MarkDeliveredAsync([item], item.MessageUid, CancellationToken.None);
+            return new(item.Id, "delivered", replay.Changed);
+        }
+
+        // A parked or uncertain native turn owns the queue head. A later input cannot cross it.
+        return status.State switch
+        {
+            "unknown" or "failed" or "cancelled" => new(item.Id, status.State, replay.Changed, status.ErrorCode),
+            _ => new(item.Id, "delivering", replay.Changed),
+        };
+    }
+
+    internal async Task<RemoteReplayProgress> PollTranscriptAsync(ClaimsPrincipal caller, string logicalId,
         SessionTranscriptPipeline transcript, CancellationToken ct)
     {
         var (snapshot, session) = await ReadOwnedAsync(caller, logicalId, ct);
@@ -84,8 +163,7 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
         var binding = new RemoteTranscriptBinding(scope.NodeId, scope.RuntimeId, scope.Generation);
         var storageProvider = snapshot.Threads[0].Native.Target.ProviderId;
         var after = transcript.RemoteReplayPosition(storageProvider, logicalId, binding);
-        var request = new RemoteSessionLifecycleRequest(thread.Revision, thread.ProviderInstanceId,
-            RuntimeSessionId: thread.RuntimeSessionId, NativeThreadId: thread.NativeThreadId);
+        var request = ThreadRequest(thread);
         var page = await ApplyAsync<RemoteSessionEventPage>(caller, scope, SessionRuntimeOperation.ReadEvents,
             FormattableString.Invariant($"events:{after}"), request with { AfterSeq = after, Limit = 128 },
             HttpStatusCode.OK, ct);
@@ -100,7 +178,7 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
                 || ack.AcknowledgedThrough > transcript.RemoteReplayPosition(storageProvider, logicalId, binding))
                 throw new ControllerRemoteSessionException(502, "remote_transcript_receipt_mismatch");
         }
-        return through;
+        return new(through, through > after, page.Events.Count == 0 && page.LastSequence == through);
     }
 
     private async Task<(SessionBindingSnapshot Snapshot, ControllerRemoteSession Session)> ReadOwnedAsync(
@@ -139,7 +217,10 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
     private async Task<T> ApplyAsync<T>(ClaimsPrincipal caller, SessionRuntimeScope scope, SessionRuntimeOperation operation,
         string key, RemoteSessionLifecycleRequest request, HttpStatusCode expected, CancellationToken ct) where T : class
     {
-        var (status, body) = await send(caller, scope, operation, key, JsonSerializer.SerializeToUtf8Bytes(request, Json), ct);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(request, Json);
+        if (payload.Length > SessionRuntimeGrant.MaxPayloadBytes)
+            throw new ControllerRemoteSessionException(422, "remote_request_too_large");
+        var (status, body) = await send(caller, scope, operation, key, payload, ct);
         if (status != expected)
         {
             if (operation == SessionRuntimeOperation.ReadEvents && status == HttpStatusCode.Conflict
@@ -172,6 +253,16 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
         return new(placement.NodeId, placement.RuntimeId, "remote-" + Convert.ToHexString(digest).ToLowerInvariant(), 0,
             owner, placement.Workspace);
     }
+
+    private static RemoteSessionLifecycleRequest ThreadRequest(RemoteSessionLifecycleThread thread)
+        => new(thread.Revision, thread.ProviderInstanceId, RuntimeSessionId: thread.RuntimeSessionId,
+            NativeThreadId: thread.NativeThreadId);
+
+    private static RemoteSessionLifecycleRequest InputRequest(ControllerRemoteSession session, string uid, string text)
+        => ThreadRequest(session.Thread) with { InputUid = uid, Text = text, Fence = Fence(session.Preview) };
+
+    private static bool MatchesInput(RemoteInputReceipt receipt, string inputUid)
+        => receipt.InputUid == inputUid && Identifier(receipt.QueueItemId) && Identifier(receipt.TurnId);
 
     private static RemoteSessionStartFence Fence(RemoteSessionPlacementPreview preview)
         => new(preview.ProviderId, preview.AccessLevel, preview.MaxAccessLevel);

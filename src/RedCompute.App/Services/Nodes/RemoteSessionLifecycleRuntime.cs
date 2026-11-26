@@ -82,7 +82,8 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                 || SessionAccessLevels.Rank(workspace.Access.AccessLevel!) > SessionAccessLevels.Rank(workspace.Access.MaxAccessLevel!))
                 return Error(422, "runtime_provider_unavailable");
 
-            if (request.Fence is { } fence && (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume)
+            if (request.Fence is { } fence && (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume
+                    or SessionRuntimeOperation.SendInput)
                 || workspace.Provider.ProviderId != fence.ProviderId || workspace.Access.AccessLevel != fence.AccessLevel
                 || workspace.Access.MaxAccessLevel != fence.MaxAccessLevel))
                 return Error(409, "remote_placement_changed");
@@ -250,6 +251,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                         state = inspection.ErrorCode == "delivery_outcome_unknown" ? "unknown"
                             : inspection.DeliveryState?.ToString().ToLowerInvariant() ?? "unknown",
                         receipt = inspection.Receipt,
+                        payloadDigest = inspection.PayloadDigest,
                         turn = queue.GetTurn(thread.RuntimeSessionId, inspection.Receipt.TurnId)?.Summary,
                         errorCode = inspection.ErrorCode,
                     });

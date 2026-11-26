@@ -281,7 +281,7 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         var placement = new RemoteSessionPlacement(nodeId, runtimeId, "workspace", revision, "codex", providerInstance, null, null);
         RemoteSessionLifecycleThread thread;
         string logicalId;
-        byte[] originalReceipt;
+        RemoteInputReceipt originalReceipt;
         RemoteSessionEventPage firstPage;
         await using (var link = Connect())
         {
@@ -294,9 +294,8 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
             logicalId = scope.LogicalSessionId;
             thread = start.Thread;
             Assert.Equal(start, await source.StartAsync(caller, "start", placement, CancellationToken.None));
-            var accepted = await SendAsync(SessionRuntimeOperation.SendInput, inputUid, Input(thread));
-            Assert.Equal(HttpStatusCode.Accepted, accepted.Status);
-            originalReceipt = accepted.Body;
+            Assert.Equal("absent", (await source.InspectInputAsync(caller, logicalId, inputUid, CancellationToken.None)).State);
+            originalReceipt = await source.SendInputAsync(caller, logicalId, inputUid, "One prompt", CancellationToken.None);
             await delivery.ProcessSessionAsync(thread.RuntimeSessionId, CancellationToken.None);
             Assert.Equal(SessionStatus.Active, probe.Info!.Status);
             Assert.Equal(1, probe.Inputs);
@@ -316,9 +315,15 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
 
         await using var reconnected = Connect();
         await WaitForRouteAsync();
-        var repeat = await SendAsync(SessionRuntimeOperation.SendInput, inputUid, Input(thread));
-        Assert.Equal(HttpStatusCode.Accepted, repeat.Status);
-        Assert.Equal(originalReceipt, repeat.Body);
+        var settled = await source.InspectInputAsync(caller, logicalId, inputUid, CancellationToken.None);
+        Assert.Equal("delivered", settled.State);
+        Assert.Equal(originalReceipt, settled.Receipt);
+        Assert.Equal(originalReceipt.TurnId, settled.Turn?.TurnId);
+        var repeat = await source.SendInputAsync(caller, logicalId, inputUid, "One prompt", CancellationToken.None);
+        Assert.Equal(originalReceipt, repeat);
+        var conflict = await Assert.ThrowsAsync<ControllerRemoteSessionException>(() =>
+            source.SendInputAsync(caller, logicalId, inputUid, "Changed prompt", CancellationToken.None));
+        Assert.Equal("idempotency_conflict", conflict.Code);
         await delivery.ProcessSessionAsync(thread.RuntimeSessionId, CancellationToken.None);
         Assert.Equal(1, probe.Inputs);
 
@@ -365,8 +370,6 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         static RemoteSessionLifecycleRequest Request(RemoteSessionLifecycleThread bound) =>
             new(revision, providerInstance, RuntimeSessionId: bound.RuntimeSessionId, NativeThreadId: bound.NativeThreadId);
 
-        static RemoteSessionLifecycleRequest Input(RemoteSessionLifecycleThread bound) =>
-            Request(bound) with { InputUid = inputUid, Text = "One prompt" };
 
         async Task<RemoteSessionEventPage> ReadEventsAsync(RemoteSessionLifecycleThread bound, string commandId, long after)
         {

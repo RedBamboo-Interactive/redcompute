@@ -62,6 +62,50 @@ public sealed partial class SessionInputQueueStore
         return snapshot;
     }
 
+    private const string ControllerRemoteLease = "remote-session-runtime";
+
+    // An attempted network delivery has a stable destination receipt. Keep it at the head until
+    // reconciliation, even when the controller restarts or the node does not reply.
+    internal async Task<SessionInputQueueItem?> ClaimControllerRemoteInputAsync(ControllerRemoteSession binding, CancellationToken ct)
+    {
+        var scope = binding.Scope;
+        await using var connection = Open();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        var current = await ReadBindingSnapshotAsync(connection, transaction, scope.LogicalSessionId, ct);
+        if (current?.Active.Native.Remote != binding || current.Active.Generation != scope.Generation) return null;
+
+        await using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = """
+            SELECT * FROM SessionQueuedInputs
+            WHERE SessionId=$session AND State IN ('Pending','Delivering','Failed') ORDER BY Sequence LIMIT 1
+            """;
+        Add(read, "$session", scope.LogicalSessionId);
+        var head = (await ReadItemsAsync(read, ct)).FirstOrDefault();
+        var now = DateTimeOffset.UtcNow;
+        if (head is null || head.OwnerUserId != scope.OwnerId || head.IsControl
+            || head.DeliveryPolicy != SessionInputDeliveryPolicy.AfterCurrent
+            || head.Input is not [{ Type: "text" }] || head.AttachmentIds.Count != 0
+            || IsDeferred(head.NextAttemptAt, now))
+            return null;
+
+        await using var claim = connection.CreateCommand();
+        claim.Transaction = transaction;
+        claim.CommandText = """
+            UPDATE SessionQueuedInputs
+            SET State='Delivering', LeaseOwner=$remote, LeaseExpiresAt=NULL,
+                AttemptCount=AttemptCount+CASE WHEN State='Pending' THEN 1 ELSE 0 END, UpdatedAt=$now
+            WHERE Id=$id AND (State='Pending' OR (State='Delivering' AND LeaseOwner=$remote))
+            """;
+        Add(claim, "$remote", ControllerRemoteLease);
+        Add(claim, "$now", now.ToString("O"));
+        Add(claim, "$id", head.Id);
+        if (await claim.ExecuteNonQueryAsync(ct) != 1) return null;
+        var claimed = await GetCoreAsync(connection, transaction, scope.LogicalSessionId, head.Id, scope.OwnerId, ct);
+        await transaction.CommitAsync(ct);
+        return claimed;
+    }
+
     private sealed record ControllerRemoteStart(SessionRuntimeScope Scope, RemoteSessionPlacement Placement,
         RemoteSessionPlacementPreview Preview);
 }

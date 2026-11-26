@@ -172,11 +172,106 @@ public sealed class TranscriptMirrorOrderTests
             redLeaf.Pipeline(sequences: new TranscriptSequenceStore(path)), default));
         Assert.Empty(acks);
         var first = Assert.Single(redLeaf.RecordPosts);
-        Assert.Equal(1, await Open().PollTranscriptAsync(caller, logicalId,
-            redLeaf.Pipeline(sequences: new TranscriptSequenceStore(path)), default));
+        Assert.Equal(1, (await Open().PollTranscriptAsync(caller, logicalId,
+            redLeaf.Pipeline(sequences: new TranscriptSequenceStore(path)), default)).Through);
         Assert.Equal(1, Assert.Single(acks));
         Assert.Equal(first.ExternalId, redLeaf.RecordPosts.Last().ExternalId);
         Assert.Single(redLeaf.Data);
+
+        Task<(HttpStatusCode Status, byte[] Body)> Reply<T>(HttpStatusCode status, T body)
+            => Task.FromResult((status, JsonSerializer.SerializeToUtf8Bytes(body, json)));
+    }
+
+    [Fact]
+    public async Task Controller_holds_later_input_while_the_previous_native_outcome_is_unknown()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start();
+        using var fixture = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "owner")], "test-signed"));
+        var placement = new RemoteSessionPlacement("node-one", "runtime", "workspace", "revision", "codex", "probe", null, null);
+        var preview = new RemoteSessionPlacementPreview("node-one", "runtime", "workspace", "revision", "codex", "probe", "ask", "ask");
+        var native = new RemoteSessionLifecycleThread("native-session", "native-thread", "probe", "revision");
+        var receipt = new RemoteInputReceipt("q_first_remote", "first", "first");
+        var record = new UnifiedMessageRecord
+        {
+            Id = 1, SessionId = native.RuntimeSessionId, Role = "user", EventType = "text",
+            Content = "first", MessageUid = "first", Timestamp = DateTimeOffset.UnixEpoch,
+        };
+        var wire = new SequencedRemoteSessionEvent(1, new("native:1", "first", "first",
+            JsonSerializer.SerializeToUtf8Bytes(record, json)));
+        var destinationAccepted = false;
+        var digest = "";
+        var destinationCompleted = false;
+        var submits = 0;
+        var acknowledged = 0L;
+
+        ControllerRemoteSessions Open(SessionInputQueueStore queue) => new(queue, (_, _, operation, key, bytes, _) =>
+        {
+            switch (operation)
+            {
+                case SessionRuntimeOperation.Inspect when key == "start":
+                    return Reply(HttpStatusCode.OK, preview);
+                case SessionRuntimeOperation.Start:
+                    return Reply(HttpStatusCode.Created, native);
+                case SessionRuntimeOperation.Inspect:
+                    Assert.Equal("first", key);
+                    if (!destinationAccepted) return Reply(HttpStatusCode.OK, new { state = "absent" });
+                    SessionTurnSummary? turn = destinationCompleted
+                        ? new("first", SessionTurnOutcomes.Completed, DateTimeOffset.UnixEpoch.AddSeconds(1), null, null) : null;
+                    return Reply(HttpStatusCode.OK, new { state = destinationCompleted ? "delivered" : "unknown",
+                        receipt, turn, payloadDigest = digest });
+                case SessionRuntimeOperation.SendInput:
+                    Assert.Equal("first", key);
+                    submits++;
+                    destinationAccepted = true;
+                    digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+                    throw new HttpRequestException("Lost destination acceptance after the durable enqueue.");
+                case SessionRuntimeOperation.ReadEvents:
+                    return Reply(HttpStatusCode.OK, new RemoteSessionEventPage(acknowledged, 1, false,
+                        acknowledged == 0 ? [wire] : []));
+                case SessionRuntimeOperation.AcknowledgeEvents:
+                    acknowledged = JsonSerializer.Deserialize<RemoteSessionLifecycleRequest>(bytes, json)!.ThroughSeq!.Value;
+                    return Reply(HttpStatusCode.OK, new { acknowledgedThrough = acknowledged });
+                default:
+                    throw new InvalidOperationException();
+            }
+        });
+
+        var store = fixture.Store;
+        var controller = Open(store);
+        var started = await controller.StartAsync(caller, "start", placement, default);
+        var logical = started.Scope.LogicalSessionId;
+        var first = (await store.EnqueueAsync(fixture.Submission("first") with { SessionId = logical })).Item;
+        var second = (await store.EnqueueAsync(fixture.Submission("second") with { SessionId = logical })).Item;
+        var transcript = redLeaf.Pipeline(sequences: new TranscriptSequenceStore(fixture.Attachments.DatabasePath));
+        await Assert.ThrowsAsync<HttpRequestException>(() => controller.AdvanceInputAsync(caller, started, transcript, default));
+        Assert.Equal(SessionInputQueueState.Delivering, (await store.GetAsync(logical, first.Id, "owner"))!.State);
+
+        store = new SessionInputQueueStore(fixture.Config, fixture.Attachments);
+        controller = Open(store);
+        Assert.Equal(0, await store.RecoverExpiredLeasesAsync());
+        var held = await controller.AdvanceInputAsync(caller, started, transcript, default);
+        Assert.Equal("unknown", held?.State);
+        Assert.Equal(1, acknowledged);
+        Assert.Single(redLeaf.Data);
+        Assert.Equal(1, submits);
+        Assert.Equal(SessionInputQueueState.Pending, (await store.GetAsync(logical, second.Id, "owner"))!.State);
+
+        var sameDigest = digest;
+        digest = new string('A', 64);
+        var conflict = await Assert.ThrowsAsync<ControllerRemoteSessionException>(() =>
+            controller.AdvanceInputAsync(caller, started, transcript, default));
+        Assert.Equal("idempotency_conflict", conflict.Code);
+        Assert.Equal(SessionInputQueueState.Delivering, (await store.GetAsync(logical, first.Id, "owner"))!.State);
+        digest = sameDigest;
+
+        destinationCompleted = true;
+        var completed = await controller.AdvanceInputAsync(caller, started, transcript, default);
+        Assert.Equal("delivered", completed?.State);
+        Assert.Equal(SessionInputQueueState.Delivered, (await store.GetAsync(logical, first.Id, "owner"))!.State);
+        Assert.Equal(SessionInputQueueState.Pending, (await store.GetAsync(logical, second.Id, "owner"))!.State);
+        Assert.Equal(1, submits);
 
         Task<(HttpStatusCode Status, byte[] Body)> Reply<T>(HttpStatusCode status, T body)
             => Task.FromResult((status, JsonSerializer.SerializeToUtf8Bytes(body, json)));
