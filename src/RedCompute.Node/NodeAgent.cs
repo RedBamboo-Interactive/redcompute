@@ -89,11 +89,19 @@ public sealed class NodeAgent : IAsyncDisposable
         _env = env;
         _reporter = new NodeReporter(env.Host, env.ProbeRunner ?? new HostProbeRunner(env.Host), env.Time);
         _runtimes = new RuntimeManager(env, env.RuntimeSpec, env.RuntimeProbe);
-        ForwardTarget = new RuntimeForwardTarget(_runtimes, env.Time);
+        ForwardTarget = new RuntimeForwardTarget(_runtimes, env.Time, ActiveSessionPairing);
         _forward = new ForwardHost(ForwardTarget, audit: entry => env.Audit.Record("forward", entry.Path, entry.Outcome,
             $"{entry.Runtime} {entry.Mode}{(entry.Method is null ? "" : " " + entry.Method)} status {entry.Status?.ToString() ?? "-"}"
             + $" request {entry.RequestBytes} B response {entry.ResponseBytes} B"));
         _runtimes.Changed += OnRuntimeChanged;
+    }
+
+    private NodePairing? ActiveSessionPairing()
+    {
+        lock (_gate)
+            return _client?.Status == LinkClientStatus.Online && _linkRun is { IsCancellationRequested: false }
+                ? _pairing
+                : null;
     }
 
     /// <summary>The runtimes the owner registered here, and what the agent started from them.</summary>

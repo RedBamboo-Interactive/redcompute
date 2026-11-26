@@ -1,4 +1,5 @@
 using System.Text;
+using RedCompute.NodeLink;
 using RedCompute.NodeLink.Forward;
 
 namespace RedCompute.Node.Runtimes;
@@ -45,11 +46,11 @@ public enum BodyRule
 /// <paramref name="View"/> is the file a <c>/view</c> asks for: one the server's own prompts produced.
 /// </summary>
 public sealed record AllowedRoute(string Path, string Query, long MaxBody, BodyRule Body, string? PromptId = null,
-    ResponseRule Response = ResponseRule.Pass, OutputFile? View = null)
+    ResponseRule Response = ResponseRule.Pass, OutputFile? View = null, SessionRuntimeOperation? SessionOperation = null)
 {
     /// <summary>Whether the route needs a body (its rule reads one): a body-less request there is refused.</summary>
     public bool NeedsBody => Body is BodyRule.ImageUpload or BodyRule.QueueDeleteOnly or BodyRule.PromptSubmit or BodyRule.InterruptOwnPrompt
-        or BodyRule.FreeOnly;
+        or BodyRule.FreeOnly || SessionOperation is not null;
 }
 
 /// <summary>
@@ -75,7 +76,7 @@ public static class RuntimeRoutes
     public static AllowedRoute? Http(string kind, string method, string path, string query, out string? refusal)
     {
         refusal = null;
-        if (kind != RuntimeKinds.ComfyUi)
+        if (kind is not (RuntimeKinds.ComfyUi or SessionRuntimeProtocol.Kind))
         {
             refusal = $"No routes for kind '{kind}'.";
             return null;
@@ -83,6 +84,14 @@ public static class RuntimeRoutes
         if (Segments(path, out refusal) is not { } segments) return null;
         if (Pairs(query, out refusal) is not { } pairs) return null;
         var rebuiltPath = "/" + string.Join('/', segments.Select(Uri.EscapeDataString));
+        if (kind == SessionRuntimeProtocol.Kind)
+        {
+            if (method == "POST" && pairs.Count == 0 && segments is ["ai-session", "v1", var name]
+                && SessionOperation(name) is { } operation)
+                return new AllowedRoute(rebuiltPath, "", 2 * MiB, BodyRule.Any, SessionOperation: operation);
+            refusal = $"{method} {path} is not on the {kind} allowlist.";
+            return null;
+        }
         var route = (method, segments) switch
         {
             ("GET", ["system_stats"]) => Plain(rebuiltPath, pairs, [], 0, BodyRule.None, ref refusal),
@@ -108,6 +117,18 @@ public static class RuntimeRoutes
         if (route is null) refusal ??= $"{method} {path} is not on the {kind} allowlist.";
         return route;
     }
+
+    private static SessionRuntimeOperation? SessionOperation(string name) => name switch
+    {
+        "start" => SessionRuntimeOperation.Start,
+        "resume" => SessionRuntimeOperation.Resume,
+        "send-input" => SessionRuntimeOperation.SendInput,
+        "park" => SessionRuntimeOperation.Park,
+        "inspect" => SessionRuntimeOperation.Inspect,
+        "read-events" => SessionRuntimeOperation.ReadEvents,
+        "acknowledge-events" => SessionRuntimeOperation.AcknowledgeEvents,
+        _ => null,
+    };
 
     /// <summary>The route for a WebSocket, or why not.</summary>
     public static AllowedRoute? Ws(string kind, string path, string query, out string? refusal)

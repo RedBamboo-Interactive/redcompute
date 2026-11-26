@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.WebSockets;
+using System.Text.Json;
+using RedCompute.NodeLink;
 using RedCompute.Core.Providers;
 using RedCompute.NodeLink.Forward;
 
@@ -22,7 +24,8 @@ namespace RedCompute.Node.Runtimes;
 /// <c>Accept-Encoding</c>, so the node reads it as it is.</item>
 /// </list>
 /// </summary>
-public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? time = null) : IForwardTarget
+public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? time = null,
+    Func<NodePairing?>? activePairing = null) : IForwardTarget
 {
     private sealed record Admitted(RuntimeRegistration Runtime, AllowedRoute Route, string? Boundary);
 
@@ -55,6 +58,8 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? 
             ? RuntimeRoutes.Ws(runtime.Kind, open.Path, open.Query, out refusal)
             : RuntimeRoutes.Http(runtime.Kind, open.Method!, open.Path, open.Query, out refusal);
         if (route is null) return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, refusal ?? "Not on the allowlist.");
+        if (route.SessionOperation is not null && activePairing?.Invoke()?.LinkPin is null)
+            return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, "Session routes require an active pinned pairing.");
         if (RuntimeRoutes.ContentTypes(open.Headers) > 1)
             return ForwardDecision.Refuse(ForwardErrorCodes.RouteNotAllowed, "A request carries one Content-Type.");
         if (route.NeedsBody && open.BodyBytes == 0)
@@ -82,6 +87,17 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? 
         };
         request.Headers.Host = $"127.0.0.1:{runtime.Port}";
         request.Headers.ConnectionClose = true;
+        if (route.SessionOperation is { } operation)
+        {
+            request.Content = await VerifySessionCommandAsync(runtime.Id, operation, route.MaxBody, requestBody, ct);
+            using var answer = await SendUpstreamAsync(runtime.Id, request, ct);
+            if (answer.Content.Headers.ContentEncoding.Count != 0)
+                throw new ForwardTargetException(ForwardErrorCodes.UpstreamFailed, "The session runtime response is encoded.");
+            await using var answerBody = await answer.Content.ReadAsStreamAsync(ct);
+            var bytes = await RuntimeAnswers.ReadCappedAsync(answerBody, 2 * RuntimeRoutes.MiB, route.Path, ct);
+            return new ForwardUpstreamResponse((int)answer.StatusCode,
+                [new("content-type", "application/json")], new MemoryStream(bytes));
+        }
         if (open.BodyBytes != 0 && route.Body != BodyRule.None)
         {
             Func<string, bool> submitted = id => Submitted.Contains(runtime.Id, id);
@@ -111,19 +127,7 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? 
         // /free unloads the runtime's models: never while the owner's own prompts run or wait (review item 5).
         if (route.Body == BodyRule.FreeOnly) await RefuseWhileOwnerBusyAsync(runtime, ct);
 
-        HttpResponseMessage response;
-        try
-        {
-            response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        }
-        catch (HttpRequestException error) when (Find<ForwardTargetException>(error) is { } refused)
-        {
-            throw refused;
-        }
-        catch (HttpRequestException error)
-        {
-            throw new ForwardTargetException(ForwardErrorCodes.UpstreamFailed, $"{runtime.Id} did not answer: {error.Message}");
-        }
+        var response = await SendUpstreamAsync(runtime.Id, request, ct);
         if (route.Response == ResponseRule.QueueRedacted) return await RedactedQueueAsync(runtime, response, ct);
         var headers = new List<KeyValuePair<string, string>>();
         foreach (var (name, values) in response.Headers.Concat(response.Content.Headers))
@@ -138,6 +142,48 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? 
         if (route.Response == ResponseRule.HistoryOutputs && response.IsSuccessStatusCode && route.PromptId is { } historyOf)
             stream = new HistoryAnswerRecorder(stream, answer => Outputs.Add(runtime.Id, ServerOutputs.FilesOf(answer.Span, historyOf)));
         return new ForwardUpstreamResponse((int)response.StatusCode, headers, stream, response);
+    }
+
+    private async Task<HttpContent> VerifySessionCommandAsync(string runtimeId, SessionRuntimeOperation operation,
+        long maxBody, Stream body, CancellationToken ct)
+    {
+        var pairing = activePairing?.Invoke();
+        if (pairing?.LinkPin is not { } pin)
+            throw new ForwardTargetException(ForwardErrorCodes.RouteNotAllowed, "Session routes require an active pinned pairing.");
+
+        SessionRuntimeGrant? grant;
+        try
+        {
+            var bytes = await RuntimeAnswers.ReadCappedAsync(body, maxBody, "session command", ct);
+            grant = JsonSerializer.Deserialize<SessionRuntimeGrant>(bytes);
+        }
+        catch (JsonException)
+        {
+            throw new ForwardTargetException(ForwardErrorCodes.RouteNotAllowed, "The session command envelope is invalid.");
+        }
+        if (grant is null || !grant.Verify(pin.PublicKeyBytes(), pairing.NodeId, runtimeId, operation,
+                (time ?? TimeProvider.System).GetUtcNow()) || !ReferenceEquals(pairing, activePairing?.Invoke()))
+            throw new ForwardTargetException(ForwardErrorCodes.RouteNotAllowed, "The session command grant was refused.");
+
+        var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(grant));
+        content.Headers.ContentType = new("application/json");
+        return content;
+    }
+
+    private static async Task<HttpResponseMessage> SendUpstreamAsync(string runtimeId, HttpRequestMessage request, CancellationToken ct)
+    {
+        try
+        {
+            return await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+        catch (HttpRequestException error) when (Find<ForwardTargetException>(error) is { } refused)
+        {
+            throw refused;
+        }
+        catch (HttpRequestException error)
+        {
+            throw new ForwardTargetException(ForwardErrorCodes.UpstreamFailed, $"{runtimeId} did not answer: {error.Message}");
+        }
     }
 
     /// <summary>
