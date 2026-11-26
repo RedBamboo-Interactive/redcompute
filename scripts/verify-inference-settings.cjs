@@ -295,7 +295,7 @@ async function main() {
   assert.ok(bearer, "REDLEAF_EXECUTION_TOKEN is required");
   const identity = await api(leaf, "/auth/execution-context");
   assert.equal(identity.tokenUse, "execution");
-  assert.ok(identity.identity);
+  assert.equal(identity.identity?.actor?.kind, "agent", "Use a signed Agent execution identity");
   assert.ok(process.env.REDLEAF_SCRATCH_DIR, "REDLEAF_SCRATCH_DIR is required");
   assert.ok(["prepare", "arm", "verify"].includes(phase), "Choose prepare, arm, or verify");
   assert.equal(args.length, phase === "prepare" ? 2 : 1, "Expected request and state paths for prepare, or state path alone");

@@ -203,4 +203,3 @@ public partial class ClaudeSessionService
     private static string? InferString(JsonElement value, string name)
         => value.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.String ? field.GetString() : null;
 }
-

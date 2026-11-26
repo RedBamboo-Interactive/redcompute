@@ -274,4 +274,3 @@ public sealed class SessionInferenceSettingsEndpointTests
         return (ctx.Response.StatusCode, json.RootElement.Clone());
     }
 }
-
