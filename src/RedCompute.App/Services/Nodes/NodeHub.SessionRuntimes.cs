@@ -29,6 +29,10 @@ public sealed partial class NodeHub
             || !runtime.Capabilities.Contains(SessionRuntimeProtocol.Kind, StringComparer.Ordinal))
             throw new NodeHubException("session_runtime_unavailable", "The registered session runtime is unavailable.");
 
+        if (SessionRuntimeProtocol.IsMoveOperation(operation)
+            && !runtime.Capabilities.Contains(SessionRuntimeProtocol.BindingMoveCapability, StringComparer.Ordinal))
+            throw new NodeHubException("session_runtime_move_unsupported", "The node agent cannot forward session move commands.");
+
         var keyId = Server.FindSession(node.Id)?.ControllerKeyId;
         var key = keyId is null ? null : _options.LinkKeys?.Keys()
             .FirstOrDefault(key => NodeLinkKeyInfo.For(key.PublicKey).KeyId == keyId);

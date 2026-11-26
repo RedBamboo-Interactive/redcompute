@@ -4,6 +4,7 @@ namespace RedCompute.NodeLink;
 public static class SessionRuntimeProtocol
 {
     public const string Kind = "ai-session.v1";
+    public const string BindingMoveCapability = "ai-session.binding-move.v1";
     public const string HealthPath = "/ai-session/v1/health";
     public const int MaxExchangeBodyBytes = 2 * 1024 * 1024;
 
@@ -17,7 +18,16 @@ public static class SessionRuntimeProtocol
             [SessionRuntimeOperation.Inspect] = "/ai-session/v1/inspect",
             [SessionRuntimeOperation.ReadEvents] = "/ai-session/v1/read-events",
             [SessionRuntimeOperation.AcknowledgeEvents] = "/ai-session/v1/acknowledge-events",
+            [SessionRuntimeOperation.PrepareMove] = "/ai-session/v1/prepare-move",
+            [SessionRuntimeOperation.SealMoveSource] = "/ai-session/v1/seal-move-source",
+            [SessionRuntimeOperation.ActivateMove] = "/ai-session/v1/activate-move",
+            [SessionRuntimeOperation.DiscardMove] = "/ai-session/v1/discard-move",
         };
+
+    public static bool IsMoveOperation(SessionRuntimeOperation operation) => operation is SessionRuntimeOperation.PrepareMove
+        or SessionRuntimeOperation.SealMoveSource or SessionRuntimeOperation.ActivateMove or SessionRuntimeOperation.DiscardMove;
+
+    public static string MoveRequestId(SessionRuntimeOperation operation, string moveId) => $"{operation}:{moveId}";
 
     public static string PathFor(SessionRuntimeOperation operation) => CommandPaths[operation];
 

@@ -21,13 +21,13 @@ internal sealed record RemoteSessionLifecycleRequest(string Revision, string Pro
 internal sealed record RemoteSessionStartFence(string ProviderId, string AccessLevel, string MaxAccessLevel);
 
 internal sealed record RemoteSessionLifecycleThread(string RuntimeSessionId, string NativeThreadId, string ProviderInstanceId,
-    string Revision, string? Model = null, string? Effort = null, DateTimeOffset? StartedAt = null);
+    string Revision, string? Model = null, string? Effort = null, DateTimeOffset? StartedAt = null, long NativeHistoryThrough = 0);
 internal sealed record RemoteSessionRuntimeBinding(SessionRuntimeScope Scope, RemoteSessionLifecycleThread Thread);
 
 internal sealed record RemoteSessionRuntimeWorkspace(string OwnerId, string Reference, string Revision,
     string ProjectPath, string ProviderInstanceId, ISessionProvider Provider, SessionAccessState Access, Guid? RepositoryId = null);
 
-internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue,
+internal sealed partial class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue,
     Func<RemoteSessionRuntimeIdentity?> currentPairing,
     Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, CancellationToken, Task<RemoteSessionRuntimeWorkspace?>> resolve,
     TimeProvider time, Action<string>? signalInput = null,
@@ -44,7 +44,9 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         if (!Authorized(operation, grant))
             return Error(403, "invalid_runtime_grant");
 
-        if (grant.Scope.Generation != 0)
+        if (SessionRuntimeProtocol.IsMoveOperation(operation))
+            return await ApplyMoveAsync(grant, ct);
+        if (operation == SessionRuntimeOperation.Start && grant.Scope.Generation != 0)
             return Error(409, "binding_generation_mismatch");
 
         RemoteSessionLifecycleRequest? request;
@@ -93,6 +95,9 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                 || workspace.Access.MaxAccessLevel != fence.MaxAccessLevel))
                 return Error(409, "remote_placement_changed");
 
+            if (!isRead && await IsSealedAsync(grant.Scope, ct))
+                return Error(409, "binding_generation_sealed");
+
             if (inspectPlacement)
                 return Reply(200, new
                 {
@@ -104,6 +109,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                     providerId = workspace.Provider.ProviderId,
                     workspace.Access.AccessLevel,
                     workspace.Access.MaxAccessLevel,
+                    supportsBindingMoves = true,
                 });
 
             if (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume or SessionRuntimeOperation.Park))
@@ -279,7 +285,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         RemoteSessionRuntimeWorkspace workspace, RemoteSessionLifecycleThread thread, long after, int limit, CancellationToken ct)
     {
         var page = await queue.ReadRemoteEventsAsync(scope, after, limit, ct);
-        if (page.Gap || page.Events.Count > 0)
+        if (page.Gap || page.Events.Count > 0 || await IsSealedAsync(scope, ct))
             return Reply(page.Gap ? 409 : 200, page);
 
         // Native records are committed at the provider before they enter the spool.
@@ -288,12 +294,12 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         if (info is null || !Matches(info, thread.RuntimeSessionId, workspace) || info.ProviderSessionId != thread.NativeThreadId)
             return Reply(200, page);
 
-        var through = await queue.ReadRemoteNativeWatermarkAsync(scope, ct);
+        var through = Math.Max(thread.NativeHistoryThrough, await queue.ReadRemoteNativeWatermarkAsync(scope, ct));
         string? inputUid = null;
         var added = 0;
         foreach (var record in history.Where(record => record.SessionId == thread.RuntimeSessionId).OrderBy(record => record.Id))
         {
-            if (record.Role == "user" && !string.IsNullOrWhiteSpace(record.MessageUid))
+            if (record.Id > thread.NativeHistoryThrough && record.Role == "user" && !string.IsNullOrWhiteSpace(record.MessageUid))
                 inputUid = record.MessageUid;
             if (record.Id <= through) continue;
             var body = JsonSerializer.SerializeToUtf8Bytes(record, Json);

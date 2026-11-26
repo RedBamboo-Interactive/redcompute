@@ -380,6 +380,164 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_prepared_generation_cannot_dispatch_until_activation_and_discard_is_durable()
+    {
+        using var controller = NoiseKeyPair.Generate();
+        using var stranger = NoiseKeyPair.Generate();
+        Directory.CreateDirectory(_root);
+        var provider = DispatchProxy.Create<IFixtureProvider, Provider>();
+        var probe = (Provider)(object)provider;
+        var scope = new SessionRuntimeScope("node", "sessions", "logical", 1, "owner", "workspace");
+        var runtime = OpenRuntime();
+        var prepare = MakePrepare("move-one");
+        var refused = await runtime.ApplyAsync(SessionRuntimeOperation.PrepareMove,
+            Grant(stranger, SessionRuntimeOperation.PrepareMove, "move-one", prepare));
+        Assert.Equal(403, refused.Status);
+        Assert.Equal(0, probe.Starts);
+
+        var discarded = await runtime.ApplyAsync(SessionRuntimeOperation.DiscardMove,
+            Grant(controller, SessionRuntimeOperation.DiscardMove, "move-aborted", Ids("move-aborted")));
+        Assert.Equal(200, discarded.Status);
+        var late = await OpenRuntime().ApplyAsync(SessionRuntimeOperation.PrepareMove,
+            Grant(controller, SessionRuntimeOperation.PrepareMove, "move-aborted", MakePrepare("move-aborted")));
+        Assert.Equal(409, late.Status);
+        Assert.Equal(0, probe.Starts);
+
+        var prepareCommand = Grant(controller, SessionRuntimeOperation.PrepareMove, "move-one", prepare);
+        var prepared = await runtime.ApplyAsync(SessionRuntimeOperation.PrepareMove, prepareCommand);
+        Assert.Equal(201, prepared.Status);
+        var thread = JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(prepared.Body, Json)!;
+        runtime = OpenRuntime();
+        Assert.Equal(prepared.Body, (await runtime.ApplyAsync(SessionRuntimeOperation.PrepareMove, prepareCommand)).Body);
+        Assert.Equal(1, probe.Starts);
+        var changed = await runtime.ApplyAsync(SessionRuntimeOperation.PrepareMove,
+            Grant(controller, SessionRuntimeOperation.PrepareMove, "move-one", MakePrepare("move-one", "other")));
+        Assert.Equal(409, changed.Status);
+
+        var input = SessionRuntimeGrant.Issue(controller, scope, SessionRuntimeOperation.SendInput, "next",
+            DateTimeOffset.UtcNow.AddSeconds(30), JsonSerializer.SerializeToUtf8Bytes(new RemoteSessionLifecycleRequest(
+                "abc123", "probe", RuntimeSessionId: thread.RuntimeSessionId, NativeThreadId: thread.NativeThreadId,
+                InputUid: "next", Text: "Next"), Json));
+        Assert.Equal(409, (await runtime.ApplyAsync(SessionRuntimeOperation.SendInput, input)).Status);
+        Assert.Null(runtime.FindLocalSession(thread.RuntimeSessionId).Info);
+
+        var activation = Grant(controller, SessionRuntimeOperation.ActivateMove, "move-one",
+            Ids("move-one", thread.RuntimeSessionId, thread.NativeThreadId));
+        var activated = await runtime.ApplyAsync(SessionRuntimeOperation.ActivateMove, activation);
+        Assert.Equal(200, activated.Status);
+        runtime = OpenRuntime();
+        Assert.Equal(activated.Body, (await runtime.ApplyAsync(SessionRuntimeOperation.ActivateMove, activation)).Body);
+        Assert.Same(probe.Info, runtime.FindLocalSession(thread.RuntimeSessionId).Info);
+        Assert.Equal(202, (await runtime.ApplyAsync(SessionRuntimeOperation.SendInput, input)).Status);
+        Assert.Equal(409, (await runtime.ApplyAsync(SessionRuntimeOperation.DiscardMove,
+            Grant(controller, SessionRuntimeOperation.DiscardMove, "move-one", Ids("move-one")))).Status);
+        Assert.Equal(1, probe.Starts);
+
+        object Ids(string move, string? runtimeId = null, string? native = null) => new
+        {
+            moveId = move, sourceGeneration = 0, destinationGeneration = 1, revision = "abc123",
+            providerInstanceId = "probe", runtimeSessionId = runtimeId, nativeThreadId = native,
+        };
+        object MakePrepare(string move, string text = "Earlier decision") => new
+        {
+            moveId = move, sourceGeneration = 0, destinationGeneration = 1, revision = "abc123",
+            providerInstanceId = "probe", model = "probe-model", effort = "low", historyThrough = 2,
+            history = new[] { new { role = "user", messageUid = "earlier", content = text } },
+            fence = new RemoteSessionStartFence("codex", SessionAccessLevels.Ask, SessionAccessLevels.Ask),
+        };
+        SessionRuntimeGrant Grant(NoiseKeyPair key, SessionRuntimeOperation operation, string move, object payload)
+            => SessionRuntimeGrant.Issue(key, scope, operation, SessionRuntimeProtocol.MoveRequestId(operation, move),
+                DateTimeOffset.UtcNow.AddSeconds(30), JsonSerializer.SerializeToUtf8Bytes(payload, Json));
+        RemoteSessionLifecycleRuntime OpenRuntime()
+        {
+            var workspace = new RemoteSessionRuntimeWorkspace("owner", "workspace", "abc123", _root, "probe", provider,
+                new(SessionAccessLevels.Ask, SessionAccessLevels.Ask, false, null, null));
+            return new(new(_config, new(_config, Path.Combine(_root, "bytes"), Path.Combine(_root, "input.db"))),
+                () => new("node", "sessions", controller.PublicKey),
+                (_, _, _) => Task.FromResult<RemoteSessionRuntimeWorkspace?>(workspace), TimeProvider.System,
+                configuredWorkspace: (_, _) => workspace);
+        }
+    }
+
+    [Fact]
+    public async Task A_sealed_source_can_return_with_its_original_thread_and_a_fresh_replay_boundary()
+    {
+        using var controller = NoiseKeyPair.Generate();
+        Directory.CreateDirectory(_root);
+        var provider = DispatchProxy.Create<IFixtureProvider, Provider>();
+        var probe = (Provider)(object)provider;
+        var scope = new SessionRuntimeScope("node", "sessions", "logical", 0, "owner", "workspace");
+        var current = OpenRuntime();
+        var start = await current.ApplyAsync(SessionRuntimeOperation.Start,
+            Grant(scope, SessionRuntimeOperation.Start, "start", new RemoteSessionLifecycleRequest("abc123", "probe", "probe-model", "low")));
+        Assert.Equal(201, start.Status);
+        var thread = JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(start.Body, Json)!;
+        probe.Record(10, "user", "previous-input", "Already mirrored");
+        probe.Info!.Status = SessionStatus.Active;
+        Assert.Equal(409, (await Move(SessionRuntimeOperation.SealMoveSource, "busy-move", scope, 0, 1)).Status);
+        Assert.Equal(0, probe.Parks);
+
+        probe.Info.Status = SessionStatus.Idle;
+        var sealedSource = await Move(SessionRuntimeOperation.SealMoveSource, "outbound", scope, 0, 1);
+        Assert.Equal(200, sealedSource.Status);
+        current = OpenRuntime();
+        Assert.Equal(sealedSource.Body, (await Move(SessionRuntimeOperation.SealMoveSource, "outbound", scope, 0, 1)).Body);
+        Assert.Equal(1, probe.Parks);
+        Assert.Null(current.FindLocalSession(thread.RuntimeSessionId).Info);
+        var input = new RemoteSessionLifecycleRequest("abc123", "probe", RuntimeSessionId: thread.RuntimeSessionId,
+            NativeThreadId: thread.NativeThreadId, InputUid: "stale", Text: "Stale");
+        Assert.Equal(409, (await current.ApplyAsync(SessionRuntimeOperation.SendInput,
+            Grant(scope, SessionRuntimeOperation.SendInput, "stale", input))).Status);
+
+        var returnedScope = scope with { Generation = 2 };
+        var prepared = await Move(SessionRuntimeOperation.PrepareMove, "return", returnedScope, 1, 2, previous: 0);
+        Assert.Equal(201, prepared.Status);
+        var returned = JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(prepared.Body, Json)!;
+        Assert.Equal(thread.NativeThreadId, returned.NativeThreadId);
+        Assert.Equal(thread.RuntimeSessionId, returned.RuntimeSessionId);
+        Assert.Equal(10, returned.NativeHistoryThrough);
+        Assert.Equal(1, probe.Starts);
+        Assert.Equal(1, probe.Resumes);
+        Assert.Null(current.FindLocalSession(returned.RuntimeSessionId).Info);
+
+        Assert.Equal(200, (await Move(SessionRuntimeOperation.ActivateMove, "return", returnedScope, 1, 2)).Status);
+        current = OpenRuntime();
+        Assert.Same(probe.Info, current.FindLocalSession(returned.RuntimeSessionId).Info);
+        probe.Record(20, "user", "new-input", "New transcript record");
+        var replay = new RemoteSessionLifecycleRequest("abc123", "probe", RuntimeSessionId: thread.RuntimeSessionId,
+            NativeThreadId: thread.NativeThreadId, AfterSeq: 0, Limit: 8);
+        var oldPage = await current.ApplyAsync(SessionRuntimeOperation.ReadEvents,
+            Grant(scope, SessionRuntimeOperation.ReadEvents, "read-old", replay));
+        Assert.Equal(200, oldPage.Status);
+        Assert.Empty(JsonSerializer.Deserialize<RemoteSessionEventPage>(oldPage.Body, Json)!.Events);
+        var newPage = await current.ApplyAsync(SessionRuntimeOperation.ReadEvents,
+            Grant(returnedScope, SessionRuntimeOperation.ReadEvents, "read-new", replay));
+        Assert.Equal(200, newPage.Status);
+        Assert.Equal("new-input", Assert.Single(JsonSerializer.Deserialize<RemoteSessionEventPage>(newPage.Body, Json)!.Events).Event.InputUid);
+
+        Task<RemoteLifecycleReceipt> Move(SessionRuntimeOperation operation, string id, SessionRuntimeScope commandScope,
+            long from, long to, long? previous = null)
+        {
+            var request = new RemoteSessionMoveRequest(id, from, to, "abc123", "probe", thread.RuntimeSessionId,
+                thread.NativeThreadId, previous, previous is null ? null : "probe-model", previous is null ? null : "low",
+                Fence: previous is null ? null : new("codex", SessionAccessLevels.Ask, SessionAccessLevels.Ask));
+            return current.ApplyAsync(operation, Grant(commandScope, operation, SessionRuntimeProtocol.MoveRequestId(operation, id), request));
+        }
+        SessionRuntimeGrant Grant(SessionRuntimeScope commandScope, SessionRuntimeOperation operation, string id, object payload)
+            => SessionRuntimeGrant.Issue(controller, commandScope, operation, id, DateTimeOffset.UtcNow.AddSeconds(30),
+                JsonSerializer.SerializeToUtf8Bytes(payload, Json));
+        RemoteSessionLifecycleRuntime OpenRuntime()
+        {
+            var workspace = new RemoteSessionRuntimeWorkspace("owner", "workspace", "abc123", _root, "probe", provider,
+                new(SessionAccessLevels.Ask, SessionAccessLevels.Ask, false, null, null));
+            return new(new(_config, new(_config, Path.Combine(_root, "bytes"), Path.Combine(_root, "input.db"))),
+                () => new("node", "sessions", controller.PublicKey),
+                (_, _, _) => Task.FromResult<RemoteSessionRuntimeWorkspace?>(workspace), TimeProvider.System,
+                configuredWorkspace: (_, _) => workspace);
+        }
+    }
+
+    [Fact]
     public async Task Owner_configuration_requires_the_registered_workspace_head_and_current_pin()
     {
         Directory.CreateDirectory(_root);
@@ -466,6 +624,12 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
             nameof(ISessionProvider.GetSession) => (Info, _messages.ToList()),
             nameof(ISessionProvider.StartSessionAsync) => Start(args!),
             nameof(ISessionProvider.ResumeSessionAsync) => Resume(),
+            nameof(ISessionProvider.GetAccessState) => new SessionAccessState(Info!.AccessLevel,
+                Info.MaxAccessLevel, Info.Unattended, Info.AccessLevelBeforePlan, Info.AccessLevelSource),
+            nameof(ISessionProvider.SetAccessState) => ApplyAccess((SessionAccessState)args![1]!),
+            nameof(ISessionInferenceSettings.BindingModelId) => (string?)args![0],
+            nameof(ISessionInferenceSettings.GetInferenceOptionsAsync) => Task.FromResult(
+                new SessionInferenceOptions("probe-model", "low", [new("probe-model", "Probe", "low", ["low"])])),
             nameof(ISessionProvider.TrySendInputAsync) => Send((string?)args![3]),
             nameof(IIdleSessionParkingProvider.TryParkIdleSessionAsync) => Park((string)args![1]!),
             _ => throw new InvalidOperationException(method?.Name),
@@ -501,6 +665,14 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
             Info!.Status = SessionStatus.Stopped;
             Info.StopReason = reason;
             return Task.FromResult(true);
+        }
+
+        private bool ApplyAccess(SessionAccessState state)
+        {
+            Info!.AccessLevel = state.AccessLevel;
+            Info.MaxAccessLevel = state.MaxAccessLevel;
+            Info.AccessLevelSource = state.Source;
+            return true;
         }
 
         private Task<UnifiedSessionInfo?> Resume()

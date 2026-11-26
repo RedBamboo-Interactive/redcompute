@@ -82,9 +82,20 @@ public sealed partial class SessionInputQueueStore
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT NodeId, RuntimeId, LogicalSessionId, Generation, OwnerId, AccessScope, Body
-            FROM RemoteSessionLifecycleCommands WHERE Operation='Start' AND Status=201
-              AND json_extract(CAST(Body AS TEXT),'$.runtimeSessionId')=$runtime
+            SELECT active.NodeId, active.RuntimeId, active.LogicalSessionId, active.Generation,
+                   active.OwnerId, active.AccessScope, active.Body
+            FROM RemoteSessionLifecycleCommands active
+            WHERE active.Operation IN ('Start','ActivateMove') AND active.Status BETWEEN 200 AND 299
+              AND json_extract(CAST(active.Body AS TEXT),'$.runtimeSessionId')=$runtime
+              AND NOT EXISTS (
+                  SELECT 1 FROM RemoteSessionLifecycleCommands retirement
+                  WHERE retirement.NodeId=active.NodeId AND retirement.RuntimeId=active.RuntimeId
+                    AND retirement.LogicalSessionId=active.LogicalSessionId AND retirement.OwnerId=active.OwnerId
+                    AND retirement.Status BETWEEN 200 AND 299
+                    AND ((retirement.Generation=active.Generation AND retirement.AccessScope=active.AccessScope
+                          AND retirement.Operation='SealMoveSource')
+                         OR (retirement.Generation>active.Generation AND retirement.Operation='ActivateMove'))
+              )
             """;
         Add(command, "$runtime", runtimeId);
         using var row = command.ExecuteReader();
@@ -103,11 +114,47 @@ public sealed partial class SessionInputQueueStore
         read.CommandText = """
             SELECT Status, Body FROM RemoteSessionLifecycleCommands
             WHERE NodeId=$node AND RuntimeId=$runtime AND LogicalSessionId=$logical AND Generation=$generation
-              AND OwnerId=$owner AND AccessScope=$access AND Operation='Start' AND Status BETWEEN 200 AND 299
+              AND OwnerId=$owner AND AccessScope=$access
+              AND Operation IN ('Start','ActivateMove') AND Status BETWEEN 200 AND 299
             """;
         BindRemoteLifecycleScope(read, scope);
         await using var result = await read.ExecuteReaderAsync(ct);
         return await result.ReadAsync(ct) ? new(result.GetInt32(0), result.GetFieldValue<byte[]>(1)) : null;
+    }
+
+    internal async Task<RemoteLifecycleReceipt?> ReadRemoteMoveReceiptAsync(SessionRuntimeScope scope,
+        SessionRuntimeOperation operation, string moveId, CancellationToken ct)
+    {
+        await using var connection = Open();
+        await using var read = connection.CreateCommand();
+        read.CommandText = """
+            SELECT Status, Body FROM RemoteSessionLifecycleCommands
+            WHERE NodeId=$node AND RuntimeId=$runtime AND LogicalSessionId=$logical AND Generation=$generation
+              AND OwnerId=$owner AND AccessScope=$access AND Operation=$operation
+              AND RequestId=$request AND Status BETWEEN 200 AND 299
+            """;
+        BindRemoteLifecycleScope(read, scope);
+        Add(read, "$operation", operation.ToString());
+        Add(read, "$request", SessionRuntimeProtocol.MoveRequestId(operation, moveId));
+        await using var result = await read.ExecuteReaderAsync(ct);
+        return await result.ReadAsync(ct) ? new(result.GetInt32(0), result.GetFieldValue<byte[]>(1)) : null;
+    }
+
+    internal async Task<bool> IsRemoteRuntimeGenerationRetiredAsync(SessionRuntimeScope scope, CancellationToken ct)
+    {
+        await using var connection = Open();
+        await using var read = connection.CreateCommand();
+        read.CommandText = """
+            SELECT EXISTS(
+                SELECT 1 FROM RemoteSessionLifecycleCommands
+                WHERE NodeId=$node AND RuntimeId=$runtime AND LogicalSessionId=$logical AND OwnerId=$owner
+                  AND Status BETWEEN 200 AND 299
+                  AND ((Generation=$generation AND AccessScope=$access AND Operation='SealMoveSource')
+                       OR (Generation>$generation AND Operation='ActivateMove'))
+            )
+            """;
+        BindRemoteLifecycleScope(read, scope);
+        return await read.ExecuteScalarAsync(ct) is 1L;
     }
 
     private static void BindRemoteLifecycle(SqliteCommand command, SessionRuntimeGrant grant)
@@ -135,7 +182,8 @@ public sealed partial class SessionInputQueueStore
 
     private static void CheckRemoteLifecycleOperation(SessionRuntimeOperation operation)
     {
-        if (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume or SessionRuntimeOperation.Park))
+        if (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume or SessionRuntimeOperation.Park)
+            && !SessionRuntimeProtocol.IsMoveOperation(operation))
             throw new ArgumentOutOfRangeException(nameof(operation), "Expected a lifecycle operation.");
     }
 }

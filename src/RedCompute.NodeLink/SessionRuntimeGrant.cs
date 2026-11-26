@@ -13,6 +13,10 @@ public enum SessionRuntimeOperation
     Inspect,
     ReadEvents,
     AcknowledgeEvents,
+    PrepareMove,
+    SealMoveSource,
+    ActivateMove,
+    DiscardMove,
 }
 
 public sealed record SessionRuntimeScope(string NodeId, string RuntimeId, string LogicalSessionId, long Generation,

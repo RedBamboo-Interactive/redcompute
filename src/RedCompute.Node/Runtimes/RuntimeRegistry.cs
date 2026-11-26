@@ -16,7 +16,7 @@ public static class RuntimeKinds
     public static IReadOnlyList<string> Capabilities(string kind) => kind switch
     {
         ComfyUi => ["image-gen"],
-        SessionRuntimeProtocol.Kind => [SessionRuntimeProtocol.Kind],
+        SessionRuntimeProtocol.Kind => [SessionRuntimeProtocol.Kind, SessionRuntimeProtocol.BindingMoveCapability],
         _ => [],
     };
 }
