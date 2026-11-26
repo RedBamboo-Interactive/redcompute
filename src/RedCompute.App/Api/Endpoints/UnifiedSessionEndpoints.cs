@@ -1266,7 +1266,8 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapGet("/ai-session/sessions/{id}/inference-settings",
-            "Read the current model, reasoning effort, valid choices and accepted pending changes. Use this before validating or changing a session.",
+            "Discover AI Session inference settings. Read the current Model, Thinking (reasoning effort), provider-supported choices "
+            + "and pending changes. Use these choices with PUT inference-settings?validateOnly=true before applying a change.",
             async (HttpContext ctx, string id) =>
         {
             var (provider, info) = FindSessionAcrossProviders(registry, id);
@@ -1282,11 +1283,13 @@ public static class UnifiedSessionEndpoints
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id").WithResponse(InferenceSettingsResponseSchema);
 
         endpoints.MapPut("/ai-session/sessions/{id}/inference-settings",
-            "Set model or reasoning effort for subsequent turns on the same provider thread. Authorized Agents and people can change it. "
-            + "Send model, effort, or both. A new model keeps a compatible effort and otherwise uses its default. "
-            + "Set validateOnly=true to check the proposed settings without changing or queuing anything. "
-            + "Earlier input runs first. A queued change returns 202 and an operation.id; check input-queue/{itemId} for its exact outcome. "
-            + "Supply X-Idempotency-Key when retrying an operation must return its same receipt.", async (HttpContext ctx, string id) =>
+            "Change the AI Session Model or Thinking (reasoning effort) on the current provider thread. First GET inference-settings "
+            + "for supported choices. Send model, effort, or both. A new model keeps a supported effort or uses its default. "
+            + "Use validateOnly=true to preview proposed values and wouldQueue without writes. "
+            + "An immediate change returns 200 with effective values. Earlier queued input runs first. A queued change returns 202 "
+            + "with operation.id. GET input-queue/{itemId} for the exact receipt, including metadata.applied after delivery. "
+            + "Use X-Idempotency-Key to queue a retry-safe change. Replay with the same body to get the same receipt; a different body with the same key returns 409 idempotency_conflict. "
+            + "An immediate provider refusal returns 409 inference_change_unavailable. Unsupported choices return 422.", async (HttpContext ctx, string id) =>
         {
             var (_, initial) = FindSessionAcrossProviders(registry, id);
             if (initial is null) return Error(404, "not_found", "Session not found");
@@ -1389,8 +1392,11 @@ public static class UnifiedSessionEndpoints
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("model", "string", location: ParamLocation.Body, description: "A model id from the session's inference options")
             .WithParam("effort", "string", location: ParamLocation.Body, description: "A level supported by the selected model")
-            .WithParam("validateOnly", "boolean", location: ParamLocation.Query, description: "Validate the resulting configuration without writes")
-            .WithParam("X-Idempotency-Key", "string", location: ParamLocation.Header, description: "Queue a uniquely keyed change and return its existing receipt on replay").WithResponse(InferenceSettingsResponseSchema);
+            .WithParam("validateOnly", "boolean", location: ParamLocation.Query, defaultValue: false,
+                description: "Preview proposed model and effort and whether the operation would queue. Does not persist or enqueue.")
+            .WithParam("X-Idempotency-Key", "string", location: ParamLocation.Header,
+                description: "Queue a retry-safe change. Same key and body return the original receipt. Same key with a different body returns 409.")
+            .WithResponse(InferenceSettingsResponseSchema);
 
         endpoints.MapPost("/ai-session/sessions/{id}/message",
             "Durably admit a user message, then deliver according to its policy. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
@@ -1674,7 +1680,9 @@ public static class UnifiedSessionEndpoints
             .WithResponse(QueueListResponseSchema);
 
         endpoints.MapGet("/ai-session/sessions/{id}/input-queue/{itemId}",
-            "Get one durable queue item or terminal receipt for exact delivery verification",
+            "Get an exact AI Session queue receipt using the id returned by message admission or PUT inference-settings. "
+            + "A delivered inference-settings receipt records the effective model and Thinking in metadata.applied. "
+            + "A failed receipt returns its error and whether it can be retried.",
             async (HttpContext ctx, string id, string itemId) =>
         {
             var (_, info) = FindSessionAcrossProviders(registry, id);
@@ -1688,7 +1696,8 @@ public static class UnifiedSessionEndpoints
                 : Results.Json(await PublicQueueItemAsync(item, userId ?? "local-user", ctx.RequestAborted));
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
-            .WithParam("itemId", "string", required: true, location: ParamLocation.Path, description: "Queue item id returned by message admission")
+            .WithParam("itemId", "string", required: true, location: ParamLocation.Path,
+                description: "Queue id returned by message admission or inference-settings operation.id")
             .WithResponse(QueueItemResponseSchema);
 
         endpoints.MapDelete("/ai-session/sessions/{id}/input-queue/{itemId}",

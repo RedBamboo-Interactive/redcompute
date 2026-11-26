@@ -1,7 +1,7 @@
 {
   "slug": "ai-session",
   "displayName": "AI Session",
-  "description": "AI coding sessions and inference",
+  "description": "Persistent AI sessions with model and Thinking controls, validation, and durable change receipts",
   "icon": "ph ph-terminal-window",
   "color": "#EC4899",
   "category": "ai"
