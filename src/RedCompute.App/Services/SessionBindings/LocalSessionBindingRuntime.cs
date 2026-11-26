@@ -77,9 +77,11 @@ internal sealed class LocalSessionBindingRuntime(SessionBindingCommands commands
     {
         var destination = item.BindingChange!.Destination;
         if (commands.GetNative(destination) is not IIdleSessionParkingProvider parking) return;
-        var previous = commands.Binding(logicalId)?.Threads.LastOrDefault(thread =>
+        var snapshot = commands.Binding(logicalId);
+        var previous = snapshot?.Threads.LastOrDefault(thread =>
             thread.Native.Target.ProviderInstanceId == destination.ProviderInstanceId);
         var id = previous?.Native.RuntimeSessionId ?? NativeSessionBindingPreparer.NewRuntimeId(logicalId, moveId);
+        if (snapshot?.Active.Native.RuntimeSessionId == id) return;
         if (commands.GetNative(destination)?.GetSessionInfo(id) is { Status: SessionStatus.Idle } prepared)
             await parking.TryParkIdleSessionAsync(prepared.Id, SessionStopReasons.IdleTimeout, ct);
     }

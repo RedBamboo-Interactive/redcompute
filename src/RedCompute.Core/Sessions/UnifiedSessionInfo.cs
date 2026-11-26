@@ -9,6 +9,9 @@ public class UnifiedSessionInfo
     public required string Provider { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]
     public string? TranscriptProvider { get; private set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? NativeRuntimeId { get; private set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public string? NativeDeveloperInstructions { get; set; }
 
@@ -17,6 +20,7 @@ public class UnifiedSessionInfo
         var view = (UnifiedSessionInfo)MemberwiseClone();
         view._id = logicalId;
         view.TranscriptProvider = transcriptProvider;
+        view.NativeRuntimeId = NativeRuntimeId ?? Id;
         return view;
     }
     public string? ProviderEntity { get; set; }

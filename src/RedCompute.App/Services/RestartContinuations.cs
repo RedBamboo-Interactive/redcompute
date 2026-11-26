@@ -88,7 +88,8 @@ internal sealed class RestartContinuations
                 { prompt = found; break; }
             if (prompt is null) continue;
 
-            var planned = _checkpoint?.Sessions.FirstOrDefault(s => s.SessionId == sessionId
+            var runtimeId = info.NativeRuntimeId ?? sessionId;
+            var planned = _checkpoint?.Sessions.FirstOrDefault(s => s.SessionId == runtimeId
                 && string.Equals(s.Provider, info.Provider, StringComparison.OrdinalIgnoreCase));
             // The drain saw this session idle and stopped it cleanly: the restart cut nothing. A
             // registration still armed here waits for a turn that never came (background work that
