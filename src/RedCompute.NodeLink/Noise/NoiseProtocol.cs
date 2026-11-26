@@ -65,6 +65,21 @@ public sealed class NoiseKeyPair : IDisposable
 
     public byte[] ExportPkcs8() => _key.ExportPkcs8PrivateKey();
 
+    // Only the exportable controller key is used to issue scoped session grants.
+    internal byte[] SignSessionGrant(ReadOnlySpan<byte> message)
+    {
+        var parameters = _key.ExportParameters(includePrivateParameters: true);
+        try
+        {
+            using var signer = ECDsa.Create(parameters);
+            return signer.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(parameters.D);
+        }
+    }
+
     /// <summary>DH(this, peer): the 32-byte x-coordinate. Throws for a point that is not on the curve.</summary>
     public byte[] Dh(ReadOnlySpan<byte> peerPublicKey)
     {
