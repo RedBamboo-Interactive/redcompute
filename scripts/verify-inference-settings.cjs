@@ -8,6 +8,7 @@
 // Set LEAF_VERIFY_HARNESS=1 to require the provider switch and return in this same run.
 
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
@@ -191,6 +192,14 @@ async function createFixture(provider, runId) {
   return fixture;
 }
 
+async function openSettingsModal(page) {
+  await page.locator('[data-slot="panel-header"]').getByRole("button", { name: "Conversation actions", exact: true }).click({ timeout: 30_000 });
+  await page.getByRole("menuitem", { name: /^Info\b/ }).click();
+  const dialog = page.getByRole("dialog").filter({ has: page.locator('[data-slot="session-info-hero"]') });
+  await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
+  return dialog;
+}
+
 async function modalChanges(context, fixture, initial, desiredModel) {
   const page = await context.newPage();
   try {
@@ -198,10 +207,7 @@ async function modalChanges(context, fixture, initial, desiredModel) {
       ? "/apps/codered/sessions/" + encodeURIComponent(fixture.sessionId)
       : "/apps/nova/chat/" + encodeURIComponent(fixture.discussionId);
     await page.goto(leaf + url, { waitUntil: "domcontentloaded" });
-    await page.locator('[data-slot="panel-header"]').getByRole("button", { name: "Conversation actions", exact: true }).click({ timeout: 30_000 });
-    await page.getByRole("menuitem", { name: /^Info\b/ }).click();
-    const dialog = page.getByRole("dialog").filter({ has: page.locator('[data-slot="session-info-hero"]') });
-    await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
+    const dialog = await openSettingsModal(page);
     const model = dialog.getByRole("combobox", { name: "Model" });
     const thinking = dialog.getByRole("combobox", { name: "Thinking" });
     assert.equal(await model.inputValue(), initial.model);
@@ -307,14 +313,55 @@ async function prepare(requestPath, statePath) {
     ({ provider, discussionId, sessionId })) }));
 }
 
+async function switchProviderInModal(fixture, from, to) {
+  const before = await settings(fixture);
+  if (before.provider === to) return;
+  assert.equal(before.provider, from);
+  assert.ok(before.providers?.some(option => option.id === to), "Destination missing from the API choices");
+  if (!before.pendingChanges?.some(item => item.provider === to)) {
+    const storageState = process.env.LEAF_BROWSER_STORAGE_STATE;
+    assert.ok(storageState, "LEAF_BROWSER_STORAGE_STATE is required for the Provider modal");
+    const { chromium } = require(process.env.LEAF_PLAYWRIGHT_MODULE || "playwright");
+    const browserEnvironment = { ...process.env };
+    delete browserEnvironment.REDLEAF_EXECUTION_TOKEN;
+    const browser = await chromium.launch({ headless: true, env: browserEnvironment });
+    try {
+      const context = await browser.newContext({ storageState, viewport: { width: 1440, height: 1000 } });
+      const page = await context.newPage();
+      const url = fixture.discussionId ? "/apps/nova/chat/" + encodeURIComponent(fixture.discussionId)
+        : "/apps/codered/sessions/" + encodeURIComponent(fixture.sessionId);
+      await page.goto(leaf + url, { waitUntil: "domcontentloaded" });
+      const dialog = await openSettingsModal(page);
+      const provider = dialog.getByRole("combobox", { name: "Provider" });
+      assert.equal(await provider.inputValue(), from);
+      await provider.selectOption(to);
+      await waitForProvider(fixture, to);
+    } finally {
+      await browser.close();
+    }
+  } else {
+    await waitForProvider(fixture, to);
+  }
+}
+
+async function waitForProvider(fixture, target) {
+  await eventually("modal Provider " + target, async () => {
+    const view = await settings(fixture);
+    const failed = view.pendingChanges?.find(item => item.provider === target && item.state === "failed");
+    assert.ok(!failed, "Provider operation failed: " + failed?.error?.code);
+    return view.provider === target;
+  });
+}
+
 async function verifyHarnessReturn(fixture, change) {
   const { first, last, originalProvider } = fixture.boundary;
   const prepared = change.metadata.applied.native;
   assert.equal(prepared.target.providerId, "codex");
   assert.notEqual(prepared.nativeThreadId, fixture.nativeId);
   const active = await idle(fixture);
-  assert.equal(active.session.provider, "codex");
-  assert.equal(active.session.providerSessionId, prepared.nativeThreadId);
+  const wasReturned = active.session.provider === originalProvider;
+  assert.equal(active.session.provider, wasReturned ? originalProvider : "codex");
+  assert.equal(active.session.providerSessionId, wasReturned ? fixture.nativeId : prepared.nativeThreadId);
   const chronological = [...fixture.sent, { ...first, provider: originalProvider }, { ...last, provider: "codex" }];
 
   await eventually("mixed history after the first switch", async () => {
@@ -322,26 +369,7 @@ async function verifyHarnessReturn(fixture, change) {
     catch (error) { if (!(error instanceof assert.AssertionError)) throw error; return false; }
   });
 
-  const storageState = process.env.LEAF_BROWSER_STORAGE_STATE;
-  assert.ok(storageState, "LEAF_BROWSER_STORAGE_STATE is required for the modal provider return");
-  const { chromium } = require(process.env.LEAF_PLAYWRIGHT_MODULE || "playwright");
-  const browserEnvironment = { ...process.env };
-  delete browserEnvironment.REDLEAF_EXECUTION_TOKEN;
-  const browser = await chromium.launch({ headless: true, env: browserEnvironment });
-  try {
-    const context = await browser.newContext({ storageState, viewport: { width: 1440, height: 1000 } });
-    const page = await context.newPage();
-    await page.goto(leaf + "/apps/nova/chat/" + encodeURIComponent(fixture.discussionId), { waitUntil: "domcontentloaded" });
-    await page.locator('[data-slot="session-info-trigger"]').click({ timeout: 30_000 });
-    const dialog = page.getByRole("dialog").filter({ has: page.locator('[data-slot="session-info-hero"]') });
-    await dialog.getByRole("tab", { name: "Settings", exact: true }).click();
-    const provider = dialog.getByRole("combobox", { name: "Provider" });
-    assert.equal(await provider.inputValue(), "codex");
-    await provider.selectOption(originalProvider);
-    await eventually("modal provider return", async () => (await settings(fixture)).provider === originalProvider);
-  } finally {
-    await browser.close();
-  }
+  await switchProviderInModal(fixture, "codex", originalProvider);
   const returned = await idle(fixture);
   assert.equal(returned.session.provider, originalProvider);
   assert.equal(returned.session.providerSessionId, fixture.nativeId);
@@ -356,12 +384,34 @@ async function verifyHarnessReturn(fixture, change) {
     providers: [originalProvider, "codex", originalProvider], originalNativeId: fixture.nativeId, codexNativeId: prepared.nativeThreadId }));
 }
 
+async function verifyCodeProvider(fixture, chronological) {
+  await switchProviderInModal(fixture, "codex", "claude-code");
+  const { session } = await idle(fixture);
+  assert.equal(session.provider, "claude-code");
+  assert.notEqual(session.providerSessionId, fixture.nativeId);
+  const sent = await message(fixture, "after-code-provider-change");
+  await terminal(fixture, sent.id);
+  await idle(fixture);
+  await eventually("Code Provider history", async () => {
+    try {
+      const view = await snapshot(fixture);
+      assert.equal(view.session.id, fixture.sessionId);
+      assert.equal(view.session.providerSessionId, session.providerSessionId);
+      assertTranscript(view.messages, [...chronological, { ...sent, provider: "claude-code" }]);
+      return true;
+    } catch (error) { if (!(error instanceof assert.AssertionError)) throw error; return false; }
+  });
+  console.log(JSON.stringify({ sessionId: fixture.sessionId, providers: ["codex", "claude-code"],
+    originalNativeId: fixture.nativeId, activeNativeId: session.providerSessionId }));
+}
+
 async function verify(state) {
   const deployment = await readJson(state.receiptPath);
   assert.equal(deployment.runId, state.runId);
   assert.equal(deployment.state, "succeeded");
   assert.equal(deployment.success, true);
   await discover();
+  const harness = state.fixtures.some(fixture => fixture.boundary.originalProvider);
   for (const fixture of state.fixtures) {
     const { first, last, operation, previous } = fixture.boundary;
     const [earlier, change, later] = await Promise.all([first, operation, last].map(entry => terminal(fixture, entry.id)));
@@ -378,18 +428,61 @@ async function verify(state) {
       continue;
     }
     assert.deepEqual(change.metadata.applied, { ...previous, ...operation.change });
+    const chronological = [...fixture.sent, first, last];
+    const current = await settings(fixture);
+    const codeAlreadySwitched = harness && current.provider === "claude-code";
     await idle(fixture);
     await eventually("complete ordered transcript after restart", async () => {
       const result = await snapshot(fixture);
-      assert.equal(result.session.providerSessionId, fixture.nativeId);
-      try { assertTranscript(result.messages, [...fixture.sent, first, last]); return true; }
+      if (!codeAlreadySwitched) assert.equal(result.session.providerSessionId, fixture.nativeId);
+      try { assertTranscript(result.messages, chronological); return true; }
       catch (error) { if (!(error instanceof assert.AssertionError)) throw error; return false; }
     });
-    assert.deepEqual(selection(await settings(fixture)), change.metadata.applied);
+    if (!codeAlreadySwitched) assert.deepEqual(selection(current), change.metadata.applied);
+    if (harness) await verifyCodeProvider(fixture, chronological);
     console.log(JSON.stringify({ provider: fixture.provider, discussionId: fixture.discussionId,
       sessionId: fixture.sessionId, nativeId: fixture.nativeId, before: previous, after: change.metadata.applied,
       incomingOrder: [earlier.id, change.id, later.id] }));
   }
+}
+
+async function archiveFixtures(state) {
+  for (const fixture of state.fixtures) {
+    if (fixture.discussionId) {
+      const route = "/api/apps/nova/discussions/" + encodeURIComponent(fixture.discussionId);
+      await api(leaf, route, { method: "DELETE" });
+      await eventually("archived acceptance discussion", async () => {
+        const detail = await api(leaf, route + "?tail=1");
+        return detail.discussion?.status === "archived";
+      });
+    } else {
+      const route = sessionRoute(fixture);
+      await api(compute, route + "/stop", { method: "POST" });
+      await api(compute, route + "/dismiss", { method: "POST" });
+      await eventually("archived acceptance Code session", async () => {
+        const result = await api(compute, route + "?tail=1");
+        return result.session.dismissed === true;
+      });
+    }
+    console.log(JSON.stringify({ archived: true, provider: fixture.provider,
+      discussionId: fixture.discussionId, sessionId: fixture.sessionId }));
+  }
+}
+
+async function verifyAndArchive(state, statePath) {
+  // If cleanup is interrupted, retry archival without needing already archived sessions to be live.
+  const verifiedPath = statePath + ".verified";
+  const fingerprint = createHash("sha256").update(JSON.stringify(state)).digest("hex");
+  let marker;
+  try { marker = await readJson(verifiedPath); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (marker) {
+    assert.deepEqual(marker, { runId: state.runId, fingerprint });
+  } else {
+    await verify(state);
+    await fs.writeFile(verifiedPath, JSON.stringify({ runId: state.runId, fingerprint }), { flag: "wx" });
+  }
+  await archiveFixtures(state);
 }
 
 async function main() {
@@ -406,7 +499,7 @@ async function main() {
   if (phase === "prepare") return prepare(path.resolve(args[0]), statePath);
   const state = await readJson(statePath);
   assert.deepEqual(state.fixtures.map(fixture => fixture.provider), ["claude-code", "codex"]);
-  if (phase === "verify") return verify(state);
+  if (phase === "verify") return verifyAndArchive(state, statePath);
   assert.equal(phase, "arm");
   const request = await readJson(state.requestPath);
   assert.equal(request.runId, state.runId);
