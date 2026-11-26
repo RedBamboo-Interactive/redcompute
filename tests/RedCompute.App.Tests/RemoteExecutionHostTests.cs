@@ -373,6 +373,26 @@ public sealed class RemoteExecutionHostTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Only_the_known_attached_session_runtime_reports_the_versioned_capability()
+    {
+        var report = RuntimeNodeHandler.ComfyUi("sessions", managed: "attach", status: "running");
+        report["kind"] = "ai-session.v1";
+        report["capabilities"] = new JsonArray("ai-session.v1", "image-gen");
+
+        var runtime = RemoteRuntimeReport.Parse(System.Text.Json.JsonSerializer.SerializeToElement(report));
+        Assert.NotNull(runtime);
+        Assert.Equal(["ai-session.v1"], runtime.Capabilities);
+
+        report["managed"] = "spawn";
+        Assert.Null(RemoteRuntimeReport.Parse(System.Text.Json.JsonSerializer.SerializeToElement(report)));
+
+        report["managed"] = "attach";
+        report["kind"] = "comfyui";
+        Assert.Equal(["image-gen"],
+            RemoteRuntimeReport.Parse(System.Text.Json.JsonSerializer.SerializeToElement(report))!.Capabilities);
+    }
+
+    [Fact]
     public async Task Malformed_or_oversized_pushes_are_dropped()
     {
         var host = await LinkAsync();

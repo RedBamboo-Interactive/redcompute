@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RedCompute.NodeLink;
 using RedCompute.NodeLink.Forward;
 using RedCompute.PluginSdk.Hosting;
 
@@ -9,12 +10,13 @@ public static class RuntimeKinds
 {
     public const string ComfyUi = "comfyui";
 
-    public static IReadOnlyList<string> All { get; } = [ComfyUi];
+    public static IReadOnlyList<string> All { get; } = [ComfyUi, SessionRuntimeProtocol.Kind];
 
     /// <summary>What a kind serves, for <c>runtime.list</c>.</summary>
     public static IReadOnlyList<string> Capabilities(string kind) => kind switch
     {
         ComfyUi => ["image-gen"],
+        SessionRuntimeProtocol.Kind => [SessionRuntimeProtocol.Kind],
         _ => [],
     };
 }
@@ -62,6 +64,8 @@ public sealed record RuntimeRegistration
         if (!ForwardOpen.IsRuntimeId(Id)) return $"A runtime id is 1-{ForwardOpen.MaxRuntimeLength} of a-z, 0-9, '.', '_', '@' or '-', starting with a letter or digit.";
         if (!RuntimeKinds.All.Contains(Kind)) return $"Unknown runtime kind '{Kind}' (this agent knows: {string.Join(", ", RuntimeKinds.All)}).";
         if (Port is < 1 or > 65535) return "The port is 1-65535.";
+        if (Kind == SessionRuntimeProtocol.Kind && Managed != HostRuntimeManagement.Attach)
+            return "An AI Session runtime must be attached to an owner-run loopback service.";
         if (Kind == RuntimeKinds.ComfyUi && !AcceptedGraphsRunInstalledNodes)
             return "A ComfyUI runs whatever node types are installed in it, including ones that run code. "
                    + "Add it with --accept-graphs-run-installed-nodes to say you accept that.";

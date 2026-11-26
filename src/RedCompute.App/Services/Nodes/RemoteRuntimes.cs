@@ -23,6 +23,7 @@ public static class RemoteRuntimeKinds
     public static IReadOnlyList<string> Capabilities(string kind) => kind switch
     {
         ComfyUi => ["image-gen"],
+        SessionRuntimeProtocol.Kind => [SessionRuntimeProtocol.Kind],
         _ => [],
     };
 
@@ -108,7 +109,7 @@ public static partial class RemoteRuntimeReport
         var id = Text("id", ForwardOpen.MaxRuntimeLength);
         if (!ForwardOpen.IsRuntimeId(id)) return null;
         var kind = Text("kind", 32);
-        if (kind is null || !KindPattern().IsMatch(kind)) return null;
+        if (kind is null || (kind != SessionRuntimeProtocol.Kind && !KindPattern().IsMatch(kind))) return null;
         HostRuntimeManagement managed;
         switch (Text("managed", 8))
         {
@@ -116,6 +117,7 @@ public static partial class RemoteRuntimeReport
             case "attach": managed = HostRuntimeManagement.Attach; break;
             default: return null;
         }
+        if (kind == SessionRuntimeProtocol.Kind && managed != HostRuntimeManagement.Attach) return null;
         if (!entry.TryGetProperty("enabled", out var enabledValue) || enabledValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             return null;
         if (Status(Text("status", 16)) is not { } status) return null;

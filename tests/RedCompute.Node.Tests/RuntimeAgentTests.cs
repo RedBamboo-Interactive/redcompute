@@ -619,6 +619,28 @@ public sealed class RuntimeLifecycleTests : IDisposable
     }
 
     [Fact]
+    public async Task The_owner_can_attach_a_session_runtime_but_cannot_spawn_one()
+    {
+        var output = new StringWriter();
+        var commands = new NodeCommands(_home.Environment(), output);
+        var registry = new RuntimeRegistry(_home.Host, _home.Paths);
+
+        Assert.NotEqual(0, await commands.RunAsync(["runtime", "add", "ai-session.v1",
+            "--path", ComfyFolder(), "--port", RuntimeAgentTests.FreePort().ToString()], CancellationToken.None));
+        Assert.NotEqual(0, await commands.RunAsync(["runtime", "add", "ai-session.v1",
+            "--attach", "http://192.168.1.20:8188"], CancellationToken.None));
+        Assert.Empty(registry.Load());
+
+        Assert.Equal(0, await commands.RunAsync(["runtime", "add", "ai-session.v1",
+            "--attach", "http://127.0.0.1:8188"], CancellationToken.None));
+        var runtime = Assert.Single(registry.Load());
+        Assert.Equal("ai-session.v1", runtime.Kind);
+        Assert.Equal(HostRuntimeManagement.Attach, runtime.Managed);
+        Assert.Equal(8188, runtime.Port);
+        Assert.Equal(["ai-session.v1"], RuntimeKinds.Capabilities(runtime.Kind));
+    }
+
+    [Fact]
     public async Task The_owner_registers_lists_disables_and_removes_runtimes()
     {
         var env = _home.Environment();

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using RedCompute.Core.Providers;
+using RedCompute.NodeLink;
 using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Node.Runtimes;
@@ -107,7 +108,8 @@ public sealed class RuntimeManager : IHostRuntimes, IAsyncDisposable
     {
         try
         {
-            using var response = await ProbeClient.GetAsync($"http://127.0.0.1:{runtime.Port}/system_stats", ct);
+            var path = runtime.Kind == SessionRuntimeProtocol.Kind ? SessionRuntimeProtocol.HealthPath : "/system_stats";
+            using var response = await ProbeClient.GetAsync($"http://127.0.0.1:{runtime.Port}{path}", ct);
             return response.IsSuccessStatusCode;
         }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or IOException)

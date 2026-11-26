@@ -3,6 +3,7 @@ using RedCompute.Node.Control;
 using RedCompute.Node.Install;
 using RedCompute.Node.Pairing;
 using RedCompute.Node.Runtimes;
+using RedCompute.NodeLink;
 using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.Node;
@@ -33,6 +34,7 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                 --accept-graphs-run-installed-nodes
           leaf-node runtime add comfyui --attach http://127.0.0.1:8188 [--id <id>] [--label <label>] [--gpu …]
                 --accept-graphs-run-installed-nodes
+          leaf-node runtime add ai-session.v1 --attach http://127.0.0.1:<port> [--id <id>] [--label <label>]
           leaf-node runtime list | test <id> | enable <id> | disable <id> | remove <id> | start <id> | stop <id>
         """;
 
@@ -452,6 +454,8 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
         string? Option(params string[] names) => names.Select(options.GetValueOrDefault).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
         var attachUrl = options.TryGetValue("attach", out var url) ? url : null;
         var attach = options.ContainsKey("attach");
+        if (kind == SessionRuntimeProtocol.Kind && string.IsNullOrWhiteSpace(attachUrl))
+            throw new NodeCommandException("usage", "An AI Session runtime needs --attach http://127.0.0.1:<port>.", NodeExitCodes.Usage);
         int port;
         if (attach && attachUrl is not null)
         {
