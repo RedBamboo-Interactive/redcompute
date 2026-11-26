@@ -146,6 +146,24 @@ async function verifyTurn(fixture, step, expected) {
 
 async function createFixture(provider, runId) {
   const key = runId + "-" + provider;
+  if (provider === "codex") {
+    const repositories = (await api(leaf, "/api/apps/codered/repositories")).items;
+    const repository = repositories.find(item => item.slug?.startsWith("redcompute-") && item.path)
+      ?? repositories.find(item => item.path);
+    assert.ok(repository?.id, "An existing registered repository is required for the Code fixture");
+    const created = await api(compute, "/ai-session/sessions", {
+      method: "POST",
+      body: { provider, repositoryId: repository.id, projectPath: repository.path },
+    });
+    assert.ok(created.id);
+    const fixture = { provider, key, sessionId: created.id, sent: [] };
+    const ready = await message(fixture, "ready");
+    await terminal(fixture, ready.id);
+    const { session } = await idle(fixture);
+    assert.equal(session.provider, provider);
+    fixture.nativeId = session.providerSessionId;
+    return fixture;
+  }
   const created = await api(leaf, "/api/apps/nova/discussions", {
     method: "POST",
     body: {
