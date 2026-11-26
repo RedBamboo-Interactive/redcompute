@@ -13,10 +13,15 @@ internal sealed record RemoteSessionPlacement(string NodeId, string RuntimeId, s
     string ProviderId, string ProviderInstanceId, string? Model, string? Effort);
 
 internal sealed record RemoteSessionPlacementPreview(string NodeId, string RuntimeId, string Workspace, string Revision,
-    string ProviderId, string ProviderInstanceId, string AccessLevel, string MaxAccessLevel);
+    string ProviderId, string ProviderInstanceId, string AccessLevel, string MaxAccessLevel, bool SupportsBindingMoves = false);
 
 internal sealed record ControllerRemoteSession(SessionRuntimeScope Scope, RemoteSessionPlacement Placement,
-    RemoteSessionPlacementPreview Preview, RemoteSessionLifecycleThread Thread);
+    RemoteSessionPlacementPreview Preview, RemoteSessionLifecycleThread Thread, string? ActivationMoveId = null,
+    bool ActivationConfirmed = false)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal bool ActivationPending => ActivationMoveId is not null && !ActivationConfirmed;
+}
 
 internal sealed record RemoteSessionInputStatus(string State, RemoteInputReceipt? Receipt, SessionTurnSummary? Turn,
     string? ErrorCode, string? PayloadDigest);
@@ -31,7 +36,7 @@ internal sealed class ControllerRemoteSessionException(int status, string code) 
     public string Code { get; } = code;
 }
 
-internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
+internal sealed partial class ControllerRemoteSessions(SessionInputQueueStore queue,
     Func<ClaimsPrincipal, SessionRuntimeScope, SessionRuntimeOperation, string, byte[], CancellationToken,
         Task<(HttpStatusCode Status, byte[] Body)>> send)
 {
@@ -78,6 +83,8 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
         if (!Identifier(key))
             throw new ControllerRemoteSessionException(422, "invalid_remote_request_key");
         var (_, session) = await ReadOwnedAsync(caller, logicalId, ct);
+        if (session.ActivationPending)
+            throw new ControllerRemoteSessionException(409, "binding_activation_pending");
 
         var thread = session.Thread;
         var resumed = await ApplyAsync<RemoteSessionLifecycleThread>(caller, session.Scope, SessionRuntimeOperation.Resume,
@@ -93,6 +100,8 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
         if (!Identifier(inputUid) || string.IsNullOrWhiteSpace(text) || text.Length > SessionRuntimeGrant.MaxPayloadBytes)
             throw new ControllerRemoteSessionException(422, "invalid_remote_input");
         var (_, session) = await ReadOwnedAsync(caller, logicalId, ct);
+        if (session.ActivationPending)
+            throw new ControllerRemoteSessionException(409, "binding_activation_pending");
         var receipt = await ApplyAsync<RemoteInputReceipt>(caller, session.Scope, SessionRuntimeOperation.SendInput,
             inputUid, InputRequest(session, inputUid, text),
             HttpStatusCode.Accepted, ct);
@@ -210,7 +219,7 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
         string key, RemoteSessionPlacement placement, CancellationToken ct)
     {
         var preview = await ApplyAsync<RemoteSessionPlacementPreview>(caller, scope, SessionRuntimeOperation.Inspect, key,
-            new(placement.Revision, placement.ProviderInstanceId), HttpStatusCode.OK, ct);
+            new RemoteSessionLifecycleRequest(placement.Revision, placement.ProviderInstanceId), HttpStatusCode.OK, ct);
         if (preview.NodeId != placement.NodeId || preview.RuntimeId != placement.RuntimeId
             || preview.Workspace != placement.Workspace || preview.Revision != placement.Revision
             || preview.ProviderId != placement.ProviderId || preview.ProviderInstanceId != placement.ProviderInstanceId
@@ -221,7 +230,7 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
     }
 
     private async Task<T> ApplyAsync<T>(ClaimsPrincipal caller, SessionRuntimeScope scope, SessionRuntimeOperation operation,
-        string key, RemoteSessionLifecycleRequest request, HttpStatusCode expected, CancellationToken ct) where T : class
+        string key, object request, HttpStatusCode expected, CancellationToken ct) where T : class
     {
         var payload = JsonSerializer.SerializeToUtf8Bytes(request, Json);
         if (payload.Length > SessionRuntimeGrant.MaxPayloadBytes)

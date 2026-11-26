@@ -50,7 +50,8 @@ public sealed partial class SessionInputQueueStore
             ON CONFLICT (SessionId) DO NOTHING
             """;
         var target = new BindingTarget(placement.ProviderId, placement.ProviderInstanceId, placement.NodeId,
-            placement.Model ?? string.Empty, placement.Effort);
+            thread.Model ?? placement.Model ?? string.Empty, thread.Effort ?? placement.Effort,
+            new(placement.RuntimeId, placement.Workspace, placement.Revision, session.Preview.AccessLevel, session.Preview.MaxAccessLevel));
         var snapshot = SessionBindingSnapshot.Initial(id, new(thread.RuntimeSessionId, thread.NativeThreadId, target, Remote: session));
         Add(insert, "$id", id);
         Add(insert, "$request", JsonSerializer.Serialize(new ControllerRemoteStart(scope, placement, session.Preview), JsonOptions));
@@ -63,6 +64,36 @@ public sealed partial class SessionInputQueueStore
         return snapshot;
     }
 
+    internal async Task<ControllerRemoteSession?> ConfirmControllerRemoteActivationAsync(ControllerRemoteSession pending,
+        CancellationToken ct)
+    {
+        if (!pending.ActivationPending) return null;
+        var scope = pending.Scope;
+        await using var connection = Open();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        var current = await ReadBindingSnapshotAsync(connection, transaction, scope.LogicalSessionId, ct);
+        if (current?.Active.Generation != scope.Generation || current.Active.Native.Remote is not { } active
+            || active != pending && active != pending with { ActivationConfirmed = true })
+            return null;
+        if (active.ActivationConfirmed) return active;
+
+        var confirmed = pending with { ActivationConfirmed = true };
+        var next = current.Active with { Native = current.Active.Native with { Remote = confirmed } };
+        var threads = current.Threads.Take(current.Threads.Count - 1).Append(next).ToArray();
+        await using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = """
+            UPDATE SessionThreadBindings SET ThreadsJson=$threads WHERE SessionId=$session AND ActiveGeneration=$generation
+            """;
+        Add(update, "$threads", JsonSerializer.Serialize(threads, JsonOptions));
+        Add(update, "$session", scope.LogicalSessionId);
+        Add(update, "$generation", scope.Generation);
+        if (await update.ExecuteNonQueryAsync(ct) != 1) return null;
+        await transaction.CommitAsync(ct);
+        BindingCommitted?.Invoke(new(scope.LogicalSessionId, threads));
+        return confirmed;
+    }
+
     private const string ControllerRemoteLease = "remote-session-runtime";
 
     // An attempted network delivery has a stable destination receipt. Keep it at the head until
@@ -70,6 +101,7 @@ public sealed partial class SessionInputQueueStore
     internal async Task<SessionInputQueueItem?> ClaimControllerRemoteInputAsync(ControllerRemoteSession binding,
         string expectedItemId, CancellationToken ct)
     {
+        if (binding.ActivationPending) return null;
         var scope = binding.Scope;
         await using var connection = Open();
         await using var transaction = connection.BeginTransaction(deferred: false);
@@ -129,6 +161,7 @@ public sealed partial class SessionInputQueueStore
     internal async Task<bool> MarkControllerRemoteDispatchIssuedAsync(ControllerRemoteSession binding, string itemId,
         CancellationToken ct)
     {
+        if (binding.ActivationPending) return false;
         var scope = binding.Scope;
         await using var connection = Open();
         await using var transaction = connection.BeginTransaction(deferred: false);

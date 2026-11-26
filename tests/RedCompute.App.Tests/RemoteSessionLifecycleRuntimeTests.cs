@@ -627,6 +627,8 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
             nameof(ISessionProvider.GetAccessState) => new SessionAccessState(Info!.AccessLevel,
                 Info.MaxAccessLevel, Info.Unattended, Info.AccessLevelBeforePlan, Info.AccessLevelSource),
             nameof(ISessionProvider.SetAccessState) => ApplyAccess((SessionAccessState)args![1]!),
+            nameof(ISessionProvider.GetPendingQuestions) => Array.Empty<PendingSessionQuestion>(),
+            nameof(ISessionProvider.GetBackgroundTasks) => Array.Empty<BackgroundTaskInfo>(),
             nameof(ISessionInferenceSettings.BindingModelId) => (string?)args![0],
             nameof(ISessionInferenceSettings.GetInferenceOptionsAsync) => Task.FromResult(
                 new SessionInferenceOptions("probe-model", "low", [new("probe-model", "Probe", "low", ["low"])])),

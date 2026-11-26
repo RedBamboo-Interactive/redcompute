@@ -56,7 +56,7 @@ internal sealed class SessionBindingSwitch(SessionInputQueueStore queue, ISessio
                 await RejectAsync(current, initial, move, "binding_changed", ct);
                 continue;
             }
-            if (SameRuntime(snapshot.Active.Native.Target, request.Destination))
+            if (SameRuntime(snapshot.Active.Native, request.Destination))
             {
                 await RejectAsync(current, initial, move, "binding_already_active", ct);
                 continue;
@@ -105,7 +105,7 @@ internal sealed class SessionBindingSwitch(SessionInputQueueStore queue, ISessio
     private async Task PrepareAsync(SessionInputQueueItem current, NativeSessionBinding initial,
         SessionBindingSnapshot snapshot, SessionBindingMove move, CancellationToken ct)
     {
-        var previous = snapshot.Threads.LastOrDefault(thread => SameRuntime(thread.Native.Target, move.Destination));
+        var previous = snapshot.Threads.LastOrDefault(thread => SameRuntime(thread.Native, move.Destination));
         var after = previous?.HistoryThrough ?? 0;
         var history = await runtime.ReadHistoryAsync(current.SessionId, after, move.HistoryThrough, ct);
         var preparation = new BindingPreparation(current.SessionId, move, snapshot.Active, previous,
@@ -131,9 +131,10 @@ internal sealed class SessionBindingSwitch(SessionInputQueueStore queue, ISessio
         => queue.TryAdvanceBindingMoveAsync(current, initial, move with { State = BindingMoveState.Rejected, Error = code }, ct);
 
 
-    private static bool SameRuntime(BindingTarget previous, BindingTarget destination)
-        => previous.ProviderId == destination.ProviderId && previous.ProviderInstanceId == destination.ProviderInstanceId
-            && previous.NodeId == destination.NodeId;
+    private static bool SameRuntime(NativeSessionBinding previous, BindingTarget destination)
+        => previous.Target.ProviderId == destination.ProviderId && previous.Target.ProviderInstanceId == destination.ProviderInstanceId
+            && previous.Target.NodeId == destination.NodeId
+            && (previous.Target.Runtime?.RuntimeId ?? previous.Remote?.Scope.RuntimeId) == destination.Runtime?.RuntimeId;
 
     internal static IReadOnlyList<BindingHandoffText> BoundedHandoff(
         IReadOnlyList<BindingHistoryText> history, long after, long through)

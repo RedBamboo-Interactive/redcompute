@@ -254,6 +254,8 @@ internal sealed partial class RemoteSessionLifecycleRuntime(SessionInputQueueSto
                     return Error(400, "invalid_remote_input");
                 return await AdmitInputAsync(grant, request.Text, workspace, thread, ct);
             case SessionRuntimeOperation.Inspect:
+                if (request.InputUid is null)
+                    return await InspectMoveSourceAsync(grant.Scope, thread, workspace, ct);
                 if (string.IsNullOrWhiteSpace(request.InputUid) || request.InputUid.Length > 200)
                     return Error(400, "invalid_input_uid");
                 var inspection = await queue.ReadRemoteInputAsync(grant.Scope, request.InputUid, ct);

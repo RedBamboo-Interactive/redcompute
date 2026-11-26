@@ -2,7 +2,9 @@ using RedCompute.App.Services.Nodes;
 
 namespace RedCompute.App.Services.SessionBindings;
 
-public sealed record BindingTarget(string ProviderId, string ProviderInstanceId, string NodeId, string Model, string? Effort);
+public sealed record RegisteredBindingRuntime(string RuntimeId, string Workspace, string Revision, string AccessLevel, string MaxAccessLevel);
+public sealed record BindingTarget(string ProviderId, string ProviderInstanceId, string NodeId, string Model, string? Effort,
+    RegisteredBindingRuntime? Runtime = null);
 
 public sealed record QueuedBindingChange(long ExpectedGeneration, BindingTarget Destination, bool ChangesNode = false);
 

@@ -62,7 +62,9 @@ internal sealed class SessionBindingTranscriptRoutes
         lock (_gate)
         {
             if (_bindings.TryGetValue(snapshot.LogicalId, out var current)
-                && current.Active.Generation >= snapshot.Active.Generation) return;
+                && (current.Active.Generation > snapshot.Active.Generation
+                    || current.Active.Generation == snapshot.Active.Generation
+                        && current.Active.Native.Remote?.ActivationConfirmed == true)) return;
             _bindings[snapshot.LogicalId] = snapshot;
             var next = new Dictionary<(string, string), LogicalTranscriptAddress?>();
             foreach (var owner in _bindings.Values)

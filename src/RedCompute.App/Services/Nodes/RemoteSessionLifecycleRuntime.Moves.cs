@@ -148,6 +148,22 @@ internal sealed partial class RemoteSessionLifecycleRuntime
             request.ProviderInstanceId, request.Revision, request.Model, request.Effort, info.StartedAt, boundary));
     }
 
+    private async Task<RemoteLifecycleReceipt> InspectMoveSourceAsync(SessionRuntimeScope scope,
+        RemoteSessionLifecycleThread thread, RemoteSessionRuntimeWorkspace workspace, CancellationToken ct)
+    {
+        var info = workspace.Provider.GetSessionInfo(thread.RuntimeSessionId);
+        if (info is null || !Matches(info, thread.RuntimeSessionId, workspace) || info.ProviderSessionId != thread.NativeThreadId)
+            return Error(409, "runtime_identity_mismatch");
+        var idle = !await IsSealedAsync(scope, ct) && await IsMoveIdleAsync(info, workspace.Provider, ct);
+        return Reply(200, new { idle, thread.RuntimeSessionId, thread.NativeThreadId });
+    }
+
+    private async Task<bool> IsMoveIdleAsync(UnifiedSessionInfo info, ISessionProvider provider, CancellationToken ct)
+        => (info.Status == SessionStatus.Idle || info.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(info.StopReason))
+            && provider.GetPendingQuestions(info.Id).Count == 0
+            && SessionWorkStates.RunningBackgroundTasks(provider.GetBackgroundTasks(info.Id)) == 0
+            && await queue.GetHeadAsync(info.Id, ct) is null;
+
     private async Task<RemoteLifecycleReceipt> SealMoveSourceAsync(SessionRuntimeScope scope,
         RemoteSessionLifecycleRequest request, RemoteSessionRuntimeWorkspace workspace)
     {
@@ -155,13 +171,13 @@ internal sealed partial class RemoteSessionLifecycleRuntime
             return Error(409, "runtime_identity_mismatch");
         if (await IsSealedAsync(scope, CancellationToken.None))
             return Error(409, "binding_generation_sealed");
-        if (await queue.GetHeadAsync(thread.RuntimeSessionId) is not null)
-            return Error(409, "remote_session_busy");
         var provider = workspace.Provider;
         var info = provider.GetSessionInfo(thread.RuntimeSessionId);
         if (info is null || !Matches(info, thread.RuntimeSessionId, workspace) || info.ProviderSessionId != thread.NativeThreadId)
             return Error(409, "runtime_identity_mismatch");
-        if (info.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(info.StopReason))
+        if (!await IsMoveIdleAsync(info, provider, CancellationToken.None))
+            return Error(409, "remote_session_busy");
+        if (info.Status == SessionStatus.Stopped)
             return Reply(200, thread);
         return info.Status == SessionStatus.Idle && provider is IIdleSessionParkingProvider parking
             && await parking.TryParkIdleSessionAsync(thread.RuntimeSessionId, SessionStopReasons.IdleTimeout)
