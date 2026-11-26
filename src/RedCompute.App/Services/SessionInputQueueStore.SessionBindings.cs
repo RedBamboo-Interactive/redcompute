@@ -45,7 +45,7 @@ public sealed partial class SessionInputQueueStore
             || !await IsBindingChangeReadyAsync(connection, transaction, current, ct))
             return false;
         if (next.Id != current.Id || next.SourceGeneration != request.ExpectedGeneration || next.Destination != request.Destination
-            || !AllowedAdvance(current.BindingMove, next))
+            || !AllowedAdvance(current.BindingMove, next, request.ChangesNode))
             throw new InvalidOperationException("Binding transition does not match the admitted queue operation");
 
         var bindings = await ReadBindingSnapshotAsync(connection, transaction, current.SessionId, ct);
@@ -119,17 +119,22 @@ public sealed partial class SessionInputQueueStore
         return true;
     }
 
-    private static bool AllowedAdvance(SessionBindingMove? current, SessionBindingMove next)
+    private static bool AllowedAdvance(SessionBindingMove? current, SessionBindingMove next, bool changesNode)
         => (current?.State, next.State) switch
         {
             (null, BindingMoveState.Pending) => next.Prepared is null,
-            (null or BindingMoveState.Pending or BindingMoveState.Prepared, BindingMoveState.Rejected) => next.Error is not null,
+            (null or BindingMoveState.Pending or BindingMoveState.Prepared or BindingMoveState.SealPending,
+                BindingMoveState.Rejected) => next.Error is not null,
             (BindingMoveState.Pending, BindingMoveState.Prepared) => next.Prepared is not null
                 && next.Prepared.Target == next.Destination && current!.HistoryThrough == next.HistoryThrough,
-            (BindingMoveState.Prepared, BindingMoveState.Committed) => current!.Prepared is not null
-                && current.Prepared == next.Prepared && current.HistoryThrough == next.HistoryThrough,
+            (BindingMoveState.Prepared, BindingMoveState.SealPending) when changesNode => SamePreparation(current!, next),
+            (BindingMoveState.Prepared, BindingMoveState.Committed) when !changesNode => SamePreparation(current!, next),
+            (BindingMoveState.SealPending, BindingMoveState.Committed) when changesNode => SamePreparation(current!, next),
             _ => false,
         };
+
+    private static bool SamePreparation(SessionBindingMove current, SessionBindingMove next)
+        => current.Prepared is not null && current.Prepared == next.Prepared && current.HistoryThrough == next.HistoryThrough;
 
     private static async Task<bool> IsBindingChangeReadyAsync(SqliteConnection connection, SqliteTransaction? transaction,
         SessionInputQueueItem item, CancellationToken ct)

@@ -4,14 +4,14 @@ namespace RedCompute.App.Services.SessionBindings;
 
 public sealed record BindingTarget(string ProviderId, string ProviderInstanceId, string NodeId, string Model, string? Effort);
 
-public sealed record QueuedBindingChange(long ExpectedGeneration, BindingTarget Destination);
+public sealed record QueuedBindingChange(long ExpectedGeneration, BindingTarget Destination, bool ChangesNode = false);
 
 internal sealed record NativeSessionBinding(string RuntimeSessionId, string NativeThreadId, BindingTarget Target,
     DateTimeOffset? StartedAt = null, ControllerRemoteSession? Remote = null);
 
 internal sealed record SessionBinding(long Generation, NativeSessionBinding Native, long HistoryThrough);
 
-internal enum BindingMoveState { Pending, Prepared, Committed, Rejected }
+internal enum BindingMoveState { Pending, Prepared, Committed, Rejected, SealPending }
 
 internal sealed record SessionBindingMove(string Id, long SourceGeneration, BindingTarget Destination, long HistoryThrough,
     BindingMoveState State, NativeSessionBinding? Prepared = null, long? CommittedGeneration = null, string? Error = null);

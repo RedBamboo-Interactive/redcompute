@@ -19,6 +19,8 @@ internal interface ISessionBindingRuntime
     Task<IReadOnlyList<BindingHistoryText>> ReadHistoryAsync(string logicalId, long after, long through, CancellationToken ct);
     Task<BindingPreparationResult> PrepareAsync(BindingPreparation preparation, CancellationToken ct);
     Task<bool> IsReadyAsync(string logicalId, SessionBindingMove move, CancellationToken ct);
+    Task<bool> SealSourceAsync(string logicalId, SessionBinding source, SessionBindingMove move, CancellationToken ct)
+        => throw new InvalidOperationException("This binding runtime cannot seal a node move.");
     // Tombstone the preparation by id so an in-flight or replayed prepare cannot revive it.
     Task DiscardAsync(string logicalId, string moveId, CancellationToken ct);
 }
@@ -59,7 +61,8 @@ internal sealed class SessionBindingSwitch(SessionInputQueueStore queue, ISessio
                 await RejectAsync(current, initial, move, "binding_already_active", ct);
                 continue;
             }
-            if (!await runtime.CanMoveAsync(current.SessionId, snapshot.Active, request.Destination, ct))
+            if (move.State != BindingMoveState.SealPending
+                && !await runtime.CanMoveAsync(current.SessionId, snapshot.Active, request.Destination, ct))
             {
                 await RejectAsync(current, initial, move, "binding_destination_unavailable", ct);
                 continue;
@@ -76,9 +79,20 @@ internal sealed class SessionBindingSwitch(SessionInputQueueStore queue, ISessio
             {
                 await PrepareAsync(current, initial, snapshot, move, ct);
             }
-            else if (!await runtime.IsReadyAsync(current.SessionId, move, ct))
+            else if (move.State == BindingMoveState.Prepared
+                && !await runtime.IsReadyAsync(current.SessionId, move, ct))
             {
                 await RejectAsync(current, initial, move, "binding_destination_unavailable", ct);
+            }
+            else if (request.ChangesNode && move.State == BindingMoveState.Prepared)
+            {
+                // Persist the intent before invoking a seal that may apply without a response.
+                await queue.TryAdvanceBindingMoveAsync(current, initial, move with { State = BindingMoveState.SealPending }, ct);
+            }
+            else if (move.State == BindingMoveState.SealPending
+                && !await runtime.SealSourceAsync(current.SessionId, snapshot.Active, move, ct))
+            {
+                await RejectAsync(current, initial, move, "binding_source_busy", ct);
             }
             else
             {

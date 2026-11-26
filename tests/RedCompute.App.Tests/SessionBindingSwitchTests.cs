@@ -227,6 +227,41 @@ public sealed class SessionBindingSwitchTests
     }
 
     [Fact]
+    public async Task A_lost_source_seal_reply_retains_the_old_binding_and_blocks_later_input_until_exact_replay()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var runtime = new Runtime { LoseSealResponse = true };
+        var target = Codex with { NodeId = "remote" };
+        var operation = await AdmitAsync(f, "move-node", 0, target, changesNode: true);
+        var later = (await f.Store.EnqueueAsync(f.Submission("after-move"))).Item;
+        var transaction = new SessionBindingSwitch(f.Store, runtime);
+        await Assert.ThrowsAsync<IOException>(() => transaction.ApplyAsync(operation, Original, default));
+
+        var reopened = Reopen(f);
+        Assert.Equal(Original, await ActiveAsync(reopened));
+        var held = await ReceiptAsync(reopened, operation);
+        Assert.Equal(BindingMoveState.SealPending, held.BindingMove?.State);
+        var cancel = await Assert.ThrowsAsync<SessionInputQueueStoreException>(() =>
+            reopened.CancelAsync(Logical, operation.Id, operation.OwnerUserId));
+        Assert.Equal("binding_seal_pending", cancel.Code);
+        Assert.Equal(operation.Id, (await reopened.GetHeadAsync(Logical))!.Id);
+        Assert.Empty(await reopened.ClaimBatchAsync(Logical, "test", TimeSpan.FromMinutes(1)));
+
+        // A failed candidate readiness check after seal intent cannot silently restore old dispatch.
+        runtime.RevokeAfterPrepare = true;
+        var resumed = new SessionBindingSwitch(reopened, runtime);
+        var moved = await resumed.ApplyAsync(operation, Original, default);
+        Assert.Equal(BindingMoveState.Committed, moved?.State);
+        Assert.Equal(1, moved?.CommittedGeneration);
+        Assert.Equal(target, (await ActiveAsync(Reopen(f))).Target);
+        Assert.Equal([operation.Id, operation.Id], runtime.Seals);
+        Assert.Single(runtime.Preparations);
+        Assert.Equal(later.Id, (await reopened.GetHeadAsync(Logical))!.Id);
+        Assert.Equal(moved, await resumed.ApplyAsync(operation, Original, default));
+        Assert.Equal(2, runtime.Seals.Count);
+    }
+
+    [Fact]
     public async Task A_binding_control_blocks_later_steering_and_interrupt_delivery()
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
@@ -273,12 +308,12 @@ public sealed class SessionBindingSwitchTests
     private static SessionInputQueueStore Reopen(SessionRecoveryTests.Fixture f) => new(f.Config, f.Attachments);
 
     private static async Task<SessionInputQueueItem> AdmitAsync(SessionRecoveryTests.Fixture f, string key,
-        long generation, BindingTarget destination)
+        long generation, BindingTarget destination, bool changesNode = false)
         => (await f.Store.EnqueueAsync(f.Submission(key) with
         {
             Input = [],
             IdempotencyKey = key,
-            BindingChange = new(generation, destination),
+            BindingChange = new(generation, destination, changesNode),
         })).Item;
 
     private static async Task<SessionInputQueueItem> ReceiptAsync(SessionInputQueueStore queue, SessionInputQueueItem item)
@@ -313,7 +348,8 @@ public sealed class SessionBindingSwitchTests
         public readonly Dictionary<string, NativeSessionBinding> Created = [];
         public readonly HashSet<string> Discarded = [];
         public BindingPreparation? LatestPreparation;
-        public bool RefusePreparation, LosePrepareResponse, LoseReadinessResponse, RevokeAfterPrepare;
+        public bool RefusePreparation, LosePrepareResponse, LoseReadinessResponse, RevokeAfterPrepare, LoseSealResponse;
+        public readonly List<string> Seals = [];
 
         public void Deliver(NativeSessionBinding binding, SessionInputQueueItem item)
         {
@@ -360,6 +396,17 @@ public sealed class SessionBindingSwitchTests
                 throw new IOException("simulated interruption after the prepare receipt was saved");
             }
             return Task.FromResult(Created.ContainsKey(move.Id));
+        }
+
+        public Task<bool> SealSourceAsync(string logicalId, SessionBinding source, SessionBindingMove move, CancellationToken ct)
+        {
+            Seals.Add(move.Id);
+            if (LoseSealResponse)
+            {
+                LoseSealResponse = false;
+                throw new IOException("simulated lost response after sealing the source");
+            }
+            return Task.FromResult(true);
         }
 
         public Task DiscardAsync(string logicalId, string moveId, CancellationToken ct)

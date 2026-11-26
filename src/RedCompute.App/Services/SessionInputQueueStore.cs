@@ -487,6 +487,8 @@ public sealed partial class SessionInputQueueStore
         if (item is null) return null;
         if (item.State is SessionInputQueueState.Delivering)
             throw new SessionInputQueueStoreException("delivery_in_progress", "The input is already being delivered");
+        if (item.BindingMove?.State == BindingMoveState.SealPending)
+            throw new SessionInputQueueStoreException("binding_seal_pending", "The source node's move seal is being reconciled");
         if (item.State is SessionInputQueueState.Delivered or SessionInputQueueState.Cancelled)
             return item;
 
@@ -532,8 +534,11 @@ public sealed partial class SessionInputQueueStore
         using var transaction = connection.BeginTransaction(deferred: false);
         var select = connection.CreateCommand();
         select.Transaction = transaction;
-        select.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId = $sessionId AND State IN ('Pending', 'Delivering', 'Failed') ORDER BY Sequence";
+        const string cancellable = "SessionId=$sessionId AND State IN ('Pending','Delivering','Failed')"
+            + " AND COALESCE(json_extract(BindingMoveJson,'$.state'),-1)!=$seal";
+        select.CommandText = $"SELECT * FROM SessionQueuedInputs WHERE {cancellable} ORDER BY Sequence";
         Add(select, "$sessionId", sessionId);
+        Add(select, "$seal", (int)BindingMoveState.SealPending);
         var items = await ReadItemsAsync(select, ct);
         if (items.Count == 0)
         {
@@ -544,8 +549,10 @@ public sealed partial class SessionInputQueueStore
         var now = DateTimeOffset.UtcNow;
         var update = connection.CreateCommand();
         update.Transaction = transaction;
-        update.CommandText = "UPDATE SessionQueuedInputs SET State = 'Cancelled', UpdatedAt = $now, CompletedAt = $now, LeaseOwner = NULL, LeaseExpiresAt = NULL WHERE SessionId = $sessionId AND State IN ('Pending', 'Delivering', 'Failed')";
-        Add(update, "$now", now.ToString("O")); Add(update, "$sessionId", sessionId);
+        update.CommandText = $"UPDATE SessionQueuedInputs SET State='Cancelled', UpdatedAt=$now, CompletedAt=$now, LeaseOwner=NULL, LeaseExpiresAt=NULL WHERE {cancellable}";
+        Add(update, "$now", now.ToString("O"));
+        Add(update, "$sessionId", sessionId);
+        Add(update, "$seal", (int)BindingMoveState.SealPending);
         await update.ExecuteNonQueryAsync(ct);
         foreach (var item in items)
             await ReleaseAttachmentsAsync(connection, transaction, item.SessionId, item.MessageUid, now, ct);
