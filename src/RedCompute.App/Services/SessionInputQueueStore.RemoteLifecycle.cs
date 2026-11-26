@@ -75,17 +75,36 @@ public sealed partial class SessionInputQueueStore
         return await update.ExecuteNonQueryAsync(ct) == 1;
     }
 
+    internal async Task<RemoteLifecycleReceipt?> ReadRemoteLifecycleStartAsync(SessionRuntimeScope scope, CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        await using var read = connection.CreateCommand();
+        read.CommandText = """
+            SELECT Status, Body FROM RemoteSessionLifecycleCommands
+            WHERE NodeId=$node AND RuntimeId=$runtime AND LogicalSessionId=$logical AND Generation=$generation
+              AND OwnerId=$owner AND AccessScope=$access AND Operation='Start' AND Status BETWEEN 200 AND 299
+            """;
+        BindRemoteLifecycleScope(read, scope);
+        await using var result = await read.ExecuteReaderAsync(ct);
+        return await result.ReadAsync(ct) ? new(result.GetInt32(0), result.GetFieldValue<byte[]>(1)) : null;
+    }
+
     private static void BindRemoteLifecycle(SqliteCommand command, SessionRuntimeGrant grant)
     {
-        Add(command, "$node", grant.Scope.NodeId);
-        Add(command, "$runtime", grant.Scope.RuntimeId);
-        Add(command, "$logical", grant.Scope.LogicalSessionId);
-        Add(command, "$generation", grant.Scope.Generation);
+        BindRemoteLifecycleScope(command, grant.Scope);
         Add(command, "$request", grant.RequestId);
         Add(command, "$operation", grant.Operation.ToString());
-        Add(command, "$owner", grant.Scope.OwnerId);
-        Add(command, "$access", grant.Scope.AccessScope);
         Add(command, "$digest", Convert.ToHexString(SHA256.HashData(grant.Payload)));
+    }
+
+    private static void BindRemoteLifecycleScope(SqliteCommand command, SessionRuntimeScope scope)
+    {
+        Add(command, "$node", scope.NodeId);
+        Add(command, "$runtime", scope.RuntimeId);
+        Add(command, "$logical", scope.LogicalSessionId);
+        Add(command, "$generation", scope.Generation);
+        Add(command, "$owner", scope.OwnerId);
+        Add(command, "$access", scope.AccessScope);
     }
 
     private static void CheckRemoteLifecycleOperation(SessionRuntimeOperation operation)

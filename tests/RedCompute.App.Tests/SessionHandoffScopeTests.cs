@@ -17,6 +17,7 @@ public sealed class SessionHandoffScopeTests
         {
             Assert.Null(SessionHandoffScope.For("runtime-b"));
             var applied = SessionHandoffScope.For("runtime-a")!.WithInstructions(original.WithInstructions(policy));
+            Assert.NotNull(applied);
             Assert.StartsWith(policy, applied);
             Assert.Contains("intervening", applied);
             Assert.DoesNotContain("prior", applied[(applied.IndexOf('{'))..]);
@@ -25,6 +26,15 @@ public sealed class SessionHandoffScopeTests
         }
         Assert.Null(SessionHandoffScope.Current);
         Assert.Throws<ArgumentException>(() => SessionHandoffScope.Push(returning with { RuntimeSessionId = "../escape" }));
+    }
+
+    [Fact]
+    public void An_identity_only_launch_leaves_the_provider_instructions_alone()
+    {
+        using var scope = SessionHandoffScope.Push(new("runtime-a", "start-1", null));
+        var launch = Assert.IsType<SessionHandoff>(SessionHandoffScope.For("runtime-a"));
+        Assert.Null(launch.WithInstructions(null));
+        Assert.Equal("original instructions", launch.WithInstructions("original instructions"));
     }
 
     [Fact]
