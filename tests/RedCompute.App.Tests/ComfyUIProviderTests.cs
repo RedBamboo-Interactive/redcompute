@@ -282,7 +282,8 @@ public sealed class ComfyUIProviderTests
     public async Task Refused_connection_with_no_listener_has_nothing_to_release()
     {
         var logs = new List<string>();
-        var provider = NewProvider(ClosedPort(), logs.Add);
+        using var closed = ReserveClosedPort(out var port);
+        var provider = NewProvider(port, logs.Add);
 
         try
         {
@@ -302,7 +303,8 @@ public sealed class ComfyUIProviderTests
     public async Task Local_model_is_admitted_while_comfyui_is_not_up_yet()
     {
         var coordinator = new AcceleratorAdmissionCoordinator();
-        var provider = NewProvider(ClosedPort(), acceleratorAdmission: coordinator);
+        using var closed = ReserveClosedPort(out var port);
+        var provider = NewProvider(port, acceleratorAdmission: coordinator);
 
         try
         {
@@ -345,10 +347,11 @@ public sealed class ComfyUIProviderTests
     [Fact]
     public async Task Refused_connection_on_a_wsl_backend_still_refuses_release()
     {
+        using var closed = ReserveClosedPort(out var port);
         var provider = new ComfyUIProvider(new ProviderConfig
         {
             Type = "ComfyUI",
-            BackendPort = ClosedPort(),
+            BackendPort = port,
             WslDistro = "Ubuntu",
             Extra = new Dictionary<string, object?> { ["Host"] = "127.0.0.1" },
         }, "image-gen", _ => { });
@@ -476,13 +479,24 @@ public sealed class ComfyUIProviderTests
         };
     }
 
-    private static int ClosedPort()
+    private static Socket ReserveClosedPort(out int port)
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
+        // Binding without listening keeps refusal deterministic while other tests bind ephemeral ports.
+        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+        {
+            ExclusiveAddressUse = true,
+        };
+        try
+        {
+            socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            port = ((IPEndPoint)socket.LocalEndPoint!).Port;
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
     }
 
     private static async Task FillAcceptBacklogAsync(int port, List<TcpClient> backlog)
