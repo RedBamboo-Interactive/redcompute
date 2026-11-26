@@ -206,7 +206,7 @@ public sealed class SessionInputQueueService
         if (!admitted.Existing && submission.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent)
         {
             // A maintenance drain lets running turns finish rather than cutting them short.
-            interruptResult = await _store.HasEarlierInferenceChangeAsync(submission.SessionId, admitted.Item.Sequence, ct)
+            interruptResult = await _store.HasEarlierControlAsync(submission.SessionId, admitted.Item.Sequence, ct)
                 ? SessionSteerRefusals.SettingsChange
                 : _deliveryPaused() ? SessionInterruptResults.Maintenance
                 : InterruptRunningTurn(submission.SessionId, SessionInterruptSources.InterruptCurrent,
@@ -333,7 +333,7 @@ public sealed class SessionInputQueueService
         if (provider is null || info is null) return new(false, null);
         var next = await _store.GetHeadAsync(sessionId, ct);
         var interrupt = InterruptRunningTurn(sessionId, SessionInterruptSources.SendNow,
-            next?.InferenceChange is null ? next?.MessageUid : null, requireActive: true).Result;
+            next is { IsControl: false } ? next.MessageUid : null, requireActive: true).Result;
         Signal(sessionId);
         await PublishAsync(sessionId, items.Select(item => item.Id).ToArray(), "send_now_requested", ct);
         return new(true, interrupt);
@@ -351,7 +351,7 @@ public sealed class SessionInputQueueService
     {
         var item = await _store.GetAsync(sessionId, itemId, ownerUserId, ct);
         if (item is null) return null;
-        if (item.InferenceChange is not null || item.State is SessionInputQueueState.Failed or SessionInputQueueState.Cancelled
+        if (item.IsControl || item.State is SessionInputQueueState.Failed or SessionInputQueueState.Cancelled
             || (item.State == SessionInputQueueState.Pending && item.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent))
             throw new SessionInputQueueStoreException("not_promotable", "Only a pending queued input can be asked to steer the running turn");
 
@@ -395,7 +395,7 @@ public sealed class SessionInputQueueService
         var items = await _store.ListAsync(sessionId, ownerUserId, includeTerminal: false, ct);
         if (items.Any(active => active.State == SessionInputQueueState.Failed)) return SessionSteerRefusals.FailedHead;
         if (await _store.RequiresRecoveryAsync(item.Id, ct)) return SessionSteerRefusals.RecoveryRequired;
-        if (await _store.HasEarlierInferenceChangeAsync(sessionId, item.Sequence, ct)) return SessionSteerRefusals.SettingsChange;
+        if (await _store.HasEarlierControlAsync(sessionId, item.Sequence, ct)) return SessionSteerRefusals.SettingsChange;
         return null;
     }
 
@@ -512,7 +512,7 @@ public sealed class SessionInputQueueService
     private bool FailedInputIsInTranscript(ISessionProvider provider, SessionInputQueueItem head)
     {
         if (_failuresOutsideTranscript.ContainsKey(head.Id)) return false;
-        if (head.InferenceChange is null && TranscriptHoldsInput(provider, head.SessionId, head.MessageUid)) return true;
+        if (!head.IsControl && TranscriptHoldsInput(provider, head.SessionId, head.MessageUid)) return true;
         _failuresOutsideTranscript.TryAdd(head.Id, 0);
         return false;
     }
@@ -700,6 +700,8 @@ public sealed class SessionInputQueueService
             if (_deliveryPaused() || HasStopIntent(sessionId)) return;
             // Stop/resume endpoints cross this same gate. Re-read provider state after authorization.
             var (_, current) = FindSession(sessionId);
+            // A binding control has its own executor and must never fall through to provider input.
+            if (head.BindingChange is not null) return;
             var inferenceChange = head.InferenceChange;
             if (inferenceChange is not null)
             {

@@ -1,3 +1,5 @@
+using RedCompute.App.Services;
+
 namespace RedCompute.App.Services.SessionBindings;
 
 internal sealed record BindingHistoryText(long RecordId, string Role, string EventType, string? MessageUid, string? Content);
@@ -20,115 +22,99 @@ internal interface ISessionBindingRuntime
     Task DiscardAsync(string logicalId, string moveId, CancellationToken ct);
 }
 
-internal sealed class SessionBindingConflictException(string code) : InvalidOperationException(code)
-{
-    public string Code { get; } = code;
-}
-
 /// <summary>Runs underneath the logical session's delivery lock after earlier turns settle.</summary>
-internal sealed class SessionBindingSwitch(SessionBindingJournal journal, ISessionBindingRuntime runtime)
+internal sealed class SessionBindingSwitch(SessionInputQueueStore queue, ISessionBindingRuntime runtime)
 {
-    public async Task<SessionBindingMove> ApplyAsync(string logicalId, NativeSessionBinding initial,
-        string moveId, long expectedGeneration, BindingTarget destination, CancellationToken ct)
+    public async Task<SessionBindingMove?> ApplyAsync(SessionInputQueueItem admitted, NativeSessionBinding initial, CancellationToken ct)
     {
-        var snapshot = journal.OpenOrAttach(logicalId, initial);
+        var request = admitted.BindingChange ?? throw new ArgumentException("Expected a binding operation", nameof(admitted));
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var move = snapshot.Moves.SingleOrDefault(item => item.Id == moveId);
-            if (move is not null && (move.SourceGeneration != expectedGeneration || move.Destination != destination))
-                throw new SessionBindingConflictException("idempotency_conflict");
-            if (move?.State == BindingMoveState.Committed) return move;
-            if (move?.State == BindingMoveState.Rejected)
-            {
-                await runtime.DiscardAsync(logicalId, move.Id, ct);
-                return move;
-            }
-            if (snapshot.Active.Generation != expectedGeneration)
-                throw new SessionBindingConflictException("binding_changed");
-            if (snapshot.Moves.Any(item => item.Id != moveId && item.State is BindingMoveState.Pending or BindingMoveState.Prepared))
-                throw new SessionBindingConflictException("binding_change_pending");
+            var current = await queue.GetAsync(admitted.SessionId, admitted.Id, admitted.OwnerUserId, ct);
+            if (current is null || current.BindingChange != request)
+                throw new InvalidOperationException("Binding operation is not in the session queue");
 
-            if (move is null)
+            var move = current.BindingMove;
+            if (move?.State == BindingMoveState.Committed) return move;
+            if (move?.State == BindingMoveState.Rejected || current.State == SessionInputQueueState.Cancelled)
             {
-                if (SameRuntime(snapshot.Active.Native.Target, destination))
-                    throw new SessionBindingConflictException("binding_already_active");
-                if (!await runtime.CanMoveAsync(logicalId, snapshot.Active, destination, ct))
-                    throw new SessionBindingConflictException("binding_destination_unavailable");
-                var boundary = await runtime.ReadHistoryBoundaryAsync(logicalId, ct);
+                if (move is not null) await runtime.DiscardAsync(current.SessionId, current.Id, ct);
+                return move?.State == BindingMoveState.Rejected ? move : null;
+            }
+            if (!await queue.IsBindingChangeReadyAsync(current, ct)) return null;
+
+            var snapshot = await queue.ReadBindingSnapshotAsync(current.SessionId, ct)
+                ?? SessionBindingSnapshot.Initial(current.SessionId, initial);
+            move ??= new(current.Id, request.ExpectedGeneration, request.Destination, 0, BindingMoveState.Pending);
+
+            if (snapshot.Active.Generation != request.ExpectedGeneration)
+            {
+                await RejectAsync(current, initial, move, "binding_changed", ct);
+                continue;
+            }
+            if (SameRuntime(snapshot.Active.Native.Target, request.Destination))
+            {
+                await RejectAsync(current, initial, move, "binding_already_active", ct);
+                continue;
+            }
+            if (!await runtime.CanMoveAsync(current.SessionId, snapshot.Active, request.Destination, ct))
+            {
+                await RejectAsync(current, initial, move, "binding_destination_unavailable", ct);
+                continue;
+            }
+
+            if (current.BindingMove is null)
+            {
+                var boundary = await runtime.ReadHistoryBoundaryAsync(current.SessionId, ct);
                 if (boundary < snapshot.Active.HistoryThrough)
                     throw new InvalidOperationException("The authorized transcript boundary moved backward.");
-                var pending = new SessionBindingMove(moveId, expectedGeneration, destination, boundary, BindingMoveState.Pending);
-                Save(snapshot, pending);
+                await queue.TryAdvanceBindingMoveAsync(current, initial, move with { HistoryThrough = boundary }, ct);
             }
             else if (move.State == BindingMoveState.Pending)
             {
-                await PrepareAsync(snapshot, move, ct);
+                await PrepareAsync(current, initial, snapshot, move, ct);
+            }
+            else if (!await runtime.IsReadyAsync(current.SessionId, move, ct))
+            {
+                await RejectAsync(current, initial, move, "binding_destination_unavailable", ct);
             }
             else
             {
-                var committed = await CommitAsync(snapshot, move, ct);
-                if (committed is not null) return committed;
+                var committed = move with { State = BindingMoveState.Committed, CommittedGeneration = snapshot.Active.Generation + 1 };
+                if (await queue.TryAdvanceBindingMoveAsync(current, initial, committed, ct)) return committed;
             }
-            snapshot = journal.Read(logicalId)!;
         }
     }
 
-    private async Task PrepareAsync(SessionBindingSnapshot snapshot, SessionBindingMove move, CancellationToken ct)
+    private async Task PrepareAsync(SessionInputQueueItem current, NativeSessionBinding initial,
+        SessionBindingSnapshot snapshot, SessionBindingMove move, CancellationToken ct)
     {
-        if (!await runtime.CanMoveAsync(snapshot.LogicalId, snapshot.Active, move.Destination, ct))
-        {
-            Reject(snapshot, move, "binding_destination_unavailable");
-            return;
-        }
-
         var previous = snapshot.Threads.LastOrDefault(thread => SameRuntime(thread.Native.Target, move.Destination));
         var after = previous?.HistoryThrough ?? 0;
-        var history = await runtime.ReadHistoryAsync(snapshot.LogicalId, after, move.HistoryThrough, ct);
-        var preparation = new BindingPreparation(snapshot.LogicalId, move, snapshot.Active, previous,
+        var history = await runtime.ReadHistoryAsync(current.SessionId, after, move.HistoryThrough, ct);
+        var preparation = new BindingPreparation(current.SessionId, move, snapshot.Active, previous,
             BoundedHandoff(history, after, move.HistoryThrough));
         var result = await runtime.PrepareAsync(preparation, ct);
         if (result.Binding is not { } binding)
         {
-            Reject(snapshot, move, result.Refusal ?? "binding_prepare_refused");
+            await RejectAsync(current, initial, move, result.Refusal ?? "binding_prepare_refused", ct);
             return;
         }
         if (binding.Target != move.Destination || string.IsNullOrWhiteSpace(binding.NativeThreadId)
             || string.IsNullOrWhiteSpace(binding.RuntimeSessionId))
         {
-            Reject(snapshot, move, "binding_prepare_mismatch");
+            await RejectAsync(current, initial, move, "binding_prepare_mismatch", ct);
             return;
         }
-        Save(snapshot, move with { State = BindingMoveState.Prepared, Prepared = binding });
+        await queue.TryAdvanceBindingMoveAsync(current, initial,
+            move with { State = BindingMoveState.Prepared, Prepared = binding }, ct);
     }
 
-    private async Task<SessionBindingMove?> CommitAsync(SessionBindingSnapshot snapshot, SessionBindingMove move,
-        CancellationToken ct)
-    {
-        if (!await runtime.CanMoveAsync(snapshot.LogicalId, snapshot.Active, move.Destination, ct)
-            || !await runtime.IsReadyAsync(snapshot.LogicalId, move, ct))
-        {
-            Reject(snapshot, move, "binding_destination_unavailable");
-            return null;
-        }
+    private Task<bool> RejectAsync(SessionInputQueueItem current, NativeSessionBinding initial,
+        SessionBindingMove move, string code, CancellationToken ct)
+        => queue.TryAdvanceBindingMoveAsync(current, initial, move with { State = BindingMoveState.Rejected, Error = code }, ct);
 
-        var binding = new SessionBinding(snapshot.Active.Generation + 1, move.Prepared!, move.HistoryThrough);
-        var previous = snapshot.Active with { HistoryThrough = move.HistoryThrough };
-        var threads = snapshot.Threads.Take(snapshot.Threads.Count - 1).Append(previous).Append(binding).ToArray();
-        var committed = move with { State = BindingMoveState.Committed, CommittedGeneration = binding.Generation };
-        return Save(snapshot, committed, threads) ? committed : null;
-    }
-
-    private void Reject(SessionBindingSnapshot snapshot, SessionBindingMove move, string code)
-        => Save(snapshot, move with { State = BindingMoveState.Rejected, Error = code });
-
-    private bool Save(SessionBindingSnapshot snapshot, SessionBindingMove move, IReadOnlyList<SessionBinding>? threads = null)
-        => journal.TrySave(snapshot, snapshot with
-        {
-            Revision = snapshot.Revision + 1,
-            Threads = threads ?? snapshot.Threads,
-            Moves = snapshot.Moves.Where(item => item.Id != move.Id).Append(move).ToArray(),
-        });
 
     private static bool SameRuntime(BindingTarget previous, BindingTarget destination)
         => previous.ProviderId == destination.ProviderId && previous.ProviderInstanceId == destination.ProviderInstanceId

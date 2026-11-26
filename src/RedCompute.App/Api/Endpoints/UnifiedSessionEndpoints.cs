@@ -3655,7 +3655,7 @@ public static class UnifiedSessionEndpoints
         SessionInputQueueItem item, IEnumerable<StagedInputAttachment>? attachments = null) => new
     {
         id = item.Id,
-        kind = item.InferenceChange is null ? "message" : "inference-settings",
+        kind = item.BindingChange is not null ? "execution-binding" : item.InferenceChange is not null ? "inference-settings" : "message",
         clientId = item.ClientId,
         sessionId = item.SessionId,
         sequence = item.Sequence,
@@ -4035,7 +4035,7 @@ public static class UnifiedSessionEndpoints
         required = new[] { "id", "sessionId", "sequence", "state", "delivery", "input", "displayContent", "messageUid", "createdAt", "updatedAt", "attemptCount" },
         properties = new
         {
-            kind = new { type = "string", @enum = new[] { "message", "inference-settings" } },
+            kind = new { type = "string", @enum = new[] { "message", "inference-settings", "execution-binding" } },
             id = new { type = "string" },
             clientId = new { type = new[] { "string", "null" }, description = "Authorized client idempotency key used to reconcile an uncertain admission" },
             sessionId = new { type = "string" },
