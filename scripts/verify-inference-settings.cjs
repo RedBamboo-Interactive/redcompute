@@ -380,6 +380,9 @@ async function verifyHarnessReturn(fixture, change) {
     try { assertTranscript((await snapshot(fixture)).messages, [...chronological, { ...sent, provider: originalProvider }]); return true; }
     catch (error) { if (!(error instanceof assert.AssertionError)) throw error; return false; }
   });
+  const novaHistory = await api(leaf, "/api/apps/nova/discussions/"
+    + encodeURIComponent(fixture.discussionId) + "/history-page?limit=200");
+  assertTranscript(novaHistory.messages, [...chronological, { ...sent, provider: originalProvider }]);
   console.log(JSON.stringify({ discussionId: fixture.discussionId, sessionId: fixture.sessionId,
     providers: [originalProvider, "codex", originalProvider], originalNativeId: fixture.nativeId, codexNativeId: prepared.nativeThreadId }));
 }
