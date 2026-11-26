@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Json;
 using RedBamboo.AppHost.WebSockets;
 using RedCompute.App.Services;
@@ -9,6 +11,7 @@ using RedCompute.Core.Providers;
 using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Sessions;
+using RedCompute.Node;
 using RedCompute.NodeLink;
 using RedCompute.NodeLink.Noise;
 using RedCompute.PluginSdk;
@@ -218,6 +221,145 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task Encrypted_runtime_replays_the_exact_input_and_transcript_after_a_midturn_link_drop()
+    {
+        Directory.CreateDirectory(_root);
+        const string runtimeId = "sessions";
+        const string revision = "fixture-head";
+        const string providerInstance = "probe";
+        const string inputUid = "prompt-one";
+        var nodeId = NodeTestKit.RemoteId(81);
+        var scope = new SessionRuntimeScope(nodeId, runtimeId, "session-1", 0, NodeTestKit.Owner, "workspace");
+        var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", NodeTestKit.Owner)], "test-signed"));
+        using var nodeIdentity = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var nodeLinkKey = NoiseKeyPair.Generate();
+        using var controllerKeys = new NodeLinkKeyStore(Path.Combine(_root, "link-keys"), _ => { });
+        var controller = controllerKeys.Keys()[0];
+        var pin = NodeLinkKeyInfo.For(controller.PublicKey);
+        var pairing = new NodePairing
+        {
+            NodeId = nodeId, ServerOrigin = "https://leaf.invalid", LinkPath = "/nodes/link",
+            KeyRef = "fixture", CredentialStore = "fixture", Fingerprint = "fixture", PairedAt = DateTimeOffset.UtcNow,
+            LinkPin = new NodeLinkPin(pin.PublicKey, pin.Fingerprint, pin.KeyId, DateTimeOffset.UtcNow),
+        };
+        var registry = NodeTestKit.Registry(trustDirectory: Path.Combine(_root, "trust"));
+        registry.ApplyKernelNodes([NodeTestKit.Kernel(nodeId) with
+        {
+            PublicKeySpki = nodeIdentity.ExportSubjectPublicKeyInfo(), LinkE2eRequired = true,
+        }]);
+        await using var hub = new NodeHub(registry, _ => { }, new NodeHubOptions { LinkKeys = controllerKeys });
+
+        var provider = DispatchProxy.Create<IFixtureProvider, Provider>();
+        var probe = (Provider)(object)provider;
+        probe.KeepInputActive = true;
+        var attachments = new InputAttachmentStore(_config, Path.Combine(_root, "bytes"), Path.Combine(_root, "input.db"));
+        var queue = new SessionInputQueueStore(_config, attachments);
+        var capabilities = new CapabilityRegistry();
+        var delivery = new SessionInputQueueService(queue, attachments, capabilities, null!, new WebSocketBroadcaster(), (_, _) => { });
+        var destination = new RemoteSessionLifecycleRuntime(queue,
+            () => new(nodeId, runtimeId, controller.PublicKey),
+            (_, _, _) => Task.FromResult<RemoteSessionRuntimeWorkspace?>(Workspace()), TimeProvider.System,
+            delivery.Signal, (_, _) => Workspace());
+        delivery.BindingCommands = new SessionBindingCommands(capabilities, new SessionBindingTranscriptRoutes(queue));
+        delivery.RemoteRuntimeLookup = destination.FindLocalSession;
+        await using var host = await RemoteSessionRuntimeHost.StartAsync(destination, () => true, 0, CancellationToken.None);
+        await using var forwarder = await RegisteredRuntimeNodeSide.StartAsync(host.Address.Port, runtimeId, SessionRuntimeProtocol.Kind, pairing);
+
+        RemoteSessionLifecycleThread thread;
+        byte[] originalReceipt;
+        RemoteSessionEventPage firstPage;
+        await using (var link = Connect())
+        {
+            await WaitForRouteAsync();
+            var preview = await SendAsync(SessionRuntimeOperation.Inspect, "preview", new RemoteSessionLifecycleRequest(revision, providerInstance));
+            Assert.Equal(HttpStatusCode.OK, preview.Status);
+            Assert.Equal(0, probe.Starts);
+            var start = await SendAsync(SessionRuntimeOperation.Start, "start", new RemoteSessionLifecycleRequest(revision, providerInstance));
+            Assert.Equal(HttpStatusCode.Created, start.Status);
+            thread = JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(start.Body, Json)!;
+            var accepted = await SendAsync(SessionRuntimeOperation.SendInput, inputUid, Input(thread));
+            Assert.Equal(HttpStatusCode.Accepted, accepted.Status);
+            originalReceipt = accepted.Body;
+            await delivery.ProcessSessionAsync(thread.RuntimeSessionId, CancellationToken.None);
+            Assert.Equal(SessionStatus.Active, probe.Info!.Status);
+            Assert.Equal(1, probe.Inputs);
+            probe.Record(1, "user", inputUid, "One prompt");
+            firstPage = await ReadEventsAsync(thread, "first-page", 0);
+            Assert.Equal(1, Assert.Single(firstPage.Events).Sequence);
+        }
+
+        await NodeTestKit.WaitAsync(() => !hub.Server.IsOnline(nodeId)
+            && registry.Find(nodeId)?.Status == RedCompute.Core.Nodes.NodeStatus.Offline, "the encrypted test link to drop");
+        var offline = await Assert.ThrowsAsync<NodeHubException>(() => SendAsync(SessionRuntimeOperation.ReadEvents, "offline",
+            Request(thread) with { AfterSeq = 0, Limit = 10 }));
+        Assert.Equal("node_unavailable", offline.Code);
+        probe.Record(2, "assistant", "reply-one", "Reply persisted while the link was down");
+        probe.Info!.Status = SessionStatus.Idle;
+        delivery.OnProviderEvent("session.updated", probe.Info);
+
+        await using var reconnected = Connect();
+        await WaitForRouteAsync();
+        var repeat = await SendAsync(SessionRuntimeOperation.SendInput, inputUid, Input(thread));
+        Assert.Equal(HttpStatusCode.Accepted, repeat.Status);
+        Assert.Equal(originalReceipt, repeat.Body);
+        await delivery.ProcessSessionAsync(thread.RuntimeSessionId, CancellationToken.None);
+        Assert.Equal(1, probe.Inputs);
+
+        var repeatedPage = await ReadEventsAsync(thread, "retry-page", 0);
+        Assert.Equal(firstPage.Events[0].Event.Body, Assert.Single(repeatedPage.Events).Event.Body);
+        var recoveredPage = await ReadEventsAsync(thread, "reconnect-page", 1);
+        var recovered = Assert.Single(recoveredPage.Events);
+        Assert.Equal(2, recovered.Sequence);
+        Assert.Equal(inputUid, recovered.Event.InputUid);
+        Assert.Equal("Reply persisted while the link was down",
+            JsonSerializer.Deserialize<UnifiedMessageRecord>(recovered.Event.Body, Json)!.Content);
+        var ack = await SendAsync(SessionRuntimeOperation.AcknowledgeEvents, "ack", Request(thread) with { ThroughSeq = 2 });
+        Assert.Equal(HttpStatusCode.OK, ack.Status);
+        Assert.Empty((await ReadEventsAsync(thread, "after-ack", 2)).Events);
+
+        var park = await SendAsync(SessionRuntimeOperation.Park, "park", Request(thread));
+        Assert.Equal(HttpStatusCode.OK, park.Status);
+        var resume = await SendAsync(SessionRuntimeOperation.Resume, "resume", Request(thread));
+        Assert.Equal(HttpStatusCode.OK, resume.Status);
+        Assert.Equal(thread, JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(resume.Body, Json));
+        Assert.Equal(1, probe.Starts);
+        Assert.Equal(1, probe.Resumes);
+
+        RemoteSessionRuntimeWorkspace Workspace() => new(NodeTestKit.Owner, "workspace", revision, _root, providerInstance,
+            provider, new(SessionAccessLevels.Ask, SessionAccessLevels.Ask));
+
+        PipedNode Connect() => new(hub, nodeId, nodeHandler: forwarder, features: RuntimeNodeHandler.Phase4Features,
+            secure: async (transport, ct) => await NoiseLink.InitiateAsync(transport, new NoiseInitiatorOptions
+            {
+                NodeId = nodeId, LocalStatic = nodeLinkKey, ServerStatic = controller.PublicKey,
+                Binding = binding => NoiseBinding.Payload(binding, bytes => nodeIdentity.SignData(bytes, HashAlgorithmName.SHA256,
+                    DSASignatureFormat.IeeeP1363FixedFieldConcatenation)),
+            }, ct));
+
+        Task WaitForRouteAsync() => NodeTestKit.WaitAsync(() =>
+            hub.Server.FindSession(nodeId)?.ControllerKeyId == pin.KeyId
+            && registry.Find(nodeId)?.Status == RedCompute.Core.Nodes.NodeStatus.Online
+            && registry.RuntimesOf(nodeId).Any(runtime => runtime.Id == runtimeId && runtime.Status == BackendStatus.Running),
+            "the verified remote session runtime");
+
+        Task<(HttpStatusCode Status, byte[] Body)> SendAsync(SessionRuntimeOperation operation, string commandId, RemoteSessionLifecycleRequest payload) =>
+            hub.SendSessionRuntimeCommandAsync(caller, scope, operation, commandId, JsonSerializer.SerializeToUtf8Bytes(payload, Json), CancellationToken.None);
+
+        static RemoteSessionLifecycleRequest Request(RemoteSessionLifecycleThread bound) =>
+            new(revision, providerInstance, RuntimeSessionId: bound.RuntimeSessionId, NativeThreadId: bound.NativeThreadId);
+
+        static RemoteSessionLifecycleRequest Input(RemoteSessionLifecycleThread bound) =>
+            Request(bound) with { InputUid = inputUid, Text = "One prompt" };
+
+        async Task<RemoteSessionEventPage> ReadEventsAsync(RemoteSessionLifecycleThread bound, string commandId, long after)
+        {
+            var result = await SendAsync(SessionRuntimeOperation.ReadEvents, commandId, Request(bound) with { AfterSeq = after, Limit = 10 });
+            Assert.Equal(HttpStatusCode.OK, result.Status);
+            return JsonSerializer.Deserialize<RemoteSessionEventPage>(result.Body, Json)!;
+        }
+    }
+
+    [Fact]
     public async Task Owner_configuration_requires_the_registered_workspace_head_and_current_pin()
     {
         Directory.CreateDirectory(_root);
@@ -293,6 +435,7 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
             Content = text, Timestamp = DateTimeOffset.UtcNow,
         });
         public bool LoseStartReply { get; set; }
+        public bool KeepInputActive { get; set; }
 
         protected override object? Invoke(MethodInfo? method, object?[]? args) => method?.Name switch
         {
@@ -328,6 +471,7 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         {
             Inputs++;
             LastInputUid = uid;
+            if (KeepInputActive) Info!.Status = SessionStatus.Active;
             return Task.FromResult(SessionInputDeliveryResult.Accepted());
         }
 

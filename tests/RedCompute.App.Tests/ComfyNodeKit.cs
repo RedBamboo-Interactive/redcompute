@@ -111,7 +111,7 @@ internal sealed class FakeComfyUi : IAsyncDisposable
             {
                 if (endless != "/view") await ctx.Response.Body.WriteAsync("{\"x\":\""u8.ToArray());
                 // Not a measure of what left: once the connection is gone Kestrel's writes complete without writing until
-                // RequestAborted fires. What the node really forwarded is in its audit (ComfyNodeSide.Forwarded).
+                // RequestAborted fires. What the node really forwarded is in its audit (RegisteredRuntimeNodeSide.Forwarded).
                 while (!ctx.RequestAborted.IsCancellationRequested)
                     await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
             }
@@ -190,11 +190,11 @@ internal sealed class FakeComfyUi : IAsyncDisposable
 }
 
 /// <summary>
-/// The node side, as the agent wires it (NodeAgent): the owner's attach-mode registration of <see cref="FakeComfyUi"/>,
+/// The node side, as the agent wires it (NodeAgent): an owner's attached loopback runtime,
 /// the real <see cref="RuntimeManager"/>, the real <see cref="RuntimeForwardTarget"/> behind a <see cref="ForwardHost"/>
 /// whose audit goes to the node's audit log, and <c>runtime.v1</c> through <see cref="RuntimeRpc"/>.
 /// </summary>
-internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
+internal sealed class RegisteredRuntimeNodeSide : LinkHandler, IAsyncDisposable
 {
     public const string RuntimeId = "comfyui-1";
 
@@ -209,7 +209,7 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
     /// <summary>Every exchange the node's forward finished, as its audit saw it (bytes really read from the runtime and sent).</summary>
     public ConcurrentQueue<ForwardAudit> Forwarded { get; } = new();
 
-    private ComfyNodeSide(int port)
+    private RegisteredRuntimeNodeSide(int port, string runtimeId, string kind, NodePairing? pairing)
     {
         Root = Path.Combine(Path.GetTempPath(), "leaf-node-e2e-" + Guid.NewGuid().ToString("N")[..10]);
         Paths = NodePaths.Resolve(variable => variable == NodePaths.HomeVariable ? Root : null,
@@ -217,8 +217,10 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
         var host = new LocalExecutionHost("node_e2e");
         new RuntimeRegistry(host, Paths).Add(new RuntimeRegistration
         {
-            Id = RuntimeId, Kind = RuntimeKinds.ComfyUi, Label = "ComfyUI on the lab box", Managed = HostRuntimeManagement.Attach,
-            Port = port, Accelerator = "cuda:0", AcceptedGraphsRunInstalledNodes = true,
+            Id = runtimeId, Kind = kind, Managed = HostRuntimeManagement.Attach, Port = port,
+            Label = kind == RuntimeKinds.ComfyUi ? "ComfyUI on the lab box" : null,
+            Accelerator = kind == RuntimeKinds.ComfyUi ? "cuda:0" : "cpu",
+            AcceptedGraphsRunInstalledNodes = kind == RuntimeKinds.ComfyUi,
         });
         Environment = new NodeEnvironment
         {
@@ -227,7 +229,7 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
         Runtimes = new RuntimeManager(Environment);
         var env = Environment;
         var forwarded = Forwarded;
-        _forward = new ForwardHost(new RuntimeForwardTarget(Runtimes), audit: entry =>
+        _forward = new ForwardHost(new RuntimeForwardTarget(Runtimes, activePairing: () => pairing), audit: entry =>
         {
             forwarded.Enqueue(entry);
             env.Audit.Record("forward", entry.Path, entry.Outcome,
@@ -236,9 +238,10 @@ internal sealed class ComfyNodeSide : LinkHandler, IAsyncDisposable
         });
     }
 
-    public static async Task<ComfyNodeSide> StartAsync(int port)
+    public static async Task<RegisteredRuntimeNodeSide> StartAsync(int port, string runtimeId = RuntimeId,
+        string kind = RuntimeKinds.ComfyUi, NodePairing? pairing = null)
     {
-        var node = new ComfyNodeSide(port);
+        var node = new RegisteredRuntimeNodeSide(port, runtimeId, kind, pairing);
         node.Runtimes.Load();
         await node.Runtimes.ProbeOnceAsync();
         return node;
@@ -283,7 +286,7 @@ internal sealed class ComfyNodeKit : IAsyncDisposable
     public static readonly string NodeId = RemoteId(1);
 
     public FakeComfyUi Comfy { get; private init; } = null!;
-    public ComfyNodeSide Node { get; private init; } = null!;
+    public RegisteredRuntimeNodeSide Node { get; private init; } = null!;
     public NodeRegistry Registry { get; private init; } = null!;
     public NodeHub Hub { get; private init; } = null!;
     public PipedNode Link { get; private init; } = null!;
@@ -291,7 +294,7 @@ internal sealed class ComfyNodeKit : IAsyncDisposable
     public static async Task<ComfyNodeKit> StartAsync()
     {
         var comfy = await FakeComfyUi.StartAsync();
-        var node = await ComfyNodeSide.StartAsync(comfy.Port);
+        var node = await RegisteredRuntimeNodeSide.StartAsync(comfy.Port);
         var registry = NodeTestKit.Registry();
         registry.ApplyKernelNodes([Kernel(NodeId, "Lab box")]);
         var hub = new NodeHub(registry, _ => { });
@@ -302,7 +305,7 @@ internal sealed class ComfyNodeKit : IAsyncDisposable
 
     public HostRuntime Runtime => Registry.RuntimesOf(NodeId).Single();
 
-    public RemoteExecutionHost Host => Hub.RemoteHost(NodeId).ForRuntime(ComfyNodeSide.RuntimeId);
+    public RemoteExecutionHost Host => Hub.RemoteHost(NodeId).ForRuntime(RegisteredRuntimeNodeSide.RuntimeId);
 
     /// <summary>A text-to-image request, or an image-to-image one with <paramref name="image"/> as its <c>image</c> input.</summary>
     public static JobRequest Request(object? image = null)
