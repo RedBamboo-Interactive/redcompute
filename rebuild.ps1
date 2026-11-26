@@ -16,6 +16,10 @@ param(
     # full RedLeaf rebuild uses this to prepare both services before one suite handoff.
     [switch]$StageOnly,
 
+    # Stage and record the exact maintenance request without arming it. Verification
+    # can queue work against this run before an operator submits the normal handoff.
+    [switch]$PrepareOnly,
+
     # One-time bridge for installing the maintenance handoff into a runtime that predates it.
     # Future live rebuilds fail closed when the authenticated handoff is unavailable.
     [switch]$BootstrapMaintenance,
@@ -26,6 +30,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PrepareOnly -and ($StageOnly -or $NoKernel -or $NoLaunch -or $BootstrapMaintenance)) {
+    throw 'PrepareOnly cannot be combined with StageOnly, NoKernel, NoLaunch or BootstrapMaintenance'
+}
 $runStartedAt = Get-Date
 $runId = $runStartedAt.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $leafUrl = if ($env:REDLEAF_URL) { $env:REDLEAF_URL } else { 'http://127.0.0.1:18804' }
@@ -142,6 +149,17 @@ $request = [ordered]@{
     hadComputeProcess = [bool](Get-Process -Name RedCompute -ErrorAction SilentlyContinue)
 }
 $request | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $requestPath -Encoding UTF8
+
+if ($PrepareOnly) {
+    [pscustomobject]@{
+        runId = $runId
+        state = 'prepared'
+        requestPath = $requestPath
+        receiptPath = $receiptPath
+        message = 'Staged request prepared. No process was stopped or restarted.'
+    } | ConvertTo-Json -Depth 4
+    exit 0
+}
 
 $runningCompute = Get-Process -Name RedCompute -ErrorAction SilentlyContinue |
     Sort-Object StartTime -Descending | Select-Object -First 1
