@@ -60,7 +60,9 @@ public sealed class JobNodeIdTests : IDisposable
         }
         var bytes = new FileInfo(database).Length;
         var pagesBefore = Scalar(database, "PRAGMA page_count");
+        var pageSize = (int)Scalar(database, "PRAGMA page_size");
         Assert.True(bytes > 200L * 1024 * 1024, $"synthetic database is only {bytes} bytes");
+        var hashesBefore = PageHashes(database, pageSize);
 
         TimeSpan? added;
         using (var db = new RedComputeDbContext(database))
@@ -69,10 +71,17 @@ public sealed class JobNodeIdTests : IDisposable
             added = db.NodeIdColumnAddedIn;
         }
 
-        _output.WriteLine($"{rows} rows, {bytes / (1024 * 1024)} MB: Jobs.NodeId added in {added?.TotalMilliseconds:0.##} ms");
+        // No row was rewritten: only the header and the schema's pages differ, out of tens of thousands. The time is
+        // logged, not asserted: one ALTER is a schema write and a journal sync, so a wall-clock bound measured the
+        // disk's sync latency under load, not rows (2026-11-25: 111 ms against 100 ms in a full-suite run).
+        SqliteConnection.ClearAllPools();
+        var hashesAfter = PageHashes(database, pageSize);
+        var changed = Enumerable.Range(0, hashesBefore.Length).Where(page => hashesBefore[page] != hashesAfter[page]).Select(page => page + 1).ToArray();
+        _output.WriteLine($"{rows} rows, {bytes / (1024 * 1024)} MB, {hashesBefore.Length} pages: Jobs.NodeId added in "
+            + $"{added?.TotalMilliseconds:0.##} ms, pages changed: {string.Join(", ", changed)}");
         Assert.NotNull(added);
-        Assert.True(added < TimeSpan.FromMilliseconds(100), $"ALTER took {added?.TotalMilliseconds} ms");
         Assert.Equal(pagesBefore, Scalar(database, "PRAGMA page_count"));
+        Assert.True(changed.Length <= 8, $"{changed.Length} of {hashesBefore.Length} pages changed: {string.Join(", ", changed.Take(20))}");
         Assert.Equal(rows, Scalar(database, "SELECT COUNT(*) FROM Jobs WHERE NodeId IS NULL"));
 
         // Idempotent: the next boot finds the column and changes nothing.
@@ -193,6 +202,20 @@ public sealed class JobNodeIdTests : IDisposable
         }.ToString());
         connection.Open();
         return connection;
+    }
+
+    /// <summary>A hash of each page of the database file, in page order.</summary>
+    private static long[] PageHashes(string database, int pageSize)
+    {
+        using var file = new FileStream(database, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var hashes = new long[file.Length / pageSize];
+        var page = new byte[pageSize];
+        for (var i = 0; i < hashes.Length; i++)
+        {
+            file.ReadExactly(page);
+            hashes[i] = BitConverter.ToInt64(System.Security.Cryptography.SHA256.HashData(page));
+        }
+        return hashes;
     }
 
     private static long Scalar(string database, string sql)

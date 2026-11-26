@@ -79,7 +79,10 @@ public sealed class MaintenanceSessionDrainTests
     public async Task Grace_timeout_also_breaks_stuck_queue_delivery_after_provider_stop()
     {
         var (registry, provider) = RegistryWithSession(SessionStatus.Active);
-        var drain = CreateDrain(registry, []);
+        // The forced deadline is not this test's subject: Deployment_fails_only_when_provider_remains_active_after_force_deadline
+        // owns it, at 40 ms. After the force-stop only two 5 ms polls remain, so a 1 s bound here failed only when the full
+        // suite starved this test's continuations for over a second (2026-11-26).
+        var drain = CreateDrain(registry, [], forcedTimeout: TimeSpan.FromSeconds(30));
         var queueWaits = 0;
 
         await drain.DrainAsync(async ct =>

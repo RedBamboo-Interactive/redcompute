@@ -373,6 +373,37 @@ public sealed class SessionProcessContainmentTests : IDisposable
         Assert.Empty(restarted.List());
     }
 
+    /// <summary>
+    /// 2026-11-26, the flake in the test above, and a product race: the view says "exited" as soon as the tree is
+    /// empty, but the exit time was set only when a monitor pass released the process. Between the two, an exited
+    /// entry showed no time, and a RedCompute stop then saved it with no exit at all, so the next RedCompute said no
+    /// RedCompute had been watching. No monitor pass runs here, which holds that window open.
+    /// </summary>
+    [Fact]
+    public async Task An_exit_no_monitor_pass_has_recorded_yet_has_its_time_and_survives_a_restart()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var registry = NewRegistry();
+        var before = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var result = registry.Launch(new LongLivedLaunchRequest("short", "exit /b 3", _root), new LongLivedOwner("user", "Nova", null));
+        Assert.True(result.Status == 200, result.Error);
+        var id = result.Process!.Id;
+
+        await WaitUntilAsync(() => registry.Get(id)!.State == "exited", "the exit to show",
+            () => $"state {registry.Get(id)!.State}; " + ChainState([result.Process.Pid]));
+        var view = registry.Get(id)!;
+        Assert.NotNull(view.ExitedAt);
+        Assert.InRange(view.ExitedAt!.Value, before, DateTimeOffset.UtcNow);
+
+        registry.Dispose();
+        var restarted = NewRegistry();
+        var reloaded = restarted.Get(id)!;
+        Assert.Equal("exited", reloaded.State);
+        Assert.Equal(view.ExitedAt, reloaded.ExitedAt);
+        Assert.Null(reloaded.Note);
+        Assert.Equal(200, restarted.Stop(id).Status);
+    }
+
     [Fact]
     public async Task An_entry_that_died_while_RedCompute_was_down_is_shown_dead_or_relaunched_as_it_asked()
     {

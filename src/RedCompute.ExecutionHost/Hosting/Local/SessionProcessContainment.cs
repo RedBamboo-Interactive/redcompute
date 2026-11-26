@@ -626,14 +626,21 @@ internal sealed class ContainedProcessTree : IContainedTree
     }
 
     /// <summary>
-    /// When the last process this tree released had exited, as the OS recorded it. Once every
-    /// process of a kept tree is gone, this is when the tree ended.
+    /// When the last process of this tree to end had exited, as the OS recorded it: the ones a scan released, and the
+    /// ones that have exited but no scan has released yet, which <see cref="LiveProcesses"/> already leaves out
+    /// (2026-11-26: a tree could read empty with no exit time). Once every process of a kept tree is gone, this is
+    /// when the tree ended.
     /// </summary>
     public DateTimeOffset? LastExitAt
     {
         get
         {
             var ticks = Interlocked.Read(ref _lastExitUtcTicks);
+            if (OperatingSystem.IsWindows())
+                lock (_gate)
+                    foreach (var tracked in _tracked.Values)
+                        if (SessionProcessContainment.Native.HasExited(tracked.Handle))
+                            ticks = Math.Max(ticks, SessionProcessContainment.Native.Times(tracked.Handle).Exited);
             return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
         }
     }

@@ -281,9 +281,7 @@ public sealed class LongLivedProcessRegistry : IDisposable
                         record.LastSeenAliveAt = now;
                         continue;
                     }
-                    _trees.Remove(id);
-                    tree.Release(deleteLedger: true);
-                    RecordExit(record, tree.LastExitAt ?? now, observed: true);
+                    EndTree(id, tree, record, now);
                     changed = true;
                 }
             }
@@ -321,11 +319,30 @@ public sealed class LongLivedProcessRegistry : IDisposable
         {
             if (_disposed) return;
             _disposed = true;
+            // An entry that ended since the last pass is recorded now, as that pass would have: saved without its
+            // exit, the next RedCompute would find it gone and say no RedCompute was watching (2026-11-26).
+            if (_host.Platform.IsWindows)
+            {
+                var now = Clock();
+                foreach (var (id, tree) in _trees.ToArray())
+                    if (tree.IsKept && tree.LiveProcesses.Count == 0 && _records.TryGetValue(id, out var record))
+                        EndTree(id, tree, record, now);
+            }
             Save();
             foreach (var tree in _trees.Values)
                 if (tree.IsKept) tree.Release(deleteLedger: false);
             _trees.Clear();
         }
+    }
+
+    /// <summary>Under the gate: every process of a kept tree is gone, so the entry ended when its last process did.</summary>
+    private void EndTree(string id, IContainedTree tree, LongLivedProcessRecord record, DateTimeOffset now)
+    {
+        // Read before the release closes the handles that know it.
+        var exitedAt = tree.LastExitAt ?? now;
+        _trees.Remove(id);
+        tree.Release(deleteLedger: true);
+        RecordExit(record, exitedAt, observed: true);
     }
 
     /// <summary>Under the gate: the entry's processes are all gone.</summary>
