@@ -580,9 +580,9 @@ public class RelayServer
             try
             {
                 var configuration = new RemoteSessionRuntimeConfiguration(runtimeConfig, instance =>
-                    bindingCommands.Providers().FirstOrDefault(candidate => candidate.Instance == instance).Provider);
+                    bindingCommands.Providers().FirstOrDefault(candidate => candidate.Instance == instance).Provider, localHost);
                 var runtime = new RemoteSessionLifecycleRuntime(inputQueueStore, configuration.CurrentPairing,
-                    configuration.ResolveAsync, TimeProvider.System, inputQueue.Signal, configuration.ResolveConfigured);
+                    configuration.ResolveAsync, TimeProvider.System, inputQueue.Signal, configuration.ResolveConfigured, localHost);
                 inputQueue.RemoteRuntimeLookup = runtime.FindLocalSession;
                 _remoteSessionRuntime = await RemoteSessionRuntimeHost.StartAsync(runtime, configuration.IsReady,
                     runtimeConfig.Port, ct);

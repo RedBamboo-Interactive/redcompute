@@ -7,6 +7,7 @@ using RedCompute.NodeLink;
 using RedCompute.NodeLink.Forward;
 using RedCompute.NodeLink.Noise;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
 using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services.Nodes;
@@ -14,10 +15,12 @@ namespace RedCompute.App.Services.Nodes;
 internal sealed class RemoteSessionRuntimeConfiguration
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private readonly IExecutionHost _host;
     private readonly RemoteSessionRuntimeConfig _config;
     private readonly Func<string, ISessionProvider?> _getProvider;
 
-    internal RemoteSessionRuntimeConfiguration(RemoteSessionRuntimeConfig config, Func<string, ISessionProvider?> getProvider)
+    internal RemoteSessionRuntimeConfiguration(RemoteSessionRuntimeConfig config, Func<string, ISessionProvider?> getProvider,
+        IExecutionHost? host = null)
     {
         if (!ForwardOpen.IsRuntimeId(config.RuntimeId) || config.Port is < 1 or > 65535
             || !Path.IsPathFullyQualified(config.PairingStatePath) || config.Workspaces is not { Count: > 0 }
@@ -28,6 +31,7 @@ internal sealed class RemoteSessionRuntimeConfiguration
                 .Any(group => group.Count() != 1))
             throw new ArgumentException("Invalid local remote session runtime configuration.");
 
+        _host = host ?? LocalExecutionHost.Shared;
         _config = config;
         _getProvider = getProvider;
     }
@@ -36,7 +40,7 @@ internal sealed class RemoteSessionRuntimeConfiguration
     {
         try
         {
-            using var file = File.OpenRead(_config.PairingStatePath);
+            using var file = _host.Files.OpenRead(_host.Path(_config.PairingStatePath));
             if (file.Length > 64 * 1024) return null;
             var pair = JsonSerializer.Deserialize<PairingFile>(file, Json)?.Pairing;
             if (pair is not { NodeId.Length: > 0, LinkPin: { } pin }
@@ -52,7 +56,7 @@ internal sealed class RemoteSessionRuntimeConfiguration
     }
 
     internal bool IsReady() => CurrentPairing() is not null && _config.Workspaces.Any(workspace =>
-        Directory.Exists(workspace.ProjectPath) && _getProvider(workspace.ProviderInstanceId) is { } provider
+        _host.Files.DirectoryExists(_host.Path(workspace.ProjectPath)) && _getProvider(workspace.ProviderInstanceId) is { } provider
             && NativeSessionBindingPreparer.Supports(provider));
 
     internal RemoteSessionRuntimeWorkspace? ResolveConfigured(SessionRuntimeScope scope, RemoteSessionLifecycleRequest request)
@@ -60,7 +64,7 @@ internal sealed class RemoteSessionRuntimeConfiguration
         var workspace = _config.Workspaces.FirstOrDefault(candidate => candidate.OwnerId == scope.OwnerId
             && candidate.Reference == scope.AccessScope && candidate.ProviderInstanceId == request.ProviderInstanceId);
         if (workspace is null || _getProvider(workspace.ProviderInstanceId) is not { } provider
-            || !Directory.Exists(workspace.ProjectPath))
+            || !_host.Files.DirectoryExists(_host.Path(workspace.ProjectPath)))
             return null;
 
         return new(workspace.OwnerId, workspace.Reference, request.Revision, workspace.ProjectPath, workspace.ProviderInstanceId,
@@ -74,7 +78,7 @@ internal sealed class RemoteSessionRuntimeConfiguration
         if (workspace is null) return null;
         try
         {
-            var revision = await HostGit.RunAsync(LocalExecutionHost.Shared, workspace.ProjectPath, ["rev-parse", "--verify", "HEAD"], ct);
+            var revision = await HostGit.RunAsync(_host, workspace.ProjectPath, ["rev-parse", "--verify", "HEAD"], ct);
             if (revision is not [var head] || !string.Equals(head, request.Revision, StringComparison.OrdinalIgnoreCase))
                 return null;
         }

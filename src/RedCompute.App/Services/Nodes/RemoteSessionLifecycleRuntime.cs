@@ -6,6 +6,8 @@ using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.NodeLink;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services.Nodes;
 
@@ -29,10 +31,12 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
     Func<RemoteSessionRuntimeIdentity?> currentPairing,
     Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, CancellationToken, Task<RemoteSessionRuntimeWorkspace?>> resolve,
     TimeProvider time, Action<string>? signalInput = null,
-    Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, RemoteSessionRuntimeWorkspace?>? configuredWorkspace = null)
+    Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, RemoteSessionRuntimeWorkspace?>? configuredWorkspace = null,
+    IExecutionHost? host = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private readonly IExecutionHost _host = host ?? LocalExecutionHost.Shared;
 
     internal async Task<RemoteLifecycleReceipt> ApplyAsync(SessionRuntimeOperation operation, SessionRuntimeGrant grant,
         CancellationToken ct = default)
@@ -74,7 +78,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                 ? configuredWorkspace(grant.Scope, request) : await resolve(grant.Scope, request, ct);
             if (workspace is null || workspace.OwnerId != grant.Scope.OwnerId || workspace.Reference != grant.Scope.AccessScope
                 || workspace.Revision != request.Revision || workspace.ProviderInstanceId != request.ProviderInstanceId
-                || !Directory.Exists(workspace.ProjectPath))
+                || !_host.Files.DirectoryExists(_host.Path(workspace.ProjectPath)))
                 return Error(422, "workspace_unavailable");
             if (!NativeSessionBindingPreparer.Supports(workspace.Provider)
                 || !SessionAccessLevels.IsKnown(workspace.Access.AccessLevel)
