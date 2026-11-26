@@ -237,6 +237,24 @@ public sealed class ClaudeSessionRecoveryTests
         Assert.Equal(expected, ClaudeSessionService.UnloadedStatus(stored, restarting).Status);
     }
 
+    [Fact]
+    public void Parked_session_metadata_keeps_its_owner_and_repository_for_provider_handoff()
+    {
+        var row = Session("original", "Stopped", SessionStopReasons.IdleTimeout);
+        row.UserId = "owner";
+        row.UserName = "Owner";
+        row.UserAvatarUrl = "/assets/owner.png";
+        row.RepositoryId = Guid.NewGuid();
+        var service = CreateService(new FakeStore(row));
+
+        var parked = service.GetSessionInfo(row.Id);
+        Assert.NotNull(parked);
+        Assert.Equal(row.UserId, parked.UserId);
+        Assert.Equal(row.UserName, parked.UserName);
+        Assert.Equal(row.UserAvatarUrl, parked.UserAvatarUrl);
+        Assert.Equal(row.RepositoryId, parked.RepositoryId);
+    }
+
     // Deferred mirror work is collected, never run against the process-wide SuiteMirror, so
     // whether another test installed it cannot change what these tests observe.
     private static ClaudeSessionService CreateService(FakeStore store, List<Action>? deferred = null) => new(

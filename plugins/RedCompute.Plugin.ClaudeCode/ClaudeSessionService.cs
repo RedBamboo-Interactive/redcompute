@@ -2196,6 +2196,7 @@ public partial class ClaudeSessionService
         NodeId = r.NodeId,
         Placement = r.Placement,
         ScratchDirectory = r.ScratchDirectory,
+        RepositoryId = r.RepositoryId,
         Status = Enum.TryParse<SessionStatus>(r.Status, out var s) ? s : SessionStatus.Stopped,
         StopReason = r.StopReason,
         StoppedAt = r.StoppedAt,
@@ -2219,6 +2220,9 @@ public partial class ClaudeSessionService
         DeliveredAsOneMessage = r.DeliveredAsOneMessage,
         JobId = r.JobId,
         Source = r.Source,
+        UserId = r.UserId,
+        UserName = r.UserName,
+        UserAvatarUrl = r.UserAvatarUrl,
         Access = AccessOf(r),
         PermissionMode = PermissionModeFor(r.AccessLevel),
     };
