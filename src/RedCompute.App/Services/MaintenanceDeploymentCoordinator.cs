@@ -4,6 +4,7 @@ using System.Text.Json;
 using RedCompute.Core.Sessions;
 using RedCompute.Core.Storage;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services;
 
@@ -70,9 +71,11 @@ public sealed class MaintenanceDeploymentCoordinator
     public void AttachInputQueue(SessionInputQueueService inputQueue)
         => _inputQueue = inputQueue;
 
-    public MaintenanceDeploymentAdmission Arm(string requestPath)
+    public async Task<MaintenanceDeploymentAdmission> ArmAsync(string requestPath, CancellationToken ct)
     {
         var validated = ValidateRequest(requestPath);
+        await VerifyPreparedCheckoutAsync(validated, ct);
+        ct.ThrowIfCancellationRequested();
         lock (_gate)
         {
             var status = _status.Current;
@@ -94,6 +97,7 @@ public sealed class MaintenanceDeploymentCoordinator
             if (_inputQueue is null)
                 throw new InvalidOperationException("The durable input queue is not attached");
             var sessions = await _sessionDrain.DrainAsync(_inputQueue.WaitForDeliveryQuiescenceAsync);
+            await VerifyPreparedCheckoutAsync(request, CancellationToken.None);
             var checkpoint = new PlannedRestartData(request.RunId, DateTimeOffset.UtcNow, sessions);
             PlannedRestartCheckpoint.Write(checkpoint);
             lock (_gate) _status.Set("launching", request.RunId, 0);
@@ -240,8 +244,32 @@ public sealed class MaintenanceDeploymentCoordinator
         if (!File.Exists(handoffScript))
             throw new FileNotFoundException("Desktop handoff script is missing", handoffScript);
 
-        return new(fullRequestPath, Path.GetFullPath(receiptPath), runId, repositoryRoot, handoffScript);
+        string? preparedCommit = null;
+        if (document.RootElement.TryGetProperty("preparedSourceCommit", out var source))
+        {
+            if (!isComputeRequest || source.ValueKind != JsonValueKind.String
+                || source.GetString() is not { Length: 40 or 64 } commit || !commit.All(Uri.IsHexDigit))
+                throw new InvalidOperationException("Invalid source commit for the prepared RedCompute stage");
+            preparedCommit = commit;
+        }
+        return new(fullRequestPath, Path.GetFullPath(receiptPath), runId, repositoryRoot, handoffScript, preparedCommit);
     }
+
+    private static async Task VerifyPreparedCheckoutAsync(ValidatedRequest request, CancellationToken ct)
+    {
+        if (request.PreparedSourceCommit is not { } commit) return;
+        if (File.Exists(request.ReceiptPath))
+            throw new InvalidOperationException("This prepared deployment already has a receipt");
+        var status = await HostGit.RunAsync(LocalExecutionHost.Shared, request.RepositoryRoot,
+            ["status", "--porcelain=v2", "--branch", "--untracked-files=normal"], ct);
+        if (!PreparedSourceMatches(commit, status))
+            throw new InvalidOperationException("Prepared RedCompute stage no longer matches the canonical checkout. Stage it again.");
+    }
+
+    internal static bool PreparedSourceMatches(string commit, IReadOnlyList<string>? status)
+        => status is { Count: > 0 }
+            && status[0] == "# branch.oid " + commit
+            && status.All(line => line.StartsWith("# ", StringComparison.Ordinal));
 
     private static bool IsWithin(string path, string directory)
         => path.StartsWith(Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar)
@@ -252,5 +280,6 @@ public sealed class MaintenanceDeploymentCoordinator
         string ReceiptPath,
         string RunId,
         string RepositoryRoot,
-        string HandoffScript);
+        string HandoffScript,
+        string? PreparedSourceCommit);
 }

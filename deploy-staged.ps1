@@ -209,6 +209,12 @@ try {
     $stageManifest = @()
     foreach ($manifestEntry in $parsedManifest) { $stageManifest += $manifestEntry }
     Assert-RedBambooTreeManifest -Directory $stageDirectory -ExpectedManifest $stageManifest | Out-Null
+    if ($null -ne $request.PSObject.Properties['preparedSourceCommit']) {
+        . (Join-Path $PSScriptRoot 'scripts\prepared-stage-source.ps1')
+        if ((Get-RedComputePreparedSource -RepositoryRoot $PSScriptRoot) -cne $request.preparedSourceCommit) {
+            throw 'Prepared RedCompute stage belongs to an older checkout. Stage the current checkout again.'
+        }
+    }
     Write-DeploymentReceipt -State 'accepted' -Phase 'preflight-verified' -Success $false
 
     if (-not [bool]$request.noKernel) {

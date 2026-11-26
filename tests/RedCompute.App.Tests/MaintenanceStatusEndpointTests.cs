@@ -12,6 +12,17 @@ using Xunit;
 namespace RedCompute.App.Tests;
 public sealed class MaintenanceStatusEndpointTests
 {
+    [Fact]
+    public void Prepared_source_guard_requires_a_readable_clean_checkout_at_the_exact_commit()
+    {
+        const string prepared = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string later = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        Assert.True(MaintenanceDeploymentCoordinator.PreparedSourceMatches(prepared, ["# branch.oid " + prepared, "# branch.head main"]));
+        Assert.False(MaintenanceDeploymentCoordinator.PreparedSourceMatches(prepared, ["# branch.oid " + later, "# branch.head main"]));
+        Assert.False(MaintenanceDeploymentCoordinator.PreparedSourceMatches(prepared, ["# branch.oid " + prepared, "? new-source.cs"]));
+        Assert.False(MaintenanceDeploymentCoordinator.PreparedSourceMatches(prepared, null));
+    }
+
     [Theory]
     [InlineData(false, 401)]
     [InlineData(true, 200)]

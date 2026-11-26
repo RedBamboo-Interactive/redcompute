@@ -37,7 +37,7 @@ public static class MaintenanceEndpoints
 
             try
             {
-                var admission = coordinator.Arm(requestPath);
+                var admission = await coordinator.ArmAsync(requestPath, context.RequestAborted);
                 return Results.Json(admission,
                     statusCode: admission.Accepted
                         ? StatusCodes.Status202Accepted

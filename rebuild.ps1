@@ -33,6 +33,11 @@ $ErrorActionPreference = 'Stop'
 if ($PrepareOnly -and ($StageOnly -or $NoKernel -or $NoLaunch -or $BootstrapMaintenance)) {
     throw 'PrepareOnly cannot be combined with StageOnly, NoKernel, NoLaunch or BootstrapMaintenance'
 }
+$preparedSource = $null
+if ($PrepareOnly) {
+    . (Join-Path $PSScriptRoot 'scripts\prepared-stage-source.ps1')
+    $preparedSource = Get-RedComputePreparedSource -RepositoryRoot $PSScriptRoot
+}
 $runStartedAt = Get-Date
 $runId = $runStartedAt.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $leafUrl = if ($env:REDLEAF_URL) { $env:REDLEAF_URL } else { 'http://127.0.0.1:18804' }
@@ -147,6 +152,12 @@ $request = [ordered]@{
     noKernel = [bool]$NoKernel
     noLaunch = [bool]$NoLaunch
     hadComputeProcess = [bool](Get-Process -Name RedCompute -ErrorAction SilentlyContinue)
+}
+if ($PrepareOnly) {
+    if ((Get-RedComputePreparedSource -RepositoryRoot $PSScriptRoot) -cne $preparedSource) {
+        throw 'RedCompute checkout changed during preparation. Stage the current checkout again.'
+    }
+    $request.preparedSourceCommit = $preparedSource
 }
 $request | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $requestPath -Encoding UTF8
 
