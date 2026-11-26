@@ -260,16 +260,14 @@ public sealed class MaintenanceDeploymentCoordinator
         if (request.PreparedSourceCommit is not { } commit) return;
         if (File.Exists(request.ReceiptPath))
             throw new InvalidOperationException("This prepared deployment already has a receipt");
-        var status = await HostGit.RunAsync(LocalExecutionHost.Shared, request.RepositoryRoot,
-            ["status", "--porcelain=v2", "--branch", "--untracked-files=normal"], ct);
-        if (!PreparedSourceMatches(commit, status))
+        var head = await HostGit.RunAsync(LocalExecutionHost.Shared, request.RepositoryRoot,
+            ["rev-parse", "--verify", "HEAD"], ct);
+        if (!PreparedSourceMatches(commit, head))
             throw new InvalidOperationException("Prepared RedCompute stage no longer matches the canonical checkout. Stage it again.");
     }
 
-    internal static bool PreparedSourceMatches(string commit, IReadOnlyList<string>? status)
-        => status is { Count: > 0 }
-            && status[0] == "# branch.oid " + commit
-            && status.All(line => line.StartsWith("# ", StringComparison.Ordinal));
+    internal static bool PreparedSourceMatches(string commit, IReadOnlyList<string>? head)
+        => head is { Count: 1 } && head[0] == commit;
 
     private static bool IsWithin(string path, string directory)
         => path.StartsWith(Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar)

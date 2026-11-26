@@ -210,8 +210,8 @@ try {
     foreach ($manifestEntry in $parsedManifest) { $stageManifest += $manifestEntry }
     Assert-RedBambooTreeManifest -Directory $stageDirectory -ExpectedManifest $stageManifest | Out-Null
     if ($null -ne $request.PSObject.Properties['preparedSourceCommit']) {
-        . (Join-Path $PSScriptRoot 'scripts\prepared-stage-source.ps1')
-        if ((Get-RedComputePreparedSource -RepositoryRoot $PSScriptRoot) -cne $request.preparedSourceCommit) {
+        $head = @(git --no-optional-locks -C $PSScriptRoot rev-parse --verify HEAD)
+        if ($LASTEXITCODE -ne 0 -or $head.Count -ne 1 -or $head[0] -cne $request.preparedSourceCommit) {
             throw 'Prepared RedCompute stage belongs to an older checkout. Stage the current checkout again.'
         }
     }
