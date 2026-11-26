@@ -99,6 +99,8 @@ public sealed class SessionInputQueueService
     internal Func<string, CancellationToken, Task<bool>>? SettleRollback { get; set; }
     /// <summary>Runs before a recovery resume launches a provider: resolves a legacy session's access level, demotes a revoked Full.</summary>
     internal Func<ISessionProvider, string, CancellationToken, Task>? BeforeResume { get; set; }
+    internal Func<string, (ISessionProvider? Provider, UnifiedSessionInfo? Info)>? RemoteRuntimeLookup { get; set; }
+
     private sealed record CallerRecovery(string Token, string Owner, string Scope)
     {
         public override string ToString() => "CallerRecovery { token = [redacted] }";
@@ -140,6 +142,8 @@ public sealed class SessionInputQueueService
                 var projected = BindingCommands is { } binding
                     ? binding.ProjectEvent(source as ISessionProvider, type, data) : data;
                 if (projected is not null) OnProviderEvent(type, projected);
+                else if (data is UnifiedSessionInfo physical && RemoteRuntimeLookup?.Invoke(physical.Id).Provider is not null)
+                    OnProviderEvent(type, data);
             };
     }
 
@@ -1061,7 +1065,11 @@ public sealed class SessionInputQueueService
 
     private (ISessionProvider? Provider, UnifiedSessionInfo? Info) FindSession(string sessionId)
     {
-        if (BindingCommands is { } binding) return binding.Find(sessionId);
+        if (BindingCommands is { } binding)
+        {
+            var found = binding.Find(sessionId);
+            return found.Provider is null && RemoteRuntimeLookup is { } lookup ? lookup(sessionId) : found;
+        }
         foreach (var provider in _registry.FindProviders<ISessionProvider>())
         {
             // Metadata only: this runs on every queue pass and every summary read, and a

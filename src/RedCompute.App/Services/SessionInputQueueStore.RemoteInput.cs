@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Microsoft.Data.Sqlite;
 using RedCompute.NodeLink;
 
 namespace RedCompute.App.Services;
@@ -36,7 +37,11 @@ public sealed partial class SessionInputQueueStore
                 if (result.GetString(1) != grant.Scope.OwnerId || result.GetString(2) != grant.Scope.AccessScope
                     || result.GetString(3) != digest || result.GetString(4) != submission.SessionId)
                     throw new SessionInputQueueStoreException("idempotency_conflict", "The input UID was already used for a different signed input");
-                return new(result.GetString(0), grant.RequestId, grant.RequestId);
+                var queueId = result.GetString(0);
+                await result.DisposeAsync();
+                await RefreshRemoteInputAuthorityAsync(connection, transaction, queueId, ct);
+                await transaction.CommitAsync(ct);
+                return new(queueId, grant.RequestId, grant.RequestId);
             }
         }
 
@@ -62,6 +67,21 @@ public sealed partial class SessionInputQueueStore
         await insert.ExecuteNonQueryAsync(ct);
         await transaction.CommitAsync(ct);
         return new(admission.Item.Id, grant.RequestId, grant.RequestId);
+    }
+
+    private static async Task RefreshRemoteInputAuthorityAsync(SqliteConnection connection, SqliteTransaction transaction,
+        string queueId, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM SessionInputRecovery WHERE ItemId=$id
+                AND EXISTS (SELECT 1 FROM SessionQueuedInputs WHERE Id=$id AND State='Pending');
+            UPDATE SessionQueuedInputs SET NextAttemptAt=NULL, ErrorCode=NULL, ErrorMessage=NULL
+                WHERE Id=$id AND State='Pending' AND ErrorCode LIKE 'recovery_%';
+            """;
+        Add(command, "$id", queueId);
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     internal async Task<RemoteInputInspection?> ReadRemoteInputAsync(SessionRuntimeScope scope, string inputUid,

@@ -39,6 +39,7 @@ namespace RedCompute.App.Api;
 public class RelayServer
 {
     private WebApplication? _app;
+    private RemoteSessionRuntimeHost? _remoteSessionRuntime;
     private readonly RedComputeConfig _config;
     private readonly CapabilityRegistry _registry;
     private readonly JobTrackingService _jobTracker;
@@ -567,6 +568,25 @@ public class RelayServer
         _log($"[Relay] Starting on port {_config.ApiPort}", null);
         await _app.StartAsync(ct);
         _log($"[Relay] Listening at http://127.0.0.1:{_config.ApiPort}", null);
+        if (_config.RemoteSessionRuntime is { } runtimeConfig)
+        {
+            try
+            {
+                var configuration = new RemoteSessionRuntimeConfiguration(runtimeConfig, instance =>
+                    bindingCommands.Providers().FirstOrDefault(candidate => candidate.Instance == instance).Provider);
+                var runtime = new RemoteSessionLifecycleRuntime(inputQueueStore, configuration.CurrentPairing,
+                    configuration.ResolveAsync, TimeProvider.System, inputQueue.Signal, configuration.ResolveConfigured);
+                inputQueue.RemoteRuntimeLookup = runtime.FindLocalSession;
+                _remoteSessionRuntime = await RemoteSessionRuntimeHost.StartAsync(runtime, configuration.IsReady,
+                    runtimeConfig.Port, ct);
+                _log($"[Nodes] Session runtime listening at {_remoteSessionRuntime.Address}", null);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                inputQueue.RemoteRuntimeLookup = null;
+                _log($"[Nodes] Session runtime could not start: {error.Message}", null);
+            }
+        }
 
         // Provider entities were synchronously loaded before capability initialization. Keep
         // retrying only when that initial RedLeaf/cache sync could not supply an entity snapshot.
@@ -824,6 +844,12 @@ public class RelayServer
 
     public async Task StopAsync()
     {
+        if (_remoteSessionRuntime is not null)
+        {
+            try { await _remoteSessionRuntime.DisposeAsync(); }
+            catch (Exception error) { _log($"[Nodes] Session runtime shutdown: {error.Message}", null); }
+            _remoteSessionRuntime = null;
+        }
         if (_voiceSessions is not null)
         {
             try { await _voiceSessions.StopAllAsync(CancellationToken.None); }

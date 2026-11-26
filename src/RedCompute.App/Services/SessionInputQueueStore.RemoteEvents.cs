@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using RedCompute.NodeLink;
@@ -120,6 +121,17 @@ public sealed partial class SessionInputQueueStore
         if (await command.ExecuteNonQueryAsync(ct) != through - position.Value.Ack) return null;
         await transaction.CommitAsync(ct);
         return through;
+    }
+
+    internal async Task<long> ReadRemoteNativeWatermarkAsync(SessionRuntimeScope scope, CancellationToken ct = default)
+    {
+        await using var connection = Open();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EventId FROM RemoteSessionEvents WHERE " + RemoteEventBinding
+            + " AND OwnerId=$owner AND AccessScope=$access AND EventId LIKE 'native:%' ORDER BY Sequence DESC LIMIT 1";
+        BindRemoteLifecycleScope(command, scope);
+        return await command.ExecuteScalarAsync(ct) is string id
+            && long.TryParse(id.AsSpan("native:".Length), NumberStyles.None, CultureInfo.InvariantCulture, out var source) ? source : 0;
     }
 
     private static async Task<(long Ack, long Last)?> ReadRemoteEventPositionAsync(SqliteConnection connection,

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using RedCompute.App.Services.SessionBindings;
@@ -14,7 +15,8 @@ internal sealed record RemoteSessionLifecycleRequest(string Revision, string Pro
     string? Effort = null, string? RuntimeSessionId = null, string? NativeThreadId = null,
     string? InputUid = null, string? Text = null, long? AfterSeq = null, int? Limit = null, long? ThroughSeq = null);
 
-internal sealed record RemoteSessionLifecycleThread(string RuntimeSessionId, string NativeThreadId, string ProviderInstanceId);
+internal sealed record RemoteSessionLifecycleThread(string RuntimeSessionId, string NativeThreadId, string ProviderInstanceId, string Revision);
+internal sealed record RemoteSessionRuntimeBinding(SessionRuntimeScope Scope, RemoteSessionLifecycleThread Thread);
 
 internal sealed record RemoteSessionRuntimeWorkspace(string OwnerId, string Reference, string Revision,
     string ProjectPath, string ProviderInstanceId, ISessionProvider Provider, SessionAccessState Access, Guid? RepositoryId = null);
@@ -22,7 +24,8 @@ internal sealed record RemoteSessionRuntimeWorkspace(string OwnerId, string Refe
 internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue,
     Func<RemoteSessionRuntimeIdentity?> currentPairing,
     Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, CancellationToken, Task<RemoteSessionRuntimeWorkspace?>> resolve,
-    TimeProvider time, Action<string>? signalInput = null)
+    TimeProvider time, Action<string>? signalInput = null,
+    Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, RemoteSessionRuntimeWorkspace?>? configuredWorkspace = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
@@ -58,7 +61,10 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
             if (!Authorized(operation, grant))
                 return Error(403, "invalid_runtime_grant");
 
-            var workspace = await resolve(grant.Scope, request, ct);
+            var isRead = operation is SessionRuntimeOperation.Inspect or SessionRuntimeOperation.ReadEvents
+                or SessionRuntimeOperation.AcknowledgeEvents;
+            var workspace = isRead && configuredWorkspace is not null
+                ? configuredWorkspace(grant.Scope, request) : await resolve(grant.Scope, request, ct);
             if (workspace is null || workspace.OwnerId != grant.Scope.OwnerId || workspace.Reference != grant.Scope.AccessScope
                 || workspace.Revision != request.Revision || workspace.ProviderInstanceId != request.ProviderInstanceId
                 || !Directory.Exists(workspace.ProjectPath))
@@ -99,6 +105,23 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         }
     }
 
+    internal (ISessionProvider? Provider, UnifiedSessionInfo? Info) FindLocalSession(string runtimeId)
+    {
+        if (configuredWorkspace is null || !runtimeId.StartsWith("binding-", StringComparison.Ordinal)
+            || queue.FindRemoteRuntimeBinding(runtimeId) is not { } binding
+            || currentPairing() is not { } pairing || pairing.NodeId != binding.Scope.NodeId || pairing.RuntimeId != binding.Scope.RuntimeId)
+            return (null, null);
+
+        var thread = binding.Thread;
+        var request = new RemoteSessionLifecycleRequest(thread.Revision, thread.ProviderInstanceId,
+            RuntimeSessionId: thread.RuntimeSessionId, NativeThreadId: thread.NativeThreadId);
+        var workspace = configuredWorkspace(binding.Scope, request);
+        if (workspace is not null && workspace.Provider.GetSessionInfo(runtimeId) is { } info && Matches(info, runtimeId, workspace)
+            && info.ProviderSessionId == thread.NativeThreadId)
+            return (workspace.Provider, info);
+        return (null, null);
+    }
+
     private bool Authorized(SessionRuntimeOperation operation, SessionRuntimeGrant grant)
         => currentPairing() is { } active
            && grant.Verify(active.PinnedControllerKey, active.NodeId, active.RuntimeId, operation, time.GetUtcNow());
@@ -123,7 +146,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         if (session.Status == SessionStatus.Error || session.Status == SessionStatus.Stopped && !SessionStopReasons.IsAutoResumable(session.StopReason))
             return Error(409, "remote_session_not_resumable");
         return Matches(session, runtimeId, workspace) && session.ProviderSessionId is { Length: > 0 } nativeId
-            ? Reply(201, new RemoteSessionLifecycleThread(runtimeId, nativeId, request.ProviderInstanceId))
+            ? Reply(201, new RemoteSessionLifecycleThread(runtimeId, nativeId, request.ProviderInstanceId, request.Revision))
             : Error(409, "runtime_identity_mismatch");
     }
 
@@ -181,7 +204,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         var started = await queue.ReadRemoteLifecycleStartAsync(scope, ct);
         var thread = started is null ? null : JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(started.Body, Json);
         return thread is not null && thread.RuntimeSessionId == request.RuntimeSessionId && thread.NativeThreadId == request.NativeThreadId
-            && thread.ProviderInstanceId == request.ProviderInstanceId ? thread : null;
+            && thread.ProviderInstanceId == request.ProviderInstanceId && thread.Revision == request.Revision ? thread : null;
     }
 
     private async Task<RemoteLifecycleReceipt> ApplyTurnCommandAsync(SessionRuntimeGrant grant, RemoteSessionLifecycleRequest request,
@@ -207,8 +230,7 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
             case SessionRuntimeOperation.ReadEvents:
                 if (request.AfterSeq is not >= 0 || request.Limit is not (>= 1 and <= 128))
                     return Error(400, "invalid_event_cursor");
-                var page = await queue.ReadRemoteEventsAsync(grant.Scope, request.AfterSeq.Value, request.Limit.Value, ct);
-                return Reply(page.Gap ? 409 : 200, page);
+                return await ReplayEventsAsync(grant.Scope, workspace, thread, request.AfterSeq.Value, request.Limit.Value, ct);
             case SessionRuntimeOperation.AcknowledgeEvents:
                 if (request.ThroughSeq is not >= 0)
                     return Error(400, "invalid_event_cursor");
@@ -217,6 +239,47 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
             default:
                 return Error(404, "unsupported_operation");
         }
+    }
+
+    private async Task<RemoteLifecycleReceipt> ReplayEventsAsync(SessionRuntimeScope scope,
+        RemoteSessionRuntimeWorkspace workspace, RemoteSessionLifecycleThread thread, long after, int limit, CancellationToken ct)
+    {
+        var page = await queue.ReadRemoteEventsAsync(scope, after, limit, ct);
+        if (page.Gap || page.Events.Count > 0)
+            return Reply(page.Gap ? 409 : 200, page);
+
+        // Native records are committed at the provider before they enter the spool.
+        // Reading the same durable prefix after a crash converges on the same record IDs.
+        var (info, history) = workspace.Provider.GetSession(thread.RuntimeSessionId);
+        if (info is null || !Matches(info, thread.RuntimeSessionId, workspace) || info.ProviderSessionId != thread.NativeThreadId)
+            return Reply(200, page);
+
+        var through = await queue.ReadRemoteNativeWatermarkAsync(scope, ct);
+        string? inputUid = null;
+        var added = 0;
+        foreach (var record in history.Where(record => record.SessionId == thread.RuntimeSessionId).OrderBy(record => record.Id))
+        {
+            if (record.Role == "user" && !string.IsNullOrWhiteSpace(record.MessageUid))
+                inputUid = record.MessageUid;
+            if (record.Id <= through) continue;
+            var body = JsonSerializer.SerializeToUtf8Bytes(record, Json);
+            if (body.Length > SessionInputQueueStore.MaxRemoteEventBytes && added == 0)
+                return Error(413, "remote_event_too_large");
+            if (body.Length > SessionInputQueueStore.MaxRemoteEventBytes) break;
+            try
+            {
+                await queue.AppendRemoteEventAsync(scope,
+                    new("native:" + record.Id.ToString(CultureInfo.InvariantCulture), inputUid, inputUid, body), ct);
+            }
+            catch (SessionInputQueueStoreException error) when (error.Code == "remote_event_backpressure")
+            {
+                break;
+            }
+            if (++added >= 128) break;
+        }
+
+        var replay = await queue.ReadRemoteEventsAsync(scope, after, limit, ct);
+        return Reply(replay.Gap ? 409 : 200, replay);
     }
 
     private async Task<RemoteLifecycleReceipt> AdmitInputAsync(SessionRuntimeGrant grant, string text,

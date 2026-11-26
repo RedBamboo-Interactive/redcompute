@@ -8,6 +8,7 @@ namespace RedCompute.Core.Configuration;
 public class RedComputeConfig
 {
     public int ApiPort { get; set; } = 18800;
+    public RemoteSessionRuntimeConfig? RemoteSessionRuntime { get; set; }
     public string LogLevel { get; set; } = "Info";
     public double ElectricityRatePerKwh { get; set; } = 0.15;
     /// <summary>Eagerly bring Docker Desktop up at launch. Off by default: Docker is only

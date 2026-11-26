@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using RedCompute.App.Services.Nodes;
 using Microsoft.Data.Sqlite;
 using RedCompute.NodeLink;
 
@@ -73,6 +75,25 @@ public sealed partial class SessionInputQueueStore
         Add(update, "$status", receipt.Status);
         Add(update, "$body", receipt.Body);
         return await update.ExecuteNonQueryAsync(ct) == 1;
+    }
+
+    internal RemoteSessionRuntimeBinding? FindRemoteRuntimeBinding(string runtimeId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT NodeId, RuntimeId, LogicalSessionId, Generation, OwnerId, AccessScope, Body
+            FROM RemoteSessionLifecycleCommands WHERE Operation='Start' AND Status=201
+              AND json_extract(CAST(Body AS TEXT),'$.runtimeSessionId')=$runtime
+            """;
+        Add(command, "$runtime", runtimeId);
+        using var row = command.ExecuteReader();
+        if (!row.Read()) return null;
+        var thread = JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(row.GetFieldValue<byte[]>(6), JsonOptions);
+        if (thread is null) return null;
+        var scope = new SessionRuntimeScope(row.GetString(0), row.GetString(1), row.GetString(2), row.GetInt64(3), row.GetString(4),
+            row.GetString(5));
+        return row.Read() ? null : new(scope, thread);
     }
 
     internal async Task<RemoteLifecycleReceipt?> ReadRemoteLifecycleStartAsync(SessionRuntimeScope scope, CancellationToken ct = default)
