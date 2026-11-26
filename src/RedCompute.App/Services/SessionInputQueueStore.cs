@@ -1351,6 +1351,10 @@ public sealed partial class SessionInputQueueStore
             );
             CREATE INDEX IF NOT EXISTS IX_RemoteSessionEvents_Acknowledged
                 ON RemoteSessionEvents(NodeId, RuntimeId, LogicalSessionId, Generation, Sequence) WHERE Body IS NULL;
+            CREATE TABLE IF NOT EXISTS ControllerRemoteSessionStarts (
+                SessionId TEXT PRIMARY KEY NOT NULL,
+                RequestJson TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS SessionThreadBindings (
                 SessionId TEXT PRIMARY KEY NOT NULL,
                 ActiveGeneration INTEGER NOT NULL,

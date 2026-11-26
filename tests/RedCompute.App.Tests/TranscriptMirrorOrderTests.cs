@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Http;
+using System.Security.Claims;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Text;
@@ -10,9 +13,11 @@ using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Streams;
 using RedBamboo.AppHost.WebSockets;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.NodeLink;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -115,6 +120,66 @@ public sealed class TranscriptMirrorOrderTests
                 Id = sequence, SessionId = "native", Role = role, EventType = "text", Content = content,
                 MessageUid = role == "user" ? "input-one" : "response-one", Timestamp = DateTimeOffset.UnixEpoch,
             }, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+    }
+
+    [Fact]
+    public async Task Controller_sends_no_ack_when_canonical_record_delivery_is_ambiguous()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start(loseFirstRecordAcknowledgement: true);
+        using var fixture = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var path = fixture.Attachments.DatabasePath;
+        var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "owner")], "test-signed"));
+        var starts = new RemoteSessionPlacement("node-one", "runtime", "workspace", "revision", "codex", "probe", null, null);
+        var preview = new RemoteSessionPlacementPreview("node-one", "runtime", "workspace", "revision", "codex", "probe", "ask", "ask");
+        var native = new RemoteSessionLifecycleThread("native-session", "native-thread", "probe", "revision");
+        var row = new UnifiedMessageRecord
+        {
+            Id = 1, SessionId = native.RuntimeSessionId, Role = "user", EventType = "text", Content = "prompt",
+            MessageUid = "input", Timestamp = DateTimeOffset.UnixEpoch,
+        };
+        var page = new RemoteSessionEventPage(0, 1, false,
+            [new(1, new("native:1", "turn", "input", JsonSerializer.SerializeToUtf8Bytes(row, json)))]);
+        var acks = new List<long>();
+
+        ControllerRemoteSessions Open() => new(new SessionInputQueueStore(fixture.Config, fixture.Attachments),
+            (identity, scope, operation, _, bytes, _) =>
+            {
+                Assert.Same(caller, identity);
+                Assert.Equal("owner", scope.OwnerId);
+                var request = JsonSerializer.Deserialize<RemoteSessionLifecycleRequest>(bytes, json)!;
+                switch (operation)
+                {
+                    case SessionRuntimeOperation.Inspect: return Reply(HttpStatusCode.OK, preview);
+                    case SessionRuntimeOperation.Start: return Reply(HttpStatusCode.Created, native);
+                    case SessionRuntimeOperation.ReadEvents:
+                        Assert.Equal(native.NativeThreadId, request.NativeThreadId);
+                        Assert.Equal(0, request.AfterSeq);
+                        return Reply(HttpStatusCode.OK, page);
+                    case SessionRuntimeOperation.AcknowledgeEvents:
+                        Assert.Equal(native.NativeThreadId, request.NativeThreadId);
+                        acks.Add(request.ThroughSeq!.Value);
+                        return Reply(HttpStatusCode.OK, new { acknowledgedThrough = request.ThroughSeq });
+                    default:
+                        throw new InvalidOperationException();
+                }
+            });
+
+        var controller = Open();
+        var started = await controller.StartAsync(caller, "start", starts, default);
+        var logicalId = started.Scope.LogicalSessionId;
+        await Assert.ThrowsAsync<HttpRequestException>(() => controller.PollTranscriptAsync(caller, logicalId,
+            redLeaf.Pipeline(sequences: new TranscriptSequenceStore(path)), default));
+        Assert.Empty(acks);
+        var first = Assert.Single(redLeaf.RecordPosts);
+        Assert.Equal(1, await Open().PollTranscriptAsync(caller, logicalId,
+            redLeaf.Pipeline(sequences: new TranscriptSequenceStore(path)), default));
+        Assert.Equal(1, Assert.Single(acks));
+        Assert.Equal(first.ExternalId, redLeaf.RecordPosts.Last().ExternalId);
+        Assert.Single(redLeaf.Data);
+
+        Task<(HttpStatusCode Status, byte[] Body)> Reply<T>(HttpStatusCode status, T body)
+            => Task.FromResult((status, JsonSerializer.SerializeToUtf8Bytes(body, json)));
     }
 
     [Fact]

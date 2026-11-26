@@ -13,7 +13,10 @@ internal sealed record RemoteSessionRuntimeIdentity(string NodeId, string Runtim
 
 internal sealed record RemoteSessionLifecycleRequest(string Revision, string ProviderInstanceId, string? Model = null,
     string? Effort = null, string? RuntimeSessionId = null, string? NativeThreadId = null,
-    string? InputUid = null, string? Text = null, long? AfterSeq = null, int? Limit = null, long? ThroughSeq = null);
+    string? InputUid = null, string? Text = null, long? AfterSeq = null, int? Limit = null, long? ThroughSeq = null,
+    RemoteSessionStartFence? Fence = null);
+
+internal sealed record RemoteSessionStartFence(string ProviderId, string AccessLevel, string MaxAccessLevel);
 
 internal sealed record RemoteSessionLifecycleThread(string RuntimeSessionId, string NativeThreadId, string ProviderInstanceId, string Revision);
 internal sealed record RemoteSessionRuntimeBinding(SessionRuntimeScope Scope, RemoteSessionLifecycleThread Thread);
@@ -78,6 +81,11 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
                 || !workspace.Provider.SupportedAccessLevels.Contains(workspace.Access.AccessLevel!)
                 || SessionAccessLevels.Rank(workspace.Access.AccessLevel!) > SessionAccessLevels.Rank(workspace.Access.MaxAccessLevel!))
                 return Error(422, "runtime_provider_unavailable");
+
+            if (request.Fence is { } fence && (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume)
+                || workspace.Provider.ProviderId != fence.ProviderId || workspace.Access.AccessLevel != fence.AccessLevel
+                || workspace.Access.MaxAccessLevel != fence.MaxAccessLevel))
+                return Error(409, "remote_placement_changed");
 
             if (inspectPlacement)
                 return Reply(200, new

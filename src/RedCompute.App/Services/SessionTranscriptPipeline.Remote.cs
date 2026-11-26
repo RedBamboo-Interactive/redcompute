@@ -10,6 +10,11 @@ public sealed partial class SessionTranscriptPipeline
 {
     private static readonly JsonSerializerOptions RemoteRecordJson = new(JsonSerializerDefaults.Web);
 
+    internal long RemoteReplayPosition(string provider, string logicalId, RemoteTranscriptBinding binding)
+        => _sequences is TranscriptSequenceStore sequences
+            ? sequences.RemotePersistedThrough(provider, logicalId, binding)
+            : throw new InvalidOperationException("Remote replay requires durable transcript sequences");
+
     /// <summary>Returns an ACK position only after the canonical RedLeaf append and local receipt both commit.</summary>
     internal long ImportRemoteReplay(string storageProvider, string logicalId, string originProvider, string runtimeSessionId,
         RemoteTranscriptBinding binding, RemoteSessionEventPage page)

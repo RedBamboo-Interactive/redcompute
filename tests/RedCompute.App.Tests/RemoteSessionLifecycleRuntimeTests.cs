@@ -54,6 +54,16 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         Assert.Equal(422, stale.Status);
         Assert.Equal(0, probe.Starts);
 
+        var changedAccess = await runtime.ApplyAsync(SessionRuntimeOperation.Start,
+            Grant(controller, SessionRuntimeOperation.Start, "start", start with
+            {
+                Fence = new("codex", SessionAccessLevels.Ask, SessionAccessLevels.Full),
+            }));
+        Assert.Equal(409, changedAccess.Status);
+        using var changed = JsonDocument.Parse(changedAccess.Body);
+        Assert.Equal("remote_placement_changed", changed.RootElement.GetProperty("code").GetString());
+        Assert.Equal(0, probe.Starts);
+
         var command = Grant(controller, SessionRuntimeOperation.Start, "start", start);
         probe.LoseStartReply = true;
         await Assert.ThrowsAsync<IOException>(() => runtime.ApplyAsync(SessionRuntimeOperation.Start, command));
@@ -229,7 +239,7 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         const string providerInstance = "probe";
         const string inputUid = "prompt-one";
         var nodeId = NodeTestKit.RemoteId(81);
-        var scope = new SessionRuntimeScope(nodeId, runtimeId, "session-1", 0, NodeTestKit.Owner, "workspace");
+        SessionRuntimeScope? scope = null;
         var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", NodeTestKit.Owner)], "test-signed"));
         using var nodeIdentity = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var nodeLinkKey = NoiseKeyPair.Generate();
@@ -265,18 +275,25 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
         await using var host = await RemoteSessionRuntimeHost.StartAsync(destination, () => true, 0, CancellationToken.None);
         await using var forwarder = await RegisteredRuntimeNodeSide.StartAsync(host.Address.Port, runtimeId, SessionRuntimeProtocol.Kind, pairing);
 
+        var sourceAttachments = new InputAttachmentStore(_config, Path.Combine(_root, "source-bytes"), Path.Combine(_root, "source-input.db"));
+        var sourceQueue = new SessionInputQueueStore(_config, sourceAttachments);
+        var source = new ControllerRemoteSessions(sourceQueue, hub.SendSessionRuntimeCommandAsync);
+        var placement = new RemoteSessionPlacement(nodeId, runtimeId, "workspace", revision, "codex", providerInstance, null, null);
         RemoteSessionLifecycleThread thread;
+        string logicalId;
         byte[] originalReceipt;
         RemoteSessionEventPage firstPage;
         await using (var link = Connect())
         {
             await WaitForRouteAsync();
-            var preview = await SendAsync(SessionRuntimeOperation.Inspect, "preview", new RemoteSessionLifecycleRequest(revision, providerInstance));
-            Assert.Equal(HttpStatusCode.OK, preview.Status);
+            var preview = await source.ValidateAsync(caller, "start", placement, CancellationToken.None);
+            Assert.Equal(SessionAccessLevels.Ask, preview.AccessLevel);
             Assert.Equal(0, probe.Starts);
-            var start = await SendAsync(SessionRuntimeOperation.Start, "start", new RemoteSessionLifecycleRequest(revision, providerInstance));
-            Assert.Equal(HttpStatusCode.Created, start.Status);
-            thread = JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(start.Body, Json)!;
+            var start = await source.StartAsync(caller, "start", placement, CancellationToken.None);
+            scope = start.Scope;
+            logicalId = scope.LogicalSessionId;
+            thread = start.Thread;
+            Assert.Equal(start, await source.StartAsync(caller, "start", placement, CancellationToken.None));
             var accepted = await SendAsync(SessionRuntimeOperation.SendInput, inputUid, Input(thread));
             Assert.Equal(HttpStatusCode.Accepted, accepted.Status);
             originalReceipt = accepted.Body;
@@ -319,9 +336,9 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
 
         var park = await SendAsync(SessionRuntimeOperation.Park, "park", Request(thread));
         Assert.Equal(HttpStatusCode.OK, park.Status);
-        var resume = await SendAsync(SessionRuntimeOperation.Resume, "resume", Request(thread));
-        Assert.Equal(HttpStatusCode.OK, resume.Status);
-        Assert.Equal(thread, JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(resume.Body, Json));
+        var reopened = new ControllerRemoteSessions(new SessionInputQueueStore(_config, sourceAttachments), hub.SendSessionRuntimeCommandAsync);
+        var resume = await reopened.ResumeAsync(caller, logicalId, "resume", CancellationToken.None);
+        Assert.Equal(thread, resume.Thread);
         Assert.Equal(1, probe.Starts);
         Assert.Equal(1, probe.Resumes);
 
@@ -343,7 +360,7 @@ public sealed class RemoteSessionLifecycleRuntimeTests : IDisposable
             "the verified remote session runtime");
 
         Task<(HttpStatusCode Status, byte[] Body)> SendAsync(SessionRuntimeOperation operation, string commandId, RemoteSessionLifecycleRequest payload) =>
-            hub.SendSessionRuntimeCommandAsync(caller, scope, operation, commandId, JsonSerializer.SerializeToUtf8Bytes(payload, Json), CancellationToken.None);
+            hub.SendSessionRuntimeCommandAsync(caller, scope!, operation, commandId, JsonSerializer.SerializeToUtf8Bytes(payload, Json), CancellationToken.None);
 
         static RemoteSessionLifecycleRequest Request(RemoteSessionLifecycleThread bound) =>
             new(revision, providerInstance, RuntimeSessionId: bound.RuntimeSessionId, NativeThreadId: bound.NativeThreadId);
