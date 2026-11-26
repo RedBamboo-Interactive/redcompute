@@ -5,6 +5,7 @@ public static class SessionRuntimeProtocol
 {
     public const string Kind = "ai-session.v1";
     public const string BindingMoveCapability = "ai-session.binding-move.v1";
+    public const string MoveCatalogueScope = "binding-move-catalogue";
     public const string HealthPath = "/ai-session/v1/health";
     public const int MaxExchangeBodyBytes = 2 * 1024 * 1024;
 

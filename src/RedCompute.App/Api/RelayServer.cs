@@ -458,7 +458,7 @@ public class RelayServer
         if (_nodeHub is { } hub)
         {
             var controller = new ControllerRemoteSessions(inputQueueStore, hub.SendSessionRuntimeCommandAsync);
-            inputQueue.AttachRemoteController(controller, transcriptPipeline, redLeafJwt.ValidateToken);
+            inputQueue.AttachRemoteController(controller, transcriptPipeline, redLeafJwt.ValidateToken, _nodes?.LocalNodeId ?? "");
             remoteSessions = new(controller, redLeafReader, _streamClient, _jobTracker, inputQueue);
         }
         maintenance.AttachInputQueue(inputQueue);
@@ -582,7 +582,8 @@ public class RelayServer
                 var configuration = new RemoteSessionRuntimeConfiguration(runtimeConfig, instance =>
                     bindingCommands.Providers().FirstOrDefault(candidate => candidate.Instance == instance).Provider, localHost);
                 var runtime = new RemoteSessionLifecycleRuntime(inputQueueStore, configuration.CurrentPairing,
-                    configuration.ResolveAsync, TimeProvider.System, inputQueue.Signal, configuration.ResolveConfigured, localHost);
+                    configuration.ResolveAsync, TimeProvider.System, inputQueue.Signal, configuration.ResolveConfigured,
+                    localHost, configuration.ListMoveWorkspacesAsync);
                 inputQueue.RemoteRuntimeLookup = runtime.FindLocalSession;
                 _remoteSessionRuntime = await RemoteSessionRuntimeHost.StartAsync(runtime, configuration.IsReady,
                     runtimeConfig.Port, ct);

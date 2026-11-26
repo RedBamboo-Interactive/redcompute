@@ -73,6 +73,8 @@ internal sealed class SessionBindingTranscriptRoutes
                 foreach (var thread in owner.Threads)
                 {
                     var native = thread.Native;
+                    // Remote records enter through the paired runtime replay pipeline, with node and generation.
+                    if (native.Remote is not null) continue;
                     next[(native.Target.ProviderId, native.RuntimeSessionId)] = thread.Generation == owner.Active.Generation
                         ? new(owner.LogicalId, rootProvider, native.Target.ProviderId) : null;
                 }

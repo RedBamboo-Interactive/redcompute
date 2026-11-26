@@ -8,11 +8,27 @@ namespace RedCompute.App.Services.Nodes;
 
 internal sealed partial class ControllerRemoteSessions
 {
+    internal async Task<IReadOnlyList<RemoteMoveWorkspace>> ListMoveWorkspacesAsync(ClaimsPrincipal caller, string logicalId,
+        long generation, string nodeId, string runtimeId, CancellationToken ct)
+    {
+        var owner = NodeAccess.Subject(caller) ?? throw new ControllerRemoteSessionException(401, "signed_owner_required");
+        var scope = new SessionRuntimeScope(nodeId, runtimeId, logicalId, generation, owner, SessionRuntimeProtocol.MoveCatalogueScope);
+        var catalogue = await ApplyAsync<RemoteMoveCatalogue>(caller, scope, SessionRuntimeOperation.Inspect,
+            Guid.NewGuid().ToString("N"), new RemoteSessionLifecycleRequest("", "", MoveCatalogue: true), HttpStatusCode.OK, ct);
+        if (catalogue.Workspaces is not { Count: <= 32 } || catalogue.Workspaces.Any(workspace => workspace is null
+            || !Identifier(workspace.Workspace) || !Identifier(workspace.Revision) || !Identifier(workspace.ProviderId)
+            || !Identifier(workspace.ProviderInstanceId) || !SessionAccessLevels.IsKnown(workspace.AccessLevel)
+            || !SessionAccessLevels.IsKnown(workspace.MaxAccessLevel)
+            || SessionAccessLevels.Rank(workspace.AccessLevel) > SessionAccessLevels.Rank(workspace.MaxAccessLevel)))
+            throw new ControllerRemoteSessionException(502, "invalid_remote_runtime_reply");
+        return catalogue.Workspaces;
+    }
+
     internal async Task<RemoteSessionPlacementPreview> ValidateMoveAsync(ClaimsPrincipal caller, string logicalId,
         long generation, string requestId, RemoteSessionPlacement placement, string accessCap, CancellationToken ct)
     {
         var scope = GetScope(caller, requestId, placement) with { LogicalSessionId = logicalId, Generation = generation };
-        var preview = await InspectAsync(caller, scope, requestId, placement, ct);
+        var preview = await InspectAsync(caller, scope, requestId, placement, ct, movePreview: true);
         if (!preview.SupportsBindingMoves)
             throw new ControllerRemoteSessionException(422, "session_runtime_move_unsupported");
         if (!SessionAccessLevels.IsKnown(accessCap)
@@ -45,7 +61,7 @@ internal sealed partial class ControllerRemoteSessions
         var request = new RemoteSessionMoveRequest(move.Id, move.SourceGeneration, scope.Generation,
             placement.Revision, placement.ProviderInstanceId, prior?.Thread.RuntimeSessionId,
             prior?.Thread.NativeThreadId, prior?.Scope.Generation, target.Model, target.Effort,
-            move.HistoryThrough, preparation.History, artifacts, Fence(preview));
+            move.HistoryThrough, preparation.History, artifacts, Fence(preview), PreviousMoveId: prior?.ActivationMoveId);
         var thread = await ApplyMovePhaseAsync<RemoteSessionLifecycleThread>(caller, scope, SessionRuntimeOperation.PrepareMove,
             request, HttpStatusCode.Created, ct);
         if (!Identifier(thread.RuntimeSessionId) || !Identifier(thread.NativeThreadId)
@@ -92,6 +108,37 @@ internal sealed partial class ControllerRemoteSessions
         return await queue.ConfirmControllerRemoteActivationAsync(session, CancellationToken.None);
     }
 
+    internal async Task<bool> RetireRedirectedSourceAsync(ClaimsPrincipal caller, ControllerRemoteSession retired,
+        string retirementId, CancellationToken ct)
+    {
+        EnsureMoveOwner(caller, retired.Scope);
+        if (retired.ActivationPending)
+        {
+            var tombstone = new RemoteSessionMoveRequest(retired.ActivationMoveId!, retired.Scope.Generation - 1,
+                retired.Scope.Generation, retired.Thread.Revision, retired.Thread.ProviderInstanceId);
+            try
+            {
+                var discarded = await ApplyMovePhaseAsync<RemoteDiscardedMove>(caller, retired.Scope,
+                    SessionRuntimeOperation.DiscardMove, tombstone, HttpStatusCode.OK, ct);
+                if (discarded.MoveId != retired.ActivationMoveId)
+                    throw new ControllerRemoteSessionException(502, "remote_move_receipt_mismatch");
+                return true;
+            }
+            catch (ControllerRemoteSessionException ex) when (ex.Status == 409 && ex.Code == "binding_generation_already_active") { }
+        }
+        try
+        {
+            var request = MoveForThread(retirementId, retired.Scope.Generation, retired.Thread);
+            var sealedThread = await ApplyMovePhaseAsync<RemoteSessionLifecycleThread>(caller, retired.Scope,
+                SessionRuntimeOperation.SealMoveSource, request, HttpStatusCode.OK, ct);
+            return sealedThread == retired.Thread;
+        }
+        catch (ControllerRemoteSessionException ex) when (ex.Status == 409 && ex.Code == "binding_generation_sealed")
+        {
+            return true;
+        }
+    }
+
     internal async Task DiscardMoveAsync(ClaimsPrincipal caller, string logicalId, SessionBindingMove move, CancellationToken ct)
     {
         var (scope, placement, _) = MoveTarget(caller, logicalId, move);
@@ -133,6 +180,7 @@ internal sealed partial class ControllerRemoteSessions
             throw new ControllerRemoteSessionException(404, "session_not_found");
     }
 
+    private sealed record RemoteMoveCatalogue(IReadOnlyList<RemoteMoveWorkspace> Workspaces);
     private sealed record RemoteMoveSourceState(bool Idle, string RuntimeSessionId, string NativeThreadId);
     private sealed record RemoteDiscardedMove(string MoveId);
 }

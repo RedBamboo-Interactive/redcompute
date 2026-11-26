@@ -1,12 +1,16 @@
+using System.Net.Http;
 using System.Reflection;
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RedCompute.App.Services;
+using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Capabilities;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Providers;
 using RedCompute.Core.Sessions;
+using RedCompute.NodeLink;
 using RedCompute.PluginSdk;
 using Xunit;
 
@@ -227,6 +231,19 @@ public sealed class SessionBindingSwitchTests
     }
 
     [Fact]
+    public async Task An_input_that_wins_queue_admission_prevents_a_node_move()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var newNode = Codex with { NodeId = "remote" };
+        var first = (await f.Store.EnqueueAsync(f.Submission("earlier-prompt"))).Item;
+        var busy = await Assert.ThrowsAsync<SessionInputQueueStoreException>(
+            () => AdmitAsync(f, "racing-node-move", 0, newNode, changesNode: true));
+        Assert.Equal("input_queued", busy.Code);
+        Assert.Equal(first.Id, (await Reopen(f).GetHeadAsync(Logical))!.Id);
+        Assert.Null(await Reopen(f).ReadBindingSnapshotAsync(Logical));
+    }
+
+    [Fact]
     public async Task A_lost_source_seal_reply_retains_the_old_binding_and_blocks_later_input_until_exact_replay()
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
@@ -259,6 +276,63 @@ public sealed class SessionBindingSwitchTests
         Assert.Equal(later.Id, (await reopened.GetHeadAsync(Logical))!.Id);
         Assert.Equal(moved, await resumed.ApplyAsync(operation, Original, default));
         Assert.Equal(2, runtime.Seals.Count);
+    }
+
+    [Fact]
+    public async Task An_owner_can_return_from_a_held_node_after_restart_without_reordering_the_prompts()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var runtime = new Runtime();
+        var placement = new RemoteSessionPlacement("remote", "sessions", "repo", "revision", "codex", "remote-codex", "codex-a", "low");
+        var preview = new RemoteSessionPlacementPreview(placement.NodeId, placement.RuntimeId, placement.Workspace,
+            placement.Revision, placement.ProviderId, placement.ProviderInstanceId, "ask", "ask", true);
+        var target = new BindingTarget("codex", placement.ProviderInstanceId, placement.NodeId, "codex-a", "low",
+            new(placement.RuntimeId, placement.Workspace, placement.Revision, "ask", "ask"));
+        var thread = new RemoteSessionLifecycleThread("remote-runtime-id", "remote-native-id", placement.ProviderInstanceId,
+            placement.Revision, placement.Model, placement.Effort);
+        var outbound = await AdmitAsync(f, "unreachable", 0, target, changesNode: true);
+        var scope = new SessionRuntimeScope(placement.NodeId, placement.RuntimeId, Logical, 1, "owner", placement.Workspace);
+        var pending = new ControllerRemoteSession(scope, placement, preview, thread, outbound.Id);
+        runtime.Created.Add(outbound.Id, new(thread.RuntimeSessionId, thread.NativeThreadId, target, Remote: pending));
+        Assert.Equal(BindingMoveState.Committed, (await new SessionBindingSwitch(f.Store, runtime)
+            .ApplyAsync(outbound, Original, default))?.State);
+        Assert.Contains(Logical, await f.Store.GetRunnableSessionIdsAsync());
+
+        var first = (await f.Store.EnqueueAsync(f.Submission("first-held"))).Item;
+        var second = (await f.Store.EnqueueAsync(f.Submission("second-held"))).Item;
+        var store = Reopen(f);
+        var activationRequests = 0;
+        var controller = new ControllerRemoteSessions(store, (_, scope, operation, request, _, _) =>
+        {
+            Assert.Equal(pending.Scope, scope);
+            Assert.Equal(SessionRuntimeOperation.ActivateMove, operation);
+            Assert.Equal(SessionRuntimeProtocol.MoveRequestId(operation, outbound.Id), request);
+            activationRequests++;
+            throw new HttpRequestException("The destination is still offline.");
+        });
+        var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "owner")], "test-signed"));
+        await Assert.ThrowsAsync<HttpRequestException>(() => controller.ActivateCommittedMoveAsync(caller, Logical, default));
+        Assert.Equal(1, activationRequests);
+        Assert.Null(await store.ClaimControllerRemoteInputAsync(pending, first.Id, default));
+        var denied = await Assert.ThrowsAsync<ControllerRemoteSessionException>(() =>
+            controller.SendInputAsync(caller, Logical, first.MessageUid, "first-held", default));
+        Assert.Equal("binding_activation_pending", denied.Code);
+
+        var back = await AdmitAsync(f, "owner-redirect", 1, Codex, changesNode: true, replacesHeldBinding: true);
+        Assert.Equal(back.Id, (await store.ReadPendingHeldBindingReplacementAsync(Logical, default))?.Id);
+        var returned = await new SessionBindingSwitch(store, runtime).ApplyAsync(back, Original, default);
+        Assert.Equal(2, returned?.CommittedGeneration);
+        Assert.Equal(Original, returned?.Prepared);
+        Assert.Null(await store.ConfirmControllerRemoteActivationAsync(pending, default));
+        var retirement = Assert.Single(await Reopen(f).ReadPendingNodeRetirementsAsync(default));
+        Assert.Equal((Logical, 1L, back.Id), (retirement.SessionId, retirement.Thread.Generation, retirement.Thread.RetirementMoveId));
+        Assert.Equal(1, activationRequests);
+        var released = await store.ClaimBatchAsync(Logical, "test", TimeSpan.FromMinutes(1));
+        Assert.Equal([first.Id, second.Id], released.Select(item => item.Id));
+        foreach (var prompt in released) runtime.Deliver(Original, prompt);
+        await store.MarkDeliveredAsync(released, first.MessageUid);
+        CloseTurn(store);
+        Assert.Equal([("first-held", Original.NativeThreadId), ("second-held", Original.NativeThreadId)], runtime.Deliveries);
     }
 
     [Fact]
@@ -308,12 +382,12 @@ public sealed class SessionBindingSwitchTests
     private static SessionInputQueueStore Reopen(SessionRecoveryTests.Fixture f) => new(f.Config, f.Attachments);
 
     private static async Task<SessionInputQueueItem> AdmitAsync(SessionRecoveryTests.Fixture f, string key,
-        long generation, BindingTarget destination, bool changesNode = false)
+        long generation, BindingTarget destination, bool changesNode = false, bool replacesHeldBinding = false)
         => (await f.Store.EnqueueAsync(f.Submission(key) with
         {
             Input = [],
             IdempotencyKey = key,
-            BindingChange = new(generation, destination, changesNode),
+            BindingChange = new(generation, destination, changesNode, replacesHeldBinding),
         })).Item;
 
     private static async Task<SessionInputQueueItem> ReceiptAsync(SessionInputQueueStore queue, SessionInputQueueItem item)

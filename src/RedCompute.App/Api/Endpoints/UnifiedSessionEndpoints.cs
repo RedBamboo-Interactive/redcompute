@@ -117,8 +117,11 @@ public static partial class UnifiedSessionEndpoints
             => inputQueue.BindingCommands?.Find(id) ?? FindSessionAcrossProviders(registry, id);
 
         Task<UnifiedSessionInfo?> FindQueueSessionAsync(HttpContext context, string id)
-            => remote is not null && ControllerRemoteSessions.IsLogicalId(id)
-                ? remote.ReadOwnedAsync(context, id) : Task.FromResult(FindSession(id).Info);
+            => FindQueueSessionCoreAsync(context, id);
+
+        async Task<UnifiedSessionInfo?> FindQueueSessionCoreAsync(HttpContext context, string id)
+            => remote is not null && await remote.IsActiveAsync(id, context.RequestAborted)
+                ? await remote.ReadOwnedAsync(context, id) : FindSession(id).Info;
 
         async Task AuthorizeRemoteStart(HttpContext context, RemoteSessionPlacementPreview preview,
             JobProvenance provenance, CancellationToken ct)
@@ -148,6 +151,8 @@ public static partial class UnifiedSessionEndpoints
         // only after the next session.updated event.
         UnifiedSessionInfo WithLiveCapabilities(UnifiedSessionInfo session)
         {
+            if (inputQueue.BindingCommands?.Binding(session.Id) is { Active.Native.Remote: not null } remoteBinding)
+                session = RemoteSessions.ProjectRemoteBinding(session, remoteBinding);
             var (provider, binding) = inputQueue.BindingCommands?.IsBound(session.Id) == true ? FindSession(session.Id)
                 : (FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id), null);
             if (binding is not null) session = session.WithActiveBinding(binding);
@@ -257,6 +262,8 @@ public static partial class UnifiedSessionEndpoints
             if (signal) inputQueue.Signal(id);
             return response!;
         }
+
+        remote?.MapNodeMoves(endpoints, nodes, FindSession, CanReadSession, () => _maintenance?.IsDraining == true);
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
         var providerEnum = providerIds.Count > 0 ? providerIds : null;
@@ -1515,7 +1522,7 @@ public static partial class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/message",
             "Durably admit a user message, then deliver according to its policy. Remote session runtimes accept one text part after the current turn and return a durable receipt. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
         {
-            if (remote is not null && ControllerRemoteSessions.IsLogicalId(id))
+            if (remote is not null && await remote.IsActiveAsync(id, ctx.RequestAborted))
                 return await remote.MessageAsync(ctx, id);
             var (provider, info) = FindSession(id);
             if (info == null)
@@ -2199,7 +2206,7 @@ public static partial class UnifiedSessionEndpoints
         {
             if (_maintenance?.IsDraining == true)
                 return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
-            if (remote is not null && ControllerRemoteSessions.IsLogicalId(id))
+            if (remote is not null && await remote.IsActiveAsync(id, ctx.RequestAborted))
                 return await remote.ResumeAsync(ctx, id);
             var (provider, info) = FindSession(id);
             if (info == null)
@@ -3853,7 +3860,8 @@ public static partial class UnifiedSessionEndpoints
         "attachment_not_found" or "attachment_missing" => Error(404, ex.Code, ex.Message),
         "attachment_expired" => Error(410, ex.Code, ex.Message),
         "idempotency_conflict" or "attachment_already_claimed" or "delivery_in_progress"
-            or "not_retryable_state" or "not_promotable" => Error(409, ex.Code, ex.Message),
+            or "not_retryable_state" or "not_promotable" or "binding_seal_pending" or "binding_changed"
+            or "input_queued" => Error(409, ex.Code, ex.Message),
         "attachments_too_large" or "attachment_too_large" => Error(413, ex.Code, ex.Message),
         _ => Error(422, ex.Code, ex.Message),
     };

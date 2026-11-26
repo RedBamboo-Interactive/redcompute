@@ -45,6 +45,22 @@ internal static class HostGit
         }
     }
 
+    internal static async Task<string?> ReadCleanHeadAsync(IExecutionHost host, string? workingDirectory, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory)) return null;
+        try
+        {
+            var limit = TimeSpan.FromSeconds(3);
+            var revision = await RunAsync(host, workingDirectory, ["rev-parse", "--verify", "HEAD"], ct, limit);
+            var status = await RunAsync(host, workingDirectory, ["status", "--porcelain", "--untracked-files=normal"], ct, limit);
+            return revision is [var commit] && status is { Count: 0 } ? commit : null;
+        }
+        catch (Exception error) when (error is TimeoutException or InvalidOperationException or System.IO.IOException)
+        {
+            return null;
+        }
+    }
+
     private static async Task<List<string>?> RunOnceAsync(IExecutionHost host, string workingDirectory, string[] args,
         CancellationToken ct, TimeSpan? limit)
     {

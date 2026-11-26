@@ -29,6 +29,7 @@ internal sealed class SessionBindingCommands(CapabilityRegistry registry, Sessio
         var binding = routes.Binding(logicalId);
         if (binding is not null)
         {
+            if (binding.Active.Native.Remote is not null) return (null, null);
             var native = GetNative(binding.Active.Native.Target);
             if (native is null) return (null, null);
             if (binding.Active.Generation == 0 && binding.Active.Native.RuntimeSessionId == logicalId)

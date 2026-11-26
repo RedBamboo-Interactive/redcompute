@@ -10,14 +10,20 @@ public sealed partial class SessionInputQueueService
     private RemoteControllerInput? _remoteController;
 
     internal void AttachRemoteController(ControllerRemoteSessions sessions, SessionTranscriptPipeline transcript,
-        Func<string, ClaimsPrincipal?> validateToken)
-        => _remoteController = new(sessions, transcript, validateToken);
+        Func<string, ClaimsPrincipal?> validateToken, string localNodeId = "")
+        => _remoteController = new(sessions, transcript, validateToken, localNodeId);
 
     private async Task<bool> ProcessControllerRemoteInputAsync(string sessionId, CancellationToken ct)
     {
-        if (_remoteController is not { } controller || !ControllerRemoteSessions.IsLogicalId(sessionId)
-            || (await _store.ReadBindingSnapshotAsync(sessionId, ct))?.Active.Native.Remote is not { } binding)
+        if (_remoteController is not { } controller || await _store.ReadBindingSnapshotAsync(sessionId, ct) is not { } snapshot
+            || snapshot.Active.Native.Remote is not { } binding)
             return false;
+
+        if (binding.ActivationPending)
+        {
+            await ProcessNodeActivationAsync(controller, snapshot, binding, ct);
+            return true;
+        }
 
         var head = await _store.GetHeadAsync(sessionId, ct);
         if (head is null || head.OwnerUserId != binding.Scope.OwnerId
@@ -25,15 +31,7 @@ public sealed partial class SessionInputQueueService
             || SessionInputQueueStore.IsDeferred(head.NextAttemptAt, DateTimeOffset.UtcNow))
             return true;
 
-        var session = new UnifiedSessionInfo
-        {
-            Id = sessionId,
-            Provider = binding.Placement.ProviderId,
-            UserId = binding.Scope.OwnerId,
-            ProjectName = binding.Placement.Workspace,
-            ProjectPath = "",
-            NodeId = binding.Scope.NodeId,
-        };
+        var session = RemoteQueueInfo(snapshot, binding);
         var recovery = await ReadRecoveryAuthorityAsync(session, head, ct);
         var principal = recovery.AccessToken is { } token ? controller.ValidateToken(token) : null;
         if (principal is null || NodeAccess.Subject(principal) != head.OwnerUserId)
@@ -95,5 +93,5 @@ public sealed partial class SessionInputQueueService
     }
 
     private sealed record RemoteControllerInput(ControllerRemoteSessions Sessions, SessionTranscriptPipeline Transcript,
-        Func<string, ClaimsPrincipal?> ValidateToken);
+        Func<string, ClaimsPrincipal?> ValidateToken, string LocalNodeId);
 }

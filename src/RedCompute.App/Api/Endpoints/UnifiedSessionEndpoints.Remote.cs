@@ -16,7 +16,7 @@ namespace RedCompute.App.Api.Endpoints;
 
 public static partial class UnifiedSessionEndpoints
 {
-    internal sealed class RemoteSessions(ControllerRemoteSessions controller, RedLeafSessionReader reader,
+    internal sealed partial class RemoteSessions(ControllerRemoteSessions controller, RedLeafSessionReader reader,
         RedLeafStreamClient streams, IJobTracker jobs, SessionInputQueueService queue)
     {
         internal async Task<IResult> StartAsync(HttpContext ctx, JsonElement body,
@@ -118,7 +118,7 @@ public static partial class UnifiedSessionEndpoints
                 {
                     info.Status = SessionStatus.Idle;
                     info.StopReason = null;
-                    await streams.PatchEntityDataAsync($"ai-session-{info.Provider}-{info.Id}",
+                    await streams.PatchEntityDataAsync($"ai-session-{info.TranscriptProvider ?? info.Provider}-{info.Id}",
                         new { status = info.Status.ToString(), stop_reason = (string?)null }, ct);
                 }
                 queue.Signal(id);
@@ -161,7 +161,9 @@ public static partial class UnifiedSessionEndpoints
             var owner = NodeAccess.Subject(ctx.User);
             if (owner is null) return null;
             var (info, _) = await reader.GetSessionInfoAsync(id);
-            return info?.UserId == owner ? info : null;
+            if (info?.UserId != owner) return null;
+            var binding = await queue.ReadNodeBindingAsync(id, ctx.RequestAborted);
+            return binding?.Active.Native.Remote is not null ? ProjectRemoteBinding(info, binding) : info;
         }
 
         private static async Task<JobProvenance> AuthorizedProvenanceAsync(HttpContext ctx, string route)

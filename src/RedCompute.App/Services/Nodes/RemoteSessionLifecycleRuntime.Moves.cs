@@ -10,7 +10,7 @@ internal sealed record RemoteSessionMoveRequest(string MoveId, long SourceGenera
     string Revision, string ProviderInstanceId, string? RuntimeSessionId = null, string? NativeThreadId = null,
     long? PreviousGeneration = null, string? Model = null, string? Effort = null, long HistoryThrough = 0,
     IReadOnlyList<BindingHandoffText>? History = null, IReadOnlyList<BindingHandoffArtifact>? Artifacts = null,
-    RemoteSessionStartFence? Fence = null);
+    RemoteSessionStartFence? Fence = null, string? PreviousMoveId = null);
 
 internal sealed partial class RemoteSessionLifecycleRuntime
 {
@@ -27,9 +27,16 @@ internal sealed partial class RemoteSessionLifecycleRuntime
         {
             if (!Authorized(grant.Operation, grant))
                 return Error(403, "invalid_runtime_grant");
+            var reservation = await queue.ReserveRemoteLifecycleAsync(grant, ct);
+            if (reservation.State == RemoteLifecycleState.Conflict)
+                return Error(409, "lifecycle_request_conflict");
+            if (reservation.Receipt is { } receipt)
+                return receipt;
+
             var scope = grant.Scope;
             var bindingRequest = new RemoteSessionLifecycleRequest(request.Revision, request.ProviderInstanceId,
-                RuntimeSessionId: request.RuntimeSessionId, NativeThreadId: request.NativeThreadId);
+                RuntimeSessionId: request.RuntimeSessionId, NativeThreadId: request.NativeThreadId,
+                MovePreview: grant.Operation == SessionRuntimeOperation.PrepareMove);
             var workspace = grant.Operation == SessionRuntimeOperation.DiscardMove && configuredWorkspace is not null
                 ? configuredWorkspace(scope, bindingRequest) : await resolve(scope, bindingRequest, ct);
             if (workspace is null || workspace.OwnerId != scope.OwnerId || workspace.Reference != scope.AccessScope
@@ -40,23 +47,11 @@ internal sealed partial class RemoteSessionLifecycleRuntime
                 || workspace.Access.AccessLevel != fence.AccessLevel || workspace.Access.MaxAccessLevel != fence.MaxAccessLevel))
                 return Error(409, "remote_placement_changed");
 
-            var reservation = await queue.ReserveRemoteLifecycleAsync(grant, ct);
-            if (reservation.State == RemoteLifecycleState.Conflict)
-                return Error(409, "lifecycle_request_conflict");
-            if (reservation.Receipt is { } receipt)
-                return receipt;
-
             // A lost network response never cancels a reserved provider operation.
             var result = grant.Operation switch
             {
-                SessionRuntimeOperation.PrepareMove when await IsSealedAsync(scope, CancellationToken.None)
-                    => Error(409, "binding_generation_sealed"),
-                SessionRuntimeOperation.ActivateMove when await IsSealedAsync(scope, CancellationToken.None)
-                    => Error(409, "binding_generation_sealed"),
-                SessionRuntimeOperation.PrepareMove when await IsSealedAsync(scope, CancellationToken.None)
-                    => Error(409, "binding_generation_sealed"),
-                SessionRuntimeOperation.ActivateMove when await IsSealedAsync(scope, CancellationToken.None)
-                    => Error(409, "binding_generation_sealed"),
+                SessionRuntimeOperation.PrepareMove or SessionRuntimeOperation.ActivateMove
+                    when await IsSealedAsync(scope, CancellationToken.None) => Error(409, "binding_generation_sealed"),
                 SessionRuntimeOperation.PrepareMove => await PrepareMoveAsync(grant, request, workspace),
                 SessionRuntimeOperation.SealMoveSource => await SealMoveSourceAsync(scope, bindingRequest, workspace),
                 SessionRuntimeOperation.ActivateMove => await ActivateMoveAsync(scope, request),
@@ -88,11 +83,14 @@ internal sealed partial class RemoteSessionLifecycleRuntime
         var noThread = request.RuntimeSessionId is null && request.NativeThreadId is null;
         if (operation != SessionRuntimeOperation.PrepareMove)
             return (operation == SessionRuntimeOperation.DiscardMove ? noThread : hasThread)
-                && request.PreviousGeneration is null && request.Model is null && request.Effort is null
+                && request.PreviousGeneration is null && request.PreviousMoveId is null && request.Model is null && request.Effort is null
                 && request.HistoryThrough == 0 && request.History is null && request.Artifacts is null && request.Fence is null;
 
         return request.Fence is not null && !string.IsNullOrWhiteSpace(request.Model) && request.HistoryThrough >= 0
-            && (request.PreviousGeneration is { } previous ? previous >= 0 && previous < request.DestinationGeneration && hasThread : noThread)
+            && (request.PreviousGeneration is { } previous
+                ? previous >= 0 && previous < request.DestinationGeneration && hasThread
+                    && (request.PreviousMoveId is null || request.PreviousMoveId is { Length: > 0 and <= 160 })
+                : noThread && request.PreviousMoveId is null)
             && (request.History is null || request.History.Count <= 24
                 && request.History.All(row => row is { Role: "user" or "assistant", Content: not null } && row.Content.Length <= 12_000)
                 && request.History.Sum(row => row.Content.Length) <= 12_000)
@@ -119,7 +117,15 @@ internal sealed partial class RemoteSessionLifecycleRuntime
             var priorScope = scope with { Generation = generation };
             var started = await queue.ReadRemoteLifecycleStartAsync(priorScope);
             var thread = started is null ? null : JsonSerializer.Deserialize<RemoteSessionLifecycleThread>(started.Body, Json);
-            if (!MatchesMoveThread(thread, request) || !await IsSealedAsync(priorScope, CancellationToken.None))
+            var retired = await IsSealedAsync(priorScope, CancellationToken.None);
+            if (thread is null && request.PreviousMoveId is { } previousMove
+                && await queue.ReadRemoteMoveReceiptAsync(priorScope, SessionRuntimeOperation.DiscardMove, previousMove,
+                    CancellationToken.None) is not null)
+            {
+                thread = await ReadMoveThreadAsync(priorScope, SessionRuntimeOperation.PrepareMove, previousMove);
+                retired = thread is not null;
+            }
+            if (!MatchesMoveThread(thread, request) || !retired)
                 return Error(409, "binding_previous_thread_missing");
             previous = new(generation, new(thread!.RuntimeSessionId, thread.NativeThreadId, target), 0);
         }

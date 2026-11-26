@@ -16,7 +16,11 @@ internal sealed record RemoteSessionRuntimeIdentity(string NodeId, string Runtim
 internal sealed record RemoteSessionLifecycleRequest(string Revision, string ProviderInstanceId, string? Model = null,
     string? Effort = null, string? RuntimeSessionId = null, string? NativeThreadId = null,
     string? InputUid = null, string? Text = null, long? AfterSeq = null, int? Limit = null, long? ThroughSeq = null,
-    RemoteSessionStartFence? Fence = null);
+    RemoteSessionStartFence? Fence = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool MovePreview = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool MoveCatalogue = false);
 
 internal sealed record RemoteSessionStartFence(string ProviderId, string AccessLevel, string MaxAccessLevel);
 
@@ -32,7 +36,8 @@ internal sealed partial class RemoteSessionLifecycleRuntime(SessionInputQueueSto
     Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, CancellationToken, Task<RemoteSessionRuntimeWorkspace?>> resolve,
     TimeProvider time, Action<string>? signalInput = null,
     Func<SessionRuntimeScope, RemoteSessionLifecycleRequest, RemoteSessionRuntimeWorkspace?>? configuredWorkspace = null,
-    IExecutionHost? host = null)
+    IExecutionHost? host = null,
+    Func<string, CancellationToken, Task<IReadOnlyList<RemoteMoveWorkspace>>>? listMoveWorkspaces = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
@@ -58,9 +63,18 @@ internal sealed partial class RemoteSessionLifecycleRuntime(SessionInputQueueSto
         {
             return Error(400, "invalid_lifecycle_request");
         }
+        if (request is { MoveCatalogue: true })
+        {
+            if (operation != SessionRuntimeOperation.Inspect || grant.Scope.AccessScope != SessionRuntimeProtocol.MoveCatalogueScope
+                || request != new RemoteSessionLifecycleRequest("", "", MoveCatalogue: true) || listMoveWorkspaces is null)
+                return Error(400, "invalid_move_catalogue_request");
+            var workspaces = await listMoveWorkspaces(grant.Scope.OwnerId, ct);
+            return Authorized(operation, grant) ? Reply(200, new { workspaces }) : Error(403, "invalid_runtime_grant");
+        }
         var inspectPlacement = operation == SessionRuntimeOperation.Inspect
             && request is { RuntimeSessionId: null, NativeThreadId: null, InputUid: null };
-        if (request is null || string.IsNullOrWhiteSpace(request.Revision) || string.IsNullOrWhiteSpace(request.ProviderInstanceId)
+        if (request is null || request.MovePreview && !inspectPlacement
+            || string.IsNullOrWhiteSpace(request.Revision) || string.IsNullOrWhiteSpace(request.ProviderInstanceId)
             || (operation == SessionRuntimeOperation.Start || inspectPlacement
                 ? request.RuntimeSessionId is not null || request.NativeThreadId is not null
                   || inspectPlacement && (request.Model is not null || request.Effort is not null)
@@ -99,18 +113,9 @@ internal sealed partial class RemoteSessionLifecycleRuntime(SessionInputQueueSto
                 return Error(409, "binding_generation_sealed");
 
             if (inspectPlacement)
-                return Reply(200, new
-                {
-                    nodeId = grant.Scope.NodeId,
-                    runtimeId = grant.Scope.RuntimeId,
-                    workspace = workspace.Reference,
-                    workspace.Revision,
-                    workspace.ProviderInstanceId,
-                    providerId = workspace.Provider.ProviderId,
-                    workspace.Access.AccessLevel,
-                    workspace.Access.MaxAccessLevel,
-                    supportsBindingMoves = true,
-                });
+                return Reply(200, new RemoteSessionPlacementPreview(grant.Scope.NodeId, grant.Scope.RuntimeId,
+                    workspace.Reference, workspace.Revision, workspace.Provider.ProviderId, workspace.ProviderInstanceId,
+                    workspace.Access.AccessLevel!, workspace.Access.MaxAccessLevel!, request.MovePreview));
 
             if (operation is not (SessionRuntimeOperation.Start or SessionRuntimeOperation.Resume or SessionRuntimeOperation.Park))
             {

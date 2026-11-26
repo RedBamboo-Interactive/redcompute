@@ -176,6 +176,7 @@ public sealed partial class SessionInputQueueService
                     foreach (var sessionId in await _store.GetRunnableSessionIdsAsync(ct))
                         sessions.Add(sessionId);
                     await _store.CleanupTerminalAsync(TerminalRetention, ct);
+                    StartNodeRetirementSweep(ct);
                 }
 
                 foreach (var sessionId in sessions)
@@ -476,7 +477,18 @@ public sealed partial class SessionInputQueueService
         CancellationToken ct) => _store.FindExistingInferenceChangeAsync(submission, ct);
 
     internal Task<SessionInputQueueItem?> FindExistingBindingChangeAsync(SessionInputQueueSubmission submission,
-        string provider, CancellationToken ct) => _store.FindExistingBindingChangeAsync(submission, provider, ct);
+        string provider, CancellationToken ct) => _store.FindExistingBindingChangeAsync(submission,
+            change => !change.ChangesNode && change.Destination.ProviderId == provider, ct);
+
+    internal Task<SessionInputQueueItem?> FindExistingNodeMoveAsync(SessionInputQueueSubmission submission,
+        Func<QueuedBindingChange, bool> matches, CancellationToken ct)
+        => _store.FindExistingBindingChangeAsync(submission, change => change.ChangesNode && matches(change), ct);
+
+    internal Task<SessionBindingSnapshot?> ReadNodeBindingAsync(string sessionId, CancellationToken ct)
+        => _store.ReadBindingSnapshotAsync(sessionId, ct);
+
+    internal Task<bool> HasUnsettledRemoteDispatchAsync(string sessionId, CancellationToken ct)
+        => _store.HasUnsettledControllerRemoteDispatchAsync(sessionId, ct);
 
     internal Task<IReadOnlyList<SessionInputQueueItem>> ListInferenceChangesAsync(
         string sessionId, string ownerUserId, CancellationToken ct)
@@ -588,6 +600,7 @@ public sealed partial class SessionInputQueueService
                         "steer_unavailable", ct, errorCode: "steer_unavailable");
                 return;
             }
+            if (await ProcessNodeMoveAsync(sessionId, ct)) return;
             if (await ProcessControllerRemoteInputAsync(sessionId, ct)) return;
             var (provider, info) = FindSession(sessionId);
             if (provider is null || info is null) return;
@@ -1061,7 +1074,7 @@ public sealed partial class SessionInputQueueService
     {
         var (provider, info) = FindSession(sessionId);
         if (!string.IsNullOrWhiteSpace(info?.UserId)) return info.UserId;
-        if (_remoteController is not null && ControllerRemoteSessions.IsLogicalId(sessionId)
+        if (_remoteController is not null
             && (await _store.ReadBindingSnapshotAsync(sessionId, ct))?.Active.Native.Remote is { } remote)
             return remote.Scope.OwnerId;
         var local = await _store.ListAsync(sessionId, "local-user", includeTerminal: false, ct);

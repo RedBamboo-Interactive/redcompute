@@ -13,7 +13,9 @@ internal sealed record RemoteSessionPlacement(string NodeId, string RuntimeId, s
     string ProviderId, string ProviderInstanceId, string? Model, string? Effort);
 
 internal sealed record RemoteSessionPlacementPreview(string NodeId, string RuntimeId, string Workspace, string Revision,
-    string ProviderId, string ProviderInstanceId, string AccessLevel, string MaxAccessLevel, bool SupportsBindingMoves = false);
+    string ProviderId, string ProviderInstanceId, string AccessLevel, string MaxAccessLevel,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool SupportsBindingMoves = false);
 
 internal sealed record ControllerRemoteSession(SessionRuntimeScope Scope, RemoteSessionPlacement Placement,
     RemoteSessionPlacementPreview Preview, RemoteSessionLifecycleThread Thread, string? ActivationMoveId = null,
@@ -216,10 +218,10 @@ internal sealed partial class ControllerRemoteSessions(SessionInputQueueStore qu
     }
 
     private async Task<RemoteSessionPlacementPreview> InspectAsync(ClaimsPrincipal caller, SessionRuntimeScope scope,
-        string key, RemoteSessionPlacement placement, CancellationToken ct)
+        string key, RemoteSessionPlacement placement, CancellationToken ct, bool movePreview = false)
     {
         var preview = await ApplyAsync<RemoteSessionPlacementPreview>(caller, scope, SessionRuntimeOperation.Inspect, key,
-            new RemoteSessionLifecycleRequest(placement.Revision, placement.ProviderInstanceId), HttpStatusCode.OK, ct);
+            new RemoteSessionLifecycleRequest(placement.Revision, placement.ProviderInstanceId, MovePreview: movePreview), HttpStatusCode.OK, ct);
         if (preview.NodeId != placement.NodeId || preview.RuntimeId != placement.RuntimeId
             || preview.Workspace != placement.Workspace || preview.Revision != placement.Revision
             || preview.ProviderId != placement.ProviderId || preview.ProviderInstanceId != placement.ProviderInstanceId

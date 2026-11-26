@@ -1,17 +1,21 @@
+using System.Text.Json.Serialization;
 using RedCompute.App.Services.Nodes;
 
 namespace RedCompute.App.Services.SessionBindings;
 
 public sealed record RegisteredBindingRuntime(string RuntimeId, string Workspace, string Revision, string AccessLevel, string MaxAccessLevel);
 public sealed record BindingTarget(string ProviderId, string ProviderInstanceId, string NodeId, string Model, string? Effort,
-    RegisteredBindingRuntime? Runtime = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] RegisteredBindingRuntime? Runtime = null);
 
-public sealed record QueuedBindingChange(long ExpectedGeneration, BindingTarget Destination, bool ChangesNode = false);
+public sealed record QueuedBindingChange(long ExpectedGeneration, BindingTarget Destination,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ChangesNode = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ReplacesHeldBinding = false);
 
 internal sealed record NativeSessionBinding(string RuntimeSessionId, string NativeThreadId, BindingTarget Target,
     DateTimeOffset? StartedAt = null, ControllerRemoteSession? Remote = null);
 
-internal sealed record SessionBinding(long Generation, NativeSessionBinding Native, long HistoryThrough);
+internal sealed record SessionBinding(long Generation, NativeSessionBinding Native, long HistoryThrough,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? RetirementMoveId = null);
 
 internal enum BindingMoveState { Pending, Prepared, Committed, Rejected, SealPending }
 

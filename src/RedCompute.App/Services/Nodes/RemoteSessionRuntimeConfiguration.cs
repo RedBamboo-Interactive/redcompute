@@ -12,6 +12,9 @@ using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services.Nodes;
 
+internal sealed record RemoteMoveWorkspace(string Workspace, string Revision, string ProviderId, string ProviderInstanceId,
+    string AccessLevel, string MaxAccessLevel);
+
 internal sealed class RemoteSessionRuntimeConfiguration
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -78,8 +81,9 @@ internal sealed class RemoteSessionRuntimeConfiguration
         if (workspace is null) return null;
         try
         {
-            var revision = await HostGit.RunAsync(_host, workspace.ProjectPath, ["rev-parse", "--verify", "HEAD"], ct);
-            if (revision is not [var head] || !string.Equals(head, request.Revision, StringComparison.OrdinalIgnoreCase))
+            var head = request.MovePreview ? await HostGit.ReadCleanHeadAsync(_host, workspace.ProjectPath, ct)
+                : (await HostGit.RunAsync(_host, workspace.ProjectPath, ["rev-parse", "--verify", "HEAD"], ct))?.SingleOrDefault();
+            if (!string.Equals(head, request.Revision, StringComparison.OrdinalIgnoreCase))
                 return null;
         }
         catch (Exception error) when (error is InvalidOperationException or TimeoutException or IOException)
@@ -88,6 +92,21 @@ internal sealed class RemoteSessionRuntimeConfiguration
         }
 
         return workspace;
+    }
+
+    internal async Task<IReadOnlyList<RemoteMoveWorkspace>> ListMoveWorkspacesAsync(string owner, CancellationToken ct)
+    {
+        var choices = new List<RemoteMoveWorkspace>();
+        foreach (var workspace in _config.Workspaces.Where(workspace => workspace.OwnerId == owner).Take(32))
+        {
+            if (_getProvider(workspace.ProviderInstanceId) is not { } provider || !NativeSessionBindingPreparer.Supports(provider))
+                continue;
+            var commit = await HostGit.ReadCleanHeadAsync(_host, workspace.ProjectPath, ct);
+            if (string.IsNullOrWhiteSpace(commit)) continue;
+            choices.Add(new(workspace.Reference, commit, provider.ProviderId, workspace.ProviderInstanceId,
+                workspace.AccessLevel, workspace.AccessLevel));
+        }
+        return choices;
     }
 
     private sealed record PairingFile(PairingEntry? Pairing);

@@ -10,6 +10,7 @@ internal sealed class LocalSessionBindingRuntime(SessionBindingCommands commands
     : ISessionBindingRuntime
 {
     private BindingHandoffArtifact[] _artifacts = [];
+    internal IReadOnlyList<BindingHandoffArtifact> Artifacts => _artifacts;
 
     public Task<bool> CanMoveAsync(string logicalId, SessionBinding source, BindingTarget destination, CancellationToken ct)
     {

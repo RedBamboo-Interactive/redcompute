@@ -89,9 +89,37 @@ public sealed partial class SessionInputQueueStore
         Add(update, "$session", scope.LogicalSessionId);
         Add(update, "$generation", scope.Generation);
         if (await update.ExecuteNonQueryAsync(ct) != 1) return null;
+        await using var clear = connection.CreateCommand();
+        clear.Transaction = transaction;
+        clear.CommandText = "UPDATE SessionQueuedInputs SET ErrorCode=NULL, ErrorMessage=NULL, NextAttemptAt=NULL WHERE Id=$id AND State='Delivered'";
+        Add(clear, "$id", pending.ActivationMoveId!);
+        await clear.ExecuteNonQueryAsync(ct);
         await transaction.CommitAsync(ct);
         BindingCommitted?.Invoke(new(scope.LogicalSessionId, threads));
         return confirmed;
+    }
+
+    internal async Task DeferControllerRemoteActivationAsync(ControllerRemoteSession pending, string error, CancellationToken ct)
+    {
+        await using var connection = Open();
+        await using var update = connection.CreateCommand();
+        update.CommandText = """
+            UPDATE SessionQueuedInputs SET ErrorCode=$error, ErrorMessage=$error, NextAttemptAt=$next, UpdatedAt=$now
+            WHERE Id=$item AND State='Delivered' AND EXISTS (
+                SELECT 1 FROM SessionThreadBindings
+                WHERE SessionId=$session AND ActiveGeneration=$generation
+                  AND json_extract(ThreadsJson,'$[#-1].native.remote.activationMoveId')=$item
+                  AND COALESCE(json_extract(ThreadsJson,'$[#-1].native.remote.activationConfirmed'),0)=0
+            )
+            """;
+        var now = DateTimeOffset.UtcNow;
+        Add(update, "$item", pending.ActivationMoveId!);
+        Add(update, "$session", pending.Scope.LogicalSessionId);
+        Add(update, "$generation", pending.Scope.Generation);
+        Add(update, "$error", error);
+        Add(update, "$now", now.ToString("O"));
+        Add(update, "$next", now.AddSeconds(30).ToString("O"));
+        await update.ExecuteNonQueryAsync(ct);
     }
 
     private const string ControllerRemoteLease = "remote-session-runtime";

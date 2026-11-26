@@ -368,6 +368,15 @@ public sealed partial class SessionInputQueueStore
             }
         }
 
+        if (submission.BindingChange is { ChangesNode: true } nodeChange)
+            await GuardNodeMoveAdmissionAsync(connection, transaction, submission.SessionId, nodeChange, ct);
+        if (submission.BindingChange is null && submission.InferenceChange is null
+            && (submission.Input is not [{ Type: "text" }] || attachmentIds.Length > 0
+                || submission.DeliveryPolicy != SessionInputDeliveryPolicy.AfterCurrent)
+            && await ExpectsRemoteInputAsync(connection, transaction, submission.SessionId, ct))
+            throw new SessionInputQueueStoreException("remote_input_not_supported",
+                "A session moving to a registered remote runtime accepts one text part after the current turn");
+
         long totalAttachmentSize = 0;
         foreach (var attachmentId in attachmentIds)
         {
@@ -879,7 +888,7 @@ public sealed partial class SessionInputQueueStore
     }
 
     internal async Task<SessionInputQueueItem?> FindExistingBindingChangeAsync(SessionInputQueueSubmission submission,
-        string provider, CancellationToken ct)
+        Func<QueuedBindingChange, bool> matches, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(submission.IdempotencyKey)) return null;
         await using var connection = Open();
@@ -887,7 +896,7 @@ public sealed partial class SessionInputQueueStore
         var existing = await FindByIdempotencyAsync(connection, transaction, submission.SessionId,
             submission.OwnerUserId, ComputeProvenanceScope(submission.Provenance), submission.IdempotencyKey, ct);
         if (existing is null) return null;
-        if (existing.Value.Item.BindingChange?.Destination.ProviderId != provider)
+        if (existing.Value.Item.BindingChange is not { } change || !matches(change))
             throw new SessionInputQueueStoreException("idempotency_conflict", "The idempotency key was already used for a different input");
         return existing.Value.Item;
     }
@@ -999,6 +1008,12 @@ public sealed partial class SessionInputQueueStore
             SELECT DISTINCT SessionId FROM SessionQueuedInputs
             WHERE (State='Pending' OR (State='Delivering' AND LeaseOwner=$remote))
               AND (NextAttemptAt IS NULL OR NextAttemptAt <= $now OR NextAttemptAt > $horizon)
+            UNION
+            SELECT binding.SessionId FROM SessionThreadBindings binding
+            JOIN SessionQueuedInputs move ON move.Id=json_extract(binding.ThreadsJson,'$[#-1].native.remote.activationMoveId')
+            WHERE COALESCE(json_extract(binding.ThreadsJson,'$[#-1].native.remote.activationConfirmed'),0)=0
+              AND move.State='Delivered'
+              AND (move.NextAttemptAt IS NULL OR move.NextAttemptAt <= $now OR move.NextAttemptAt > $horizon)
             """;
         Add(cmd, "$remote", ControllerRemoteLease);
         Add(cmd, "$now", DateTimeOffset.UtcNow.ToString("O"));
@@ -1034,6 +1049,13 @@ public sealed partial class SessionInputQueueStore
         cmd.CommandText = """
             DELETE FROM SessionQueuedInputs WHERE State IN ('Delivered','Cancelled') AND CompletedAt <= $cutoff
                 AND COALESCE(ErrorCode,'') != 'deployment_target_superseded'
+                AND NOT EXISTS (SELECT 1 FROM SessionThreadBindings binding
+                    WHERE binding.SessionId=SessionQueuedInputs.SessionId
+                        AND json_extract(binding.ThreadsJson,'$[#-1].native.remote.activationMoveId')=SessionQueuedInputs.Id
+                        AND COALESCE(json_extract(binding.ThreadsJson,'$[#-1].native.remote.activationConfirmed'),0)=0)
+                AND NOT EXISTS (SELECT 1 FROM SessionThreadBindings binding, json_each(binding.ThreadsJson) thread
+                    WHERE binding.SessionId=SessionQueuedInputs.SessionId
+                        AND json_extract(thread.value,'$.retirementMoveId')=SessionQueuedInputs.Id)
                 AND NOT EXISTS (SELECT 1 FROM SessionPromptCallbacks callback
                     WHERE callback.SessionId=SessionQueuedInputs.SessionId AND json_extract(callback.EntryJson,'$.PromptMessageUid')=SessionQueuedInputs.MessageUid)
             """;
