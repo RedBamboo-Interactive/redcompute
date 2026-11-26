@@ -129,6 +129,7 @@ public class OpenCodeDbContext : DbContext
         modelBuilder.Entity<OpenCodeSessionRecord>(entity =>
         {
             entity.HasKey(s => s.Id);
+            entity.Property(s => s.InferenceSettingsPinned).HasDefaultValue(false).ValueGeneratedNever();
             entity.Property(s => s.PromptCache).HasConversion(
                 value => JsonSerializer.Serialize(value, (JsonSerializerOptions?)null),
                 value => JsonSerializer.Deserialize<RedCompute.Core.Sessions.PromptCacheUsage>(value, (JsonSerializerOptions?)null));
