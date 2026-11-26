@@ -16,10 +16,23 @@ internal static class NativeSessionBindingPreparer
         && provider is ISessionInferenceSettings and IIdleSessionParkingProvider
         && provider.Capabilities.HasFlag(SessionCapabilities.PersistentSessions | SessionCapabilities.Resume);
 
+    internal static string? ChooseAccess(ISessionProvider provider, UnifiedSessionInfo source)
+    {
+        var sourceLevel = SessionAccessLevels.IsKnown(source.AccessLevel) ? source.AccessLevel! : SessionAccessLevels.Ask;
+        var cap = SessionAccessLevels.IsKnown(source.MaxAccessLevel) ? source.MaxAccessLevel! : SessionAccessLevels.Full;
+        var rank = SessionAccessLevels.Rank(SessionAccessLevels.Lower(sourceLevel, cap));
+        return SessionAccessLevels.All.Take(rank + 1).Reverse().FirstOrDefault(provider.SupportedAccessLevels.Contains);
+    }
+
     internal static string RuntimeId(BindingPreparation preparation)
     {
         if (preparation.PreviousDestination is { } previous) return previous.Native.RuntimeSessionId;
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(preparation.LogicalId + ":" + preparation.Move.Id));
+        return NewRuntimeId(preparation.LogicalId, preparation.Move.Id);
+    }
+
+    internal static string NewRuntimeId(string logicalId, string operationId)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(logicalId + ":" + operationId));
         return "binding-" + Convert.ToHexStringLower(hash.AsSpan(0, 16));
     }
 
@@ -31,8 +44,8 @@ internal static class NativeSessionBindingPreparer
         if (!Supports(provider) || provider.ProviderId != target.ProviderId
             || SessionExecutionProfile.IsConversationOnly(source.ExecutionProfile))
             return new(Refusal: "binding_provider_unavailable");
-        var accessLevel = source.AccessLevel ?? SessionAccessLevels.Ask;
-        if (!provider.SupportedAccessLevels.Contains(accessLevel, StringComparer.Ordinal))
+        var accessLevel = ChooseAccess(provider, source);
+        if (accessLevel is null)
             return new(Refusal: "binding_access_unsupported");
 
         var runtimeId = RuntimeId(preparation);
@@ -44,8 +57,9 @@ internal static class NativeSessionBindingPreparer
             return new(Refusal: "binding_previous_thread_missing");
 
         using var handoff = SessionHandoffScope.Push(new(runtimeId, preparation.Move.Id, HandoffJson(preparation, authorizedArtifacts)));
-        using var access = SessionAccessScope.Push(new SessionAccessState(accessLevel, source.MaxAccessLevel,
-            source.Unattended, source.AccessLevelBeforePlan, source.AccessLevelSource));
+        var allowed = new SessionAccessState(accessLevel, source.MaxAccessLevel, source.Unattended,
+            source.AccessLevelBeforePlan, source.AccessLevelSource);
+        using var access = SessionAccessScope.Push(allowed);
         using var placement = SessionPlacementScope.Push(source.Placement?.ToJsonString());
         using var delivery = SessionDeliveryScope.Push(source.DeliveredAsOneMessage);
 
@@ -69,6 +83,8 @@ internal static class NativeSessionBindingPreparer
             if (existing.Status != SessionStatus.Idle && (existing.Status != SessionStatus.Stopped
                 || !SessionStopReasons.IsAutoResumable(existing.StopReason)))
                 return new(Refusal: "binding_previous_thread_unavailable");
+            if (provider.GetAccessState(runtimeId) != allowed && !provider.SetAccessState(runtimeId, allowed))
+                return new(Refusal: "binding_access_unavailable");
             ct.ThrowIfCancellationRequested();
             prepared = await provider.ResumeSessionAsync(runtimeId, provenance);
         }
@@ -88,14 +104,15 @@ internal static class NativeSessionBindingPreparer
         BindingTarget target, CancellationToken ct)
     {
         var options = await settings.GetInferenceOptionsAsync(prepared.Id, ct);
-        var model = options.Models.FirstOrDefault(candidate => candidate.Id == target.Model);
+        var canonical = settings.BindingModelId(target.Model);
+        var model = options.Models.FirstOrDefault(candidate => candidate.Id == canonical);
         if (model is null || target.Effort is { } effort && !model.SupportedEfforts.Contains(effort, StringComparer.Ordinal))
             return false;
-        if (options.Model == target.Model && (target.Effort is null || options.Effort == target.Effort)) return true;
-        if (!await settings.TrySetInferenceSettingsAsync(prepared.Id, target.Model, target.Effort ?? model.DefaultEffort, ct))
+        if (options.Model == canonical && (target.Effort is null || options.Effort == target.Effort)) return true;
+        if (!await settings.TrySetInferenceSettingsAsync(prepared.Id, canonical, target.Effort ?? model.DefaultEffort, ct))
             return false;
         var confirmed = await settings.GetInferenceOptionsAsync(prepared.Id, ct);
-        return confirmed.Model == target.Model && (target.Effort is null || confirmed.Effort == target.Effort);
+        return confirmed.Model == canonical && (target.Effort is null || confirmed.Effort == target.Effort);
     }
 
     internal static string HandoffJson(BindingPreparation request, IReadOnlyList<BindingHandoffArtifact> artifacts)

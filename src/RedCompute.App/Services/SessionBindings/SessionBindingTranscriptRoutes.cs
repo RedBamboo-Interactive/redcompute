@@ -17,6 +17,11 @@ internal sealed class SessionBindingTranscriptRoutes
         foreach (var binding in queue.ReadBindingSnapshots()) Publish(binding);
     }
 
+    public SessionBindingSnapshot? Binding(string logicalId)
+    {
+        lock (_gate) return _bindings.GetValueOrDefault(logicalId);
+    }
+
     public LogicalTranscriptAddress? Resolve(string provider, string runtimeId)
         => Resolve(Volatile.Read(ref _routes), provider, runtimeId);
 

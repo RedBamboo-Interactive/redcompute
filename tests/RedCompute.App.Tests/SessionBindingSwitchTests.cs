@@ -1,7 +1,13 @@
+using System.Reflection;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RedCompute.App.Services;
 using RedCompute.App.Services.SessionBindings;
+using RedCompute.Core.Capabilities;
+using RedCompute.Core.Configuration;
+using RedCompute.Core.Providers;
+using RedCompute.Core.Sessions;
+using RedCompute.PluginSdk;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -50,6 +56,65 @@ public sealed class SessionBindingSwitchTests
         Assert.Equal([0, 1, 2], (await Reopen(f).ReadBindingSnapshotAsync(Logical))!.Threads.Select(thread => thread.Generation));
         Assert.Equal([Logical], runtime.LogicalIds.Distinct());
         Assert.Equal(["before", "during", "after"], runtime.History.Where(row => row.Role == "user").Select(row => row.Content));
+    }
+
+    [Fact]
+    public async Task Commands_and_events_follow_the_committed_binding_after_reopen()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var runtime = new Runtime();
+        var item = await AdmitAsync(f, "command-route", 0, Claude);
+        var move = await new SessionBindingSwitch(f.Store, runtime).ApplyAsync(item, Original, default);
+        var destination = Assert.IsType<NativeSessionBinding>(move!.Prepared);
+
+        var registry = new CapabilityRegistry();
+        var old = FakeProvider(Codex, Original.RuntimeSessionId);
+        var next = FakeProvider(Claude, destination.RuntimeSessionId);
+        registry.Register("ai-session", new CapabilityDefinition { Slug = "ai-session", DisplayName = "AI Session" },
+            new CapabilityConfig(), new() { [Codex.ProviderInstanceId] = old, [Claude.ProviderInstanceId] = next }, null);
+        var commands = new SessionBindingCommands(registry, new SessionBindingTranscriptRoutes(Reopen(f)));
+
+        var (provider, info) = commands.Find(Logical);
+        Assert.Equal(Logical, info?.Id);
+        Assert.Equal("claude-code", info?.Provider);
+        Assert.Equal("codex", info?.TranscriptProvider);
+        Assert.Equal((null, null), commands.Find(destination.RuntimeSessionId));
+        Assert.Null(commands.ProjectEvent(old.GetSessionInfo(Original.RuntimeSessionId)!));
+        Assert.Equal(Logical, commands.ProjectEvent(next.GetSessionInfo(destination.RuntimeSessionId)!)?.Id);
+
+        await provider!.StopSessionAsync(Logical);
+        Assert.Empty(((CommandProxy)(object)old).Stopped);
+        Assert.Equal(destination.RuntimeSessionId, Assert.Single(((CommandProxy)(object)next).Stopped));
+    }
+
+    private static ICommandProvider FakeProvider(BindingTarget target, string runtimeId)
+    {
+        var provider = DispatchProxy.Create<ICommandProvider, CommandProxy>();
+        var proxy = (CommandProxy)(object)provider;
+        proxy.Info = new() { Id = runtimeId, Provider = target.ProviderId, ProjectName = "test", ProjectPath = "test" };
+        return provider;
+    }
+
+    public interface ICommandProvider : IBackendProvider, ISessionProvider;
+
+    public class CommandProxy : DispatchProxy
+    {
+        public UnifiedSessionInfo Info { get; set; } = null!;
+        public List<string> Stopped { get; } = [];
+
+        protected override object? Invoke(MethodInfo? method, object?[]? args) => method?.Name switch
+        {
+            "get_ProviderId" => Info.Provider,
+            nameof(ISessionProvider.GetSessionInfo) => (string)args![0]! == Info.Id ? Info : null,
+            nameof(ISessionProvider.StopSessionAsync) => Stop((string)args![0]!),
+            _ => throw new InvalidOperationException($"Unexpected call to {method?.Name}"),
+        };
+
+        private Task Stop(string id)
+        {
+            Stopped.Add(id);
+            return Task.CompletedTask;
+        }
     }
 
     [Fact]

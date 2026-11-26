@@ -344,6 +344,7 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     {
         Id = s.Id,
         Provider = "opencode",
+        NativeDeveloperInstructions = s.DeveloperInstructions,
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,

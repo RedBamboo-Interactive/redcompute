@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using RedBamboo.AppHost.Auth;
+using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Sessions;
 
 namespace RedCompute.App.Services;
@@ -151,7 +152,7 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             return new(null, "recovery_host_untrusted", false);
         if (_recoveryJwt is null) return new(null, "recovery_service_unavailable", false);
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/auth/session-recovery-token") {
-            Content = JsonContent.Create(new { sessionId = session.Id, provider = session.Provider,
+            Content = JsonContent.Create(new { sessionId = session.Id, provider = session.TranscriptProvider ?? session.Provider,
                 queueItemId = item.Id, messageUid = item.MessageUid, ownerUserId = item.OwnerUserId, provenance = item.Provenance }) };
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer",
             _recoveryJwt.GenerateServiceAccessToken("redcompute", roles: ["service", "admin"]));
@@ -183,6 +184,65 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
             return new(null, "recovery_identity_invalid", false);
         return new(token, null, false);
     }
+    /// <summary>Read the canonical transcript with the authority recovered for this exact queue control.</summary>
+    internal async Task<IReadOnlyList<BindingHistoryText>> ReadBindingHistoryAsync(UnifiedSessionInfo session,
+        string bearer, int limit, long? after, long? through, CancellationToken ct)
+    {
+        if (_recoveryHttp.BaseAddress is not { IsLoopback: true })
+            throw new InvalidOperationException("The binding history host is outside the local authorization boundary.");
+
+        async Task<IReadOnlyList<BindingHistoryText>> ReadAsync()
+        {
+            var provider = session.TranscriptProvider ?? session.Provider;
+            var query = $"api/entities?type=ai-session&data.session_id={Uri.EscapeDataString(session.Id)}" +
+                $"&data.provider={Uri.EscapeDataString(provider)}&limit=2";
+            using var entityReply = await GetBindingJsonAsync(query, bearer, ct);
+            var entities = entityReply.RootElement.GetProperty("items");
+            if (entities.GetArrayLength() != 1 || Str(entities[0], "id") is not { } entityId)
+                throw new InvalidOperationException("The authorized logical session transcript is unavailable.");
+
+            var records = $"api/streams/session-messages/records?entity_id={Uri.EscapeDataString(entityId)}&order=desc&limit={limit}";
+            if (after is not null) records += $"&after_id={after.Value}";
+            if (through is not null) records += $"&before_id={checked(through.Value + 1)}";
+            using var recordsReply = await GetBindingJsonAsync(records, bearer, ct);
+            return recordsReply.RootElement.GetProperty("items").EnumerateArray().Select(row =>
+            {
+                var message = MapRecord(row, session.Id).Message;
+                var canonical = Sequences?.CurrentView(provider, session.Id)?.IsRemoved(message.Sequence) != true;
+                var text = canonical && message.Role is ("user" or "assistant") && message.EventType == "text";
+                return new BindingHistoryText(message.Id, message.Role, message.EventType, message.MessageUid,
+                    text ? message.Content : null, text ? BindingArtifacts(message) : []);
+            }).ToArray();
+        }
+        return Checkpoints is null ? await ReadAsync() : await Checkpoints.ReadAsync(session.Id, ReadAsync, ct);
+    }
+
+    private static IReadOnlyList<BindingHandoffArtifact> BindingArtifacts(UnifiedMessageRecord message)
+    {
+        if (string.IsNullOrWhiteSpace(message.AttachmentsJson)) return [];
+        try
+        {
+            using var attachments = JsonDocument.Parse(message.AttachmentsJson);
+            if (attachments.RootElement.ValueKind != JsonValueKind.Object
+                || !attachments.RootElement.TryGetProperty("attachments", out var items) || items.ValueKind != JsonValueKind.Array)
+                return [];
+            return items.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object)
+                .Take(12).Select(item => (Kind: Str(item, "kind"), Name: Str(item, "name") ?? Str(item, "filename")))
+                .Where(item => item.Kind is not null && !string.IsNullOrWhiteSpace(item.Name))
+                .Select(item => new BindingHandoffArtifact(message.Id, item.Kind!, item.Name!.Split('/', (char)92)[^1])).ToArray();
+        }
+        catch (JsonException) { return []; }
+    }
+
+    private async Task<JsonDocument> GetBindingJsonAsync(string url, string bearer, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+        using var response = await _recoveryHttp.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+        return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+    }
+
     public async Task<List<UnifiedSessionInfo>> GetSessionsAsync(string? provider, int limit, bool includeDismissed,
         Func<UnifiedSessionInfo, bool>? include = null)
     {

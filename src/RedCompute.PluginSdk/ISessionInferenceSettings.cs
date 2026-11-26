@@ -5,6 +5,9 @@ public interface ISessionInferenceSettings
 {
     Task<SessionInferenceOptions> GetInferenceOptionsAsync(string sessionId, CancellationToken ct);
 
+    /// <summary>Canonical id the provider reports for a supported launch alias.</summary>
+    string BindingModelId(string requested) => requested;
+
     /// <summary>Persists a selection already validated against the owning provider's catalog.</summary>
     Task<bool> TrySetInferenceSettingsAsync(string sessionId, string? model, string? effort, CancellationToken ct);
 

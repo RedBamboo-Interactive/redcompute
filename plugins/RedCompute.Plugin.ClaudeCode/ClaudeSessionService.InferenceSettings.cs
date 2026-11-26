@@ -46,6 +46,9 @@ public partial class ClaudeSessionService
         finally { session.InferenceCatalogGate.Release(); }
     }
 
+    internal string BindingModelId(string requested)
+        => _inferenceModels?.FirstOrDefault(candidate => candidate.Alias == requested)?.Option.Id ?? requested;
+
     internal Task<bool> TrySetInferenceSettingsAsync(string sessionId, string? model, string? effort, CancellationToken ct)
         => _sessions.TryGetValue(sessionId, out var session)
             ? TrySetLiveInferenceSettingsAsync(session, model, effort, ct)

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using RedBamboo.AppHost.WebSockets;
+using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -132,8 +133,16 @@ public sealed class SessionInputQueueService
         _reconcileCallbacks = reconcileCallbacks;
 
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
-            source.PluginEvent += OnProviderEvent;
+            source.PluginEvent += (type, data) =>
+            {
+                var projected = BindingCommands is { } binding
+                    ? binding.ProjectEvent(source as ISessionProvider, type, data) : data;
+                if (projected is not null) OnProviderEvent(type, projected);
+            };
     }
+
+    internal SessionBindingCommands? BindingCommands { get; set; }
+    internal RedLeafSessionReader? BindingHistory { get; set; }
 
     /// <summary>Context-free: continuations never run on the caller's SynchronizationContext (see DetachedWork).</summary>
     public Task RunAsync(CancellationToken ct) => DetachedWork.Start(() => RunLoopAsync(ct));
@@ -459,6 +468,9 @@ public sealed class SessionInputQueueService
     internal Task<SessionInputQueueItem?> FindExistingInferenceChangeAsync(SessionInputQueueSubmission submission,
         CancellationToken ct) => _store.FindExistingInferenceChangeAsync(submission, ct);
 
+    internal Task<SessionInputQueueItem?> FindExistingBindingChangeAsync(SessionInputQueueSubmission submission,
+        string provider, CancellationToken ct) => _store.FindExistingBindingChangeAsync(submission, provider, ct);
+
     internal Task<IReadOnlyList<SessionInputQueueItem>> ListInferenceChangesAsync(
         string sessionId, string ownerUserId, CancellationToken ct)
         => _store.ListInferenceChangesAsync(sessionId, ownerUserId, ct);
@@ -687,9 +699,10 @@ public sealed class SessionInputQueueService
                 }
             }
             SessionRecoveryAuthority? authority = null;
-            if (restart || await _store.RequiresRecoveryAsync(head.Id, ct))
+            if (restart || head.BindingChange is not null || await _store.RequiresRecoveryAsync(head.Id, ct))
             {
-                authority = callerMatches ? new(caller!.Token, null, false) : await ReadRecoveryAuthorityAsync(info, head, ct);
+                authority = callerMatches && head.BindingChange is null ? new(caller!.Token, null, false)
+                    : await ReadRecoveryAuthorityAsync(info, head, ct);
                 if (authority.AccessToken is null)
                 {
                     await _store.BlockPendingAsync(head, authority.ErrorCode ?? "recovery_authority_blocked", authority.Retryable, ct);
@@ -700,8 +713,46 @@ public sealed class SessionInputQueueService
             if (_deliveryPaused() || HasStopIntent(sessionId)) return;
             // Stop/resume endpoints cross this same gate. Re-read provider state after authorization.
             var (_, current) = FindSession(sessionId);
-            // A binding control has its own executor and must never fall through to provider input.
-            if (head.BindingChange is not null) return;
+            if (head.BindingChange is { } binding)
+            {
+                if (BindingCommands is not { } commands || BindingHistory is not { } reader || current is null) return;
+                if (provider.GetPendingQuestions(sessionId).Count > 0
+                    || SessionWorkStates.RunningBackgroundTasks(provider.GetBackgroundTasks(sessionId)) != 0) return;
+
+                var previous = commands.Binding(sessionId)?.Active.Native;
+                var instance = commands.InstanceFor(provider);
+                if (previous is null && (instance is null || current.ProviderSessionId is null))
+                {
+                    await _store.BlockPendingAsync(head, "binding_source_unavailable", false, ct);
+                    await PublishAsync(sessionId, [head.Id], "blocked", ct);
+                    return;
+                }
+                var initial = previous ?? new NativeSessionBinding(sessionId, current.ProviderSessionId!,
+                    new(current.Provider, instance!, binding.Destination.NodeId, current.Model ?? "", current.Effort));
+                var creation = current.JobId is { } sourceJob ? _jobTracker.GetJob(sourceJob)?.CreationProvenance : null;
+                if (current.Confidential && creation is null)
+                {
+                    await _store.BlockPendingAsync(head, "binding_source_authority_unavailable", false, ct);
+                    await PublishAsync(sessionId, [head.Id], "blocked", ct);
+                    return;
+                }
+                var runtime = new LocalSessionBindingRuntime(commands, reader, current, head,
+                    authority!.AccessToken!, InvocationProvenance(head), creation);
+                var switched = await new SessionBindingSwitch(_store, runtime).ApplyAsync(head, initial, ct);
+                if (switched?.State == BindingMoveState.Rejected)
+                    await PublishAsync(sessionId, [head.Id], "failed", ct, errorCode: switched.Error);
+                if (switched?.State == BindingMoveState.Committed)
+                {
+                    await PublishAsync(sessionId, [head.Id], "delivered", CancellationToken.None);
+                    if (SessionBindingCommands.Unwrap(provider) is IIdleSessionParkingProvider parking)
+                    {
+                        try { await parking.TryParkIdleSessionAsync(initial.RuntimeSessionId, SessionStopReasons.IdleTimeout, CancellationToken.None); }
+                        catch (Exception ex) { _log($"[InputQueue] Retired binding parking failed for {sessionId}: {ex.Message}", current.JobId); }
+                    }
+                    Signal(sessionId);
+                }
+                return;
+            }
             var inferenceChange = head.InferenceChange;
             if (inferenceChange is not null)
             {
@@ -747,7 +798,8 @@ public sealed class SessionInputQueueService
                     await _store.AuthorizePendingScopeAsync(head, ct);
                 if (_deliveryPaused() || HasStopIntent(sessionId) || info.Status != SessionStatus.Idle) return;
                 // Current canonical authority must also hold after asynchronous provider startup.
-                authority = callerMatches ? new(caller!.Token, null, false) : await ReadRecoveryAuthorityAsync(info, head, ct);
+                authority = callerMatches && head.BindingChange is null ? new(caller!.Token, null, false)
+                    : await ReadRecoveryAuthorityAsync(info, head, ct);
                 if (authority.AccessToken is null)
                 {
                     await _store.BlockPendingAsync(head, authority.ErrorCode ?? "recovery_authority_blocked", authority.Retryable, ct);
@@ -997,6 +1049,7 @@ public sealed class SessionInputQueueService
 
     private (ISessionProvider? Provider, UnifiedSessionInfo? Info) FindSession(string sessionId)
     {
+        if (BindingCommands is { } binding) return binding.Find(sessionId);
         foreach (var provider in _registry.FindProviders<ISessionProvider>())
         {
             // Metadata only: this runs on every queue pass and every summary read, and a

@@ -281,6 +281,7 @@ public class RelayServer
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
         var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         var bindingRoutes = new SessionBindingTranscriptRoutes(inputQueueStore);
+        var bindingCommands = new SessionBindingCommands(_registry, bindingRoutes);
         var transcriptPipeline = new SessionTranscriptPipeline(
             _streamClient, broadcaster, _log,
             (provider, sessionId) => _confidentialSessions.TryGetValue(
@@ -291,24 +292,27 @@ public class RelayServer
         SuiteMirror.SessionUpserted = snap =>
         {
             _lastSessionSnapshots[SessionConfidentialityKey(snap.Provider, snap.Id)] = snap;
+            var address = bindingRoutes.Resolve(snap.Provider, snap.Id);
+            if (address is null) return;
             // An explicit title (rename or requested update) outranks the provider's title.
-            var explicitTitle = titles.Get(snap.Id);
+            var explicitTitle = titles.Get(address.SessionId);
             var (mirroredName, titleSource) = SessionTitleStore.ForMirror(
                 snap.Title, $"{snap.ProjectName} ({snap.Provider})", explicitTitle);
             var job = snap.JobId is { } jobId ? _jobTracker.GetJob(jobId) : null;
             var ownerAgentId = job?.CreationProvenance?.Actor.EntityId
                 ?? job?.CreationProvenance?.Actor.Id;
-            _confidentialSessions[SessionConfidentialityKey(snap.Provider, snap.Id)] =
+            _confidentialSessions[SessionConfidentialityKey(address.StorageProvider, address.SessionId)] =
                 job?.Confidential ?? false;
             _streamClient.UpsertEntity(
-                SessionEntitySlug(snap.Provider, snap.Id),
+                SessionEntitySlug(address.StorageProvider, address.SessionId),
                 "ai-session",
                 mirroredName,
                 new
                 {
-                provider = snap.Provider,
+                provider = address.StorageProvider,
+                active_provider = address.OriginProvider,
                 provider_entity = snap.ProviderEntity,
-                session_id = snap.Id,
+                session_id = address.SessionId,
                 project_name = snap.ProjectName,
                 project_path = snap.ProjectPath,
                 // As the provider recorded it: a NULL is a session older than node ids and reads as
@@ -347,6 +351,12 @@ public class RelayServer
                 });
         };
 
+        inputQueueStore.BindingCommitted += binding =>
+        {
+            var active = binding.Active.Native;
+            if (_lastSessionSnapshots.TryGetValue(SessionConfidentialityKey(active.Target.ProviderId, active.RuntimeSessionId), out var snap))
+                SuiteMirror.SessionUpserted?.Invoke(snap);
+        };
         SuiteMirror.MessagesAdded = transcriptPipeline.MirrorMessages;
         SuiteMirror.CompletedMessagesAdded = transcriptPipeline.MirrorCompletedMessages;
         // Providers recover in their constructors, before these hooks existed. Flush the durable
@@ -432,17 +442,16 @@ public class RelayServer
         PlacementEndpoints.Map(registry, placementShadow.Status);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
         _callbacks.AttachDurableStore(_inputAttachments.DatabasePath, inputQueueStore,
-            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null));
+            sessionId => bindingCommands.Find(sessionId).Info);
         _callbacks.AttachQuestionSource(
-            sessionId => _registry.FindProviders<ISessionProvider>()
-                .Select(p => p.GetPendingQuestions(sessionId)).FirstOrDefault(q => q.Count > 0) ?? [],
-            sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null));
+            sessionId => bindingCommands.Find(sessionId).Provider?.GetPendingQuestions(sessionId) ?? [],
+            sessionId => bindingCommands.Find(sessionId).Info);
         var inputQueue = new SessionInputQueueService(inputQueueStore, _inputAttachments, _registry,
             _jobTracker, broadcaster, _log,
             sessionId => _confidentialSessions.Any(pair =>
                 pair.Value && pair.Key.EndsWith($":{sessionId}", StringComparison.OrdinalIgnoreCase)),
             () => maintenance.IsDraining, redLeafReader.RecoverAuthorityAsync, maintenance.ReadVerificationTarget,
-            _callbacks.ReconcileAsync);
+            _callbacks.ReconcileAsync) { BindingCommands = bindingCommands, BindingHistory = redLeafReader };
         maintenance.AttachInputQueue(inputQueue);
         var access = new SessionAccessService(
             new RedLeafSessionAccessPolicyClient(_config.RedLeafUrl, redLeafJwt, _log),
@@ -459,7 +468,7 @@ public class RelayServer
             _qualityModes, redLeafReader, _providerConfig, _inputAttachments, inputQueue,
             repositoryValidator, maintenance,
             async (session, job, token) => await _streamClient.PatchEntityDataAsync(
-                SessionEntitySlug(session.Provider, session.Id),
+                SessionEntitySlug(session.TranscriptProvider ?? session.Provider, session.Id),
                 new
                 {
                     owner_id = job.UserId,
@@ -471,9 +480,12 @@ public class RelayServer
             titles,
             session =>
             {
-                var key = SessionConfidentialityKey(session.Provider, session.Id);
+                var active = bindingRoutes.Binding(session.Id)?.Active.Native;
+                var rawKey = active is null ? SessionConfidentialityKey(session.Provider, session.Id)
+                    : SessionConfidentialityKey(active.Target.ProviderId, active.RuntimeSessionId);
+                var key = SessionConfidentialityKey(session.TranscriptProvider ?? session.Provider, session.Id);
                 // Re-mirror the latest snapshot: latest-wins replaces a pending upsert with the old name.
-                if (_lastSessionSnapshots.TryGetValue(key, out var snapshot))
+                if (_lastSessionSnapshots.TryGetValue(rawKey, out var snapshot))
                     SuiteMirror.SessionUpserted?.Invoke(snapshot);
                 if (session.Confidential
                     || (_confidentialSessions.TryGetValue(key, out var confidential) && confidential))
@@ -488,8 +500,8 @@ public class RelayServer
                     broadcaster.Broadcast("session.updated", session);
             },
             _nodes, placementShadow, placementAuthority);
-        SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access);
-        SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks);
+        SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access, bindingCommands.Find);
+        SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks, bindingCommands.Find);
         CliVersionEndpoints.Map(registry, _registry);
         MaintenanceEndpoints.Map(registry, maintenance);
         // Every session tree dies with its session; the long-lived registry is the one way out.
@@ -514,13 +526,13 @@ public class RelayServer
         // Read now: the host consumes the planned-restart checkpoint once providers have started.
         if (_callbacks.Durable is { } durableCallbacks)
             _ = new RestartContinuations(durableCallbacks, inputQueueStore, inputQueue.AdmitAsync,
-                sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null),
+                sessionId => bindingCommands.Find(sessionId).Info,
                 PlannedRestartCheckpoint.Current, DateTimeOffset.UtcNow, _log).RunAfterBootAsync(ct);
         // A delegated turn that failed on a network or provider blip is retried with backoff; its
         // completion waits for the retry (2026-11-14 DNS outage).
         if (_callbacks.Durable is { } retryCallbacks)
             _ = new TransientTurnRetries(retryCallbacks, inputQueueStore, inputQueue.AdmitAsync,
-                sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null),
+                sessionId => bindingCommands.Find(sessionId).Info,
                 _log).RunAsync(ct);
         // Always runs: its eligibility clock also tells completion callbacks a session settled.
         // A zero idle timeout disables only the parking itself.
@@ -638,6 +650,7 @@ public class RelayServer
                 broadcaster.Broadcast("job.event", evt);
         };
 
+        var bindingCommands = inputQueue.BindingCommands!;
         foreach (var source in _registry.FindProviders<IPluginEventSource>())
         {
             var sessionProvider = source as ISessionProvider;
@@ -647,18 +660,23 @@ public class RelayServer
                 // SessionTranscriptPipeline, which can suppress confidential content.
                 if (type == SessionTranscriptPipeline.StreamEventType) return;
 
+                var rawEndedId = type == "session.ended" ? TryReadEventId(data) : null;
+                var projected = bindingCommands.ProjectEvent(sessionProvider, type, data);
+                if (projected is null) return;
+                data = projected;
+
                 if (data is UnifiedSessionInfo session)
                 {
                     _titles?.Apply(session);
                     SessionEventProjection.ApplyNode(session, _nodes);
-                    SessionEventProjection.ApplyWorkState(session, sessionProvider, _log);
+                    SessionEventProjection.ApplyWorkState(session, bindingCommands.Find(session.Id).Provider ?? sessionProvider, _log);
                     // How the last turn ended, interrupt included, so clients stop calling an
                     // interrupted turn completed. The queue's own handler has already closed it.
                     session.LastTurn = inputQueue.LastTurn(session.Id);
                     var confidential = session.JobId is { } jobId
                         && _jobTracker.GetJob(jobId)?.Confidential == true;
                     session.Confidential = confidential;
-                    _confidentialSessions[SessionConfidentialityKey(session.Provider, session.Id)] = confidential;
+                    _confidentialSessions[SessionConfidentialityKey(session.TranscriptProvider ?? session.Provider, session.Id)] = confidential;
                     if (confidential)
                     {
                         broadcaster.Broadcast("ai-session.changed", new
@@ -672,16 +690,16 @@ public class RelayServer
                     }
                 }
 
-                if (type == "session.ended" && sessionProvider is not null
-                    && TryReadEventId(data) is { } endedId
+                if (rawEndedId is not null && sessionProvider is not null
+                    && bindingCommands.RouteEvent(sessionProvider.ProviderId, rawEndedId) is { } ended
                     && _confidentialSessions.TryGetValue(
-                        SessionConfidentialityKey(sessionProvider.ProviderId, endedId), out var endedConfidential)
+                        SessionConfidentialityKey(ended.StorageProvider, ended.SessionId), out var endedConfidential)
                     && endedConfidential)
                 {
                     broadcaster.Broadcast("ai-session.changed", new
                     {
                         provider = sessionProvider.ProviderId,
-                        sessionId = endedId,
+                        sessionId = ended.SessionId,
                         confidential = true,
                         timestamp = DateTimeOffset.UtcNow.ToString("O"),
                     });
@@ -690,7 +708,11 @@ public class RelayServer
 
                 broadcaster.Broadcast(type, data);
             };
-            source.PluginEvent += _callbacks.OnSessionEvent;
+            source.PluginEvent += (type, data) =>
+            {
+                if (bindingCommands.ProjectEvent(sessionProvider, type, data) is { } projected)
+                    _callbacks.OnSessionEvent(type, projected);
+            };
         }
 
         foreach (var sp in _registry.FindProviders<ISessionProvider>())
@@ -699,7 +721,11 @@ public class RelayServer
             sp.SessionStreamEvent += (sessionId, evt) =>
                 transcriptPipeline.HandleLiveEvent(providerId, sessionId, evt);
             // Question notifications ride the callback registry, apart from the transcript.
-            sp.SessionStreamEvent += _callbacks.OnStreamEvent;
+            sp.SessionStreamEvent += (sessionId, evt) =>
+            {
+                if (bindingCommands.RouteEvent(providerId, sessionId) is { } address)
+                    _callbacks.OnStreamEvent(address.SessionId, evt);
+            };
         }
 
         _hardwareMonitor.SnapshotUpdated += snapshot => broadcaster.Broadcast("hardware.snapshot", snapshot);

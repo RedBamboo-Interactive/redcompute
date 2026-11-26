@@ -2,7 +2,8 @@ using RedCompute.App.Services;
 
 namespace RedCompute.App.Services.SessionBindings;
 
-internal sealed record BindingHistoryText(long RecordId, string Role, string EventType, string? MessageUid, string? Content);
+internal sealed record BindingHistoryText(long RecordId, string Role, string EventType, string? MessageUid, string? Content,
+    IReadOnlyList<BindingHandoffArtifact>? Artifacts = null);
 internal sealed record BindingHandoffText(string Role, string? MessageUid, string Content);
 
 internal sealed record BindingPreparation(string LogicalId, SessionBindingMove Move, SessionBinding Source,

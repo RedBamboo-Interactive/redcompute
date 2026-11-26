@@ -78,7 +78,14 @@ public sealed class SessionRollbackService
     {
         SessionRollbackOutcome outcome = null!;
         await _queue.WithSessionLockAsync(sessionId,
-            async () => outcome = await RollbackLockedAsync(provider, sessionId, messageUid, ct), ct);
+            async () =>
+            {
+                var commands = _queue.BindingCommands;
+                var active = commands is null ? provider : commands.Find(sessionId).Provider;
+                outcome = active is null
+                    ? SessionRollbackOutcome.Refused(SessionRollbackRefusals.Unsupported, "The active session provider is unavailable")
+                    : await RollbackLockedAsync(active, sessionId, messageUid, ct);
+            }, ct);
         if (outcome.RolledBack) _queue.Signal(sessionId);
         return outcome;
     }

@@ -4,8 +4,21 @@ namespace RedCompute.Core.Sessions;
 
 public class UnifiedSessionInfo
 {
-    public required string Id { get; init; }
+    private string _id = null!;
+    public required string Id { get => _id; init => _id = value; }
     public required string Provider { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? TranscriptProvider { get; private set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? NativeDeveloperInstructions { get; set; }
+
+    public UnifiedSessionInfo AsLogicalSession(string logicalId, string transcriptProvider)
+    {
+        var view = (UnifiedSessionInfo)MemberwiseClone();
+        view._id = logicalId;
+        view.TranscriptProvider = transcriptProvider;
+        return view;
+    }
     public string? ProviderEntity { get; set; }
     public required string ProjectName { get; init; }
     public required string ProjectPath { get; init; }

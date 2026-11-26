@@ -403,6 +403,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public Task<SessionInferenceOptions> GetInferenceOptionsAsync(string sessionId, CancellationToken ct)
         => _claude.GetInferenceOptionsAsync(sessionId, ct);
 
+    public string BindingModelId(string requested) => _claude.BindingModelId(requested);
+
     public Task<bool> TrySetInferenceSettingsAsync(string sessionId, string? model, string? effort, CancellationToken ct)
         => _claude.TrySetInferenceSettingsAsync(sessionId, model, effort, ct);
 
@@ -425,6 +427,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     {
         Id = s.Id,
         Provider = "claude-code",
+        NativeDeveloperInstructions = s.DeveloperInstructions,
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,

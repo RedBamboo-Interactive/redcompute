@@ -591,6 +591,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
     {
         Id = s.Id,
         Provider = "codex",
+        NativeDeveloperInstructions = s.DeveloperInstructions,
         ProviderEntity = s.ProviderEntity,
         ProjectName = s.ProjectName,
         ProjectPath = s.ProjectPath,

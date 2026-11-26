@@ -15,6 +15,7 @@ using RedCompute.App.Services.SessionTitles;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Discovery;
 using RedCompute.Core.Jobs;
+using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 using RedCompute.PluginSdk.Hosting.Local;
@@ -112,6 +113,9 @@ public static class UnifiedSessionEndpoints
         _shadow = placementShadow;
         _authority = placementAuthority;
 
+        (ISessionProvider? Provider, UnifiedSessionInfo? Info) FindSession(string id)
+            => inputQueue.BindingCommands?.Find(id) ?? FindSessionAcrossProviders(registry, id);
+
         bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
             => ComputeResourceAccess.CanReadSession(
                 context,
@@ -127,7 +131,8 @@ public static class UnifiedSessionEndpoints
         {
             // A rename or requested title update outranks the provider's own title everywhere.
             _titles?.Apply(session);
-            var provider = FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id);
+            var provider = inputQueue.BindingCommands?.IsBound(session.Id) == true ? FindSession(session.Id).Provider
+                : FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id);
             session.SupportsSteering = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsSteering) == true;
             session.SupportsRollback = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsRollback) == true
                 && provider.SupportsRollback(session.Id);
@@ -152,7 +157,8 @@ public static class UnifiedSessionEndpoints
         // unaffected.
         IReadOnlyList<PendingSessionQuestion> PendingQuestions(UnifiedSessionInfo session)
         {
-            var provider = FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id);
+            var provider = inputQueue.BindingCommands?.IsBound(session.Id) == true ? FindSession(session.Id).Provider
+                : FindSessionOwner(registry.FindProviders<ISessionProvider>(), session.Provider, session.Id);
             try
             {
                 return provider?.GetPendingQuestions(session.Id) ?? [];
@@ -162,6 +168,74 @@ public static class UnifiedSessionEndpoints
                 log($"[Sessions] Pending questions unavailable for {session.Provider}/{session.Id}: {ex.Message}", null);
                 return [];
             }
+        }
+
+        IReadOnlyList<BindingProviderOption> ProviderOptions(ISessionProvider provider, UnifiedSessionInfo info)
+            => inputQueue.BindingHistory is not null && inputQueue.BindingCommands is { } commands
+                ? commands.Options(provider, info, nodes) : [];
+
+        async Task<IResult> ChangeProviderAsync(HttpContext ctx, string id, string requestedProvider,
+            string? key, bool validateOnly)
+        {
+            if (inputQueue.BindingCommands is not { } commands || inputQueue.BindingHistory is null)
+                return Error(422, "binding_unsupported", "Provider changes are unavailable on this Compute host.");
+            var owner = ResolveUserId(ctx);
+            var identity = ExecutionContextScope.Current;
+            if (ctx.User.Identity?.IsAuthenticated != true || ctx.User.Identity.AuthenticationType == "LocalDefault"
+                || owner is null or "local-user" or "system" || identity?.Beneficiary.Kind != "user"
+                || identity.Beneficiary.Id != owner || identity.Actor.Kind is not ("agent" or "app"))
+                return Error(403, "binding_signed_identity_required", "Provider changes require a signed Agent or first-party app acting for the session owner.");
+
+            IResult? response = null;
+            var signal = false;
+            await inputQueue.WithSessionLockAsync(id, async () =>
+            {
+                var (provider, info) = FindSession(id);
+                if (provider is not ISessionInferenceSettings settings || info is null)
+                { response = Error(404, "not_found", "Session not found"); return; }
+                if (!CanReadSession(ctx, info) || owner != info.UserId)
+                { response = ComputeResourceAccess.SessionDenied(info); return; }
+
+                JobProvenance provenance;
+                try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions/{id}/inference-settings"); }
+                catch (JobProvenanceValidationException ex)
+                { response = Error(422, "invalid_provenance", ex.Message); return; }
+                if (provenance.OnBehalfOf.Kind != "user" || provenance.OnBehalfOf.Id != owner
+                    || provenance.Actor.Kind != identity.Actor.Kind || provenance.Actor.Id != identity.Actor.Id
+                    || provenance.Actor.EntityId != identity.Actor.EntityId || provenance.Origin.App.Id != identity.App.Id)
+                { response = Error(403, "binding_signed_identity_required", "The recovered actor and owner must match the signed request."); return; }
+
+                var options = await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted);
+                var pending = await inputQueue.ListInferenceChangesAsync(id, owner, ctx.RequestAborted);
+                var choices = ProviderOptions(provider, info);
+                var submission = new SessionInputQueueSubmission(id, owner, [], $"Change Provider to {requestedProvider}",
+                    null, provenance, SessionInputDeliveryPolicy.AfterCurrent, Guid.NewGuid().ToString("N"), [], key);
+                try
+                {
+                    if (!validateOnly && await inputQueue.FindExistingBindingChangeAsync(submission, requestedProvider, ctx.RequestAborted) is { } replay)
+                    { response = InferenceSettingsResponse(options, pending, replay, provider: info.Provider, providers: choices); return; }
+                    if (pending.Any(item => item.BindingChange is not null))
+                    { response = Error(409, "input_queued", "A Provider change is already queued for this session."); return; }
+                    if (choices.FirstOrDefault(option => option.Id == requestedProvider)?.Target is not { } target)
+                    { response = Error(422, "binding_destination_unavailable", "Choose another Provider from this session's current options."); return; }
+                    if (validateOnly)
+                    {
+                        response = InferenceSettingsResponse(options, pending,
+                            proposed: new(target.Model, target.Effort, []), wouldQueue: true,
+                            provider: info.Provider, providers: choices, proposedProvider: requestedProvider);
+                        return;
+                    }
+                    var generation = commands.Binding(id)?.Active.Generation ?? 0;
+                    var admission = await AdmitWithCurrentCallerAsync(ctx, provider, info,
+                        submission with { BindingChange = new(generation, target) }, inputQueue, ctx.RequestAborted);
+                    signal = admission.Item.State == SessionInputQueueState.Pending;
+                    var active = await inputQueue.ListInferenceChangesAsync(id, owner, ctx.RequestAborted);
+                    response = InferenceSettingsResponse(options, active, admission.Item, provider: info.Provider, providers: choices);
+                }
+                catch (SessionInputQueueStoreException ex) { response = Error(409, ex.Code, ex.Message); }
+            }, ctx.RequestAborted);
+            if (signal) inputQueue.Signal(id);
+            return response!;
         }
 
         var providerIds = registry.FindProviders<ISessionProvider>().Select(p => p.ProviderId).ToList();
@@ -542,7 +616,7 @@ public static class UnifiedSessionEndpoints
             }
             // The session's Agent comes from the verified start identity, never from the body; so does
             // the session delegating this one, whose level the new session inherits as level and cap.
-            var parent = _access!.FindParent(SignedSessionReferences(ctx), info => CanReadSession(ctx, info));
+            var parent = _access!.FindParent(SignedSessionReferences(ctx), info => CanReadSession(ctx, info), FindSession);
             // A caller with no identity of its own (any process on this machine) never starts above Ask.
             maxAccessLevel = ComputeResourceAccess.AnonymousCap(ctx, maxAccessLevel);
             var accessStart = await _access.ResolveStartAsync(provider, requestedAccessLevel, maxAccessLevel, unattended,
@@ -1103,7 +1177,7 @@ public static class UnifiedSessionEndpoints
             "Set whether the session's output is delivered to its reader as one message (no progress lines). Persisted with the session and applied from its next launch.",
             async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             if (!CanReadSession(ctx, info))
@@ -1267,10 +1341,11 @@ public static class UnifiedSessionEndpoints
 
         endpoints.MapGet("/ai-session/sessions/{id}/inference-settings",
             "Discover AI Session inference settings. Read the current Model, Thinking (reasoning effort), provider-supported choices "
-            + "and pending changes. Use these choices with PUT inference-settings?validateOnly=true before applying a change.",
+            + "and pending changes. A providers list offers harness targets for eligible sessions. "
+            + "Use these choices with PUT inference-settings?validateOnly=true before applying a change.",
             async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", "Session not found");
             if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
             if (provider is not ISessionInferenceSettings settings)
@@ -1278,7 +1353,7 @@ public static class UnifiedSessionEndpoints
 
             var options = await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted);
             var pending = await _inputQueue!.ListInferenceChangesAsync(id, ResolveUserId(ctx) ?? "local-user", ctx.RequestAborted);
-            return InferenceSettingsResponse(options, pending);
+            return InferenceSettingsResponse(options, pending, provider: info.Provider, providers: ProviderOptions(provider!, info));
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id").WithResponse(InferenceSettingsResponseSchema);
 
@@ -1289,9 +1364,10 @@ public static class UnifiedSessionEndpoints
             + "An immediate change returns 200 with effective values. Earlier queued input runs first. A queued change returns 202 "
             + "with operation.id. GET input-queue/{itemId} for the exact receipt, including metadata.applied after delivery. "
             + "Use X-Idempotency-Key to queue a retry-safe change. Replay with the same body to get the same receipt; a different body with the same key returns 409 idempotency_conflict. "
-            + "An immediate provider refusal returns 409 inference_change_unavailable. Unsupported choices return 422.", async (HttpContext ctx, string id) =>
+            + "A signed Agent or first-party app can send provider on its own to queue a harness switch. Discover supported providers first. "
+            + "A second Provider write while one is pending returns 409 input_queued. An immediate refusal returns 409 inference_change_unavailable. Unsupported choices return 422.", async (HttpContext ctx, string id) =>
         {
-            var (_, initial) = FindSessionAcrossProviders(registry, id);
+            var (_, initial) = FindSession(id);
             if (initial is null) return Error(404, "not_found", "Session not found");
             if (!CanReadSession(ctx, initial)) return ComputeResourceAccess.SessionDenied(initial);
 
@@ -1308,6 +1384,12 @@ public static class UnifiedSessionEndpoints
 
             if (body.ValueKind != JsonValueKind.Object)
                 return Error(422, "invalid_inference_settings", "Send a model or reasoning effort");
+            if (body.TryGetProperty("provider", out var bindingProvider))
+            {
+                if (!IsSettingString(bindingProvider) || body.TryGetProperty("model", out _) || body.TryGetProperty("effort", out _))
+                    return Error(422, "invalid_inference_settings", "Send provider as a nonempty string in its own request.");
+                return await ChangeProviderAsync(ctx, id, bindingProvider.GetString()!, idempotencyKey, validateOnly);
+            }
             var modelProvided = body.TryGetProperty("model", out var modelValue);
             var effortProvided = body.TryGetProperty("effort", out var effortValue);
             if ((!modelProvided && !effortProvided) || (modelProvided && !IsSettingString(modelValue))
@@ -1321,7 +1403,7 @@ public static class UnifiedSessionEndpoints
             var queue = _inputQueue!;
             await queue.WithSessionLockAsync(id, async () =>
             {
-                var (provider, info) = FindSessionAcrossProviders(registry, id);
+                var (provider, info) = FindSession(id);
                 if (info is null) { result = Error(404, "not_found", "Session not found"); return; }
                 if (!CanReadSession(ctx, info)) { result = ComputeResourceAccess.SessionDenied(info); return; }
                 if (provider is not ISessionInferenceSettings settings)
@@ -1332,6 +1414,11 @@ public static class UnifiedSessionEndpoints
 
                 var options = await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted);
                 var pending = await queue.ListInferenceChangesAsync(id, owner, ctx.RequestAborted);
+                if (pending.Any(item => item.BindingChange is not null))
+                {
+                    result = Error(409, "input_queued", "Read inference options after the queued Provider change before changing Model or Thinking.");
+                    return;
+                }
                 var projected = options;
                 foreach (var operation in pending.Where(item => item.State == SessionInputQueueState.Pending))
                     projected = SessionInferenceSettings.Resolve(projected, operation.InferenceChange!).Options;
@@ -1392,6 +1479,7 @@ public static class UnifiedSessionEndpoints
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("model", "string", location: ParamLocation.Body, description: "A model id from the session's inference options")
             .WithParam("effort", "string", location: ParamLocation.Body, description: "A level supported by the selected model")
+            .WithParam("provider", "string", location: ParamLocation.Body, description: "Send a provider id from GET providers in its own signed write. The queued switch retains the logical session and transcript.")
             .WithParam("validateOnly", "boolean", location: ParamLocation.Query, defaultValue: false,
                 description: "Preview proposed model and effort and whether the operation would queue. Does not persist or enqueue.")
             .WithParam("X-Idempotency-Key", "string", location: ParamLocation.Header,
@@ -1401,7 +1489,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/message",
             "Durably admit a user message, then deliver according to its policy. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1581,7 +1669,7 @@ public static class UnifiedSessionEndpoints
                 var resumeAttempted = waitForDelivery && IsAutoResumable(provider, info);
                 var admitted = await AdmitWithCurrentCallerAsync(ctx, provider, info, submission, _inputQueue!,
                     ctx.RequestAborted, waitForDelivery);
-                var (_, currentInfo) = FindSessionAcrossProviders(registry, id);
+                var (_, currentInfo) = FindSession(id);
                 var resumed = resumeAttempted && currentInfo?.Status is SessionStatus.Idle or SessionStatus.Active or SessionStatus.Starting;
                 var queueSummary = admitted.Queue;
                 return Results.Json(new
@@ -1661,7 +1749,7 @@ public static class UnifiedSessionEndpoints
             "List the durable FIFO for a session. Active items are returned by default; includeTerminal exposes 24-hour delivery and cancellation receipts.",
             async (HttpContext ctx, string id) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1685,7 +1773,7 @@ public static class UnifiedSessionEndpoints
             + "A failed receipt returns its error and whether it can be retried.",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1704,7 +1792,7 @@ public static class UnifiedSessionEndpoints
             "Cancel a pending or failed queue item and release its attachments back to draft state",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1726,7 +1814,7 @@ public static class UnifiedSessionEndpoints
             "Retry a failed queue head after inspecting its structured error",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1748,7 +1836,7 @@ public static class UnifiedSessionEndpoints
             "Ask one pending queued input to join the running turn instead of waiting for it to end. It never interrupts. Asking again, or asking about an input already steering or delivered, changes nothing. When steering is unavailable the answer says why (outcome unavailable, with reason) and the input stays queued; if the turn ended meanwhile the input runs as the next turn (deliveryReason no_active_turn), once.",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1788,7 +1876,7 @@ public static class UnifiedSessionEndpoints
             "Interrupt the active turn and deliver the durable queue in its own order once the provider reports a safe idle state: interrupt-current input first, then FIFO. The interrupt is attributed to the input that runs next.",
             async (HttpContext ctx, string id) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1821,7 +1909,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/inject",
             "Inject a message into the session history without triggering a model turn", async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1872,7 +1960,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/answer",
             "Answer a pending question from the session", async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -1906,7 +1994,7 @@ public static class UnifiedSessionEndpoints
             "(cancelled, session_ended) has no decision.",
             async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -2038,7 +2126,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/interrupt",
             "Interrupt the session's current operation", (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -2057,7 +2145,7 @@ public static class UnifiedSessionEndpoints
             + "The response confirms the request; the task's terminal state arrives as a `task` record and session.updated.",
             async (HttpContext ctx, string id, string taskId) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             if (!CanReadSession(ctx, info))
@@ -2083,7 +2171,7 @@ public static class UnifiedSessionEndpoints
         {
             if (_maintenance?.IsDraining == true)
                 return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -2114,7 +2202,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/stop",
             "Stop a running session gracefully", async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -2128,7 +2216,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/dismiss",
             "Mark a session as dismissed (hidden from default listings)", async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -2143,7 +2231,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapPost("/ai-session/sessions/{id}/restore",
             "Clear a dismissal so the session returns to default listings. Does not start a process; resume separately.", (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             if (!CanReadSession(ctx, info))
@@ -2158,7 +2246,7 @@ public static class UnifiedSessionEndpoints
             "Explicitly supersede only an exact never-delivered pending deployment verification target with a declared admitted replacement. Preserves terminal audit; ordinary inputs cannot be superseded.",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", "Session not found");
             if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
             var userId = ResolveUserId(ctx);
@@ -2186,7 +2274,7 @@ public static class UnifiedSessionEndpoints
             if (_callbacks == null)
                 return Error(503, "not_configured", "Callback registry not available");
 
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -2247,7 +2335,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapDelete("/ai-session/sessions/{id}/callback/unaccepted",
             "Remove only an exact owner-authorized prompt preregistration after definitive admission rejection; accepted input is never removed.", async (HttpContext ctx, string id) =>
         {
-            var (_, info) = FindSessionAcrossProviders(registry, id);
+            var (_, info) = FindSession(id);
             if (info is null) return Error(404, "not_found", "Session not found");
             if (!CanReadSession(ctx, info)) return ComputeResourceAccess.SessionDenied(info);
             var owner = ResolveUserId(ctx);
@@ -2265,7 +2353,7 @@ public static class UnifiedSessionEndpoints
         endpoints.MapDelete("/ai-session/sessions/{id}",
             "Force-kill a session", async (HttpContext ctx, string id) =>
         {
-            var (provider, info) = FindSessionAcrossProviders(registry, id);
+            var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
             var userId = ResolveUserId(ctx);
@@ -3393,6 +3481,8 @@ public static class UnifiedSessionEndpoints
                     supportedEfforts = new { type = "array", items = new { type = "string" } },
                 } },
             },
+            provider = new { type = new[] { "string", "null" }, description = "Currently active native harness" },
+            providers = new { type = new[] { "array", "null" }, description = "Eligible installed harness IDs and names. Use an offered destination in a signed provider-only write." },
             pendingChanges = new { type = "array", description = "Accepted settings operations in queue order, with id, state, requested values and any error" },
             operation = new { type = new[] { "object", "null" }, description = "Exact operation receipt for this write. Contains id, state, requested values, and applied model and effort on success" },
             proposed = new { type = new[] { "object", "null" }, description = "Resolved model and effort returned by a validateOnly request" },
@@ -3402,14 +3492,17 @@ public static class UnifiedSessionEndpoints
 
     private static IResult InferenceSettingsResponse(SessionInferenceOptions options,
         IReadOnlyList<SessionInputQueueItem> pending, SessionInputQueueItem? operation = null,
-        SessionInferenceOptions? proposed = null, bool? wouldQueue = null) => Results.Json(new
+        SessionInferenceOptions? proposed = null, bool? wouldQueue = null,
+        string? provider = null, IReadOnlyList<BindingProviderOption>? providers = null, string? proposedProvider = null) => Results.Json(new
     {
         options.Model,
         options.Effort,
         options.Models,
+        provider,
+        providers = providers?.Select(option => new { option.Id, option.Name }),
         pendingChanges = pending.Select(PublicInferenceChange),
         operation = operation is null ? null : PublicInferenceChange(operation),
-        proposed = proposed is null ? null : new { proposed.Model, proposed.Effort },
+        proposed = proposed is null ? null : new { proposed.Model, proposed.Effort, provider = proposedProvider },
         wouldQueue,
     }, statusCode: operation?.State is SessionInputQueueState.Pending or SessionInputQueueState.Delivering ? 202 : 200);
 
@@ -3417,10 +3510,11 @@ public static class UnifiedSessionEndpoints
     {
         item.Id,
         state = item.State.ToString().ToLowerInvariant(),
-        item.InferenceChange!.Model,
-        item.InferenceChange.Effort,
+        model = item.InferenceChange?.Model,
+        effort = item.InferenceChange?.Effort,
+        provider = item.BindingChange?.Destination.ProviderId,
         applied = item.MetadataJson is null ? (JsonElement?)null
-            : JsonSerializer.Deserialize<JsonElement>(item.MetadataJson).GetProperty("applied"),
+            : JsonSerializer.Deserialize<JsonElement>(item.MetadataJson) is var metadata && metadata.TryGetProperty("applied", out var applied) ? applied : null,
         error = item.ErrorCode is null ? null : new { code = item.ErrorCode, message = item.ErrorMessage, retryable = item.ErrorRetryable },
     };
 

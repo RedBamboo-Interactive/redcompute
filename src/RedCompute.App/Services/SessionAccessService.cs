@@ -74,13 +74,16 @@ public sealed class SessionAccessService(
     /// reads as Ask.
     /// </summary>
     public SessionAccessParent? FindParent(IEnumerable<string?> signedSessionReferences,
-        Func<UnifiedSessionInfo, bool> canRead)
+        Func<UnifiedSessionInfo, bool> canRead,
+        Func<string, (ISessionProvider? Provider, UnifiedSessionInfo? Info)>? activeSession = null)
     {
         var named = signedSessionReferences.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).ToList();
         if (named.Count == 0) return null;
         if (named.Count > 1) return Unresolved(string.Join(",", named), "several sessions are named");
         var id = named[0]!;
-        foreach (var provider in providers())
+        var active = activeSession?.Invoke(id).Provider;
+        var candidates = activeSession is null ? providers() : active is null ? [] : [active];
+        foreach (var provider in candidates)
         {
             try
             {

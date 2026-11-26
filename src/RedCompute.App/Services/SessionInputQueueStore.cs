@@ -866,6 +866,20 @@ public sealed partial class SessionInputQueueStore
         return existing.Value.Item;
     }
 
+    internal async Task<SessionInputQueueItem?> FindExistingBindingChangeAsync(SessionInputQueueSubmission submission,
+        string provider, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(submission.IdempotencyKey)) return null;
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var existing = await FindByIdempotencyAsync(connection, transaction, submission.SessionId,
+            submission.OwnerUserId, ComputeProvenanceScope(submission.Provenance), submission.IdempotencyKey, ct);
+        if (existing is null) return null;
+        if (existing.Value.Item.BindingChange?.Destination.ProviderId != provider)
+            throw new SessionInputQueueStoreException("idempotency_conflict", "The idempotency key was already used for a different input");
+        return existing.Value.Item;
+    }
+
     internal async Task<IReadOnlyList<SessionInputQueueItem>> ListInferenceChangesAsync(
         string sessionId, string ownerUserId, CancellationToken ct)
     {
@@ -873,7 +887,7 @@ public sealed partial class SessionInputQueueStore
         var cmd = connection.CreateCommand();
         cmd.CommandText = """
             SELECT * FROM SessionQueuedInputs
-            WHERE SessionId=$sessionId AND OwnerUserId=$owner AND InferenceChangeJson IS NOT NULL
+            WHERE SessionId=$sessionId AND OwnerUserId=$owner AND (InferenceChangeJson IS NOT NULL OR BindingChangeJson IS NOT NULL)
                 AND State IN ('Pending','Delivering','Failed')
             ORDER BY Sequence
             """;

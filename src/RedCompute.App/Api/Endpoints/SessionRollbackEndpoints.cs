@@ -11,7 +11,8 @@ namespace RedCompute.App.Api.Endpoints;
 /// <summary>The explicit rollback route. Nothing else in RedCompute rolls a conversation back.</summary>
 public static class SessionRollbackEndpoints
 {
-    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, IJobTracker jobTracker, SessionRollbackService rollbacks)
+    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, IJobTracker jobTracker, SessionRollbackService rollbacks,
+        Func<string, (ISessionProvider? Provider, UnifiedSessionInfo? Info)>? sessionLookup = null)
     {
         endpoints.MapPost("/ai-session/sessions/{id}/rollback",
             "Rewind the conversation to just before one of the person's messages, identified by its messageUid. That message and "
@@ -41,15 +42,7 @@ public static class SessionRollbackEndpoints
             if (string.IsNullOrWhiteSpace(messageUid))
                 return Results.Json(new ErrorResponse { Error = "invalid_request", Message = "messageUid is required" }, statusCode: 400);
 
-            ISessionProvider? provider = null;
-            UnifiedSessionInfo? info = null;
-            foreach (var candidate in registry.FindProviders<ISessionProvider>())
-            {
-                info = candidate.GetSessionInfo(id);
-                if (info is null) continue;
-                provider = candidate;
-                break;
-            }
+            var (provider, info) = sessionLookup?.Invoke(id) ?? UnifiedSessionEndpoints.FindSessionAcrossProviders(registry, id);
             if (provider is null || info is null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
 

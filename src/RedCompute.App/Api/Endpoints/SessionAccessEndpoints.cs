@@ -21,7 +21,8 @@ public static class SessionAccessEndpoints
         + "auto (the provider's own classifier decides; Claude only), full (everything runs unprompted). A level the provider cannot enforce becomes ask; "
         + "session.supportedAccessLevels lists what it can.";
 
-    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, IJobTracker jobTracker, SessionAccessService access)
+    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, IJobTracker jobTracker, SessionAccessService access,
+        Func<string, (ISessionProvider? Provider, UnifiedSessionInfo? Info)>? sessionLookup = null)
     {
         endpoints.MapPost("/ai-session/sessions/{id}/access-level",
             "Change the session's access level. " + LevelDescription + " Lowering is open to anyone with write access to the session. "
@@ -36,7 +37,8 @@ public static class SessionAccessEndpoints
             + LimitsDescription,
             async (HttpContext ctx, string id) =>
         {
-            var (provider, info, error) = Find(ctx, registry, jobTracker, id);
+            var (provider, info, error) = Find(ctx, jobTracker, id,
+                sessionLookup ?? (key => UnifiedSessionEndpoints.FindSessionAcrossProviders(registry, key)));
             if (error is not null) return error;
 
             JsonElement body;
@@ -136,7 +138,8 @@ public static class SessionAccessEndpoints
             + "level. Responds with the provider-native mode now in force.",
             async (HttpContext ctx, string id) =>
         {
-            var (provider, info, error) = Find(ctx, registry, jobTracker, id);
+            var (provider, info, error) = Find(ctx, jobTracker, id,
+                sessionLookup ?? (key => UnifiedSessionEndpoints.FindSessionAcrossProviders(registry, key)));
             if (error is not null) return error;
 
             JsonElement body;
@@ -278,12 +281,12 @@ public static class SessionAccessEndpoints
     }
 
     private static (ISessionProvider? Provider, UnifiedSessionInfo? Info, IResult? Error) Find(
-        HttpContext ctx, CapabilityRegistry registry, IJobTracker jobTracker, string id)
+        HttpContext ctx, IJobTracker jobTracker, string id,
+        Func<string, (ISessionProvider? Provider, UnifiedSessionInfo? Info)> sessionLookup)
     {
-        foreach (var candidate in registry.FindProviders<ISessionProvider>())
+        var (candidate, info) = sessionLookup(id);
+        if (candidate is not null && info is not null)
         {
-            var info = candidate.GetSessionInfo(id);
-            if (info is null) continue;
             var job = info.Confidential && info.JobId is { } jobId ? jobTracker.GetJob(jobId) : null;
             if (!ComputeResourceAccess.CanReadSession(ctx, info, job))
                 return (null, null, ComputeResourceAccess.SessionDenied(info));
