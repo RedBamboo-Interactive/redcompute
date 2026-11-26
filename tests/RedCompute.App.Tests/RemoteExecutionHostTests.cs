@@ -381,7 +381,12 @@ public sealed class RemoteExecutionHostTests : IAsyncLifetime
 
         var runtime = RemoteRuntimeReport.Parse(System.Text.Json.JsonSerializer.SerializeToElement(report));
         Assert.NotNull(runtime);
-        Assert.Equal(["ai-session.v1"], runtime.Capabilities);
+        Assert.Equal([SessionRuntimeProtocol.Kind], runtime.Capabilities);
+
+        report["capabilities"] = new JsonArray(SessionRuntimeProtocol.Kind, SessionRuntimeProtocol.BindingMoveCapability, "image-gen");
+        var moveRuntime = RemoteRuntimeReport.Parse(System.Text.Json.JsonSerializer.SerializeToElement(report));
+        Assert.NotNull(moveRuntime);
+        Assert.Equal([SessionRuntimeProtocol.Kind, SessionRuntimeProtocol.BindingMoveCapability], moveRuntime.Capabilities);
 
         report["managed"] = "spawn";
         Assert.Null(RemoteRuntimeReport.Parse(System.Text.Json.JsonSerializer.SerializeToElement(report)));

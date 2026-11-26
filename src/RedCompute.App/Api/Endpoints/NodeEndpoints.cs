@@ -14,6 +14,7 @@ using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Hardware;
 using RedCompute.Core.Nodes;
 using RedCompute.Core.Providers;
+using RedCompute.NodeLink;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
@@ -389,7 +390,8 @@ public static class NodeEndpoints
     internal static IReadOnlyList<NodeCapabilityView> RemoteCapabilities(NodeRegistry nodes, NodeDescriptor node,
         CapabilityRegistry registry, NodePlacement placement)
         => nodes.RuntimesOf(node.Id)
-            .SelectMany(runtime => runtime.Capabilities.Select(slug => (Runtime: runtime, Slug: slug)))
+            .SelectMany(runtime => runtime.Capabilities.Where(slug => slug != SessionRuntimeProtocol.BindingMoveCapability)
+                .Select(slug => (Runtime: runtime, Slug: slug)))
             .Select(item =>
             {
                 var (runtime, slug) = item;

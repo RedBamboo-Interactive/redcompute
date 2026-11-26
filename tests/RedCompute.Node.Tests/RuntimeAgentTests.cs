@@ -637,7 +637,9 @@ public sealed class RuntimeLifecycleTests : IDisposable
         Assert.Equal("ai-session.v1", runtime.Kind);
         Assert.Equal(HostRuntimeManagement.Attach, runtime.Managed);
         Assert.Equal(8188, runtime.Port);
-        Assert.Equal(["ai-session.v1"], RuntimeKinds.Capabilities(runtime.Kind));
+        Assert.Equal(["ai-session.v1", "ai-session.binding-move.v1"], RuntimeKinds.Capabilities(runtime.Kind));
+        Assert.Contains("typed AI Session routes", output.ToString());
+        Assert.DoesNotContain("ComfyUI allowlist", output.ToString());
     }
 
     [Fact]

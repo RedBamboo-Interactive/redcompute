@@ -351,12 +351,19 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                 var attach = runtime.Managed == HostRuntimeManagement.Attach;
                 env.Audit.Record("local", "runtime-add", runtime.Id, $"{runtime.Kind} {(attach ? "attach" : "spawn")} port {runtime.Port}");
                 output.WriteLine($"Registered {runtime.Kind} runtime '{runtime.Id}' at 127.0.0.1:{runtime.Port}.");
-                output.WriteLine(attach
-                    ? "You run it; the server can reach it on the ComfyUI allowlist (no Manager, install or user-data routes), never start or stop it."
-                    : "The server can start and stop it, as you, with what you set here (never a program, argument or folder of its own), "
-                      + "and reach it on the ComfyUI allowlist (no Manager, install or user-data routes).");
-                output.WriteLine("A workflow runs every node type installed in it. leaf-node runtime disable "
-                    + runtime.Id + " stops the server using it; kill-all, a revoke and an uninstall stop what leaf-node started.");
+                if (runtime.Kind == SessionRuntimeProtocol.Kind)
+                {
+                    output.WriteLine("You run the service. The paired controller uses its typed AI Session routes.");
+                }
+                else
+                {
+                    output.WriteLine(attach
+                        ? "You run it; the server can reach it on the ComfyUI allowlist (no Manager, install or user-data routes), never start or stop it."
+                        : "The server can start and stop it, as you, with what you set here (never a program, argument or folder of its own), "
+                          + "and reach it on the ComfyUI allowlist (no Manager, install or user-data routes).");
+                    output.WriteLine("A workflow runs every node type installed in it. leaf-node runtime disable "
+                        + runtime.Id + " stops the server using it; kill-all, a revoke and an uninstall stop what leaf-node started.");
+                }
                 await NotifyAgentAsync(ct);
                 return NodeExitCodes.Ok;
             }
@@ -390,9 +397,11 @@ public sealed class NodeCommands(NodeEnvironment env, TextWriter output, Func<IN
                     status = answer["runtime"]?["status"]?.GetValue<string>();
                     detail = answer["runtime"]?["statusDetail"]?.GetValue<string>();
                 }
+                var healthPath = registry.Load().FirstOrDefault(runtime => runtime.Id == id)?.Kind == SessionRuntimeProtocol.Kind
+                    ? SessionRuntimeProtocol.HealthPath : "/system_stats";
                 output.WriteLine(passed
-                    ? $"'{id}' answered GET /system_stats."
-                    : $"'{id}' did not answer GET /system_stats ({status}{(detail is null ? "" : ": " + detail)}). leaf-node logs and its log file say more.");
+                    ? $"'{id}' answered GET {healthPath}."
+                    : $"'{id}' did not answer GET {healthPath} ({status}{(detail is null ? "" : ": " + detail)}). leaf-node logs and its log file say more.");
                 return passed ? NodeExitCodes.Ok : NodeExitCodes.Failed;
             }
             case "list":
