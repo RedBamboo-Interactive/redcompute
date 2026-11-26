@@ -454,6 +454,13 @@ public class RelayServer
                 pair.Value && pair.Key.EndsWith($":{sessionId}", StringComparison.OrdinalIgnoreCase)),
             () => maintenance.IsDraining, redLeafReader.RecoverAuthorityAsync, maintenance.ReadVerificationTarget,
             _callbacks.ReconcileAsync) { BindingCommands = bindingCommands, BindingHistory = redLeafReader };
+        UnifiedSessionEndpoints.RemoteSessions? remoteSessions = null;
+        if (_nodeHub is { } hub)
+        {
+            var controller = new ControllerRemoteSessions(inputQueueStore, hub.SendSessionRuntimeCommandAsync);
+            inputQueue.AttachRemoteController(controller, transcriptPipeline, redLeafJwt.ValidateToken);
+            remoteSessions = new(controller, redLeafReader, _streamClient, _jobTracker, inputQueue);
+        }
         maintenance.AttachInputQueue(inputQueue);
         var access = new SessionAccessService(
             new RedLeafSessionAccessPolicyClient(_config.RedLeafUrl, redLeafJwt, _log),
@@ -501,7 +508,7 @@ public class RelayServer
                 else
                     broadcaster.Broadcast("session.updated", session);
             },
-            _nodes, placementShadow, placementAuthority);
+            _nodes, placementShadow, placementAuthority, remoteSessions);
         SessionAccessEndpoints.Map(registry, _registry, _jobTracker, access, bindingCommands.Find);
         SessionRollbackEndpoints.Map(registry, _registry, _jobTracker, rollbacks, bindingCommands.Find);
         CliVersionEndpoints.Map(registry, _registry);

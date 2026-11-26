@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using RedBamboo.AppHost.WebSockets;
 using System.Net;
 using System.Net.Http;
+using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
@@ -71,7 +72,7 @@ public sealed record SessionInputQueueChanged(
 /// RedCompute-owned admission and delivery coordinator. Browser state is never used as a lease or
 /// scheduling signal; provider session state and the durable queue are authoritative.
 /// </summary>
-public sealed class SessionInputQueueService
+public sealed partial class SessionInputQueueService
 {
     private static readonly TimeSpan DeliveryLease = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan SteeringLease = TimeSpan.FromMinutes(30);
@@ -587,6 +588,7 @@ public sealed class SessionInputQueueService
                         "steer_unavailable", ct, errorCode: "steer_unavailable");
                 return;
             }
+            if (await ProcessControllerRemoteInputAsync(sessionId, ct)) return;
             var (provider, info) = FindSession(sessionId);
             if (provider is null || info is null) return;
 
@@ -1059,6 +1061,9 @@ public sealed class SessionInputQueueService
     {
         var (provider, info) = FindSession(sessionId);
         if (!string.IsNullOrWhiteSpace(info?.UserId)) return info.UserId;
+        if (_remoteController is not null && ControllerRemoteSessions.IsLogicalId(sessionId)
+            && (await _store.ReadBindingSnapshotAsync(sessionId, ct))?.Active.Native.Remote is { } remote)
+            return remote.Scope.OwnerId;
         var local = await _store.ListAsync(sessionId, "local-user", includeTerminal: false, ct);
         return local.Count > 0 ? "local-user" : provider is null ? null : "local-user";
     }

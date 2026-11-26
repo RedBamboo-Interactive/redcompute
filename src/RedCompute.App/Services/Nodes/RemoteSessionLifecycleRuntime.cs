@@ -18,7 +18,8 @@ internal sealed record RemoteSessionLifecycleRequest(string Revision, string Pro
 
 internal sealed record RemoteSessionStartFence(string ProviderId, string AccessLevel, string MaxAccessLevel);
 
-internal sealed record RemoteSessionLifecycleThread(string RuntimeSessionId, string NativeThreadId, string ProviderInstanceId, string Revision);
+internal sealed record RemoteSessionLifecycleThread(string RuntimeSessionId, string NativeThreadId, string ProviderInstanceId,
+    string Revision, string? Model = null, string? Effort = null, DateTimeOffset? StartedAt = null);
 internal sealed record RemoteSessionRuntimeBinding(SessionRuntimeScope Scope, RemoteSessionLifecycleThread Thread);
 
 internal sealed record RemoteSessionRuntimeWorkspace(string OwnerId, string Reference, string Revision,
@@ -171,7 +172,8 @@ internal sealed class RemoteSessionLifecycleRuntime(SessionInputQueueStore queue
         if (session.Status == SessionStatus.Error || session.Status == SessionStatus.Stopped && !SessionStopReasons.IsAutoResumable(session.StopReason))
             return Error(409, "remote_session_not_resumable");
         return Matches(session, runtimeId, workspace) && session.ProviderSessionId is { Length: > 0 } nativeId
-            ? Reply(201, new RemoteSessionLifecycleThread(runtimeId, nativeId, request.ProviderInstanceId, request.Revision))
+            ? Reply(201, new RemoteSessionLifecycleThread(runtimeId, nativeId, request.ProviderInstanceId, request.Revision,
+                session.Model, session.Effort, session.StartedAt == default ? null : session.StartedAt))
             : Error(409, "runtime_identity_mismatch");
     }
 

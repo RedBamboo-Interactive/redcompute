@@ -35,17 +35,23 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
     Func<ClaimsPrincipal, SessionRuntimeScope, SessionRuntimeOperation, string, byte[], CancellationToken,
         Task<(HttpStatusCode Status, byte[] Body)>> send)
 {
+    private const string LogicalIdPrefix = "remote-";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    internal static bool IsLogicalId(string id) => id.Length == LogicalIdPrefix.Length + 64
+        && id.StartsWith(LogicalIdPrefix, StringComparison.Ordinal)
+        && id.AsSpan(LogicalIdPrefix.Length).IndexOfAnyExcept("0123456789abcdef") < 0;
 
     internal Task<RemoteSessionPlacementPreview> ValidateAsync(ClaimsPrincipal caller, string key,
         RemoteSessionPlacement placement, CancellationToken ct)
         => InspectAsync(caller, GetScope(caller, key, placement), key, placement, ct);
 
     internal async Task<ControllerRemoteSession> StartAsync(ClaimsPrincipal caller, string key,
-        RemoteSessionPlacement placement, CancellationToken ct)
+        RemoteSessionPlacement placement, CancellationToken ct, Func<RemoteSessionPlacementPreview, Task>? authorize = null)
     {
         var scope = GetScope(caller, key, placement);
         var preview = await InspectAsync(caller, scope, key, placement, ct);
+        if (authorize is not null) await authorize(preview);
         await queue.ReserveControllerRemoteStartAsync(scope, placement, preview, ct);
         if (await queue.ReadBindingSnapshotAsync(scope.LogicalSessionId, ct) is { } existing)
             return MatchStart(existing, scope, placement, preview);
@@ -116,12 +122,12 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
     }
 
     internal async Task<ControllerRemoteInputAdvance?> AdvanceInputAsync(ClaimsPrincipal caller, ControllerRemoteSession binding,
-        SessionTranscriptPipeline transcript, CancellationToken ct)
+        string expectedItemId, SessionTranscriptPipeline transcript, CancellationToken ct)
     {
         var scope = binding.Scope;
         if (NodeAccess.Subject(caller) != scope.OwnerId)
             throw new ControllerRemoteSessionException(404, "session_not_found");
-        var item = await queue.ClaimControllerRemoteInputAsync(binding, ct);
+        var item = await queue.ClaimControllerRemoteInputAsync(binding, expectedItemId, ct);
         if (item is null) return null;
 
         var text = item.Input[0].Value;
@@ -140,11 +146,9 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
         }
 
         var replay = await PollTranscriptAsync(caller, scope.LogicalSessionId, transcript, ct);
-        if (status.State == "delivered" && status.Turn is { Outcome: not null, EndedAt: not null } && replay.CaughtUp)
-        {
-            await queue.MarkDeliveredAsync([item], item.MessageUid, CancellationToken.None);
+        if (status.State == "delivered" && status.Turn is { } turn && replay.CaughtUp
+            && await queue.CompleteControllerRemoteInputAsync(item, turn, CancellationToken.None))
             return new(item.Id, "delivered", replay.Changed);
-        }
 
         // A parked or uncertain native turn owns the queue head. A later input cannot cross it.
         return status.State switch
@@ -250,7 +254,7 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
             throw new ControllerRemoteSessionException(422, "invalid_remote_placement");
 
         var digest = SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new[] { owner, key }, Json));
-        return new(placement.NodeId, placement.RuntimeId, "remote-" + Convert.ToHexString(digest).ToLowerInvariant(), 0,
+        return new(placement.NodeId, placement.RuntimeId, LogicalIdPrefix + Convert.ToHexString(digest).ToLowerInvariant(), 0,
             owner, placement.Workspace);
     }
 
@@ -267,7 +271,7 @@ internal sealed class ControllerRemoteSessions(SessionInputQueueStore queue,
     private static RemoteSessionStartFence Fence(RemoteSessionPlacementPreview preview)
         => new(preview.ProviderId, preview.AccessLevel, preview.MaxAccessLevel);
 
-    private static bool Identifier(string? value) =>
+    internal static bool Identifier(string? value) =>
         value is { Length: > 0 and <= 200 } && !value.Any(char.IsControl) && !string.IsNullOrWhiteSpace(value);
 
     private sealed record ReplayAcknowledgement(long AcknowledgedThrough);

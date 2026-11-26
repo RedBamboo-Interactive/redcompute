@@ -23,7 +23,7 @@ using RedCompute.PluginSdk.Hosting;
 
 namespace RedCompute.App.Api.Endpoints;
 
-public static class UnifiedSessionEndpoints
+public static partial class UnifiedSessionEndpoints
 {
     internal static Task<SessionInputAdmissionResult> AdmitWithCurrentCallerAsync(HttpContext ctx,
         ISessionProvider provider, UnifiedSessionInfo info, SessionInputQueueSubmission submission,
@@ -78,7 +78,7 @@ public static class UnifiedSessionEndpoints
         return session;
     }
 
-    public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
+    internal static void Map(EndpointRegistry endpoints, CapabilityRegistry registry,
         IJobTracker jobTracker, Action<string, Guid?> log, RedComputeConfig config,
         DockerContainerService? docker = null, SessionCallbackRegistry? callbacks = null,
         QualityModeService? quality = null, RedLeafSessionReader? redLeafReader = null,
@@ -90,7 +90,7 @@ public static class UnifiedSessionEndpoints
         SessionAccessService? access = null,
         SessionTitleStore? titles = null, Action<UnifiedSessionInfo>? titleChanged = null,
         INodeRegistry? nodes = null, PlacementShadow? placementShadow = null,
-        PlacementAuthority? placementAuthority = null)
+        PlacementAuthority? placementAuthority = null, RemoteSessions? remote = null)
     {
         // Without a policy source (tests, hosts with no RedLeaf) the contract's no-record defaults
         // apply: auto (ask where the provider has no auto), Full disabled.
@@ -116,8 +116,27 @@ public static class UnifiedSessionEndpoints
         (ISessionProvider? Provider, UnifiedSessionInfo? Info) FindSession(string id)
             => inputQueue.BindingCommands?.Find(id) ?? FindSessionAcrossProviders(registry, id);
 
+        Task<UnifiedSessionInfo?> FindQueueSessionAsync(HttpContext context, string id)
+            => remote is not null && ControllerRemoteSessions.IsLogicalId(id)
+                ? remote.ReadOwnedAsync(context, id) : Task.FromResult(FindSession(id).Info);
+
+        async Task AuthorizeRemoteStart(HttpContext context, RemoteSessionPlacementPreview preview,
+            JobProvenance provenance, CancellationToken ct)
+        {
+            var parent = access.FindParent(SignedSessionReferences(context), info => CanReadSession(context, info), FindSession);
+            var starting = await access.ResolveStartAsync([preview.AccessLevel], preview.AccessLevel, preview.MaxAccessLevel,
+                false, ComputeResourceAccess.IsPersonPresent(context), SessionAccessService.AgentEntityId(provenance), ct, parent);
+            if (starting.Error is { } error)
+                throw new ControllerRemoteSessionException(error == SessionAccessResolver.ParentInPlan ? 409 : 422, error);
+            if (starting.State is not { } state || state.AccessLevel != preview.AccessLevel
+                || state.MaxAccessLevel is { } cap && SessionAccessLevels.Rank(preview.MaxAccessLevel) > SessionAccessLevels.Rank(cap)
+                || state.Unattended || SessionAccessLevels.Rank(preview.MaxAccessLevel) > SessionAccessLevels.Rank(SessionAccessLevels.Ask))
+                throw new ControllerRemoteSessionException(422, "remote_session_access_unavailable");
+        }
+
         bool CanReadSession(HttpContext context, UnifiedSessionInfo session)
-            => ComputeResourceAccess.CanReadSession(
+            => (!ControllerRemoteSessions.IsLogicalId(session.Id) || (NodeAccess.Subject(context.User) is { } owner && owner == session.UserId))
+                && ComputeResourceAccess.CanReadSession(
                 context,
                 session,
                 session.Confidential && session.JobId is { } jobId
@@ -416,7 +435,8 @@ public static class UnifiedSessionEndpoints
             .WithParam("provider", "string", description: "Filter by provider", enumValues: providerEnum, location: ParamLocation.Query);
 
         endpoints.MapPost("/ai-session/sessions",
-            "Start a new persistent session. The optional conversation-only profile uses an isolated empty workspace, read-only/no-network execution, denied approvals, and no derived suite credential. " +
+            "Start a new persistent session. A signed Agent can validate registered remote placement with validateOnly and then start using the same X-Idempotency-Key. Send placement.nodeId and placement.sessionRuntime with id, workspace, revision and providerInstanceId. Remote sessions use a configured workspace and support text input after the current turn. " +
+            "The optional conversation-only profile uses an isolated empty workspace, read-only/no-network execution, denied approvals, and no derived suite credential. " +
             "The response carries accessLevel, accessLevelSource, maxAccessLevel, supportedAccessLevels and unattended.", async (HttpContext ctx) =>
         {
             if (_maintenance?.IsDraining == true)
@@ -430,6 +450,10 @@ public static class UnifiedSessionEndpoints
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
             if (body.ValueKind != JsonValueKind.Object)
                 return Error(400, "invalid_body", "Request body must be a JSON object");
+
+            if (RemoteSessionStartRequest.IsRequested(body))
+                return remote is null ? Error(503, "remote_session_unavailable", "No registered remote session controller is configured")
+                    : await remote.StartAsync(ctx, body, (preview, provenance, ct) => AuthorizeRemoteStart(ctx, preview, provenance, ct));
 
             var (q, qualityError) = ResolveQuality(ctx, body);
             if (qualityError != null) return qualityError;
@@ -684,7 +708,11 @@ public static class UnifiedSessionEndpoints
             .WithParam("qualityTier", "string", description: "Quality-tier entity slug resolved suite-wide to a provider+model+effort. Ignored when model is set.", location: ParamLocation.Body)
             .WithParam("thinkingBudget", "integer", description: "Thinking/reasoning token budget. Explicit value wins over qualityTier.", location: ParamLocation.Body)
             .WithParam("scratchDir", "string", description: "Existing absolute physical directory used for TEMP, TMP, TMPDIR, and REDLEAF_SCRATCH_DIR.", location: ParamLocation.Body)
-            .WithParam("placement", "object", description: PlacementDescription, location: ParamLocation.Body)
+            .WithParam("placement", "object", description: PlacementDescription
+                + " For persistent remote start use nodeId plus sessionRuntime: { id, workspace, revision, providerInstanceId }.",
+                location: ParamLocation.Body)
+            .WithParam("validateOnly", "boolean", description: "Check signed remote placement and return eligible runtime, revision and provider access without allocating a thread.", location: ParamLocation.Body)
+            .WithParam("X-Idempotency-Key", "string", description: "Required for remote placement. Reuse an exact key and request to recover a start after reconnect.", location: ParamLocation.Header)
             .WithParam("developerInstructions", "string", description: "Provider-native developer instructions applied to the persistent session. Unsupported providers reject the request.", location: ParamLocation.Body)
             .WithParam("executionProfile", "string", description: "Persisted provider execution restrictions. conversation-only is currently supported by Codex.", enumValues: [SessionExecutionProfile.Default, SessionExecutionProfile.ConversationOnly], defaultValue: SessionExecutionProfile.Default, location: ParamLocation.Body)
             .WithParam("confidential", "boolean", description: "Restrict the session and linked job to the beneficiary user and verified owning Agent.", defaultValue: false, location: ParamLocation.Body)
@@ -1485,8 +1513,10 @@ public static class UnifiedSessionEndpoints
             .WithResponse(InferenceSettingsResponseSchema);
 
         endpoints.MapPost("/ai-session/sessions/{id}/message",
-            "Durably admit a user message, then deliver according to its policy. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
+            "Durably admit a user message, then deliver according to its policy. Remote session runtimes accept one text part after the current turn and return a durable receipt. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
         {
+            if (remote is not null && ControllerRemoteSessions.IsLogicalId(id))
+                return await remote.MessageAsync(ctx, id);
             var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
@@ -1747,7 +1777,7 @@ public static class UnifiedSessionEndpoints
             "List the durable FIFO for a session. Active items are returned by default; includeTerminal exposes 24-hour delivery and cancellation receipts.",
             async (HttpContext ctx, string id) =>
         {
-            var (_, info) = FindSession(id);
+            var info = await FindQueueSessionAsync(ctx, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1771,7 +1801,7 @@ public static class UnifiedSessionEndpoints
             + "A failed receipt returns its error and whether it can be retried.",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info) = FindSession(id);
+            var info = await FindQueueSessionAsync(ctx, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -1790,7 +1820,7 @@ public static class UnifiedSessionEndpoints
             "Cancel a pending or failed queue item and release its attachments back to draft state",
             async (HttpContext ctx, string id, string itemId) =>
         {
-            var (_, info) = FindSession(id);
+            var info = await FindQueueSessionAsync(ctx, id);
             if (info is null) return Error(404, "not_found", $"Session '{id}' not found");
             var userId = ResolveUserId(ctx);
             if (!CanReadSession(ctx, info))
@@ -2165,10 +2195,12 @@ public static class UnifiedSessionEndpoints
             .WithParam("taskId", "string", required: true, location: ParamLocation.Path, description: "Background task id from session.backgroundTasks or a `task` record");
 
         endpoints.MapPost("/ai-session/sessions/{id}/resume",
-            "Resume a stopped session", async (HttpContext ctx, string id) =>
+            "Resume a stopped session. A remotely placed session resumes its existing native thread on the registered node.", async (HttpContext ctx, string id) =>
         {
             if (_maintenance?.IsDraining == true)
                 return Error(503, "maintenance_draining", "RedCompute is draining active turns for a planned deployment");
+            if (remote is not null && ControllerRemoteSessions.IsLogicalId(id))
+                return await remote.ResumeAsync(ctx, id);
             var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);

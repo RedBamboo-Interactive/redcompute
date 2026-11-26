@@ -100,8 +100,8 @@ public sealed class ControllerRemoteSessionsTests : IDisposable
         var first = (await store.EnqueueAsync(fixture.Submission("first") with { SessionId = scope.LogicalSessionId })).Item;
         var second = (await store.EnqueueAsync(fixture.Submission("second") with { SessionId = scope.LogicalSessionId })).Item;
 
-        Assert.Null(await store.ClaimControllerRemoteInputAsync(binding with { Scope = scope with { OwnerId = "different" } }, default));
-        var admitted = await store.ClaimControllerRemoteInputAsync(binding, default);
+        Assert.Null(await store.ClaimControllerRemoteInputAsync(binding with { Scope = scope with { OwnerId = "different" } }, first.Id, default));
+        var admitted = await store.ClaimControllerRemoteInputAsync(binding, first.Id, default);
         Assert.Equal(first.Id, admitted!.Id);
         Assert.Equal(SessionInputQueueState.Delivering, admitted.State);
         Assert.Equal(1, admitted.AttemptCount);
@@ -109,7 +109,7 @@ public sealed class ControllerRemoteSessionsTests : IDisposable
         store = new SessionInputQueueStore(fixture.Config, fixture.Attachments);
         Assert.Equal(0, await store.RecoverExpiredLeasesAsync());
         Assert.Contains(scope.LogicalSessionId, await store.GetRunnableSessionIdsAsync());
-        var again = await store.ClaimControllerRemoteInputAsync(binding, default);
+        var again = await store.ClaimControllerRemoteInputAsync(binding, first.Id, default);
         Assert.Equal(first.Id, again!.Id);
         Assert.Equal(1, again.AttemptCount);
         var cancel = await Assert.ThrowsAsync<SessionInputQueueStoreException>(() => store.CancelAsync(scope.LogicalSessionId, first.Id, "owner"));
@@ -117,7 +117,10 @@ public sealed class ControllerRemoteSessionsTests : IDisposable
         Assert.Equal(SessionInputQueueState.Pending, (await store.GetAsync(scope.LogicalSessionId, second.Id, "owner"))!.State);
 
         await store.MarkDeliveredAsync([again], first.MessageUid);
-        Assert.Equal(second.Id, (await store.ClaimControllerRemoteInputAsync(binding, default))!.Id);
+        // A verified receipt or recovery token for the previous head cannot admit its successor.
+        Assert.Null(await store.ClaimControllerRemoteInputAsync(binding, first.Id, default));
+        Assert.Equal(SessionInputQueueState.Pending, (await store.GetAsync(scope.LogicalSessionId, second.Id, "owner"))!.State);
+        Assert.Equal(second.Id, (await store.ClaimControllerRemoteInputAsync(binding, second.Id, default))!.Id);
         Assert.Contains(scope.LogicalSessionId, await store.GetRunnableSessionIdsAsync());
     }
 

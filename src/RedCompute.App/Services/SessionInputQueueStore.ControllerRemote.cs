@@ -1,6 +1,7 @@
 using System.Text.Json;
 using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.SessionBindings;
+using RedCompute.Core.Sessions;
 using RedCompute.NodeLink;
 
 namespace RedCompute.App.Services;
@@ -66,7 +67,8 @@ public sealed partial class SessionInputQueueStore
 
     // An attempted network delivery has a stable destination receipt. Keep it at the head until
     // reconciliation, even when the controller restarts or the node does not reply.
-    internal async Task<SessionInputQueueItem?> ClaimControllerRemoteInputAsync(ControllerRemoteSession binding, CancellationToken ct)
+    internal async Task<SessionInputQueueItem?> ClaimControllerRemoteInputAsync(ControllerRemoteSession binding,
+        string expectedItemId, CancellationToken ct)
     {
         var scope = binding.Scope;
         await using var connection = Open();
@@ -83,7 +85,7 @@ public sealed partial class SessionInputQueueStore
         Add(read, "$session", scope.LogicalSessionId);
         var head = (await ReadItemsAsync(read, ct)).FirstOrDefault();
         var now = DateTimeOffset.UtcNow;
-        if (head is null || head.OwnerUserId != scope.OwnerId || head.IsControl
+        if (head is null || head.Id != expectedItemId || head.OwnerUserId != scope.OwnerId || head.IsControl
             || head.DeliveryPolicy != SessionInputDeliveryPolicy.AfterCurrent
             || head.Input is not [{ Type: "text" }] || head.AttachmentIds.Count != 0
             || IsDeferred(head.NextAttemptAt, now))
@@ -104,6 +106,73 @@ public sealed partial class SessionInputQueueStore
         var claimed = await GetCoreAsync(connection, transaction, scope.LogicalSessionId, head.Id, scope.OwnerId, ct);
         await transaction.CommitAsync(ct);
         return claimed;
+    }
+
+    internal async Task<bool> CompleteControllerRemoteInputAsync(SessionInputQueueItem item, SessionTurnSummary turn,
+        CancellationToken ct)
+    {
+        if (turn.TurnId != item.MessageUid || turn.EndedAt is not { } endedAt
+            || turn.Outcome is not (SessionTurnOutcomes.Completed or SessionTurnOutcomes.Interrupted
+                or SessionTurnOutcomes.Failed or SessionTurnOutcomes.Stopped))
+            return false;
+
+        await using var connection = Open();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        await using var complete = connection.CreateCommand();
+        complete.Transaction = transaction;
+        complete.CommandText = """
+            UPDATE SessionQueuedInputs
+            SET State='Delivered', TurnId=$turn, DeliveredMessageUid=$uid, UpdatedAt=$now, CompletedAt=$now,
+                NextAttemptAt=NULL, LeaseOwner=NULL, LeaseExpiresAt=NULL, ErrorCode=NULL, ErrorMessage=NULL, ErrorRetryable=0
+            WHERE Id=$id AND SessionId=$session AND OwnerUserId=$owner AND State='Delivering' AND LeaseOwner=$remote
+            """;
+        Add(complete, "$turn", turn.TurnId);
+        Add(complete, "$uid", item.MessageUid);
+        Add(complete, "$now", DateTimeOffset.UtcNow.ToString("O"));
+        Add(complete, "$id", item.Id);
+        Add(complete, "$session", item.SessionId);
+        Add(complete, "$owner", item.OwnerUserId);
+        Add(complete, "$remote", ControllerRemoteLease);
+        if (await complete.ExecuteNonQueryAsync(ct) != 1) return false;
+
+        await using var save = connection.CreateCommand();
+        save.Transaction = transaction;
+        save.CommandText = """
+            INSERT INTO SessionTurns
+                (SessionId, TurnId, OpenedAt, ActiveSeen, EndedAt, Status, Outcome, InterruptSource, InterruptedByMessageUid, Error)
+            VALUES ($session,$turn,$opened,1,$ended,$status,$outcome,$interrupt,$interruptedBy,$error)
+            ON CONFLICT (SessionId, TurnId) DO NOTHING
+            """;
+        Add(save, "$session", item.SessionId);
+        Add(save, "$turn", turn.TurnId);
+        Add(save, "$opened", item.CreatedAt.ToUniversalTime().ToString("O"));
+        Add(save, "$ended", endedAt.ToUniversalTime().ToString("O"));
+        Add(save, "$status", turn.Outcome == SessionTurnOutcomes.Stopped ? "Stopped" : "Idle");
+        Add(save, "$outcome", turn.Outcome);
+        AddNullable(save, "$interrupt", turn.InterruptSource);
+        AddNullable(save, "$interruptedBy", turn.InterruptedByMessageUid);
+        AddNullable(save, "$error", turn.Error);
+        await save.ExecuteNonQueryAsync(ct);
+        await transaction.CommitAsync(ct);
+        _lastEnded.TryRemove(item.SessionId, out _);
+        return true;
+    }
+
+    internal async Task SetControllerRemoteInputErrorAsync(SessionInputQueueItem item, string? error, CancellationToken ct)
+    {
+        await using var connection = Open();
+        await using var update = connection.CreateCommand();
+        update.CommandText = """
+            UPDATE SessionQueuedInputs SET ErrorCode=$error, ErrorMessage=$error, ErrorRetryable=0, UpdatedAt=$now
+            WHERE Id=$id AND SessionId=$session AND OwnerUserId=$owner AND State='Delivering' AND LeaseOwner=$remote
+            """;
+        AddNullable(update, "$error", error);
+        Add(update, "$now", DateTimeOffset.UtcNow.ToString("O"));
+        Add(update, "$id", item.Id);
+        Add(update, "$session", item.SessionId);
+        Add(update, "$owner", item.OwnerUserId);
+        Add(update, "$remote", ControllerRemoteLease);
+        await update.ExecuteNonQueryAsync(ct);
     }
 
     private sealed record ControllerRemoteStart(SessionRuntimeScope Scope, RemoteSessionPlacement Placement,

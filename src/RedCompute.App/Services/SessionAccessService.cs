@@ -25,11 +25,15 @@ public sealed class SessionAccessService(
     /// and cap (source parent). Otherwise a requested level is explicit and kept across policy
     /// changes, and without one the level comes from the policy and follows it.
     /// </summary>
-    public async Task<SessionAccessStart> ResolveStartAsync(ISessionProvider provider, string? requested,
+    public Task<SessionAccessStart> ResolveStartAsync(ISessionProvider provider, string? requested,
         string? maxAccessLevel, bool unattended, bool personPresent, string? agentEntityId, CancellationToken ct = default,
         SessionAccessParent? parent = null)
+        => ResolveStartAsync(provider.SupportedAccessLevels, requested, maxAccessLevel, unattended, personPresent, agentEntityId, ct, parent);
+
+    internal async Task<SessionAccessStart> ResolveStartAsync(IReadOnlyList<string> supported, string? requested,
+        string? maxAccessLevel, bool unattended, bool personPresent, string? agentEntityId, CancellationToken ct,
+        SessionAccessParent? parent)
     {
-        var supported = provider.SupportedAccessLevels;
         if (supported.Count == 0) return new SessionAccessStart(null);
         var current = await ReadPolicyAsync(ct);
         if (parent is not null)

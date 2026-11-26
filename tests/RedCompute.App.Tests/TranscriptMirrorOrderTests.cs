@@ -245,14 +245,30 @@ public sealed class TranscriptMirrorOrderTests
         var first = (await store.EnqueueAsync(fixture.Submission("first") with { SessionId = logical })).Item;
         var second = (await store.EnqueueAsync(fixture.Submission("second") with { SessionId = logical })).Item;
         var transcript = redLeaf.Pipeline(sequences: new TranscriptSequenceStore(fixture.Attachments.DatabasePath));
-        await Assert.ThrowsAsync<HttpRequestException>(() => controller.AdvanceInputAsync(caller, started, transcript, default));
+        await Assert.ThrowsAsync<HttpRequestException>(() => controller.AdvanceInputAsync(caller, started, first.Id, transcript, default));
         Assert.Equal(SessionInputQueueState.Delivering, (await store.GetAsync(logical, first.Id, "owner"))!.State);
 
         store = new SessionInputQueueStore(fixture.Config, fixture.Attachments);
         controller = Open(store);
+        fixture.Store = store;
+        var authority = "expired";
+        fixture.Authority = (session, item, _) =>
+        {
+            Assert.Equal(logical, session.Id);
+            Assert.Equal(first.Id, item.Id);
+            return Task.FromResult(new SessionRecoveryAuthority(authority, null, false));
+        };
+        var worker = fixture.Service();
+        worker.AttachRemoteController(controller, transcript, token => token == "verified" ? caller : null);
         Assert.Equal(0, await store.RecoverExpiredLeasesAsync());
-        var held = await controller.AdvanceInputAsync(caller, started, transcript, default);
-        Assert.Equal("unknown", held?.State);
+        await worker.ProcessSessionAsync(logical, default);
+        Assert.Equal("recovery_identity_invalid", (await store.GetAsync(logical, first.Id, "owner"))!.ErrorCode);
+        Assert.Equal(0, acknowledged);
+        Assert.Equal(1, submits);
+
+        authority = "verified";
+        await worker.ProcessSessionAsync(logical, default);
+        Assert.Equal("delivery_outcome_unknown", (await store.GetAsync(logical, first.Id, "owner"))!.ErrorCode);
         Assert.Equal(1, acknowledged);
         Assert.Single(redLeaf.Data);
         Assert.Equal(1, submits);
@@ -260,16 +276,18 @@ public sealed class TranscriptMirrorOrderTests
 
         var sameDigest = digest;
         digest = new string('A', 64);
-        var conflict = await Assert.ThrowsAsync<ControllerRemoteSessionException>(() =>
-            controller.AdvanceInputAsync(caller, started, transcript, default));
-        Assert.Equal("idempotency_conflict", conflict.Code);
-        Assert.Equal(SessionInputQueueState.Delivering, (await store.GetAsync(logical, first.Id, "owner"))!.State);
+        await worker.ProcessSessionAsync(logical, default);
+        var mismatch = await store.GetAsync(logical, first.Id, "owner");
+        Assert.Equal("idempotency_conflict", mismatch!.ErrorCode);
+        Assert.Equal(SessionInputQueueState.Delivering, mismatch.State);
         digest = sameDigest;
 
         destinationCompleted = true;
-        var completed = await controller.AdvanceInputAsync(caller, started, transcript, default);
-        Assert.Equal("delivered", completed?.State);
-        Assert.Equal(SessionInputQueueState.Delivered, (await store.GetAsync(logical, first.Id, "owner"))!.State);
+        await worker.ProcessSessionAsync(logical, default);
+        var delivered = await store.GetAsync(logical, first.Id, "owner");
+        Assert.Equal(SessionInputQueueState.Delivered, delivered!.State);
+        Assert.Equal("first", delivered.TurnId);
+        Assert.Equal(SessionTurnOutcomes.Completed, store.LastEndedTurn(logical)?.Outcome);
         Assert.Equal(SessionInputQueueState.Pending, (await store.GetAsync(logical, second.Id, "owner"))!.State);
         Assert.Equal(1, submits);
 
@@ -476,7 +494,7 @@ public sealed class TranscriptMirrorOrderTests
     };
 
     /// <summary>The session.stream events a client would have been sent.</summary>
-    private sealed class FrameSocket : WebSocket
+    internal sealed class FrameSocket : WebSocket
     {
         private readonly ConcurrentQueue<JsonElement> _events = new();
 
@@ -527,10 +545,20 @@ public sealed class TranscriptMirrorOrderTests
         public TranscriptStamp Next(string provider, string sessionId) => new("epoch", Interlocked.Increment(ref _value));
     }
 
-    private sealed class FakeRedLeaf : IAsyncDisposable
+    internal sealed class FakeRedLeaf : IAsyncDisposable
     {
         private readonly WebApplication _server;
         private RedLeafStreamClient _client = null!;
+        private readonly ConcurrentDictionary<string, JsonElement> _sessionEntities = new(StringComparer.Ordinal);
+        internal RedLeafStreamClient StreamClient => _client;
+
+        internal RedLeafSessionReader SessionReader(SessionRecoveryTests.Fixture fixture)
+        {
+            var config = fixture.Config;
+            var quality = new QualityModeService(config, (_, _) => { }, new ProviderConfigService(config, (_, _) => { }),
+                new HttpClient(), Path.Combine(fixture.Root, "quality-cache.json"), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2));
+            return new(_server.Urls.Single(), new JwtService(new JwtOptions { SigningKey = new string('a', 64) }), quality);
+        }
         private int _rejectRecordWrites;
         private int _loseRecordAcknowledgements;
         private int _losePayloadAcknowledgements;
@@ -578,6 +606,23 @@ public sealed class TranscriptMirrorOrderTests
                 _losePayloadAcknowledgements = loseFirstPayloadAcknowledgement ? 1 : 0,
                 _rejectPayloadWrites = rejectFirstPayloadWrite ? 1 : 0,
             };
+            server.MapGet("/api/entity-types/{type}", () => Results.Ok(new { slug = "ai-session" }));
+            server.MapPut("/api/entities/by-slug/{slug}", async (HttpContext ctx, string slug) =>
+            {
+                using var json = await JsonDocument.ParseAsync(ctx.Request.Body);
+                var data = json.RootElement.GetProperty("data");
+                var id = Guid.Parse("11111111-1111-1111-1111-111111111111");
+                f._sessionEntities[data.GetProperty("session_id").GetString()!] = JsonSerializer.SerializeToElement(new
+                {
+                    id, slug, name = json.RootElement.GetProperty("name").GetString(), data,
+                });
+                return Results.Ok(new { id });
+            });
+            server.MapGet("/api/entities", (HttpContext ctx) =>
+            {
+                var key = ctx.Request.Query["data.session_id"].ToString();
+                return Results.Ok(new { items = f._sessionEntities.TryGetValue(key, out var entity) ? new[] { entity } : [] });
+            });
             server.MapGet("/api/entities/{slug}", () => Results.Ok(new { id = Guid.Parse("11111111-1111-1111-1111-111111111111") }));
             server.MapPost("/api/streams/{stream}/records", async (HttpContext ctx) =>
             {
