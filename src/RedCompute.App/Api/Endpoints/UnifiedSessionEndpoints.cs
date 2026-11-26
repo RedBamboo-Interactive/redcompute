@@ -1266,7 +1266,7 @@ public static class UnifiedSessionEndpoints
         });
 
         endpoints.MapGet("/ai-session/sessions/{id}/inference-settings",
-            "Read the session's selected model, reasoning effort and supported choices.",
+            "Read the current model, reasoning effort, valid choices and accepted pending changes. Use this before validating or changing a session.",
             async (HttpContext ctx, string id) =>
         {
             var (provider, info) = FindSessionAcrossProviders(registry, id);
@@ -1275,19 +1275,29 @@ public static class UnifiedSessionEndpoints
             if (provider is not ISessionInferenceSettings settings)
                 return Error(422, "inference_settings_unsupported", "This session's provider cannot change inference settings");
 
-            return Results.Json(await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted));
+            var options = await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted);
+            var pending = await _inputQueue!.ListInferenceChangesAsync(id, ResolveUserId(ctx) ?? "local-user", ctx.RequestAborted);
+            return InferenceSettingsResponse(options, pending);
         })
-            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id");
+            .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id").WithResponse(InferenceSettingsResponseSchema);
 
         endpoints.MapPut("/ai-session/sessions/{id}/inference-settings",
             "Set model or reasoning effort for subsequent turns on the same provider thread. Authorized Agents and people can change it. "
             + "Send model, effort, or both. A new model keeps a compatible effort and otherwise uses its default. "
-            + "The active turn keeps its settings. If there is undelivered input, returns 409 input_queued so that input retains its settings.",
-            async (HttpContext ctx, string id) =>
+            + "Set validateOnly=true to check the proposed settings without changing or queuing anything. "
+            + "Earlier input runs first. A queued change returns 202 and an operation.id; check input-queue/{itemId} for its exact outcome. "
+            + "Supply X-Idempotency-Key when retrying an operation must return its same receipt.", async (HttpContext ctx, string id) =>
         {
             var (_, initial) = FindSessionAcrossProviders(registry, id);
             if (initial is null) return Error(404, "not_found", "Session not found");
             if (!CanReadSession(ctx, initial)) return ComputeResourceAccess.SessionDenied(initial);
+
+            var validateOnly = false;
+            if (ctx.Request.Query.TryGetValue("validateOnly", out var validation) && !bool.TryParse(validation, out validateOnly))
+                return Error(400, "invalid_validate_only", "validateOnly must be true or false");
+            var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
+            if (idempotencyKey?.Length > 256)
+                return Error(400, "invalid_idempotency_key", "X-Idempotency-Key cannot exceed 256 characters");
 
             JsonElement body;
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
@@ -1295,29 +1305,22 @@ public static class UnifiedSessionEndpoints
 
             if (body.ValueKind != JsonValueKind.Object)
                 return Error(422, "invalid_inference_settings", "Send a model or reasoning effort");
-
             var modelProvided = body.TryGetProperty("model", out var modelValue);
             var effortProvided = body.TryGetProperty("effort", out var effortValue);
             if ((!modelProvided && !effortProvided) || (modelProvided && !IsSettingString(modelValue))
                 || (effortProvided && !IsSettingString(effortValue)))
                 return Error(422, "invalid_inference_settings", "model and effort must be nonempty strings when supplied");
 
-            var model = modelProvided ? modelValue.GetString() : null;
-            var effort = effortProvided ? effortValue.GetString() : null;
+            var change = new QueuedInferenceChange(modelProvided ? modelValue.GetString() : null, effortProvided ? effortValue.GetString() : null);
+            var owner = ResolveUserId(ctx) ?? "local-user";
             IResult? result = null;
-            await _inputQueue.WithSessionLockAsync(id, async () =>
+            var signal = false;
+            var queue = _inputQueue!;
+            await queue.WithSessionLockAsync(id, async () =>
             {
                 var (provider, info) = FindSessionAcrossProviders(registry, id);
-                if (info is null)
-                {
-                    result = Error(404, "not_found", "Session not found");
-                    return;
-                }
-                if (!CanReadSession(ctx, info))
-                {
-                    result = ComputeResourceAccess.SessionDenied(info);
-                    return;
-                }
+                if (info is null) { result = Error(404, "not_found", "Session not found"); return; }
+                if (!CanReadSession(ctx, info)) { result = ComputeResourceAccess.SessionDenied(info); return; }
                 if (provider is not ISessionInferenceSettings settings)
                 {
                     result = Error(422, "inference_settings_unsupported", "This session's provider cannot change inference settings");
@@ -1325,41 +1328,64 @@ public static class UnifiedSessionEndpoints
                 }
 
                 var options = await settings.GetInferenceOptionsAsync(id, ctx.RequestAborted);
-                var selected = options.Models.FirstOrDefault(candidate => candidate.Id == (model ?? options.Model));
-                if (selected is null)
+                var pending = await queue.ListInferenceChangesAsync(id, owner, ctx.RequestAborted);
+                var projected = options;
+                foreach (var operation in pending.Where(item => item.State == SessionInputQueueState.Pending))
+                    projected = SessionInferenceSettings.Resolve(projected, operation.InferenceChange!).Options;
+
+                var wouldQueue = !string.IsNullOrWhiteSpace(idempotencyKey) || queue.IsDeliveryPaused
+                    || await queue.HasQueuedInputAsync(id, ctx.RequestAborted);
+                var choice = SessionInferenceSettings.Resolve(projected, change);
+                if (choice.Error is not null && (validateOnly || string.IsNullOrWhiteSpace(idempotencyKey)))
                 {
-                    result = Error(422, "unsupported_model", "Choose a model available to this session's provider");
+                    result = Error(choice.Retryable ? 503 : 422, choice.Error, choice.Message!);
                     return;
                 }
-                if (effort is not null && !selected.SupportedEfforts.Contains(effort, StringComparer.Ordinal))
+                if (validateOnly)
                 {
-                    result = Error(422, "unsupported_effort", "Choose a reasoning effort supported by the selected model");
+                    result = InferenceSettingsResponse(options, pending, proposed: choice.Options, wouldQueue: wouldQueue);
+                    return;
+                }
+                if (!wouldQueue)
+                {
+                    var applied = SessionInferenceSettings.Apply(settings, info, options, change);
+                    result = applied.Error is null ? InferenceSettingsResponse(applied.Options, pending)
+                        : Error(409, applied.Error, applied.Message!);
                     return;
                 }
 
-                var nextEffort = effort ?? (selected.Id == options.Model
-                    || (options.Effort is { } currentEffort && selected.SupportedEfforts.Contains(currentEffort, StringComparer.Ordinal))
-                    ? options.Effort : selected.DefaultEffort);
-                if (selected.Id == options.Model && nextEffort == options.Effort)
-                {
-                    result = Results.Json(options);
-                    return;
-                }
-                if (await _inputQueue.HasQueuedInputAsync(id, ctx.RequestAborted))
-                {
-                    result = Error(409, "input_queued", "This session has pending input. Change its settings after that input is delivered.");
-                    return;
-                }
+                JobProvenance provenance;
+                try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions/{id}/inference-settings"); }
+                catch (JobProvenanceValidationException ex) { result = Error(422, "invalid_provenance", ex.Message); return; }
 
-                result = settings.TrySetInferenceSettings(id, modelProvided ? selected.Id : info.Model, nextEffort)
-                    ? Results.Json(options with { Model = selected.Id, Effort = nextEffort })
-                    : Error(409, "inference_change_unavailable", "This session could not change its inference settings");
+                var display = change.Model is null ? $"Change Thinking to {change.Effort}"
+                    : change.Effort is null ? $"Change Model to {change.Model}" : $"Change Model to {change.Model} and Thinking to {change.Effort}";
+                var submission = new SessionInputQueueSubmission(id, owner, [], display, null, provenance,
+                    SessionInputDeliveryPolicy.AfterCurrent, Guid.NewGuid().ToString("N"), [], idempotencyKey, change);
+                try
+                {
+                    if (choice.Error is not null)
+                    {
+                        var replay = await queue.FindExistingInferenceChangeAsync(submission, ctx.RequestAborted);
+                        result = replay is null ? Error(choice.Retryable ? 503 : 422, choice.Error, choice.Message!)
+                            : InferenceSettingsResponse(options, pending, replay);
+                        return;
+                    }
+                    var admitted = await AdmitWithCurrentCallerAsync(ctx, provider, info, submission, queue, ctx.RequestAborted);
+                    signal = admitted.Item.State == SessionInputQueueState.Pending;
+                    var active = await queue.ListInferenceChangesAsync(id, owner, ctx.RequestAborted);
+                    result = InferenceSettingsResponse(options, active, admitted.Item);
+                }
+                catch (SessionInputQueueStoreException ex) { result = Error(409, ex.Code, ex.Message); }
             }, ctx.RequestAborted);
+            if (signal) queue.Signal(id);
             return result!;
         })
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
             .WithParam("model", "string", location: ParamLocation.Body, description: "A model id from the session's inference options")
-            .WithParam("effort", "string", location: ParamLocation.Body, description: "A level supported by the selected model");
+            .WithParam("effort", "string", location: ParamLocation.Body, description: "A level supported by the selected model")
+            .WithParam("validateOnly", "boolean", location: ParamLocation.Query, description: "Validate the resulting configuration without writes")
+            .WithParam("X-Idempotency-Key", "string", location: ParamLocation.Header, description: "Queue a uniquely keyed change and return its existing receipt on replay").WithResponse(InferenceSettingsResponseSchema);
 
         endpoints.MapPost("/ai-session/sessions/{id}/message",
             "Durably admit a user message, then deliver according to its policy. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
@@ -3336,6 +3362,54 @@ public static class UnifiedSessionEndpoints
             : matching.FirstOrDefault(candidate => candidate.GetSessionInfo(sessionId) is not null);
     }
 
+    private static readonly object InferenceSettingsResponseSchema = new
+    {
+        type = "object",
+        properties = new
+        {
+            model = new { type = new[] { "string", "null" }, description = "Current selected model" },
+            effort = new { type = new[] { "string", "null" }, description = "Current selected effort" },
+            models = new
+            {
+                type = "array",
+                items = new { type = "object", required = new[] { "id", "name", "supportedEfforts" }, properties = new
+                {
+                    id = new { type = "string" }, name = new { type = "string" },
+                    defaultEffort = new { type = new[] { "string", "null" } },
+                    supportedEfforts = new { type = "array", items = new { type = "string" } },
+                } },
+            },
+            pendingChanges = new { type = "array", description = "Accepted settings operations in queue order, with id, state, requested values and any error" },
+            operation = new { type = new[] { "object", "null" }, description = "Exact operation receipt for this write. Contains id, state, requested values, and applied model and effort on success" },
+            proposed = new { type = new[] { "object", "null" }, description = "Resolved model and effort returned by a validateOnly request" },
+            wouldQueue = new { type = new[] { "boolean", "null" }, description = "Whether a validateOnly request would wait in the queue at the time of validation" },
+        },
+    };
+
+    private static IResult InferenceSettingsResponse(SessionInferenceOptions options,
+        IReadOnlyList<SessionInputQueueItem> pending, SessionInputQueueItem? operation = null,
+        SessionInferenceOptions? proposed = null, bool? wouldQueue = null) => Results.Json(new
+    {
+        options.Model,
+        options.Effort,
+        options.Models,
+        pendingChanges = pending.Select(PublicInferenceChange),
+        operation = operation is null ? null : PublicInferenceChange(operation),
+        proposed = proposed is null ? null : new { proposed.Model, proposed.Effort },
+        wouldQueue,
+    }, statusCode: operation?.State is SessionInputQueueState.Pending or SessionInputQueueState.Delivering ? 202 : 200);
+
+    private static object PublicInferenceChange(SessionInputQueueItem item) => new
+    {
+        item.Id,
+        state = item.State.ToString().ToLowerInvariant(),
+        item.InferenceChange!.Model,
+        item.InferenceChange.Effort,
+        applied = item.MetadataJson is null ? (JsonElement?)null
+            : JsonSerializer.Deserialize<JsonElement>(item.MetadataJson).GetProperty("applied"),
+        error = item.ErrorCode is null ? null : new { code = item.ErrorCode, message = item.ErrorMessage, retryable = item.ErrorRetryable },
+    };
+
     private static bool IsSettingString(JsonElement value)
         => value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString());
 
@@ -3567,6 +3641,7 @@ public static class UnifiedSessionEndpoints
         SessionInputQueueItem item, IEnumerable<StagedInputAttachment>? attachments = null) => new
     {
         id = item.Id,
+        kind = item.InferenceChange is null ? "message" : "inference-settings",
         clientId = item.ClientId,
         sessionId = item.SessionId,
         sequence = item.Sequence,
@@ -3946,6 +4021,7 @@ public static class UnifiedSessionEndpoints
         required = new[] { "id", "sessionId", "sequence", "state", "delivery", "input", "displayContent", "messageUid", "createdAt", "updatedAt", "attemptCount" },
         properties = new
         {
+            kind = new { type = "string", @enum = new[] { "message", "inference-settings" } },
             id = new { type = "string" },
             clientId = new { type = new[] { "string", "null" }, description = "Authorized client idempotency key used to reconcile an uncertain admission" },
             sessionId = new { type = "string" },

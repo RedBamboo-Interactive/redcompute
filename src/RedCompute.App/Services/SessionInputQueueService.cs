@@ -47,6 +47,7 @@ public static class SessionSteerRefusals
     public const string SessionNotRunning = "session_not_running";
     public const string UserStopped = "user_stopped";
     public const string Maintenance = "maintenance_drain";
+    public const string SettingsChange = "waiting_for_settings_change";
     public const string FailedHead = "failed_head";
     public const string RecoveryRequired = "recovery_required";
 }
@@ -205,7 +206,9 @@ public sealed class SessionInputQueueService
         if (!admitted.Existing && submission.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent)
         {
             // A maintenance drain lets running turns finish rather than cutting them short.
-            interruptResult = _deliveryPaused() ? SessionInterruptResults.Maintenance
+            interruptResult = await _store.HasEarlierInferenceChangeAsync(submission.SessionId, admitted.Item.Sequence, ct)
+                ? SessionSteerRefusals.SettingsChange
+                : _deliveryPaused() ? SessionInterruptResults.Maintenance
                 : InterruptRunningTurn(submission.SessionId, SessionInterruptSources.InterruptCurrent,
                     admitted.Item.MessageUid, requireActive: true).Result;
             await _store.SetInterruptResultAsync(admitted.Item.Id, interruptResult, ct);
@@ -329,7 +332,8 @@ public sealed class SessionInputQueueService
         var (provider, info) = FindSession(sessionId);
         if (provider is null || info is null) return new(false, null);
         var next = await _store.GetHeadAsync(sessionId, ct);
-        var interrupt = InterruptRunningTurn(sessionId, SessionInterruptSources.SendNow, next?.MessageUid, requireActive: true).Result;
+        var interrupt = InterruptRunningTurn(sessionId, SessionInterruptSources.SendNow,
+            next?.InferenceChange is null ? next?.MessageUid : null, requireActive: true).Result;
         Signal(sessionId);
         await PublishAsync(sessionId, items.Select(item => item.Id).ToArray(), "send_now_requested", ct);
         return new(true, interrupt);
@@ -347,7 +351,7 @@ public sealed class SessionInputQueueService
     {
         var item = await _store.GetAsync(sessionId, itemId, ownerUserId, ct);
         if (item is null) return null;
-        if (item.State is SessionInputQueueState.Failed or SessionInputQueueState.Cancelled
+        if (item.InferenceChange is not null || item.State is SessionInputQueueState.Failed or SessionInputQueueState.Cancelled
             || (item.State == SessionInputQueueState.Pending && item.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent))
             throw new SessionInputQueueStoreException("not_promotable", "Only a pending queued input can be asked to steer the running turn");
 
@@ -391,6 +395,7 @@ public sealed class SessionInputQueueService
         var items = await _store.ListAsync(sessionId, ownerUserId, includeTerminal: false, ct);
         if (items.Any(active => active.State == SessionInputQueueState.Failed)) return SessionSteerRefusals.FailedHead;
         if (await _store.RequiresRecoveryAsync(item.Id, ct)) return SessionSteerRefusals.RecoveryRequired;
+        if (await _store.HasEarlierInferenceChangeAsync(sessionId, item.Sequence, ct)) return SessionSteerRefusals.SettingsChange;
         return null;
     }
 
@@ -451,6 +456,13 @@ public sealed class SessionInputQueueService
         try { await action(); } finally { gate.Release(); }
     }
 
+    internal Task<SessionInputQueueItem?> FindExistingInferenceChangeAsync(SessionInputQueueSubmission submission,
+        CancellationToken ct) => _store.FindExistingInferenceChangeAsync(submission, ct);
+
+    internal Task<IReadOnlyList<SessionInputQueueItem>> ListInferenceChangesAsync(
+        string sessionId, string ownerUserId, CancellationToken ct)
+        => _store.ListInferenceChangesAsync(sessionId, ownerUserId, ct);
+
     internal async Task<bool> HasQueuedInputAsync(string sessionId, CancellationToken ct = default)
         => await _store.GetHeadAsync(sessionId, ct) is not null;
 
@@ -500,7 +512,7 @@ public sealed class SessionInputQueueService
     private bool FailedInputIsInTranscript(ISessionProvider provider, SessionInputQueueItem head)
     {
         if (_failuresOutsideTranscript.ContainsKey(head.Id)) return false;
-        if (TranscriptHoldsInput(provider, head.SessionId, head.MessageUid)) return true;
+        if (head.InferenceChange is null && TranscriptHoldsInput(provider, head.SessionId, head.MessageUid)) return true;
         _failuresOutsideTranscript.TryAdd(head.Id, 0);
         return false;
     }
@@ -688,6 +700,15 @@ public sealed class SessionInputQueueService
             if (_deliveryPaused() || HasStopIntent(sessionId)) return;
             // Stop/resume endpoints cross this same gate. Re-read provider state after authorization.
             var (_, current) = FindSession(sessionId);
+            // A settings change is already a safe-boundary operation. A recoverable stopped
+            // session can persist it before the following prompt resumes the provider.
+            if (head.InferenceChange is { } change)
+            {
+                if (current?.Status == SessionStatus.Idle ||
+                    (restart && current?.Status == SessionStatus.Stopped && SessionStopReasons.IsAutoResumable(current.StopReason)))
+                    await ApplyInferenceChangeAsync(provider, current!, head, change, ct);
+                return;
+            }
             if (restart)
             {
                 if (current?.Status != SessionStatus.Stopped
@@ -818,6 +839,41 @@ public sealed class SessionInputQueueService
         {
             gate.Release();
         }
+    }
+
+    private async Task ApplyInferenceChangeAsync(ISessionProvider provider, UnifiedSessionInfo info,
+        SessionInputQueueItem item, QueuedInferenceChange change, CancellationToken ct)
+    {
+        string? error;
+        string? message;
+        var retryable = false;
+        QueuedInferenceChange? applied = null;
+        try
+        {
+            if (provider is ISessionInferenceSettings settings)
+            {
+                var current = await settings.GetInferenceOptionsAsync(info.Id, ct);
+                if (_deliveryPaused() || HasStopIntent(info.Id)) return;
+                ct.ThrowIfCancellationRequested();
+                var result = SessionInferenceSettings.Apply(settings, info, current, change);
+                (error, message, retryable) = (result.Error, result.Message, result.Retryable);
+                if (error is null) applied = new(result.Options.Model, result.Options.Effort);
+            }
+            else
+            {
+                (error, message) = ("inference_settings_unsupported", "This session's provider cannot change inference settings");
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            retryable = true;
+            (error, message) = ("inference_change_failed", "RedCompute could not save the session settings");
+            _log($"[InputQueue] Inference change failed for session {info.Id}: {ex.Message}", info.JobId);
+        }
+
+        await _store.CompleteInferenceChangeAsync(item, error, message, retryable, applied, CancellationToken.None);
+        await PublishAsync(info.Id, [item.Id], error is null ? "settings_applied" : "failed", CancellationToken.None, errorCode: error);
+        if (error is null) Signal(info.Id);
     }
 
     private sealed record DeliveryPayload(

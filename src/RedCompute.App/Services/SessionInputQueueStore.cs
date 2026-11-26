@@ -27,6 +27,8 @@ public enum SessionInputDeliveryPolicy
 
 public sealed record QueuedSessionInputPart(string Type, string Value);
 
+public sealed record QueuedInferenceChange(string? Model, string? Effort);
+
 public sealed record SessionInputQueueItem(
     long Sequence,
     string Id,
@@ -60,7 +62,8 @@ public sealed record SessionInputQueueItem(
     // The provider turn that carried this input (SessionTurns), shared by every input it carried.
     string? TurnId = null,
     // For interrupt-current: what asking the running turn to stop returned (SessionInterruptResults).
-    string? InterruptResult = null)
+    string? InterruptResult = null,
+    QueuedInferenceChange? InferenceChange = null)
 {
     public SessionInputDeliveryPolicy Requested => RequestedDeliveryPolicy ?? DeliveryPolicy;
 }
@@ -131,7 +134,8 @@ public sealed record SessionInputQueueSubmission(
     SessionInputDeliveryPolicy DeliveryPolicy,
     string MessageUid,
     IReadOnlyList<string> AttachmentIds,
-    string? IdempotencyKey);
+    string? IdempotencyKey,
+    QueuedInferenceChange? InferenceChange = null);
 
 public sealed record SessionInputQueueAdmission(SessionInputQueueItem Item, bool Existing);
 
@@ -205,15 +209,25 @@ public sealed class SessionInputQueueStore
         var head = active.FirstOrDefault();
         if (head is null || head.State != SessionInputQueueState.Pending) return head;
         if (active.Any(item => item.State is SessionInputQueueState.Delivering or SessionInputQueueState.Failed)) return head;
-        return active.FirstOrDefault(item => item.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent) ?? head;
+        return active.TakeWhile(item => item.InferenceChange is null)
+            .FirstOrDefault(item => item.DeliveryPolicy == SessionInputDeliveryPolicy.InterruptCurrent) ?? head;
     }
+
+    private const string SteerHeadSql = """
+        SELECT * FROM SessionQueuedInputs
+        WHERE SessionId=$sessionId AND State='Pending' AND DeliveryPolicy='SteerCurrent'
+          AND Sequence < COALESCE((SELECT MIN(Sequence) FROM SessionQueuedInputs
+              WHERE SessionId=$sessionId AND InferenceChangeJson IS NOT NULL
+                AND State IN ('Pending','Delivering','Failed')), 9223372036854775807)
+        ORDER BY Sequence LIMIT 1
+        """;
 
     internal async Task<SessionInputQueueItem?> GetSteerHeadAsync(string sessionId, CancellationToken ct = default)
     {
         await using var connection = Open();
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$id AND State='Pending' AND DeliveryPolicy='SteerCurrent' ORDER BY Sequence LIMIT 1";
-        Add(command, "$id", sessionId);
+        command.CommandText = SteerHeadSql;
+        Add(command, "$sessionId", sessionId);
         return (await ReadItemsAsync(command, ct)).FirstOrDefault();
     }
 
@@ -230,7 +244,7 @@ public sealed class SessionInputQueueStore
     {
         await using var connection = Open(); var command = connection.CreateCommand();
         // Delivery order, not admission order: steering and interrupt-current overtake.
-        command.CommandText = "SELECT COALESCE(DeliveredMessageUid,MessageUid) FROM SessionQueuedInputs WHERE SessionId=$id AND State IN ('Delivering','Delivered') ORDER BY COALESCE(DeliveryOrdinal,Sequence) DESC LIMIT 1";
+        command.CommandText = "SELECT COALESCE(DeliveredMessageUid,MessageUid) FROM SessionQueuedInputs WHERE SessionId=$id AND InferenceChangeJson IS NULL AND State IN ('Delivering','Delivered') ORDER BY COALESCE(DeliveryOrdinal,Sequence) DESC LIMIT 1";
         Add(command, "$id", sessionId);
         return await command.ExecuteScalarAsync(ct) as string;
     }
@@ -310,6 +324,7 @@ public sealed class SessionInputQueueStore
         var now = DateTimeOffset.UtcNow;
         var id = "q_" + Guid.NewGuid().ToString("N");
         var inputJson = JsonSerializer.Serialize(submission.Input, JsonOptions);
+        var inferenceChange = submission.InferenceChange is { } change ? JsonSerializer.Serialize(change, JsonOptions) : null;
         var attachmentIds = submission.AttachmentIds.Distinct(StringComparer.Ordinal).ToArray();
         if (attachmentIds.Length != submission.AttachmentIds.Count)
             throw new SessionInputQueueStoreException("duplicate_attachment", "An attachment can appear only once in a queued input");
@@ -371,11 +386,11 @@ public sealed class SessionInputQueueStore
             INSERT INTO SessionQueuedInputs
                 (Id, SessionId, OwnerUserId, InputJson, DisplayContent, MetadataJson, ProvenanceJson,
                  ProvenanceScope, DeliveryPolicy, RequestedDeliveryPolicy, State, MessageUid, AttachmentIdsJson, CreatedAt,
-                 UpdatedAt, AttemptCount, IdempotencyKey, IdempotencyFingerprint)
+                 UpdatedAt, AttemptCount, IdempotencyKey, IdempotencyFingerprint, InferenceChangeJson)
             VALUES
                 ($id, $sessionId, $ownerUserId, $inputJson, $displayContent, $metadataJson, $provenanceJson,
                  $provenanceScope, $deliveryPolicy, $deliveryPolicy, 'Pending', $messageUid, $attachmentIdsJson, $createdAt,
-                 $updatedAt, 0, $idempotencyKey, $idempotencyFingerprint)
+                 $updatedAt, 0, $idempotencyKey, $idempotencyFingerprint, $inferenceChange)
             """;
         Add(insert, "$id", id);
         Add(insert, "$sessionId", submission.SessionId);
@@ -392,6 +407,7 @@ public sealed class SessionInputQueueStore
         Add(insert, "$updatedAt", now.ToString("O"));
         AddNullable(insert, "$idempotencyKey", submission.IdempotencyKey);
         Add(insert, "$idempotencyFingerprint", fingerprint);
+        AddNullable(insert, "$inferenceChange", inferenceChange);
         await insert.ExecuteNonQueryAsync(ct);
 
         foreach (var attachmentId in attachmentIds)
@@ -420,7 +436,7 @@ public sealed class SessionInputQueueStore
             submission.Input, submission.DisplayContent, submission.MetadataJson, submission.Provenance,
             provenanceScope, submission.DeliveryPolicy, SessionInputQueueState.Pending, submission.MessageUid,
             attachmentIds, now, now, 0, null, null, null, null, false, null, null,
-            RequestedDeliveryPolicy: submission.DeliveryPolicy);
+            RequestedDeliveryPolicy: submission.DeliveryPolicy, InferenceChange: submission.InferenceChange);
         return new SessionInputQueueAdmission(item, false);
     }
 
@@ -577,7 +593,7 @@ public sealed class SessionInputQueueStore
             """;
         Add(headCmd, "$sessionId", sessionId);
         var head = SelectDeliveryHead(await ReadItemsAsync(headCmd, ct));
-        if (head is null || head.State == SessionInputQueueState.Failed) return [];
+        if (head is null || head.InferenceChange is not null || head.State == SessionInputQueueState.Failed) return [];
         if (head.State == SessionInputQueueState.Delivering)
         {
             if (head.LeaseExpiresAt is null || IsDeferred(head.LeaseExpiresAt, now)) return [];
@@ -602,6 +618,7 @@ public sealed class SessionInputQueueStore
         {
             // An overtaking batch carries the later interrupt-current inputs and passes over the
             // older inputs between them, which keep their place behind it.
+            if (item.InferenceChange is not null) break;
             if (overtaking && item.DeliveryPolicy != SessionInputDeliveryPolicy.InterruptCurrent) continue;
             if (!string.Equals(item.ProvenanceScope, head.ProvenanceScope, StringComparison.Ordinal)) break;
             if (item.DeliveryPolicy != head.DeliveryPolicy) break;
@@ -685,7 +702,7 @@ public sealed class SessionInputQueueStore
 
         var headCommand = connection.CreateCommand();
         headCommand.Transaction = transaction;
-        headCommand.CommandText = "SELECT * FROM SessionQueuedInputs WHERE SessionId=$sessionId AND State='Pending' AND DeliveryPolicy='SteerCurrent' ORDER BY Sequence LIMIT 1";
+        headCommand.CommandText = SteerHeadSql;
         Add(headCommand, "$sessionId", sessionId);
         var head = (await ReadItemsAsync(headCommand, ct)).FirstOrDefault();
         if (head is null || IsDeferred(head.NextAttemptAt, now)) return [];
@@ -821,6 +838,77 @@ public sealed class SessionInputQueueStore
             await update.ExecuteNonQueryAsync(ct);
         }
         await transaction.CommitAsync(ct);
+    }
+
+    internal async Task<SessionInputQueueItem?> FindExistingInferenceChangeAsync(SessionInputQueueSubmission submission,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(submission.IdempotencyKey)) return null;
+        await using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var scope = ComputeProvenanceScope(submission.Provenance);
+        var existing = await FindByIdempotencyAsync(connection, transaction, submission.SessionId,
+            submission.OwnerUserId, scope, submission.IdempotencyKey, ct);
+        if (existing is null) return null;
+        if (existing.Value.Item.InferenceChange != submission.InferenceChange)
+            throw new SessionInputQueueStoreException("idempotency_conflict", "The idempotency key was already used for a different input");
+        return existing.Value.Item;
+    }
+
+    internal async Task<IReadOnlyList<SessionInputQueueItem>> ListInferenceChangesAsync(
+        string sessionId, string ownerUserId, CancellationToken ct)
+    {
+        await using var connection = Open();
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT * FROM SessionQueuedInputs
+            WHERE SessionId=$sessionId AND OwnerUserId=$owner AND InferenceChangeJson IS NOT NULL
+                AND State IN ('Pending','Delivering','Failed')
+            ORDER BY Sequence
+            """;
+        Add(cmd, "$sessionId", sessionId);
+        Add(cmd, "$owner", ownerUserId);
+        return await ReadItemsAsync(cmd, ct);
+    }
+
+    internal async Task<bool> HasEarlierInferenceChangeAsync(string sessionId, long sequence, CancellationToken ct)
+    {
+        await using var connection = Open();
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT EXISTS(SELECT 1 FROM SessionQueuedInputs
+                WHERE SessionId=$sessionId AND Sequence < $sequence AND InferenceChangeJson IS NOT NULL
+                  AND State IN ('Pending','Delivering','Failed'))
+            """;
+        Add(cmd, "$sessionId", sessionId);
+        Add(cmd, "$sequence", sequence);
+        return Convert.ToInt64(await cmd.ExecuteScalarAsync(ct)) != 0;
+    }
+
+    // The coordinator holds the session delivery gate. An idempotent settings update can replay
+    // from Pending after a crash without manufacturing a provider turn or a delivery lease.
+    internal async Task CompleteInferenceChangeAsync(SessionInputQueueItem item, string? code, string? message,
+        bool retryable, QueuedInferenceChange? applied, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        await using var connection = Open();
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            UPDATE SessionQueuedInputs
+            SET State = $state, UpdatedAt = $now, CompletedAt = $completedAt, NextAttemptAt = NULL,
+                ErrorCode = $code, ErrorMessage = $message, ErrorRetryable = $retryable,
+                AttemptCount = AttemptCount + 1, MetadataJson = $metadata
+            WHERE Id = $id AND State = 'Pending' AND InferenceChangeJson IS NOT NULL
+            """;
+        Add(cmd, "$id", item.Id);
+        Add(cmd, "$state", code is null ? "Delivered" : "Failed");
+        Add(cmd, "$now", now);
+        AddNullable(cmd, "$completedAt", code is null ? now : null);
+        AddNullable(cmd, "$metadata", applied is null ? null : JsonSerializer.Serialize(new { applied }, JsonOptions));
+        AddNullable(cmd, "$code", code);
+        AddNullable(cmd, "$message", message);
+        Add(cmd, "$retryable", retryable ? 1 : 0);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public Task MarkDeliveredAsync(IReadOnlyList<SessionInputQueueItem> batch, string deliveredMessageUid, CancellationToken ct = default) =>
@@ -1018,8 +1106,8 @@ public sealed class SessionInputQueueStore
             // Recompute with the stable scope instead of trusting a fingerprint produced by an
             // older build whose scope included request-unique execution lineage.
             var normalizedSubmission = new SessionInputQueueSubmission(
-                item.SessionId, item.OwnerUserId, item.Input, item.DisplayContent, item.MetadataJson,
-                item.Provenance, item.Requested, item.MessageUid, item.AttachmentIds, item.ClientId);
+                item.SessionId, item.OwnerUserId, item.Input, item.DisplayContent, item.InferenceChange is null ? item.MetadataJson : null,
+                item.Provenance, item.Requested, item.MessageUid, item.AttachmentIds, item.ClientId, item.InferenceChange);
             var attachmentsJson = JsonSerializer.Serialize(item.AttachmentIds, JsonOptions);
             return (item, ComputeFingerprint(normalizedSubmission, attachmentsJson, provenanceScope));
         }
@@ -1075,7 +1163,8 @@ public sealed class SessionInputQueueStore
             reader.GetInt32(reader.GetOrdinal("ErrorRetryable")) != 0,
             NullableString("DeliveredMessageUid"), NullableDate("CompletedAt"),
             NullableString("RequestedDeliveryPolicy") is { } requested ? Enum.Parse<SessionInputDeliveryPolicy>(requested) : null,
-            NullableString("DeliveryReason"), NullableString("TurnId"), NullableString("InterruptResult"));
+            NullableString("DeliveryReason"), NullableString("TurnId"), NullableString("InterruptResult"),
+            NullableString("InferenceChangeJson") is { } change ? JsonSerializer.Deserialize<QueuedInferenceChange>(change, JsonOptions) : null);
     }
 
     private static string ComputeProvenanceScope(JobProvenance provenance)
@@ -1102,7 +1191,9 @@ public sealed class SessionInputQueueStore
     }
 
     private static string ComputeFingerprint(SessionInputQueueSubmission submission,
-        string attachmentsJson, string provenanceScope) => Sha256(JsonSerializer.Serialize(new
+        string attachmentsJson, string provenanceScope)
+    {
+        var fingerprint = Sha256(JsonSerializer.Serialize(new
         {
             submission.SessionId,
             submission.OwnerUserId,
@@ -1115,6 +1206,10 @@ public sealed class SessionInputQueueStore
             provenanceScope,
             deliveryPolicy = submission.DeliveryPolicy.ToString(),
         }, JsonOptions));
+        // Preserve prompt fingerprints across upgrades. A settings change also binds its typed payload.
+        return submission.InferenceChange is { } change
+            ? Sha256(fingerprint + JsonSerializer.Serialize(change, JsonOptions)) : fingerprint;
+    }
 
     private static string Sha256(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
@@ -1202,6 +1297,7 @@ public sealed class SessionInputQueueStore
         {
             ("RequestedDeliveryPolicy", "TEXT NULL"), ("DeliveryReason", "TEXT NULL"),
             ("DeliveryOrdinal", "INTEGER NULL"), ("TurnId", "TEXT NULL"), ("InterruptResult", "TEXT NULL"),
+            ("InferenceChangeJson", "TEXT NULL"),
         })
         {
             if (columns.Contains(column)) continue;

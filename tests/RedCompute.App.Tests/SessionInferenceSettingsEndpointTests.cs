@@ -1,9 +1,12 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Discovery;
 using RedCompute.App.Api.Endpoints;
+using RedCompute.App.Services;
 using RedCompute.Core.Sessions;
 using Xunit;
 
@@ -66,7 +69,6 @@ public sealed class SessionInferenceSettingsEndpointTests
     [Theory]
     [InlineData("owner", "unavailable", false, 422, "unsupported_effort")]
     [InlineData("other-user", "high", false, 403, "forbidden")]
-    [InlineData("owner", "high", true, 409, "input_queued")]
     public async Task Refusal_leaves_the_session_and_queued_input_intact(
         string subject, string effort, bool enqueue, int expected, string code)
     {
@@ -84,6 +86,106 @@ public sealed class SessionInferenceSettingsEndpointTests
         Assert.Equal(enqueue, await f.Store.GetHeadAsync("session") is not null);
     }
 
+    [Fact]
+    public async Task Dry_run_validates_the_target_without_sending_or_queuing_anything()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Runtime.Info.Model = "model-a";
+        f.Runtime.Info.Effort = "low";
+        await using var app = Map(f);
+
+        var (status, body) = await CallAsync(app, "PUT", new { model = "model-b" }, "owner", validateOnly: true);
+        Assert.Equal(200, status);
+        Assert.Equal("model-a", body.GetProperty("model").GetString());
+        Assert.Equal("model-b", body.GetProperty("proposed").GetProperty("model").GetString());
+        Assert.Equal("medium", body.GetProperty("proposed").GetProperty("effort").GetString());
+        Assert.Equal(0, f.Runtime.InferenceWrites);
+        Assert.Null(await f.Store.GetHeadAsync("session"));
+        var invalid = await CallAsync(app, "PUT", new { model = "no-such-model" }, "owner", key: "invalid");
+        Assert.Equal(422, invalid.Status);
+        Assert.Null(await f.Store.GetHeadAsync("session"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Accepted_change_survives_queue_reopen_and_separates_earlier_and_later_prompts(bool savedBeforeReceipt)
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        f.Runtime.Info.Status = SessionStatus.Active;
+        f.Runtime.Info.Model = "model-a";
+        f.Runtime.Info.Effort = "low";
+        var earlier = (await f.Store.EnqueueAsync(f.Submission("earlier"))).Item;
+        await using var app = Map(f);
+
+        var change = new { model = "model-b" };
+        var (status, body) = await CallAsync(app, "PUT", change, "owner", key: "settings-request");
+        Assert.True(status == 202, $"Expected queued settings, received {status}: {body}");
+        var id = body.GetProperty("operation").GetProperty("id").GetString()!;
+        Assert.Equal("model-a", body.GetProperty("model").GetString());
+        Assert.Equal(id, body.GetProperty("pendingChanges")[0].GetProperty("id").GetString());
+        var replay = await CallAsync(app, "PUT", change, "owner", key: "settings-request");
+        Assert.Equal(202, replay.Status);
+        Assert.Equal(id, replay.Body.GetProperty("operation").GetProperty("id").GetString());
+        var conflict = await CallAsync(app, "PUT", new { effort = "high" }, "owner", key: "settings-request");
+        Assert.Equal(409, conflict.Status);
+
+        var later = await f.Store.EnqueueAsync(f.Submission("later"));
+        f.Store = new(f.Config, f.Attachments);
+        var queue = f.Service();
+        var observed = new List<string?>();
+        f.Runtime.OnDelivery = () => observed.Add(f.Runtime.Info.Model);
+
+        f.Runtime.Info.Status = SessionStatus.Idle;
+        await queue.ProcessSessionAsync("session", default);
+        Assert.Equal(["model-a"], observed);
+        Assert.Equal(earlier.MessageUid, await f.Store.CurrentDeliveryUidAsync("session"));
+
+        f.Runtime.Info.Status = SessionStatus.Idle;
+        if (savedBeforeReceipt)
+        {
+            f.Runtime.Info.Model = "model-b";
+            f.Runtime.Info.Effort = "medium";
+            f.Runtime.InferenceWrites = 1;
+        }
+        await queue.ProcessSessionAsync("session", default);
+        var settled = Assert.IsType<SessionInputQueueItem>(await f.Store.GetAsync("session", id, "owner"));
+        Assert.Equal(SessionInputQueueState.Delivered, settled.State);
+        Assert.Null(settled.TurnId);
+        Assert.Null(settled.DeliveredMessageUid);
+        var exact = await CallAsync(app, "PUT", change, "owner", key: "settings-request");
+        Assert.Equal(200, exact.Status);
+        var operation = exact.Body.GetProperty("operation");
+        Assert.Equal(id, operation.GetProperty("id").GetString());
+        Assert.Equal("model-b", operation.GetProperty("applied").GetProperty("model").GetString());
+        Assert.Equal("medium", operation.GetProperty("applied").GetProperty("effort").GetString());
+        Assert.Equal(earlier.MessageUid, await f.Store.CurrentDeliveryUidAsync("session"));
+        Assert.Equal(1, f.Runtime.InferenceWrites);
+
+        await queue.ProcessSessionAsync("session", default);
+        Assert.Equal(["model-a", "model-b"], observed);
+        Assert.Equal(later.Item.MessageUid, await f.Store.CurrentDeliveryUidAsync("session"));
+        Assert.Equal(1, f.Runtime.InferenceWrites);
+    }
+
+    [Fact]
+    public async Task Interrupt_and_steer_cannot_overtake_an_accepted_change()
+    {
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var control = (await f.Store.EnqueueAsync(f.Submission("control") with
+        {
+            Input = [],
+            InferenceChange = new(null, "high"),
+        })).Item;
+        await f.Store.EnqueueAsync(f.Submission("interrupt") with { DeliveryPolicy = SessionInputDeliveryPolicy.InterruptCurrent });
+        await f.Store.EnqueueAsync(f.Submission("steer") with { DeliveryPolicy = SessionInputDeliveryPolicy.SteerCurrent });
+
+        Assert.Equal(control.Id, (await f.Store.GetHeadAsync("session"))?.Id);
+        Assert.Null(await f.Store.GetSteerHeadAsync("session"));
+        Assert.Empty(await f.Store.ClaimBatchAsync("session", "test", TimeSpan.FromMinutes(1)));
+        Assert.Empty(await f.Store.ClaimSteerBatchAsync("session", "test", TimeSpan.FromMinutes(1)));
+    }
+
     private static WebApplication Map(SessionRecoveryTests.Fixture f)
     {
         var app = WebApplication.CreateSlimBuilder().Build();
@@ -93,7 +195,7 @@ public sealed class SessionInferenceSettingsEndpointTests
     }
 
     private static async Task<(int Status, JsonElement Body)> CallAsync(
-        WebApplication app, string method, object? body, string subject)
+        WebApplication app, string method, object? body, string subject, bool validateOnly = false, string? key = null)
     {
         const string pattern = "/ai-session/sessions/{id}/inference-settings";
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
@@ -101,10 +203,15 @@ public sealed class SessionInferenceSettingsEndpointTests
                 && e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains(method));
         var ctx = new DefaultHttpContext { RequestServices = app.Services };
         SessionRollbackTests.Identify(ctx, "agent", subject);
+        var identity = (ExecutionIdentity)ctx.Items[ExecutionIdentityClaims.HttpContextItemKey]!;
+        ((ClaimsIdentity)ctx.User.Identity!).AddClaim(new Claim("execution_identity",
+            JsonSerializer.Serialize(identity, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
         ctx.SetEndpoint(endpoint);
         ctx.Request.Method = method;
         ctx.Request.Path = "/ai-session/sessions/session/inference-settings";
         ctx.Request.RouteValues["id"] = "session";
+        if (validateOnly) ctx.Request.QueryString = new("?validateOnly=true");
+        if (key is not null) ctx.Request.Headers["X-Idempotency-Key"] = key;
         if (body is not null)
         {
             var bytes = JsonSerializer.SerializeToUtf8Bytes(body);
