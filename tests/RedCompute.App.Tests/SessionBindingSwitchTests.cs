@@ -133,6 +133,8 @@ public sealed class SessionBindingSwitchTests
         Assert.Equal(BindingMoveState.Rejected, rejected?.State);
         Assert.Equal("fake_prepare_refused", rejected?.Error);
         Assert.Equal(Original, await ActiveAsync(Reopen(f)));
+        var commands = new SessionBindingCommands(new(), new SessionBindingTranscriptRoutes(Reopen(f)));
+        Assert.False(commands.IsBound(Logical));
         var replay = await service.ApplyAsync(admitted, Original, default);
         Assert.Equal(rejected, replay);
         Assert.Single(runtime.Preparations);

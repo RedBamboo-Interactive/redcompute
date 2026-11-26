@@ -31,6 +31,8 @@ internal sealed class SessionBindingCommands(CapabilityRegistry registry, Sessio
         {
             var native = GetNative(binding.Active.Native.Target);
             if (native is null) return (null, null);
+            if (binding.Active.Generation == 0 && binding.Active.Native.RuntimeSessionId == logicalId)
+                return (native, native.GetSessionInfo(logicalId));
             var facade = new BoundProvider(native, binding);
             return (facade, facade.GetSessionInfo(logicalId));
         }
@@ -106,7 +108,7 @@ internal sealed class SessionBindingCommands(CapabilityRegistry registry, Sessio
         return choices;
     }
 
-    internal bool IsBound(string logicalId) => routes.Binding(logicalId) is not null;
+    internal bool IsBound(string logicalId) => routes.Binding(logicalId) is { Active.Generation: > 0 };
 
     internal LogicalTranscriptAddress? RouteEvent(string provider, string runtimeId) => routes.Resolve(provider, runtimeId);
 
