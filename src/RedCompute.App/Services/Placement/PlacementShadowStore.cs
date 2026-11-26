@@ -1,12 +1,13 @@
 using System.IO;
 using System.Text.Json;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services.Placement;
 
 /// <summary>
 /// The shadow counts on RedCompute's own disk (<c>placement-shadow.json</c> under the data root), so a
 /// restart or a deploy inside the shadow window keeps the evidence. Counts and names only, never paths.
-/// Written whole through a temporary file, so a crash leaves the previous counts.
+/// Replaced durably, so a crash or a power cut leaves the previous counts.
 /// </summary>
 public sealed class PlacementShadowStore(string path)
 {
@@ -20,24 +21,21 @@ public sealed class PlacementShadowStore(string path)
     public PlacementShadowState? Load(Action<string, Guid?> log)
     {
         if (!File.Exists(Path)) return null;
+        string reason;
         try
         {
             var state = JsonSerializer.Deserialize<PlacementShadowState>(File.ReadAllText(Path), Options);
             if (state is { SchemaVersion: 1 }) return state;
-            log($"[Placement] {FileName} has schema {state?.SchemaVersion}: shadow counts start over", null);
+            reason = $"has schema {state?.SchemaVersion}";
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            log($"[Placement] {FileName} could not be read ({ex.GetType().Name}): shadow counts start over", null);
+            reason = $"could not be read ({ex.GetType().Name})";
         }
-        try { File.Move(Path, Path + ".unreadable", overwrite: true); } catch { }
+        // Each one kept: a second bad file never replaces the first.
+        log($"[Placement] {FileName} {reason}; {DurableFile.SetAsideAndDescribe(Path, DateTimeOffset.UtcNow)}. Shadow counts start over", null);
         return null;
     }
 
-    public void Save(PlacementShadowState state)
-    {
-        var temporary = Path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(state, Options));
-        File.Move(temporary, Path, overwrite: true);
-    }
+    public void Save(PlacementShadowState state) => DurableFile.WriteAllText(Path, JsonSerializer.Serialize(state, Options));
 }

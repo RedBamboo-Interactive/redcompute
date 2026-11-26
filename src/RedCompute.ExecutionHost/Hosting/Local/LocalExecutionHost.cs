@@ -353,12 +353,10 @@ public sealed class LocalExecutionHost : IExecutionHost
 
         public void WriteAllBytes(HostPath path, byte[] bytes) => File.WriteAllBytes(path.Value, bytes);
 
-        public void ReplaceAtomically(HostPath path, string contents)
-        {
-            var temp = path.Value + ".tmp";
-            File.WriteAllText(temp, contents);
-            File.Move(temp, path.Value, overwrite: true);
-        }
+        public void ReplaceAtomically(HostPath path, string contents) => DurableFile.WriteAllText(path.Value, contents);
+
+        public HostPath? SetAside(HostPath path, DateTimeOffset now)
+            => DurableFile.SetAside(path.Value, now) is { } aside ? host.Path(aside) : null;
 
         public void CreateDirectory(HostPath path) => Directory.CreateDirectory(path.Value);
 

@@ -56,6 +56,9 @@ public sealed class ExecutionHostGuardTests
         ("server state: the data root resolver (asks the OS for the default folder)", [
             "RedCompute.Core.Storage.ComputeStorage",
         ]),
+        ("the durable writer (N23): the one way a file is replaced, beneath the local host's ReplaceAtomically and SetAside and the allowlisted stores here; it writes only the path its caller already owns", [
+            "RedCompute.Core.Storage.DurableFile",
+        ]),
         ("server state: RedCompute's node link key, a DPAPI-protected (Windows) or 0600 (Linux) file in a 0700 folder under its data root, created without overwrite (the host's file API sets no Unix mode)", [
             "RedCompute.App.Services.Nodes.NodeLinkKeyStore",
         ]),

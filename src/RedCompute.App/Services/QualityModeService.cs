@@ -429,13 +429,8 @@ public class QualityModeService : IProviderQualityModeResolver
 
     private void WriteCache(string tiersJson, string modesJson, string? pricingJson, string? suiteConfigJson)
     {
-        string? tempPath = null;
         try
         {
-            var directory = Path.GetDirectoryName(_cachePath);
-            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-
-            tempPath = _cachePath + ".tmp";
             var envelope = JsonSerializer.Serialize(new
             {
                 schemaVersion = 1,
@@ -445,14 +440,12 @@ public class QualityModeService : IProviderQualityModeResolver
                 pricing = pricingJson,
                 suiteConfig = suiteConfigJson,
             });
-            File.WriteAllText(tempPath, envelope);
-            File.Move(tempPath, _cachePath, overwrite: true);
+            DurableFile.WriteAllText(_cachePath, envelope);
             _log($"[QualityModes] Last-known-good catalog written to {_cachePath}", null);
         }
         catch (Exception ex)
         {
             _log($"[QualityModes] Failed to write catalog cache: {ex.Message}", null);
-            try { if (tempPath != null && File.Exists(tempPath)) File.Delete(tempPath); } catch { }
         }
     }
 

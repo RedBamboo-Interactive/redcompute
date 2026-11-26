@@ -216,6 +216,7 @@ public sealed class RemoteExecutionHost : IExecutionHost
         public Task WriteAllTextAsync(HostPath path, string contents, Encoding? encoding = null, CancellationToken ct = default) => throw No(nameof(WriteAllTextAsync));
         public void WriteAllBytes(HostPath path, byte[] bytes) => throw No(nameof(WriteAllBytes));
         public void ReplaceAtomically(HostPath path, string contents) => throw No(nameof(ReplaceAtomically));
+        public HostPath? SetAside(HostPath path, DateTimeOffset now) => throw No(nameof(SetAside));
         public void CreateDirectory(HostPath path) => throw No(nameof(CreateDirectory));
         public IEnumerable<HostPath> EnumerateFiles(HostPath directory, string pattern, SearchOption option) => throw No(nameof(EnumerateFiles));
         public IEnumerable<HostPath> EnumerateDirectories(HostPath directory, string pattern, SearchOption option) => throw No(nameof(EnumerateDirectories));

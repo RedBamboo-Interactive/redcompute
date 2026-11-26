@@ -331,6 +331,7 @@ public sealed class OpenCodeHostTests : IDisposable
             => inner.WriteAllTextAsync(path, contents, encoding, ct);
         public void WriteAllBytes(HostPath path, byte[] bytes) => inner.WriteAllBytes(path, bytes);
         public void ReplaceAtomically(HostPath path, string contents) => inner.ReplaceAtomically(path, contents);
+        public HostPath? SetAside(HostPath path, DateTimeOffset now) => inner.SetAside(path, now);
         public void CreateDirectory(HostPath path) => inner.CreateDirectory(path);
         public IEnumerable<HostPath> EnumerateFiles(HostPath directory, string pattern, SearchOption option) => inner.EnumerateFiles(directory, pattern, option);
         public IEnumerable<HostPath> EnumerateDirectories(HostPath directory, string pattern, SearchOption option) => inner.EnumerateDirectories(directory, pattern, option);

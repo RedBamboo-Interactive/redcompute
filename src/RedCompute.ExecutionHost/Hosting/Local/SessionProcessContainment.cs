@@ -919,10 +919,7 @@ internal sealed class ContainedProcessTree : IContainedTree
         }
         try
         {
-            Directory.CreateDirectory(SessionProcessContainment.LedgerDirectory);
-            var temp = LedgerPath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(ledger));
-            File.Move(temp, LedgerPath, overwrite: true);
+            DurableFile.WriteAllText(LedgerPath, JsonSerializer.Serialize(ledger));
         }
         catch (Exception ex)
         {

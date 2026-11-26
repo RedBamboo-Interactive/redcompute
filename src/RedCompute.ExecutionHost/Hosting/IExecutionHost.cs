@@ -307,8 +307,18 @@ public interface IHostFileSystem
     Task WriteAllTextAsync(HostPath path, string contents, Encoding? encoding = null, CancellationToken ct = default);
     void WriteAllBytes(HostPath path, byte[] bytes);
 
-    /// <summary>Write a temporary sibling, then move it over <paramref name="path"/>.</summary>
+    /// <summary>
+    /// Replaces <paramref name="path"/> durably: a temporary sibling reaches the disk before it is moved over the file, so a
+    /// power cut leaves the old contents or the new ones, never a zero-filled file.
+    /// </summary>
     void ReplaceAtomically(HostPath path, string contents);
+
+    /// <summary>
+    /// Moves a file that does not read out of the way (<c>&lt;name&gt;.unreadable-&lt;UTC time&gt;</c> beside it) before
+    /// anything saves over it, and returns where it went; null when there was no file. Throws when it cannot be moved.
+    /// </summary>
+    HostPath? SetAside(HostPath path, DateTimeOffset now)
+        => throw new NotSupportedException("This host cannot set a file aside.");
 
     void CreateDirectory(HostPath path);
     IEnumerable<HostPath> EnumerateFiles(HostPath directory, string pattern, SearchOption option);

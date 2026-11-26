@@ -455,11 +455,10 @@ public sealed class LongLivedProcessRegistry : IDisposable
 
     private void Load()
     {
+        var records = ReadRecords();
+        if (records is null) return;
         try
         {
-            if (!_host.Files.FileExists(_host.Path(_statePath))) return;
-            var records = JsonSerializer.Deserialize<List<LongLivedProcessRecord>>(
-                _host.Files.ReadAllText(_host.Path(_statePath)), JsonOptions) ?? [];
             var now = Clock();
             foreach (var record in records)
             {
@@ -496,7 +495,37 @@ public sealed class LongLivedProcessRegistry : IDisposable
         }
         catch (Exception ex)
         {
-            _log($"[LongLived] Could not read {_statePath}: {ex.Message}");
+            _log($"[LongLived] Could not resume the processes in {_statePath}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The saved records; null when there is no file. A file that does not read (torn by a power cut, say) is set aside
+    /// before the first save could replace it, and the registry starts empty: nothing it listed is lost for good.
+    /// </summary>
+    private List<LongLivedProcessRecord>? ReadRecords()
+    {
+        var state = _host.Path(_statePath);
+        try
+        {
+            if (!_host.Files.FileExists(state)) return null;
+            return JsonSerializer.Deserialize<List<LongLivedProcessRecord>>(_host.Files.ReadAllText(state), JsonOptions) ?? [];
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or IOException or UnauthorizedAccessException)
+        {
+            string kept;
+            try
+            {
+                kept = _host.Files.SetAside(state, Clock()) is { } aside
+                    ? $"it was set aside as {aside.Value}"
+                    : "there was no file to keep";
+            }
+            catch (Exception setAside)
+            {
+                kept = $"it could not be set aside ({setAside.Message}), so the next save replaces it";
+            }
+            _log($"[LongLived] Could not read {_statePath} ({ex.Message}); {kept}. Starting with no long-lived processes.");
+            return null;
         }
     }
 
@@ -505,7 +534,7 @@ public sealed class LongLivedProcessRegistry : IDisposable
         try
         {
             _host.Files.CreateDirectory(_host.Path(Path.GetDirectoryName(_statePath)!));
-            // Written to its .tmp sibling, then moved over the state file.
+            // Durably: a temporary sibling reaches the disk before it is moved over the state file.
             _host.Files.ReplaceAtomically(_host.Path(_statePath), JsonSerializer.Serialize(_records.Values.ToList(), JsonOptions));
         }
         catch (Exception ex)

@@ -152,7 +152,7 @@ public sealed class JobDatabaseSnapshotService
             var size = new FileInfo(temp).Length;
             var sha = Hash(temp);
 
-            File.Move(temp, finalPath, overwrite: true);
+            DurableFile.Commit(temp, finalPath);
             DeleteSideFiles(finalPath);
             // Only now, with the new one safely in place, older snapshots go: at most one stays.
             foreach (var older in FinishedSnapshots())

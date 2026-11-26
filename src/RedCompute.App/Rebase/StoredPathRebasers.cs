@@ -146,13 +146,9 @@ internal static class RebaseSupport
         return (examined, changed);
     }
 
-    /// <summary>Writes the file through a sibling temp file so a crash never leaves it half written.</summary>
+    /// <summary>Replaces the file durably, so neither a crash nor a power cut leaves it half written or zero-filled.</summary>
     public static void WriteJsonAtomically(string path, JsonNode node, JsonSerializerOptions options)
-    {
-        var temp = path + ".rebase.tmp";
-        File.WriteAllText(temp, node.ToJsonString(options));
-        File.Move(temp, path, overwrite: true);
-    }
+        => DurableFile.WriteAllText(path, node.ToJsonString(options));
 }
 
 /// <summary>
@@ -220,13 +216,25 @@ public sealed class LongLivedProcessesRebaser(ComputeStorage storage) : IStoredP
         var path = Path.Combine(storage.LongLivedProcessesDirectory, "long-lived-processes.json");
         if (!File.Exists(path)) return new RebaseOwnerResult(Owner, 0, 0);
 
-        var root = JsonNode.Parse(File.ReadAllText(path));
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(File.ReadAllText(path));
+        }
+        catch (JsonException)
+        {
+            root = null;
+        }
+        // A file that does not read (a power cut tore it) holds nothing to rebase, and the registry starts empty
+        // without it: left exactly as it is for the registry to set aside, rather than failing the whole move.
+        if (root is null) return new RebaseOwnerResult(Owner, 0, 0, Skipped: 1);
+
         var (examined, changed) = RebaseSupport.RewriteJson(root, (key, value) =>
             key.Equals("logPath", StringComparison.OrdinalIgnoreCase)
             || key.Equals("workingDirectory", StringComparison.OrdinalIgnoreCase)
                 ? map.Rebase(value)
                 : null);
-        if (changed > 0) RebaseSupport.WriteJsonAtomically(path, root!, WriteOptions);
+        if (changed > 0) RebaseSupport.WriteJsonAtomically(path, root, WriteOptions);
         return new RebaseOwnerResult(Owner, examined, changed);
     }
 }

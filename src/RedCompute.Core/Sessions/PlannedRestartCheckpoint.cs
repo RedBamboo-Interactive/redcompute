@@ -37,10 +37,7 @@ public static class PlannedRestartCheckpoint
     public static void Write(PlannedRestartData checkpoint, string? path = null)
     {
         var target = Path.GetFullPath(path ?? DefaultPath);
-        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        var temporary = $"{target}.writing-{Environment.ProcessId}";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(checkpoint, JsonOptions));
-        File.Move(temporary, target, overwrite: true);
+        DurableFile.WriteAllText(target, JsonSerializer.Serialize(checkpoint, JsonOptions));
     }
 
     public static PlannedRestartData? LoadForStartup(
@@ -54,6 +51,12 @@ public static class PlannedRestartCheckpoint
         {
             if (File.Exists(target))
                 checkpoint = JsonSerializer.Deserialize<PlannedRestartData>(File.ReadAllText(target), JsonOptions);
+        }
+        catch (JsonException)
+        {
+            // Torn by a power cut, say: no session is continued from it, and it is kept rather than deleted.
+            checkpoint = null;
+            DurableFile.SetAsideAndDescribe(target, now ?? DateTimeOffset.UtcNow);
         }
         catch
         {

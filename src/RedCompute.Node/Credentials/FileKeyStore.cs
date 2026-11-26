@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using RedCompute.NodeLink.Noise;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.Node.Credentials;
 
@@ -23,16 +24,7 @@ public sealed class FileKeyStore(NodePaths paths) : INodeKeyStore
         var bytes = key.Key.ExportPkcs8PrivateKey();
         try
         {
-            var temp = paths.KeyFile + ".tmp";
-            File.Delete(temp);
-            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
-            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-            using (var stream = new FileStream(temp, options))
-            {
-                stream.Write(bytes);
-                stream.Flush(flushToDisk: true);
-            }
-            File.Move(temp, paths.KeyFile, overwrite: true);
+            Write(paths.KeyFile, bytes);
         }
         finally
         {
@@ -98,20 +90,13 @@ public sealed class FileKeyStore(NodePaths paths) : INodeKeyStore
         return existed;
     }
 
-    /// <summary>A 0600 file (on Linux), written beside and moved in.</summary>
+    /// <summary>A 0600 file (on Linux) from its first byte, replaced durably.</summary>
     private void Write(string file, byte[] bytes)
     {
         Directory.CreateDirectory(paths.Data);
-        var temp = file + ".tmp";
-        File.Delete(temp);
-        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
-        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-        using (var stream = new FileStream(temp, options))
-        {
-            stream.Write(bytes);
-            stream.Flush(flushToDisk: true);
-        }
-        File.Move(temp, file, overwrite: true);
+        // A temporary left by a release that wrote one fixed name: never read, so cleared.
+        File.Delete(file + ".tmp");
+        DurableFile.WriteAllBytes(file, bytes, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     public bool Delete(string keyRef, string origin)

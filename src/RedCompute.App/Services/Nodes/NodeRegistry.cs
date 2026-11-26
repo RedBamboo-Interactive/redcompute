@@ -69,19 +69,20 @@ public sealed class NodeRegistry : INodeRegistry
     private readonly Dictionary<string, CacheSnapshot> _cachePending = new(StringComparer.Ordinal);
     private bool _cacheDraining;
     private int _cacheWrites;
+    private int _cacheWritesInFlight;
 
     private sealed record CacheSnapshot(RemoteNode Node, long Version, string Path, CachedRemoteNode Cache);
 
     /// <summary>Tests: how many cache files were written.</summary>
     internal int CacheWrites => Volatile.Read(ref _cacheWrites);
 
-    /// <summary>Tests: waits until every deferred cache write is done.</summary>
+    /// <summary>Tests: waits until every deferred cache write is done, and any write in progress on another thread.</summary>
     internal async Task FlushCacheAsync()
     {
         while (true)
         {
             lock (_cacheQueue)
-                if (!_cacheDraining && _cachePending.Count == 0) return;
+                if (!_cacheDraining && _cachePending.Count == 0 && Volatile.Read(ref _cacheWritesInFlight) == 0) return;
             await Task.Delay(10);
         }
     }
@@ -705,6 +706,19 @@ public sealed class NodeRegistry : INodeRegistry
     }
 
     private void WriteCache(CacheSnapshot snapshot)
+    {
+        Interlocked.Increment(ref _cacheWritesInFlight);
+        try
+        {
+            WriteCacheNow(snapshot);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _cacheWritesInFlight);
+        }
+    }
+
+    private void WriteCacheNow(CacheSnapshot snapshot)
     {
         lock (_cacheIo)
         {

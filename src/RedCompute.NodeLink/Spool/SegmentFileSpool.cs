@@ -291,7 +291,13 @@ public sealed class SegmentFileSpool : IStreamSpool
     {
         var path = Path.Combine(_directory, name);
         var temp = path + ".tmp";
-        File.WriteAllText(temp, value.ToString(CultureInfo.InvariantCulture));
+        // On the disk before the rename (the same durable write as RedCompute.Core's DurableFile, which NodeLink does
+        // not reference): a power cut leaves the old marker or the new one, never a zero-filled one. Written rarely.
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 64, FileOptions.WriteThrough))
+        {
+            stream.Write(System.Text.Encoding.ASCII.GetBytes(value.ToString(CultureInfo.InvariantCulture)));
+            stream.Flush(flushToDisk: true);
+        }
         File.Move(temp, path, overwrite: true);
     }
 

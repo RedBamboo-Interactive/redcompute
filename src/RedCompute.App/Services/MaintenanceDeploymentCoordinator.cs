@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using RedCompute.Core.Sessions;
+using RedCompute.Core.Storage;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services;
@@ -175,7 +176,6 @@ public sealed class MaintenanceDeploymentCoordinator
     {
         try
         {
-            var temporaryPath = $"{request.ReceiptPath}.writing-{Environment.ProcessId}";
             var receipt = JsonSerializer.Serialize(new
             {
                 runId = request.RunId,
@@ -185,8 +185,7 @@ public sealed class MaintenanceDeploymentCoordinator
                 updatedAt = DateTimeOffset.Now,
                 error = exception.Message,
             }, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(temporaryPath, receipt);
-            File.Move(temporaryPath, request.ReceiptPath, overwrite: true);
+            DurableFile.WriteAllText(request.ReceiptPath, receipt);
         }
         catch
         {

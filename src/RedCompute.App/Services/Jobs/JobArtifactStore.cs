@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Storage;
 
 namespace RedCompute.App.Services.Jobs;
 
@@ -51,23 +52,15 @@ internal static partial class JobArtifactStore
                     {
                         if (extra.Data.CanSeek) extra.Data.Position = 0;
                         extra.Data.CopyTo(file);
+                        // On the disk before the manifest that names it: a power cut never publishes a torn clip.
+                        file.Flush(flushToDisk: true);
                     }
                     entries.Add(Entry(name, path, extra.ContentType, extra.FileName));
                 }
             }
 
-            var manifestPath = ManifestPath(outputDirectory, jobId);
-            var temporaryPath = manifestPath + $".{Guid.NewGuid():N}.tmp";
-            try
-            {
-                File.WriteAllText(temporaryPath, JsonSerializer.Serialize(new ArtifactManifest(1, entries.ToArray())));
-                File.Move(temporaryPath, manifestPath, overwrite: true);
-            }
-            finally
-            {
-                try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
-                catch { }
-            }
+            DurableFile.WriteAllText(ManifestPath(outputDirectory, jobId),
+                JsonSerializer.Serialize(new ArtifactManifest(1, entries.ToArray())));
         }
         finally
         {

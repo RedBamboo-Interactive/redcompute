@@ -114,7 +114,15 @@ public sealed class StoredPathRebaseRunner
             if (!File.Exists(_statePath)) return null;
             return JsonSerializer.Deserialize<RebaseStatus>(File.ReadAllText(_statePath), JsonOptions);
         }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        catch (JsonException ex)
+        {
+            // Torn or damaged: kept for inspection rather than replaced by the next save. Every rebaser is
+            // idempotent, so running the generation again is safe.
+            _log($"[Rebase] Could not read {_statePath} ({ex.Message}); "
+                 + DurableFile.SetAsideAndDescribe(_statePath, DateTimeOffset.UtcNow));
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _log($"[Rebase] Could not read {_statePath}: {ex.Message}");
             return null;
@@ -122,12 +130,7 @@ public sealed class StoredPathRebaseRunner
     }
 
     private void Persist(RebaseStatus status)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(_statePath)!);
-        var temp = _statePath + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(status, JsonOptions));
-        File.Move(temp, _statePath, overwrite: true);
-    }
+        => DurableFile.WriteAllText(_statePath, JsonSerializer.Serialize(status, JsonOptions));
 
     /// <summary>
     /// A failed run keeps the last completed generation on disk (so completed work is not forgotten) and adds

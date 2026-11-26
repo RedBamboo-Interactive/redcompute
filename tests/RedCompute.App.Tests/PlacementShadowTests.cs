@@ -274,7 +274,7 @@ public sealed class PlacementShadowTests : IDisposable
 
         Assert.Empty(status.Paths);
         Assert.Null(status.Since);
-        Assert.True(File.Exists(store.Path + ".unreadable"));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(store.Path)!, Path.GetFileName(store.Path) + ".unreadable-*"));
         Assert.Contains(_log, line => line.Contains("placement-shadow.json could not be read (JsonException)"));
     }
 
