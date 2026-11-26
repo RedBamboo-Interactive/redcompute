@@ -6,6 +6,7 @@ using System.Text.Json;
 using RedBamboo.AppHost.Streams;
 using RedBamboo.AppHost.WebSockets;
 using RedCompute.Core.Sessions;
+using RedCompute.App.Services.SessionBindings;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Services;
@@ -31,6 +32,7 @@ public sealed class SessionTranscriptPipeline
     private readonly Action<string, Guid?> _log;
     private readonly Func<string, string, bool> _isConfidential;
     private readonly ITranscriptSequenceStore _sequences;
+    private readonly SessionBindingTranscriptRoutes? _bindings;
     private readonly CompletedTranscriptPublisher _completed;
     internal TranscriptCheckpointCoordinator Checkpoints { get; } = new();
     internal ITranscriptSequenceStore Sequences => _sequences;
@@ -50,13 +52,15 @@ public sealed class SessionTranscriptPipeline
         WebSocketBroadcaster broadcaster,
         Action<string, Guid?> log,
         Func<string, string, bool>? isConfidential,
-        ITranscriptSequenceStore sequences)
+        ITranscriptSequenceStore sequences,
+        SessionBindingTranscriptRoutes? bindings = null)
     {
         _streams = streams;
         _broadcaster = broadcaster;
         _log = log;
         _isConfidential = isConfidential ?? ((_, _) => false);
         _sequences = sequences;
+        _bindings = bindings;
         _completed = new CompletedTranscriptPublisher(Checkpoints, sequences, PersistCompletedMessage, Broadcast);
     }
 
@@ -68,8 +72,17 @@ public sealed class SessionTranscriptPipeline
         if (evt.Type == "tool_result" && evt.IsPartial)
             return;
 
+        var originProvider = evt.OriginProvider;
+        if (_bindings is not null)
+        {
+            var route = _bindings.Resolve(provider, sessionId);
+            if (route is null) return;
+            provider = route.StorageProvider;
+            sessionId = route.SessionId;
+            if (route.OriginProvider != provider) originProvider = route.OriginProvider;
+        }
         var stamp = _sequences.Next(provider, sessionId);
-        evt = WithStamp(evt, stamp);
+        evt = WithStamp(evt, stamp, originProvider);
 
         if (evt.Type == "image")
         {
@@ -78,7 +91,7 @@ public sealed class SessionTranscriptPipeline
                 var image = DecodeImage(evt.Attachments);
                 var payloadRef = PersistSynchronously(() => PersistImageAsync(
                     provider, sessionId, "assistant", evt.Content, evt.MessageId, evt.MessageUid,
-                    DateTimeOffset.UtcNow, image, stamp, evt.ParentToolUseId));
+                    DateTimeOffset.UtcNow, image, stamp, evt.ParentToolUseId, evt.OriginProvider));
 
                 _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, image.Bytes)] = DateTimeOffset.UtcNow;
                 Broadcast(provider, sessionId, WithPayload(evt, payloadRef));
@@ -111,7 +124,7 @@ public sealed class SessionTranscriptPipeline
                     evt.Attachments is { Count: > 0 } ? JsonSerializer.Serialize(evt.Attachments) : null,
                     output,
                     stamp,
-                    evt.ParentToolUseId));
+                    evt.ParentToolUseId, evt.OriginProvider));
 
             _livePayloads[Fingerprint(provider, sessionId, evt.MessageUid, evt.MessageId, output)] = DateTimeOffset.UtcNow;
             Broadcast(provider, sessionId, WithPayload(evt, payloadRef));
@@ -136,6 +149,7 @@ public sealed class SessionTranscriptPipeline
             EnqueueInline(new AiMessageSnapshot
             {
                 Provider = provider,
+                OriginProvider = evt.OriginProvider,
                 SessionId = sessionId,
                 Role = "assistant",
                 EventType = "tool_result",
@@ -160,7 +174,10 @@ public sealed class SessionTranscriptPipeline
         }
     }
 
-    public void MirrorCompletedMessages(IReadOnlyList<AiMessageSnapshot> messages) => _completed.Publish(messages);
+    public void MirrorCompletedMessages(IReadOnlyList<AiMessageSnapshot> messages) => _completed.Publish(Project(messages));
+
+    private IReadOnlyList<AiMessageSnapshot> Project(IReadOnlyList<AiMessageSnapshot> messages)
+        => _bindings?.Project(messages) ?? messages;
 
     /// <summary>
     /// Moves a session to the epoch this rollback owns and tells live clients. Nothing from before the
@@ -189,14 +206,14 @@ public sealed class SessionTranscriptPipeline
             return PersistSynchronously(() => PersistImageAsync(
                 message.Provider, message.SessionId, message.Role, message.Content,
                 message.MessageId, message.MessageUid, message.Timestamp, image, stamp,
-                message.ParentToolUseId));
+                message.ParentToolUseId, message.OriginProvider));
         }
 
         var output = message.EventType == "tool_result" ? message.ToolResult ?? message.Content : null;
         if (!string.IsNullOrEmpty(output))
             return PersistSynchronously(() => PersistToolOutputAsync(message.Provider, message.SessionId, message.Role,
                 message.ToolName, message.ToolInput, message.MessageId, message.MessageUid,
-                message.Timestamp, message.AttachmentsJson, output, stamp, message.ParentToolUseId));
+                message.Timestamp, message.AttachmentsJson, output, stamp, message.ParentToolUseId, message.OriginProvider));
 
         PersistSynchronously(() => _streams.AppendForEntityAsync("session-messages", SessionEntitySlug(message.Provider, message.SessionId),
             InlineData(message, stamp), TranscriptRecordId(stamp),
@@ -207,7 +224,7 @@ public sealed class SessionTranscriptPipeline
     public void MirrorMessages(IReadOnlyList<AiMessageSnapshot> messages)
     {
         PruneDedupEntries();
-        foreach (var message in messages)
+        foreach (var message in Project(messages))
         {
             if (message.EventType == "image")
             {
@@ -222,7 +239,7 @@ public sealed class SessionTranscriptPipeline
                     PersistSynchronously(() => PersistImageAsync(
                         message.Provider, message.SessionId, message.Role, message.Content,
                         message.MessageId, message.MessageUid, message.Timestamp, image,
-                        _sequences.Next(message.Provider, message.SessionId), message.ParentToolUseId));
+                        _sequences.Next(message.Provider, message.SessionId), message.ParentToolUseId, message.OriginProvider));
                     continue;
                 }
                 catch (Exception ex)
@@ -250,7 +267,7 @@ public sealed class SessionTranscriptPipeline
                             message.Provider, message.SessionId, message.Role,
                             message.ToolName, message.ToolInput, message.MessageId,
                             message.MessageUid, message.Timestamp, message.AttachmentsJson, output,
-                            _sequences.Next(message.Provider, message.SessionId), message.ParentToolUseId));
+                            _sequences.Next(message.Provider, message.SessionId), message.ParentToolUseId, message.OriginProvider));
                     continue;
                 }
                 catch (Exception ex)
@@ -306,7 +323,8 @@ public sealed class SessionTranscriptPipeline
         string? attachmentsJson,
         string output,
         TranscriptStamp stamp,
-        string? parentToolUseId)
+        string? parentToolUseId,
+        string? originProvider)
     {
         var bytes = Encoding.UTF8.GetBytes(output);
         var descriptor = await _streams.AppendPayloadForEntityAsync(
@@ -314,7 +332,7 @@ public sealed class SessionTranscriptPipeline
             SessionEntitySlug(provider, sessionId),
             new
             {
-                provider,
+                provider = originProvider ?? provider,
                 session_id = sessionId,
                 role,
                 event_type = "tool_result",
@@ -357,14 +375,15 @@ public sealed class SessionTranscriptPipeline
         DateTimeOffset timestamp,
         ImagePayload image,
         TranscriptStamp stamp,
-        string? parentToolUseId)
+        string? parentToolUseId,
+        string? originProvider)
     {
         var descriptor = await _streams.AppendPayloadForEntityAsync(
             "session-messages",
             SessionEntitySlug(provider, sessionId),
             new
             {
-                provider,
+                provider = originProvider ?? provider,
                 session_id = sessionId,
                 role,
                 event_type = "image",
@@ -407,7 +426,7 @@ public sealed class SessionTranscriptPipeline
 
     private static object InlineData(AiMessageSnapshot message, TranscriptStamp stamp) => new
         {
-            provider = message.Provider,
+            provider = message.OriginProvider ?? message.Provider,
             session_id = message.SessionId,
             role = message.Role,
             event_type = message.EventType,
@@ -444,7 +463,7 @@ public sealed class SessionTranscriptPipeline
 
         _broadcaster.Broadcast(StreamEventType, new
         {
-            provider,
+            provider = evt.OriginProvider ?? provider,
             sessionId,
             @event = evt,
             // RedLeaf merges this stream with its own ambient event stream.
@@ -457,6 +476,7 @@ public sealed class SessionTranscriptPipeline
     internal static UnifiedStreamEvent WithPayload(UnifiedStreamEvent evt, TranscriptPayloadRef payloadRef) => new()
     {
         Type = evt.Type,
+        OriginProvider = evt.OriginProvider,
         Content = evt.Type == "image" ? evt.Content : null,
         ToolName = evt.ToolName,
         ToolInput = evt.ToolInput,
@@ -479,9 +499,10 @@ public sealed class SessionTranscriptPipeline
 
     private static string? Output(UnifiedStreamEvent evt) => evt.ToolResult ?? evt.Content;
 
-    private static UnifiedStreamEvent WithStamp(UnifiedStreamEvent evt, TranscriptStamp stamp) => new()
+    private static UnifiedStreamEvent WithStamp(UnifiedStreamEvent evt, TranscriptStamp stamp, string? originProvider) => new()
     {
         Type = evt.Type,
+        OriginProvider = originProvider,
         Content = evt.Content,
         ToolName = evt.ToolName,
         ToolInput = evt.ToolInput,
@@ -586,6 +607,7 @@ public sealed class SessionTranscriptPipeline
     private static UnifiedStreamEvent ImageStorageError(UnifiedStreamEvent evt) => new()
     {
         Type = "error",
+        OriginProvider = evt.OriginProvider,
         Content = "The generated image could not be stored safely.",
         MessageId = evt.MessageId,
         MessageUid = evt.MessageUid,
@@ -597,6 +619,7 @@ public sealed class SessionTranscriptPipeline
     private static AiMessageSnapshot SanitizeImage(AiMessageSnapshot message) => new()
     {
         Provider = message.Provider,
+        OriginProvider = message.OriginProvider,
         SessionId = message.SessionId,
         Role = message.Role,
         EventType = message.EventType,

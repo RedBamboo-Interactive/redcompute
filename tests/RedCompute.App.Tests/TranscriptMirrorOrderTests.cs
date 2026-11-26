@@ -10,6 +10,7 @@ using RedBamboo.AppHost.Auth;
 using RedBamboo.AppHost.Streams;
 using RedBamboo.AppHost.WebSockets;
 using RedCompute.App.Services;
+using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 using Xunit;
@@ -18,6 +19,62 @@ namespace RedCompute.App.Tests;
 
 public sealed class TranscriptMirrorOrderTests
 {
+    [Fact]
+    public async Task Switch_and_return_write_once_under_the_original_logical_transcript_with_native_origin()
+    {
+        await using var redLeaf = await FakeRedLeaf.Start();
+        using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
+        var routes = new SessionBindingTranscriptRoutes(f.Store);
+        var pipeline = redLeaf.Pipeline(routes);
+        var claude = new NativeSessionBinding("session", "native-claude",
+            new("claude-code", "default-claude", "local", "claude-x", "low"));
+        var codex = new NativeSessionBinding("binding-review", "native-codex",
+            new("codex", "default-codex", "local", "codex-x", "low"));
+
+        pipeline.MirrorCompletedMessages([Message(claude, "first")]);
+        pipeline.MirrorCompletedMessages([Message(codex, "uncommitted")]);
+        await Commit("next", 0, codex);
+        Assert.Null(routes.Resolve("claude-code", "session"));
+        pipeline.MirrorCompletedMessages([Message(codex, "second")]);
+        pipeline.MirrorCompletedMessages([Message(codex, "second")]);
+
+        await Commit("return", 1, claude);
+        pipeline.MirrorCompletedMessages([Message(codex, "late")]);
+        pipeline.MirrorCompletedMessages([Message(claude, "third")]);
+
+        Assert.Equal(["text:1", "text:2", "text:3"], redLeaf.Arrivals);
+        Assert.Equal(["session", "session", "session"], redLeaf.Data.Select(row => row.GetProperty("session_id").GetString()));
+        Assert.Equal(["claude-code", "codex", "claude-code"], redLeaf.Data.Select(row => row.GetProperty("provider").GetString()));
+        Assert.Equal(["first", "second", "third"], redLeaf.Data.Select(row => row.GetProperty("message_uid").GetString()));
+        var restored = new SessionBindingTranscriptRoutes(new(f.Config, f.Attachments));
+        Assert.Null(restored.Resolve("codex", "binding-review"));
+        Assert.Equal(new LogicalTranscriptAddress("session", "claude-code", "claude-code"),
+            restored.Resolve("claude-code", "session"));
+
+        async Task Commit(string key, long generation, NativeSessionBinding to)
+        {
+            var item = (await f.Store.EnqueueAsync(f.Submission(key) with
+            {
+                Input = [],
+                IdempotencyKey = key,
+                BindingChange = new(generation, to.Target),
+            })).Item;
+            var pending = new SessionBindingMove(item.Id, generation, to.Target, generation + 1, BindingMoveState.Pending);
+            var prepared = pending with { State = BindingMoveState.Prepared, Prepared = to };
+            Assert.True(await f.Store.TryAdvanceBindingMoveAsync(item, claude, pending, default));
+            Assert.True(await f.Store.TryAdvanceBindingMoveAsync(item with { BindingMove = pending }, claude, prepared, default));
+            var commit = prepared with { State = BindingMoveState.Committed, CommittedGeneration = generation + 1 };
+            Assert.True(await f.Store.TryAdvanceBindingMoveAsync(item with { BindingMove = prepared }, claude, commit, default));
+        }
+
+        static AiMessageSnapshot Message(NativeSessionBinding native, string uid) => new()
+        {
+            Provider = native.Target.ProviderId, SessionId = native.RuntimeSessionId, Role = "assistant",
+            EventType = "text", Content = uid, ProviderPartId = "native-part", MessageUid = uid,
+            Timestamp = DateTimeOffset.UnixEpoch,
+        };
+    }
+
     [Fact]
     public async Task MirroredToolUseIsStoredBeforeItsFastSynchronousResult()
     {
@@ -285,8 +342,8 @@ public sealed class TranscriptMirrorOrderTests
 
         private FakeRedLeaf(WebApplication server) => _server = server;
 
-        public SessionTranscriptPipeline Pipeline() =>
-            new(_client, new WebSocketBroadcaster(), (_, _) => { }, null, new Sequences());
+        public SessionTranscriptPipeline Pipeline(SessionBindingTranscriptRoutes? bindings = null) =>
+            new(_client, new WebSocketBroadcaster(), (_, _) => { }, null, new Sequences(), bindings);
 
         public SessionTranscriptPipeline Pipeline(FrameSocket frames) =>
             new(_client, frames.Broadcaster, (_, _) => { }, null, new Sequences());

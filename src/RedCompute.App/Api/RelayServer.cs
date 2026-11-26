@@ -26,6 +26,7 @@ using RedCompute.App.Services.Jobs;
 using RedCompute.App.Services.Nodes;
 using RedCompute.App.Services.Placement;
 using RedCompute.App.Services.SessionTitles;
+using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Nodes;
 using RedCompute.Core.Sessions;
@@ -278,10 +279,13 @@ public class RelayServer
             "session-messages", "Session Messages",
             "Messages and tool events from AI sessions", RetentionDays: null, ParentType: "ai-session"));
         var broadcaster = _app.Services.GetRequiredService<WebSocketBroadcaster>();
+        var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
+        var bindingRoutes = new SessionBindingTranscriptRoutes(inputQueueStore);
         var transcriptPipeline = new SessionTranscriptPipeline(
             _streamClient, broadcaster, _log,
             (provider, sessionId) => _confidentialSessions.TryGetValue(
-                SessionConfidentialityKey(provider, sessionId), out var confidential) && confidential);
+                SessionConfidentialityKey(provider, sessionId), out var confidential) && confidential,
+            new TranscriptSequenceStore(), bindingRoutes);
 
         var titles = _titles = new SessionTitleStore();
         SuiteMirror.SessionUpserted = snap =>
@@ -427,7 +431,6 @@ public class RelayServer
         _ = DetachedWork.Start(() => authorityLoop.RunAsync(ct));
         PlacementEndpoints.Map(registry, placementShadow.Status);
         var maintenance = new MaintenanceDeploymentCoordinator(_registry, _log);
-        var inputQueueStore = new SessionInputQueueStore(_config, _inputAttachments);
         _callbacks.AttachDurableStore(_inputAttachments.DatabasePath, inputQueueStore,
             sessionId => _registry.FindProviders<ISessionProvider>().Select(p => p.GetSessionInfo(sessionId)).FirstOrDefault(i => i is not null));
         _callbacks.AttachQuestionSource(

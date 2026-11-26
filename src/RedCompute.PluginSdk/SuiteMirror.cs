@@ -44,9 +44,10 @@ public sealed class AiSessionSnapshot
 }
 
 /// <summary>Unified snapshot of a session message/tool event.</summary>
-public sealed class AiMessageSnapshot
+public sealed record AiMessageSnapshot
 {
     public required string Provider { get; init; }
+    public string? OriginProvider { get; init; }
     public required string SessionId { get; init; }
     public string Role { get; init; } = "";
     public string EventType { get; init; } = "";

@@ -7,6 +7,19 @@ namespace RedCompute.App.Services;
 
 public sealed partial class SessionInputQueueStore
 {
+    internal event Action<SessionBindingSnapshot>? BindingCommitted;
+
+    internal SessionBindingSnapshot[] ReadBindingSnapshots()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT SessionId, ActiveGeneration, ThreadsJson FROM SessionThreadBindings";
+        using var reader = command.ExecuteReader();
+        var result = new List<SessionBindingSnapshot>();
+        while (reader.Read()) result.Add(MapBindingSnapshot(reader.GetString(0), reader.GetInt64(1), reader.GetString(2)));
+        return result.ToArray();
+    }
+
     internal async Task<SessionBindingSnapshot?> ReadBindingSnapshotAsync(string sessionId, CancellationToken ct = default)
     {
         await using var connection = Open();
@@ -50,6 +63,7 @@ public sealed partial class SessionInputQueueStore
         if (next.State != BindingMoveState.Rejected && bindings.Active.Generation != request.ExpectedGeneration)
             return false;
         string? receipt = null;
+        SessionBindingSnapshot? published = null;
         if (next.State == BindingMoveState.Committed)
         {
             var active = bindings.Active;
@@ -71,6 +85,7 @@ public sealed partial class SessionInputQueueStore
             Add(promote, "$threads", JsonSerializer.Serialize(threads, JsonOptions));
             if (await promote.ExecuteNonQueryAsync(ct) != 1) return false;
             receipt = JsonSerializer.Serialize(new { applied = newBinding }, JsonOptions);
+            published = new(current.SessionId, threads);
         }
 
         var terminal = next.State is BindingMoveState.Committed or BindingMoveState.Rejected;
@@ -100,6 +115,7 @@ public sealed partial class SessionInputQueueStore
         if (await update.ExecuteNonQueryAsync(ct) != 1) return false;
 
         await transaction.CommitAsync(ct);
+        if (published is not null) BindingCommitted?.Invoke(published);
         return true;
     }
 
@@ -147,8 +163,13 @@ public sealed partial class SessionInputQueueStore
         Add(command, "$id", sessionId);
         await using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct)) return null;
-        var threads = JsonSerializer.Deserialize<SessionBinding[]>(reader.GetString(1), JsonOptions);
-        if (threads is not { Length: > 0 } || threads[^1].Generation != reader.GetInt64(0))
+        return MapBindingSnapshot(sessionId, reader.GetInt64(0), reader.GetString(1));
+    }
+
+    private static SessionBindingSnapshot MapBindingSnapshot(string sessionId, long generation, string json)
+    {
+        var threads = JsonSerializer.Deserialize<SessionBinding[]>(json, JsonOptions);
+        if (threads is not { Length: > 0 } || threads[^1].Generation != generation)
             throw new InvalidDataException($"Binding history does not contain the active generation for session {sessionId}");
         return new(sessionId, threads);
     }

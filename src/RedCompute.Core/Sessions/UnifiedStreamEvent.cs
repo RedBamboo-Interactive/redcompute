@@ -3,6 +3,7 @@ namespace RedCompute.Core.Sessions;
 public class UnifiedStreamEvent
 {
     public required string Type { get; init; }
+    public string? OriginProvider { get; init; }
     public string? Content { get; init; }
     public string? ToolName { get; init; }
     public object? ToolInput { get; init; }
@@ -47,6 +48,7 @@ public class UnifiedStreamEvent
 public class UnifiedAttachment
 {
     public required string Type { get; init; }
+    public string? OriginProvider { get; init; }
     public string? MimeType { get; init; }
     public string? Data { get; init; }
     public string? Url { get; init; }

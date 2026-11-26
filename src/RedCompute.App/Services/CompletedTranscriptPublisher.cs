@@ -83,6 +83,7 @@ internal sealed class CompletedTranscriptPublisher(
             broadcast(message.Provider, message.SessionId, new UnifiedStreamEvent
             {
                 Type = message.EventType,
+                OriginProvider = message.OriginProvider,
                 Content = message.EventType == "image" || receipt.Payload is null ? message.Content : null,
                 ToolResult = receipt.Payload is null ? message.ToolResult : null,
                 ToolName = message.ToolName,
