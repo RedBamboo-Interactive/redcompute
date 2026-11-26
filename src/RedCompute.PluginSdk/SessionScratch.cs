@@ -10,9 +10,70 @@ public interface ISessionScratchWriteResolver
     Task<string?> ResolveWritableAsync(IExecutionHost host, JobProvenance? provenance, string? scratchDirectory);
 }
 
+/// <summary>
+/// Prepares the scratch unit of a session that was started without a scratch folder:
+/// <c>Scratch\RedCompute\&lt;session id&gt;</c>, allocated by whoever owns Scratch.
+/// </summary>
+public interface ISessionScratchAllocator
+{
+    /// <summary>
+    /// The session's unit on <paramref name="host"/>, created or refreshed: the same folder every time for one
+    /// session id. Null when it cannot be prepared now.
+    /// </summary>
+    Task<string?> PrepareSessionUnitAsync(IExecutionHost host, string sessionId, CancellationToken ct = default);
+}
+
+/// <summary>The scratch folder of one session launch.</summary>
+/// <param name="Persisted">What the session records (<c>Sessions.ScratchDirectory</c>).</param>
+/// <param name="Launch">
+/// What the process is pointed at; null leaves it RedCompute's own TEMP. It differs from <paramref name="Persisted"/>
+/// only when the session's unit is gone and cannot be prepared again right now.
+/// </param>
+public sealed record SessionScratchChoice(string? Persisted, string? Launch)
+{
+    /// <summary>The folder as it is recorded, both for the record and the launch.</summary>
+    public static SessionScratchChoice AsGiven(string? directory) => new(directory, directory);
+}
+
 public static class SessionScratch
 {
     private static readonly AsyncLocal<Func<string?, string?>?> CurrentExecutionToken = new();
+
+    /// <summary>The scratch owner of a session's own unit: <c>Scratch\RedCompute\&lt;session id&gt;</c>.</summary>
+    public const string SessionUnitOwner = "RedCompute";
+
+    /// <summary>Whether <paramref name="directory"/> is the unit of <paramref name="sessionId"/>, not a folder a caller chose.</summary>
+    public static bool IsSessionUnit(string? directory, string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return false;
+        var path = Path.TrimEndingDirectorySeparator(directory);
+        return string.Equals(Path.GetFileName(path), sessionId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(Path.GetFileName(Path.GetDirectoryName(path)), SessionUnitOwner, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The scratch folder a session launches with, on start and on every resume. A folder the caller chose is used
+    /// as it is. A session without one gets its own unit, and a session that has its unit has it prepared again
+    /// (the same folder, recreated if the retention sweep removed it). A unit that cannot be prepared never stops
+    /// the launch.
+    /// </summary>
+    public static async Task<SessionScratchChoice> ForSessionAsync(ISessionScratchAllocator? allocator,
+        IExecutionHost host, string sessionId, string? persisted, Action<string, Guid?> log)
+    {
+        var isUnit = IsSessionUnit(persisted, sessionId);
+        if (allocator is null || !string.IsNullOrWhiteSpace(persisted) && !isUnit)
+            return SessionScratchChoice.AsGiven(persisted);
+
+        string? prepared = null;
+        try { prepared = await allocator.PrepareSessionUnitAsync(host, sessionId).ConfigureAwait(false); }
+        catch (Exception ex) { log($"[Scratch] Preparing the unit of session {sessionId} failed: {ex.Message}", null); }
+        if (prepared is not null) return SessionScratchChoice.AsGiven(prepared);
+
+        var usable = isUnit && TryResolveDirectory(host, persisted, out _) ? persisted : null;
+        if (usable is null)
+            log($"[Scratch] Session {sessionId} has no scratch unit for this launch; it keeps RedCompute's TEMP", null);
+        return new(persisted, usable);
+    }
 
     /// <summary>The suite variable that names RedLeaf's base URL for the process (R6).</summary>
     public const string RedLeafUrlVariable = "REDLEAF_URL";

@@ -25,6 +25,7 @@ public class OpenCodeSessionService
     private readonly Action<string, Guid?> _log;
     private readonly IExecutionHost _host;
     private readonly Func<string, ProviderConfig?>? _resolveSharedProfile;
+    private readonly ISessionScratchAllocator? _scratchAllocator;
 
     internal NpmCliVersionManager CliVersionManager { get; }
 
@@ -101,12 +102,13 @@ public class OpenCodeSessionService
 
     public OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
         Action<string, Guid?> log, IAcceleratorAdmissionCoordinator? acceleratorAdmission = null,
-        IExecutionHost? host = null, Func<string, ProviderConfig?>? resolveSharedProfile = null)
+        IExecutionHost? host = null, Func<string, ProviderConfig?>? resolveSharedProfile = null,
+        ISessionScratchAllocator? scratchAllocator = null)
         : this(config, jobTracker, store, log,
             new OpenCodeNativeSessionReader(
                 OpenCodeNativeSessionReader.ResolveDbPath(host ?? LocalExecutionHost.Shared, config.OpenCodeDataHome),
                 host ?? LocalExecutionHost.Shared),
-            acceleratorAdmission, host, resolveSharedProfile)
+            acceleratorAdmission, host, resolveSharedProfile, scratchAllocator)
     {
     }
 
@@ -117,7 +119,7 @@ public class OpenCodeSessionService
     internal OpenCodeSessionService(OpenCodeConfig config, IJobTracker jobTracker, IOpenCodeSessionStore store,
         Action<string, Guid?> log, IOpenCodeNativeSessionReader nativeSessionReader,
         IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null,
-        Func<string, ProviderConfig?>? resolveSharedProfile = null)
+        Func<string, ProviderConfig?>? resolveSharedProfile = null, ISessionScratchAllocator? scratchAllocator = null)
     {
         // The host first: recovery below already kills recorded PIDs on it.
         _host = host ?? LocalExecutionHost.Shared;
@@ -126,6 +128,7 @@ public class OpenCodeSessionService
         ReadEnabledMcpServers = ResolveEnabledMcpServersAsync;
         _config = config;
         _resolveSharedProfile = resolveSharedProfile;
+        _scratchAllocator = scratchAllocator;
         CliVersionManager = new NpmCliVersionManager(
             "opencode-ai", "OpenCode", ResolveOpenCodePath, GetCliSessionState,
             static (_, _) => Task.CompletedTask, host: _host);
@@ -358,13 +361,18 @@ public class OpenCodeSessionService
         return info;
     }
 
-    private Task<(ManagedSession? session, string? error)> SpawnAcpSession(
+    private async Task<(ManagedSession? session, string? error)> SpawnAcpSession(
         OpenCodeSessionInfo info, string projectPath, string? existingSessionId,
         string? model = null, string? effort = null, int? thinkingBudget = null,
         string? scratchDirectory = null, string? developerInstructions = null)
-        => CliVersionManager.RunWhenInstallIdleAsync(spawned => SpawnAcpSessionCore(
+    {
+        // Start and resume both come through here. Before the launch gate.
+        var scratch = await SessionScratch.ForSessionAsync(_scratchAllocator, _host, info.Id, scratchDirectory, _log);
+        info.ScratchDirectory = scratch.Persisted;
+        return await CliVersionManager.RunWhenInstallIdleAsync(spawned => SpawnAcpSessionCore(
             info, projectPath, existingSessionId, model, effort, thinkingBudget,
-            scratchDirectory, developerInstructions, spawned));
+            scratch.Launch, developerInstructions, spawned));
+    }
 
     private async Task<(ManagedSession? session, string? error)> SpawnAcpSessionCore(
         OpenCodeSessionInfo info, string projectPath, string? existingSessionId,

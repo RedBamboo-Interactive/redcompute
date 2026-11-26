@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using RedBamboo.AppHost.Auth;
+using RedCompute.App.Services.Nodes;
 using RedCompute.Core.Jobs;
 using RedCompute.PluginSdk;
 using RedCompute.PluginSdk.Hosting;
@@ -62,7 +63,8 @@ public interface IHostScratch
 /// A kernel without the route (404 without one of those codes), an unreachable kernel and any malformed
 /// answer are 503 <c>placement_resolution_unavailable</c>: the caller keeps its legacy fields.
 /// </summary>
-public sealed class KernelPlacementClient : IWorkspaceResolver, IHostScratch, ISessionScratchWriteResolver
+public sealed class KernelPlacementClient : IWorkspaceResolver, IHostScratch, ISessionScratchWriteResolver,
+    ISessionScratchAllocator
 {
     internal const string Route = "api/compute/placement/resolve";
 
@@ -133,6 +135,35 @@ public sealed class KernelPlacementClient : IWorkspaceResolver, IHostScratch, IS
         }
         if (ScratchVariables.Any(name => !variables.ContainsKey(name))) return Malformed<ScratchAllocation>("scratch");
         return Resolution<ScratchAllocation>.Of(new(path!, variables));
+    }
+
+    /// <summary>How long a session launch waits for its unit before it goes ahead without one.</summary>
+    private static readonly TimeSpan SessionUnitDeadline = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The session's unit through the kernel's <c>PrepareExecution</c> (owner RedCompute, execution key the session
+    /// id). Node zero only: a remote node cannot use a folder of this machine. An answer that is not that unit, or
+    /// whose folder is not there, is refused.
+    /// </summary>
+    public async Task<string?> PrepareSessionUnitAsync(IExecutionHost host, string sessionId, CancellationToken ct = default)
+    {
+        if (host is RemoteExecutionHost) return null;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(SessionUnitDeadline);
+        try
+        {
+            var allocation = await PrepareAsync(new ScratchPlacement(SessionScratch.SessionUnitOwner, sessionId),
+                deadline.Token).ConfigureAwait(false);
+            return allocation.Value is { } scratch
+                && SessionScratch.TryResolveDirectory(host, scratch.Path, out var directory)
+                && SessionScratch.IsSessionUnit(directory, sessionId)
+                    ? directory
+                    : null;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     /// <summary>Nova allocates scratch using the Agent name and discussion ID in its verified creation provenance.</summary>

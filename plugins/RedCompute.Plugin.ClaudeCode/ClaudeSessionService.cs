@@ -75,6 +75,7 @@ public partial class ClaudeSessionService
     /// <summary>Test seam for the agent execution process; the default is the execution host.</summary>
     internal Func<HostSpawnSpec, IHostProcess?> LaunchAgentProcess { get; set; }
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
+    private readonly ISessionScratchAllocator? _scratchAllocator;
 
     public ClaudeSessionService(
         ClaudeConfig config,
@@ -84,7 +85,8 @@ public partial class ClaudeSessionService
         Func<string?> titleQualityTier,
         Action<string, Guid?> log,
         Action<Action>? whenMirrorInstalled = null,
-        IExecutionHost? host = null)
+        IExecutionHost? host = null,
+        ISessionScratchAllocator? scratchAllocator = null)
     {
         // Before recovery below: it kills recorded processes and reads transcripts on this host.
         _host = host ?? LocalExecutionHost.Shared;
@@ -92,6 +94,7 @@ public partial class ClaudeSessionService
         LaunchOneshotProcess = spec => _host.Processes.Start(spec);
         LaunchAgentProcess = spec => _host.Processes.Start(spec);
         ProbeFork = ProbeForkWithProcessAsync;
+        _scratchAllocator = scratchAllocator;
         _config = config;
         _jobTracker = jobTracker;
         _sessionStore = sessionStore;
@@ -1076,7 +1079,7 @@ public partial class ClaudeSessionService
             qualityTier, providerEntity, repositoryId, provenance, scratchDirectory,
             confidential, developerInstructions).GetAwaiter().GetResult();
 
-    public Task<ClaudeSessionInfo?> StartSessionAsync(string projectPath, string? model, string? userId,
+    public async Task<ClaudeSessionInfo?> StartSessionAsync(string projectPath, string? model, string? userId,
         string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         string? scratchDirectory = null, bool confidential = false,
@@ -1086,16 +1089,21 @@ public partial class ClaudeSessionService
         var access = SessionAccessScope.Current;
         var deliveredAsOneMessage = SessionDeliveryScope.DeliveredAsOneMessage;
         var placement = SessionPlacementScope.Current;
-        return LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
-            projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
-            providerEntity, repositoryId, provenance, scratchDirectory, confidential,
+        var id = Guid.NewGuid().ToString("N")[..12];
+        // Before the launch gate, which is held for the whole launch. A start that cannot happen gets no unit.
+        var scratch = _host.Files.DirectoryExists(_host.Path(projectPath))
+            ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, id, scratchDirectory, _log)
+            : SessionScratchChoice.AsGiven(scratchDirectory);
+        return await LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
+            id, projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
+            providerEntity, repositoryId, provenance, scratch, confidential,
             developerInstructions, access, deliveredAsOneMessage, placement)), ct);
     }
 
-    private ClaudeSessionInfo? StartSessionCore(string projectPath, string? model, string? userId,
+    private ClaudeSessionInfo? StartSessionCore(string id, string projectPath, string? model, string? userId,
         string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory, bool confidential,
+        SessionScratchChoice scratch, bool confidential,
         string? developerInstructions, Core.Sessions.SessionAccessState? access,
         bool deliveredAsOneMessage = false, string? placement = null)
     {
@@ -1115,13 +1123,12 @@ public partial class ClaudeSessionService
         if (string.IsNullOrWhiteSpace(developerInstructions))
             developerInstructions = null;
 
-        var id = Guid.NewGuid().ToString("N")[..12];
         var info = new ClaudeSessionInfo
         {
             Id = id,
             ProjectName = Path.GetFileName(projectPath),
             ProjectPath = projectPath,
-            ScratchDirectory = scratchDirectory,
+            ScratchDirectory = scratch.Persisted,
             RepositoryId = repositoryId,
             Status = SessionStatus.Starting,
             StartedAt = DateTimeOffset.UtcNow,
@@ -1157,7 +1164,7 @@ public partial class ClaudeSessionService
         }
 
         var arguments = new List<string>();
-        var environment = LaunchEnvironment(scratchDirectory, id, deliveredAsOneMessage);
+        var environment = LaunchEnvironment(scratch.Launch, id, deliveredAsOneMessage);
         PopulateSessionArgs(arguments, info.PermissionMode, model: model, effort: effort,
             developerInstructions: developerInstructions, leafMcpUrl: LeafMcpGateway.UrlFor(environment));
         var spec = CliSpec(claudePath, arguments, _host.Path(projectPath), environment, SessionOwner);
@@ -1216,12 +1223,21 @@ public partial class ClaudeSessionService
     public ClaudeSessionInfo? ResumeSession(string sessionId, JobProvenance? provenance = null)
         => ResumeSessionAsync(sessionId, provenance).GetAwaiter().GetResult();
 
-    public Task<ClaudeSessionInfo?> ResumeSessionAsync(string sessionId,
+    public async Task<ClaudeSessionInfo?> ResumeSessionAsync(string sessionId,
         JobProvenance? provenance = null, CancellationToken ct = default)
-        => LaunchGate.RunWhenInstallIdleAsync(
-            () => Task.FromResult(ResumeSessionCore(sessionId, provenance)), ct);
+    {
+        // Before the launch gate, which is held for the whole launch; the core still decides whether it resumes.
+        var scratch = !_sessions.ContainsKey(sessionId)
+            && _sessionStore.FindSession(sessionId) is { } record
+            && _host.Files.DirectoryExists(_host.Path(record.ProjectPath))
+                ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, sessionId, record.ScratchDirectory, _log)
+                : null;
+        return await LaunchGate.RunWhenInstallIdleAsync(
+            () => Task.FromResult(ResumeSessionCore(sessionId, provenance, scratch)), ct);
+    }
 
-    private ClaudeSessionInfo? ResumeSessionCore(string sessionId, JobProvenance? provenance)
+    private ClaudeSessionInfo? ResumeSessionCore(string sessionId, JobProvenance? provenance,
+        SessionScratchChoice? scratch)
     {
         if (_sessions.ContainsKey(sessionId))
         {
@@ -1283,6 +1299,7 @@ public partial class ClaudeSessionService
             return null;
         }
 
+        scratch ??= SessionScratchChoice.AsGiven(sessionRecord.ScratchDirectory);
         var info = new ClaudeSessionInfo
         {
             Id = sessionRecord.Id,
@@ -1290,7 +1307,7 @@ public partial class ClaudeSessionService
             ProjectPath = sessionRecord.ProjectPath,
             NodeId = sessionRecord.NodeId,
             Placement = sessionRecord.Placement,
-            ScratchDirectory = sessionRecord.ScratchDirectory,
+            ScratchDirectory = scratch.Persisted,
             RepositoryId = sessionRecord.RepositoryId,
             Status = SessionStatus.Starting,
             StartedAt = sessionRecord.StartedAt,
@@ -1325,7 +1342,7 @@ public partial class ClaudeSessionService
         };
 
         var arguments = new List<string>();
-        var environment = LaunchEnvironment(sessionRecord.ScratchDirectory, sessionRecord.Id, sessionRecord.DeliveredAsOneMessage);
+        var environment = LaunchEnvironment(scratch.Launch, sessionRecord.Id, sessionRecord.DeliveredAsOneMessage);
         PopulateSessionArgs(arguments, info.PermissionMode,
             string.IsNullOrEmpty(sessionRecord.ClaudeSessionId) ? null : sessionRecord.ClaudeSessionId,
             sessionRecord.Model, sessionRecord.Effort,

@@ -53,7 +53,8 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
 
     public ClaudeCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, IProviderQualityModeResolver qualityModes,
-        Action<string, Guid?> log, IExecutionHost? host = null, INodeRegistry? nodes = null)
+        Action<string, Guid?> log, IExecutionHost? host = null, INodeRegistry? nodes = null,
+        ISessionScratchAllocator? scratchAllocator = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -80,7 +81,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         var claudeConfig = BuildConfig(config);
         _claude = new ClaudeSessionService(
             claudeConfig, jobTracker, _store, qualityModes,
-            () => GetTitleQualityTier(config), log, host: host);
+            () => GetTitleQualityTier(config), log, host: host, scratchAllocator: scratchAllocator);
         _cliVersionManager = CreateCliVersionManager(host);
         _claude.LaunchGate = _cliVersionManager;
         WireSessionEvents();

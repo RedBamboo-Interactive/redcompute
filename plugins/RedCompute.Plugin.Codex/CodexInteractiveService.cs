@@ -126,6 +126,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     // The machine the app-servers run on: their processes and project directories. Node zero's local host by default.
     private readonly IExecutionHost _host;
     private readonly ISessionScratchWriteResolver? _scratchWriteResolver;
+    private readonly ISessionScratchAllocator? _scratchAllocator;
 
     internal ICliProcessLaunchGate LaunchGate { get; set; } = UnrestrictedCliProcessLaunchGate.Instance;
     // The session cap and the "already live" resume check are check-then-act across the app-server
@@ -147,11 +148,13 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         CodexSessionService exec, IJobTracker jobTracker,
         CodexAccountUsageService accountUsage,
         IProviderQualityModeResolver qualityModes, Func<string?> titleQualityTier,
-        Action<string, Guid?> log, IExecutionHost? host = null, ISessionScratchWriteResolver? scratchWriteResolver = null)
+        Action<string, Guid?> log, IExecutionHost? host = null, ISessionScratchWriteResolver? scratchWriteResolver = null,
+        ISessionScratchAllocator? scratchAllocator = null)
     {
         // Before recovery below: it kills recorded processes on this host.
         _host = host ?? LocalExecutionHost.Shared;
         _scratchWriteResolver = scratchWriteResolver;
+        _scratchAllocator = scratchAllocator;
         LaunchAppServerProcess = spec => _host.Processes.Start(spec);
         _config = config;
         _store = store;
@@ -251,7 +254,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     private bool ProjectPathExists(string? path)
         => !string.IsNullOrWhiteSpace(path) && _host.Files.DirectoryExists(_host.Path(path));
 
-    public Task<CodexSessionInfo?> StartSessionAsync(
+    public async Task<CodexSessionInfo?> StartSessionAsync(
         string projectPath, string? model, string? userId, string? userName,
         string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
@@ -260,10 +263,18 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         string executionProfile = SessionExecutionProfile.Default,
         Core.Sessions.SessionAccessState? access = null,
         string? placement = null)
-        => RunSessionLaunchAsync(spawned => StartSessionCoreAsync(
-            projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
-            providerEntity, repositoryId, provenance, scratchDirectory, confidential,
+    {
+        var id = Guid.NewGuid().ToString("N")[..12];
+        // Before the launch gate. A conversation-only session's scratch is its isolated workspace, as given;
+        // a start that cannot happen gets no unit.
+        var scratch = !SessionExecutionProfile.IsConversationOnly(executionProfile) && ProjectPathExists(projectPath)
+            ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, id, scratchDirectory, _log)
+            : SessionScratchChoice.AsGiven(scratchDirectory);
+        return await RunSessionLaunchAsync(spawned => StartSessionCoreAsync(
+            id, projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
+            providerEntity, repositoryId, provenance, scratch, confidential,
             developerInstructions, executionProfile, spawned, access, placement));
+    }
 
     private async Task<CodexSessionInfo?> RunSessionLaunchAsync(
         Func<Action, Task<CodexSessionInfo?>> launch)
@@ -280,10 +291,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     }
 
     private async Task<CodexSessionInfo?> StartSessionCoreAsync(
-        string projectPath, string? model, string? userId, string? userName,
+        string id, string projectPath, string? model, string? userId, string? userName,
         string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
-        string? scratchDirectory, bool confidential,
+        SessionScratchChoice scratch, bool confidential,
         string? developerInstructions,
         string executionProfile,
         Action spawned,
@@ -305,14 +316,13 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             return null;
         }
 
-        var id = Guid.NewGuid().ToString("N")[..12];
         var info = new CodexSessionInfo
         {
             Id = id,
             ProjectName = Path.GetFileName(projectPath.TrimEnd('/', '\\')) ?? projectPath,
             ProjectPath = projectPath,
             Placement = placement,
-            ScratchDirectory = scratchDirectory,
+            ScratchDirectory = scratch.Persisted,
             RepositoryId = repositoryId,
             StartedAt = DateTimeOffset.UtcNow,
             Status = "Starting",
@@ -333,7 +343,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         CodexAppServerConnection? conn = null;
         try
         {
-            conn = await ConnectAsync(id, projectPath, scratchDirectory,
+            conn = await ConnectAsync(id, projectPath, scratch.Launch,
                 suiteAccess: !SessionExecutionProfile.IsConversationOnly(executionProfile),
                 spawned);
             info.WritableScratchDirectory = await ResolveWritableScratchAsync(info, conn.InitializeResult, () => provenance);
@@ -380,11 +390,20 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         }
     }
 
-    public Task<CodexSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance? provenance = null)
-        => RunSessionLaunchAsync(spawned => ResumeSessionCoreAsync(sessionId, provenance, spawned));
+    public async Task<CodexSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance? provenance = null)
+    {
+        // Before the launch gate; the core still decides whether it resumes.
+        var scratch = !_sessions.ContainsKey(sessionId)
+            && _store.FindSession(sessionId) is { ThreadId: not null } record
+            && !SessionExecutionProfile.IsConversationOnly(record.ExecutionProfile)
+            && ProjectPathExists(record.ProjectPath)
+                ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, sessionId, record.ScratchDirectory, _log)
+                : null;
+        return await RunSessionLaunchAsync(spawned => ResumeSessionCoreAsync(sessionId, provenance, scratch, spawned));
+    }
 
     private async Task<CodexSessionInfo?> ResumeSessionCoreAsync(
-        string sessionId, JobProvenance? provenance, Action spawned)
+        string sessionId, JobProvenance? provenance, SessionScratchChoice? scratch, Action spawned)
     {
         SetStartFailure(null, null);
         if (_sessions.TryGetValue(sessionId, out var live)) return live.Info;
@@ -409,6 +428,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         }
 
         var info = ToInfo(record);
+        if (scratch is not null) info.ScratchDirectory = scratch.Persisted;
         CodexAppServerConnection? conn = null;
         var jobRunning = false;
         try
@@ -417,7 +437,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             conn = await ConnectAsync(
                 sessionId,
                 record.ProjectPath,
-                ScratchDirectoryForResume(record),
+                scratch is null ? ScratchDirectoryForResume(record) : scratch.Launch,
                 suiteAccess: !conversationOnly,
                 spawned);
             info.WritableScratchDirectory = await ResolveWritableScratchAsync(info, conn.InitializeResult,
@@ -510,6 +530,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         Func<JobProvenance?> creationProvenance)
         => _host.Platform.IsWindows && _scratchWriteResolver is not null
             && !string.IsNullOrWhiteSpace(info.ScratchDirectory)
+            // RedCompute's own unit is the session's TEMP, never an extra write root: that is the Agent's allocation.
+            && !SessionScratch.IsSessionUnit(info.ScratchDirectory, info.Id)
             && _config.SandboxMode != "read-only"
             && !SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
             && SupportsPhysicalScratchWriteRoot(initializeResult)

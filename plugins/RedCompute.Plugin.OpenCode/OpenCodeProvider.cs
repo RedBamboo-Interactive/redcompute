@@ -61,7 +61,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
     public OpenCodeProvider(ProviderConfig config, string capabilitySlug,
         IJobTracker jobTracker, Action<string, Guid?> log,
         IAcceleratorAdmissionCoordinator? acceleratorAdmission = null, IExecutionHost? host = null,
-        INodeRegistry? nodes = null, Func<string, ProviderConfig?>? resolveSharedProfile = null)
+        INodeRegistry? nodes = null, Func<string, ProviderConfig?>? resolveSharedProfile = null,
+        ISessionScratchAllocator? scratchAllocator = null)
     {
         _capabilitySlug = capabilitySlug;
         _log = log;
@@ -79,7 +80,8 @@ public class OpenCodeProvider : IPluginProvider, IPluginEventSource, IJobExtende
         _store = new OpenCodeSessionStore(nodes?.StampNodeId);
         var openCodeConfig = BuildConfig(config);
         _opencode = new OpenCodeSessionService(openCodeConfig, jobTracker, _store, log,
-            acceleratorAdmission: acceleratorAdmission, host: host, resolveSharedProfile: resolveSharedProfile);
+            acceleratorAdmission: acceleratorAdmission, host: host, resolveSharedProfile: resolveSharedProfile,
+            scratchAllocator: scratchAllocator);
         _models = new OpenCodeModelCatalog(_opencode.ResolveOpenCodePath, log, new ProcessCliCommandRunner(host));
         WireEvents();
     }
