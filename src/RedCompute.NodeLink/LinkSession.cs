@@ -73,6 +73,9 @@ public sealed class LinkSession : IAsyncDisposable
     /// <summary>The server's boot epoch (sent in its PINGs).</summary>
     public string? Epoch { get; }
 
+    /// <summary>The controller key negotiated on the attached encrypted server transport, if any.</summary>
+    public string? ControllerKeyId { get { lock (_gate) return (_transport as Noise.NoiseLinkTransport)?.ControllerKeyId; } }
+
     public bool IsAttached { get { lock (_gate) return _transport is not null; } }
 
     /// <summary>

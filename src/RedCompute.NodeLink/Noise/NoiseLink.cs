@@ -240,7 +240,7 @@ public static class NoiseLink
                 try
                 {
                     var transport = new NoiseLinkTransport(inner, responderToInitiator, initiatorToResponder, state.H.ToArray(), rs,
-                        options.RekeyEvery);
+                        options.RekeyEvery) { ControllerKeyId = NodeLinkKeyInfo.For(local.PublicKey).KeyId };
                     return new NoiseAcceptResult(transport, new NoiseAccepted(rs, index, payload));
                 }
                 finally
@@ -345,6 +345,9 @@ public sealed class NoiseLinkTransport : ILinkTransport
 
     /// <summary>The peer's static key (the server's on the node, the node's link key on the server).</summary>
     public byte[] RemoteStatic { get; }
+
+    /// <summary>The key this controller authenticated with, on the responder side of an encrypted transport.</summary>
+    internal string? ControllerKeyId { get; init; }
 
     public ILinkTransport Inner => _inner;
 

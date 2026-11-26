@@ -86,9 +86,8 @@ public static class RuntimeRoutes
         var rebuiltPath = "/" + string.Join('/', segments.Select(Uri.EscapeDataString));
         if (kind == SessionRuntimeProtocol.Kind)
         {
-            if (method == "POST" && pairs.Count == 0 && segments is ["ai-session", "v1", var name]
-                && SessionOperation(name) is { } operation)
-                return new AllowedRoute(rebuiltPath, "", 2 * MiB, BodyRule.Any, SessionOperation: operation);
+            if (method == "POST" && pairs.Count == 0 && SessionRuntimeProtocol.OperationForPath(rebuiltPath) is { } operation)
+                return new AllowedRoute(rebuiltPath, "", SessionRuntimeProtocol.MaxExchangeBodyBytes, BodyRule.Any, SessionOperation: operation);
             refusal = $"{method} {path} is not on the {kind} allowlist.";
             return null;
         }
@@ -117,18 +116,6 @@ public static class RuntimeRoutes
         if (route is null) refusal ??= $"{method} {path} is not on the {kind} allowlist.";
         return route;
     }
-
-    private static SessionRuntimeOperation? SessionOperation(string name) => name switch
-    {
-        "start" => SessionRuntimeOperation.Start,
-        "resume" => SessionRuntimeOperation.Resume,
-        "send-input" => SessionRuntimeOperation.SendInput,
-        "park" => SessionRuntimeOperation.Park,
-        "inspect" => SessionRuntimeOperation.Inspect,
-        "read-events" => SessionRuntimeOperation.ReadEvents,
-        "acknowledge-events" => SessionRuntimeOperation.AcknowledgeEvents,
-        _ => null,
-    };
 
     /// <summary>The route for a WebSocket, or why not.</summary>
     public static AllowedRoute? Ws(string kind, string path, string query, out string? refusal)

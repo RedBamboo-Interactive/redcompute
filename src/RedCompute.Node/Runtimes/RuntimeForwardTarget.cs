@@ -94,7 +94,7 @@ public sealed class RuntimeForwardTarget(RuntimeManager runtimes, TimeProvider? 
             if (answer.Content.Headers.ContentEncoding.Count != 0)
                 throw new ForwardTargetException(ForwardErrorCodes.UpstreamFailed, "The session runtime response is encoded.");
             await using var answerBody = await answer.Content.ReadAsStreamAsync(ct);
-            var bytes = await RuntimeAnswers.ReadCappedAsync(answerBody, 2 * RuntimeRoutes.MiB, route.Path, ct);
+            var bytes = await RuntimeAnswers.ReadCappedAsync(answerBody, SessionRuntimeProtocol.MaxExchangeBodyBytes, route.Path, ct);
             return new ForwardUpstreamResponse((int)answer.StatusCode,
                 [new("content-type", "application/json")], new MemoryStream(bytes));
         }

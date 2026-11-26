@@ -122,7 +122,6 @@ public sealed partial class NodeHub : IAsyncDisposable
     private readonly Action<string> _log;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _seenExecutions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _byeReasons = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, bool> _lastConnectionEncrypted = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RemoteExecutionHost> _hosts = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _life = new();
 
@@ -384,15 +383,10 @@ public sealed partial class NodeHub : IAsyncDisposable
             var keyIndex = result.Accepted!.ServerKeyIndex;
             sealedLink.FirstRecordOpened = () =>
             {
-                _lastConnectionEncrypted[nodeId] = true;
                 _registry.MarkSeenEncrypted(nodeId);
                 if (keyIndex > 0)
                     _log($"[NodeHub] {nodeId} linked with the previous link key; it needs the current one before the grace ends.");
             };
-        }
-        else
-        {
-            _lastConnectionEncrypted[nodeId] = false;
         }
         return result.Transport;
     }
@@ -582,7 +576,7 @@ public sealed partial class NodeHub : IAsyncDisposable
         var now = _options.Time.GetUtcNow();
         _registry.LinkUp(nodeId, new NodeLinkState(session.LinkSessionId, now, now, session.Rtt?.TotalMilliseconds,
             session.ClockOffset?.TotalMilliseconds, LinkProtocol.Current, session.Features, null, false, null,
-            _lastConnectionEncrypted.TryGetValue(nodeId, out var encrypted) && encrypted));
+            session.ControllerKeyId is not null));
         _ = Task.Run(() => LearnAsync(nodeId, session));
     }
 

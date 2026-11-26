@@ -124,6 +124,13 @@ internal sealed class MemoryRuntime : IForwardTarget
         {
             case ["blob", var size] when open.Method == "GET":
                 return new ForwardUpstreamResponse(200, [new("content-type", "application/octet-stream")], new MemoryStream(Blob(int.Parse(size))));
+            case ["ai-session", "v1", "start"] when open.Method == "POST":
+            {
+                using var envelope = new MemoryStream();
+                await requestBody.CopyToAsync(envelope, ct);
+                envelope.Position = 0;
+                return new ForwardUpstreamResponse(200, [new("content-type", "application/json")], new MemoryStream(envelope.ToArray()));
+            }
             case ["echo-hash"] when open.Method == "POST":
             {
                 using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);

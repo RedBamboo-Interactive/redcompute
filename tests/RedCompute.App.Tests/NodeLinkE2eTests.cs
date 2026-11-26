@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -133,6 +134,75 @@ public sealed class NodeLinkE2eTests : IAsyncLifetime
         Assert.Equal(2, keys.Count);
         Assert.NotEqual(old.PublicKey, rotated.Describe().PublicKey);
         Assert.Equal(old.PublicKey, NodeLinkKeyInfo.Base64Url(keys[1].PublicKey));
+    }
+
+    [Fact]
+    public async Task The_attached_link_identifies_the_previous_key_during_rotation_grace()
+    {
+        var old = _keys.Describe();
+        File.Move(Path.Combine(_keys.Directory, NodeLinkKeyStore.CurrentFile),
+            Path.Combine(_keys.Directory, NodeLinkKeyStore.PreviousFile));
+        using var rotated = new NodeLinkKeyStore(_keys.Directory, _ => { });
+        var ring = rotated.Keys();
+        var registry = NewRegistry();
+        registry.ApplyKernelNodes([Paired()]);
+        await using var hub = new NodeHub(registry, _ => { }, new NodeHubOptions { LinkKeys = rotated });
+        await using var node = new PipedNode(hub, _node, secure: Pinned(ring[1].PublicKey));
+        await WaitAsync(() => registry.Find(_node)?.Status == NodeStatus.Online, "the link on the grace key");
+
+        Assert.Equal(old.KeyId, hub.Server.FindSession(_node)?.ControllerKeyId);
+        Assert.NotEqual(rotated.Describe().KeyId, hub.Server.FindSession(_node)?.ControllerKeyId);
+    }
+
+    [Fact]
+    public async Task Session_commands_use_the_negotiated_key_and_require_signed_placement_authority()
+    {
+        var old = _keys.Describe();
+        File.Move(Path.Combine(_keys.Directory, NodeLinkKeyStore.CurrentFile),
+            Path.Combine(_keys.Directory, NodeLinkKeyStore.PreviousFile));
+        using var rotated = new NodeLinkKeyStore(_keys.Directory, _ => { });
+        var ring = rotated.Keys();
+        var registry = NewRegistry();
+        registry.ApplyKernelNodes([Paired(required: false)]);
+        await using var hub = new NodeHub(registry, _ => { }, new NodeHubOptions { LinkKeys = rotated });
+        var handler = new RuntimeNodeHandler();
+        var runtime = RuntimeNodeHandler.ComfyUi(managed: "attach", status: "running");
+        runtime["kind"] = SessionRuntimeProtocol.Kind;
+        runtime["capabilities"] = new JsonArray(SessionRuntimeProtocol.Kind);
+        handler.Runtimes.Clear();
+        handler.Runtimes.Add(runtime);
+        var scope = new SessionRuntimeScope(_node, MemoryRuntime.Id, "session-1", 0, Owner, "workspace-1");
+        var payload = "{}"u8.ToArray();
+        var owner = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", Owner)], "test-signed"));
+        var stranger = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "other")], "test-signed"));
+
+        await using (var unpinned = new PipedNode(hub, _node, nodeHandler: handler, features: RuntimeNodeHandler.Phase4Features))
+        {
+            await WaitAsync(() => registry.RuntimesOf(_node).Count > 0 && hub.Server.IsOnline(_node), "the plaintext runtime");
+            var refused = await Assert.ThrowsAsync<NodeHubException>(() => SendAsync(owner));
+            Assert.Equal("secure_node_link_required", refused.Code);
+        }
+
+        await using var node = new PipedNode(hub, _node, nodeHandler: handler, features: RuntimeNodeHandler.Phase4Features,
+            secure: Pinned(ring[1].PublicKey));
+        await WaitAsync(() => hub.Server.FindSession(_node)?.ControllerKeyId == old.KeyId
+            && registry.Find(_node)?.Status == NodeStatus.Online, "the encrypted runtime");
+        var denied = await Assert.ThrowsAsync<NodeHubException>(() => SendAsync(stranger));
+        Assert.Equal("node_not_found", denied.Code);
+        Assert.Empty(handler.Runtime.Opens);
+
+        var (status, body) = await SendAsync(owner);
+        Assert.Equal(HttpStatusCode.OK, status);
+        var grant = JsonSerializer.Deserialize<SessionRuntimeGrant>(body)!;
+        Assert.True(grant.Verify(ring[1].PublicKey, _node, MemoryRuntime.Id, SessionRuntimeOperation.Start, DateTimeOffset.UtcNow));
+        Assert.False(grant.Verify(ring[0].PublicKey, _node, MemoryRuntime.Id, SessionRuntimeOperation.Start, DateTimeOffset.UtcNow));
+        Assert.Equal(scope, grant.Scope);
+        Assert.Equal(payload, grant.Payload);
+        Assert.Equal("command-1", grant.RequestId);
+        Assert.Equal("/ai-session/v1/start", Assert.Single(handler.Runtime.Opens).Path);
+
+        Task<(HttpStatusCode Status, byte[] Body)> SendAsync(ClaimsPrincipal caller) =>
+            hub.SendSessionRuntimeCommandAsync(caller, scope, SessionRuntimeOperation.Start, "command-1", payload, CancellationToken.None);
     }
 
     // ================================================================= kernel and registry
