@@ -298,6 +298,8 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         return (sessions, rows.GetArrayLength() < limit ? null : offset + limit);
     }
 
+    /// <param name="tail">Null: the whole transcript. 0: the session only, no transcript records read.
+    /// Otherwise the newest <paramref name="tail"/> records (at least one).</param>
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionAsync(
         string sessionId, int? tail = null)
         => await GetByDataFilterAsync($"data.session_id={Uri.EscapeDataString(sessionId)}", tail);
@@ -624,6 +626,10 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         var info = MapSession(entity);
         if (info == null)
             return (null, []);
+
+        // tail 0 is the info-only read: the entity alone, no session-messages records.
+        if (tail == 0)
+            return (info, []);
 
         var entityId = entity.GetProperty("id").GetString()!;
         var history = Checkpoints is null

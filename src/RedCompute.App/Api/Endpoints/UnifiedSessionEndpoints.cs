@@ -747,11 +747,13 @@ public static partial class UnifiedSessionEndpoints
             "(Claude AskUserQuestion, Codex requestUserInput) and the tool calls waiting for a person's approval (kind permission, with permission.toolName, " +
             "summary, input and options), with requestId, askedAt and expiresAt; answer one with " +
             "POST /ai-session/sessions/{id}/question. Empty when nothing is pending. Claude questions expire after 30 minutes (the session is told to proceed " +
-            "on its own judgement); Codex questions have no deadline (expiresAt null). " + WorkStateDescription, async (HttpContext ctx, string id) =>
+            "on its own judgement); Codex questions have no deadline (expiresAt null). " + InfoOnlyReadDescription + WorkStateDescription, async (HttpContext ctx, string id) =>
         {
             int? tail = null;
             if (int.TryParse(ctx.Request.Query["tail"].FirstOrDefault(), out var requestedTail))
-                tail = Math.Clamp(requestedTail, 1, 10_000);
+                // tail=0 is the info-only read: no transcript records are read. Any other value keeps
+                // its old meaning, a negative one included (clamped to one record).
+                tail = requestedTail == 0 ? 0 : Math.Clamp(requestedTail, 1, 10_000);
 
             UnifiedSessionInfo? info;
             List<UnifiedMessageRecord> history;
@@ -772,13 +774,19 @@ public static partial class UnifiedSessionEndpoints
                 return ComputeResourceAccess.SessionDenied(info);
 
             var queue = await _inputQueue!.GetSummaryAsync(id, userId ?? "local-user", ctx.RequestAborted);
+            if (tail == 0)
+                // The transcript cursor describes the records of this snapshot; there are none, so it
+                // is left out rather than claim a sequence the read never saw.
+                return Results.Json(new { session = WithLiveCapabilities(info), messages = history, inputQueue = queue,
+                    pendingQuestions = PendingQuestions(info) });
             var transcript = _redLeafReader!.Cursor(info.Provider, info.Id, history);
             return Results.Json(new { session = WithLiveCapabilities(info), messages = history, inputQueue = queue, transcript,
                 pendingQuestions = PendingQuestions(info) });
         })
             .WithResponse(SessionDetailResponseSchema)
             .WithParam("id", "string", required: true, location: ParamLocation.Path, description: "Session id")
-            .WithParam("tail", "integer", description: "Legacy bounded newest-record read. Use transcript-page for complete keyset pagination; the backing stream clamps this compatibility read to 1000 records.", location: ParamLocation.Query);
+            .WithParam("tail", "integer", description: "Legacy bounded newest-record read. Use transcript-page for complete keyset pagination; the backing stream clamps this compatibility read to 1000 records. "
+                + "0 is the info-only read: messages is empty and transcript is absent, every other field is the same.", location: ParamLocation.Query);
 
         endpoints.MapGet("/ai-session/sessions/{id}/transcript-page",
             "Read one canonical durable transcript page without splitting a messageUid boundary",
@@ -4028,6 +4036,10 @@ public static partial class UnifiedSessionEndpoints
             .Select(reference => reference.Id)
             ?? [];
 
+    private const string InfoOnlyReadDescription =
+        "?tail=0 is the info-only read for status probes: the same session, inputQueue and pendingQuestions, messages empty, transcript absent, " +
+        "and no transcript records are read (a pending transcript checkpoint does not make it 503). ";
+
     private const string WorkStateDescription =
         "Each session carries workState, derived in one place from the turn status, parked questions and background tasks: " +
         "working (a turn is running), awaiting_answer (the turn is parked on a question or a permission), background (the turn ended Idle while background tasks still run), " +
@@ -4080,7 +4092,8 @@ public static partial class UnifiedSessionEndpoints
     private static readonly object SessionDetailResponseSchema = new
     {
         type = "object",
-        required = new[] { "session", "messages", "inputQueue", "transcript", "pendingQuestions" },
+        // transcript is absent from the info-only read (tail=0) and present on every other one.
+        required = new[] { "session", "messages", "inputQueue", "pendingQuestions" },
         properties = new
         {
             session = new
@@ -4110,7 +4123,7 @@ public static partial class UnifiedSessionEndpoints
             },
             messages = new { type = "array", items = new { type = "object" } },
             inputQueue = new { type = "object" },
-            transcript = new { type = "object" },
+            transcript = new { type = "object", description = "The cursor of this snapshot's records (epoch, throughSequence). Absent with tail=0." },
             pendingQuestions = new
             {
                 type = "array",
