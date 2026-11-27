@@ -46,7 +46,8 @@ public static partial class UnifiedSessionEndpoints
             && submission.Provenance.Actor.Kind == "app" && submission.Provenance.Actor.Id == "direct-redcompute-api")
             token = SessionExecutionToken.IssueAuthenticatedDirect(ctx, info.Id, submission.MessageUid, provider.ProviderId, provider.ProviderDisplayName);
         return token is null ? queue.AdmitAsync(submission, ct, waitForDelivery)
-            : queue.AdmitWithCallerAsync(submission, token, ct, waitForDelivery);
+            : queue.AdmitWithCallerAsync(submission, token, ct, waitForDelivery,
+                ownerDraftAuthenticated: authorized);
     }
     private static readonly HashSet<string> SupportedImageMediaTypes = new(StringComparer.OrdinalIgnoreCase)
     {

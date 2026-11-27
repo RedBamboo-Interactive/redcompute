@@ -41,6 +41,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
     /// <see cref="RespondAsync"/> or <see cref="RespondErrorAsync"/>, or the server-side turn stalls.
     /// </summary>
     public event Action<JsonElement, string, JsonElement>? ServerRequest;
+    internal string OwnerDraftConnectionId { get; } = Guid.NewGuid().ToString("N");
 
     /// <summary>Raised when the underlying process exits, expectedly or not.</summary>
     public event Action<int>? Exited;
@@ -73,7 +74,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         CancellationToken ct = default,
         Func<HostSpawnSpec, IHostProcess?>? launchProcess = null,
         Action? spawned = null,
-        IExecutionHost? host = null)
+        IExecutionHost? host = null, bool enableOwnerDraftTool = false)
     {
         host ??= LocalExecutionHost.Shared;
         var exe = CliLocators.Codex(host, configuredCliPath)
@@ -121,10 +122,11 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
 
         try
         {
-            conn.InitializeResult = await conn.SendRequestAsync("initialize", new
-            {
-                clientInfo = new { name = "redcompute", title = "RedCompute", version = "0.2.0" },
-            }, timeoutSeconds: 30, ct);
+            var clientInfo = new { name = "redcompute", title = "RedCompute", version = "0.2.0" };
+            object initialize = enableOwnerDraftTool
+                ? new { clientInfo, capabilities = new { experimentalApi = true } }
+                : new { clientInfo };
+            conn.InitializeResult = await conn.SendRequestAsync("initialize", initialize, timeoutSeconds: 30, ct);
 
             await conn.SendNotificationAsync("initialized", null, ct);
             return conn;

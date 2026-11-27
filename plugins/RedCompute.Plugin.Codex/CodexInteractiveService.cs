@@ -76,6 +76,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
         public object SteerGate { get; } = new();
         public PendingSteer? PendingSteer { get; set; }
+        public OwnerDraftTurn? OwnerDraft;
     }
 
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions,
@@ -356,7 +357,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             var threadConfig = await ReadThreadConfigAsync(conn, info);
 
             var result = await conn.SendRequestAsync(
-                "thread/start", BuildThreadStartParams(info, threadConfig), timeoutSeconds: 60);
+                "thread/start", BuildThreadStartParams(info, threadConfig, EnableOwnerDraftTool && !confidential), timeoutSeconds: 60);
 
             // The id lives at result.thread.id — not result.threadId, which is the obvious guess.
             info.ThreadId = result.TryGetProperty("thread", out var thread) && thread.TryGetProperty("id", out var tid)
@@ -637,13 +638,22 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             environment,
             launchProcess: LaunchAppServerProcess,
             spawned: spawned,
-            host: _host);
+            host: _host, enableOwnerDraftTool: suiteAccess && EnableOwnerDraftTool);
         conn.LeafMcpUrl = LeafMcpGateway.UrlFor(environment);
-        conn.Notification += (method, p) => OnNotification(sessionId, method, p);
-        conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, id, method, p);
-        conn.Exited += code => OnExited(sessionId, code);
+        conn.Notification += (method, p) =>
+        {
+            if (!EnableOwnerDraftTool || IsCurrentConnection(sessionId, conn)) OnNotification(sessionId, method, p);
+        };
+        conn.ServerRequest += (id, method, p) => _ = OnServerRequestAsync(sessionId, conn, id, method, p);
+        conn.Exited += code =>
+        {
+            if (!EnableOwnerDraftTool || IsCurrentConnection(sessionId, conn)) OnExited(sessionId, code);
+        };
         return conn;
     }
+
+    private bool IsCurrentConnection(string sessionId, CodexAppServerConnection conn)
+        => _sessions.TryGetValue(sessionId, out var current) && ReferenceEquals(current.Connection, conn);
 
     public Task StopSessionAsync(string sessionId) => StopSessionAsync(sessionId, "user_stopped");
 
@@ -667,6 +677,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             return false;
         }
 
+        RetireOwnerDraft(session);
         FinishPendingSteer(session);
         DiscardQuestions(session, "session_parked");
         await session.Connection.DisposeAsync();
@@ -684,6 +695,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
+            RetireOwnerDraft(session);
             FinishPendingSteer(session);
             DiscardQuestions(session, "session_ended");
             await session.Connection.DisposeAsync();
@@ -748,6 +760,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     private void OnExited(string sessionId, int code)
     {
         if (!_sessions.TryRemove(sessionId, out var session)) return;
+        RetireOwnerDraft(session);
         FinishPendingSteer(session);
         DiscardQuestions(session, "session_ended");
         session.Info.Status = code == 0 ? "Stopped" : "Error";
@@ -808,6 +821,15 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         if (turnInput.Length == 0) return false;
         var content = SessionInputFormatting.UserText(input);
 
+        RetireOwnerDraft(session);
+        OwnerDraftTurn? draftTurn = null;
+        if (EnableOwnerDraftTool && !SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+            && OwnerDraftDelivery.For(sessionId, messageUid) is { } draftDelivery)
+        {
+            draftTurn = new OwnerDraftTurn(draftDelivery);
+            Volatile.Write(ref session.OwnerDraft, draftTurn);
+        }
+
         // A user message opens a new turn, so the previous turn's uid must not leak into it.
         session.CurrentTurnUid = null;
         session.ActiveTurnId = null;
@@ -850,6 +872,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             if (info.Status == "Active" && session.ActiveTurnId == null)
                 session.ActiveTurnId = returnedTurnId;
             RecordTurnId(session, returnedTurnId);
+            if (draftTurn is not null && ReferenceEquals(Volatile.Read(ref session.OwnerDraft), draftTurn))
+                Volatile.Write(ref draftTurn.NativeTurnId, returnedTurnId);
 
             return true;
         }
@@ -875,6 +899,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             return SessionInputDeliveryResult.NotSteerable("session_not_active", "The session has no live active turn");
+        RetireOwnerDraft(session);
         var info = session.Info;
         var activeTurnId = session.ActiveTurnId;
         // Same refusal and code as Claude: a parked question holds the turn, and the queue waits
@@ -1229,22 +1254,30 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         _log($"[Codex] Thread {threadId} MCP tools: {toolCount}", null);
     }
 
-    internal static object BuildThreadStartParams(CodexSessionInfo info, Dictionary<string, object>? threadConfig = null) => new
+    internal static object BuildThreadStartParams(CodexSessionInfo info,
+        Dictionary<string, object>? threadConfig = null, bool enableOwnerDraftTool = false)
     {
-        cwd = info.ProjectPath,
-        model = info.Model,
-        developerInstructions = DeveloperInstructionsWithAccessNote(info),
-        baseInstructions = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
-            ? ConversationBaseInstructions
-            : null,
-        approvalPolicy = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
-            ? "never"
-            : null,
-        sandbox = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
-            ? "read-only"
-            : null,
-        config = threadConfig ?? BuildThreadConfig(info),
-    };
+        var parameters = new
+        {
+            cwd = info.ProjectPath,
+            model = info.Model,
+            developerInstructions = DeveloperInstructionsWithAccessNote(info),
+            baseInstructions = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+                ? ConversationBaseInstructions
+                : null,
+            approvalPolicy = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+                ? "never"
+                : null,
+            sandbox = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)
+                ? "read-only"
+                : null,
+            config = threadConfig ?? BuildThreadConfig(info),
+        };
+        if (!enableOwnerDraftTool || SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile)) return parameters;
+        var enabled = JsonSerializer.SerializeToNode(parameters)!.AsObject();
+        enabled["dynamicTools"] = new JsonArray(JsonNode.Parse(OwnerDraftToolSpec.GetRawText()));
+        return enabled;
+    }
 
     internal static object BuildThreadResumeParams(CodexSessionInfo info, Dictionary<string, object>? threadConfig = null) => new
     {
@@ -1298,6 +1331,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent { Type = "status", Content = "interrupting" });
 
         session.InterruptRequested = true;
+        RetireOwnerDraft(session);
         _ = InterruptAndEscalateAsync(session, session.ActiveTurnId);
         return Core.Sessions.InterruptResult.Interrupted;
     }
@@ -1414,6 +1448,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 return;
 
             case "turn/completed":
+                RetireOwnerDraft(session);
                 PendingSteer? incompleteSteer;
                 var persistIncompleteSteer = false;
                 lock (session.SteerGate)
@@ -1799,13 +1834,20 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     /// The server blocks until these are answered, so every branch must reply — including the
     /// unknown-method fallback, or an unrecognised request stalls the turn forever.
     /// </summary>
-    private async Task OnServerRequestAsync(string sessionId, JsonElement id, string method, JsonElement @params)
+    private async Task OnServerRequestAsync(string sessionId, CodexAppServerConnection conn,
+        JsonElement id, string method, JsonElement @params)
     {
-        if (!_sessions.TryGetValue(sessionId, out var session)) return;
-        var conn = session.Connection;
+        if (!_sessions.TryGetValue(sessionId, out var session) || !ReferenceEquals(conn, session.Connection)) return;
 
         try
         {
+            if (method == "item/tool/call" && EnableOwnerDraftTool)
+            {
+                await HandleOwnerDraftAsync(session, conn, id, @params, () =>
+                    _sessions.TryGetValue(sessionId, out var current) && ReferenceEquals(current, session)
+                    && ReferenceEquals(current.Connection, conn));
+                return;
+            }
             if (SessionExecutionProfile.IsConversationOnly(session.Info.ExecutionProfile))
             {
                 switch (method)

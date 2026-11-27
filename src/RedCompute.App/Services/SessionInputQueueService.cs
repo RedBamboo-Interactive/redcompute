@@ -96,6 +96,7 @@ public sealed partial class SessionInputQueueService
     private readonly ConcurrentDictionary<string, int> _pendingStops = new(StringComparer.Ordinal);
     private bool HasStopIntent(string id) => _manualStops.ContainsKey(id) || _pendingStops.GetValueOrDefault(id) > 0;
     internal bool IsDeliveryPaused => _deliveryPaused();
+    internal OwnerDraftBroker? OwnerDrafts { get; init; }
     /// <summary>True while this session must not receive input (an unfinished rollback).</summary>
     internal Func<string, CancellationToken, Task<bool>>? SettleRollback { get; set; }
     /// <summary>Runs before a recovery resume launches a provider: resolves a legacy session's access level, demotes a revoked Full.</summary>
@@ -200,11 +201,16 @@ public sealed partial class SessionInputQueueService
         bool waitForDelivery)
         => AdmitCoreAsync(submission, ct, null, waitForDelivery);
     internal Task<SessionInputAdmissionResult> AdmitWithCallerAsync(SessionInputQueueSubmission submission, string token,
-        CancellationToken ct, bool waitForDelivery = true)
-        => AdmitCoreAsync(submission, ct, token, waitForDelivery);
+        CancellationToken ct, bool waitForDelivery = true, bool ownerDraftAuthenticated = false)
+        => AdmitCoreAsync(submission, ct, token, waitForDelivery, ownerDraftAuthenticated);
     private async Task<SessionInputAdmissionResult> AdmitCoreAsync(SessionInputQueueSubmission submission, CancellationToken ct,
-        string? authenticatedCallerToken, bool waitForDelivery)
+        string? authenticatedCallerToken, bool waitForDelivery, bool ownerDraftAuthenticated = false)
     {
+        if (OwnerDrafts is not null)
+        {
+            submission = submission with { Provenance = OwnerDraftBroker.ClassifyAdmission(
+                submission.Provenance, submission.SessionId, submission.OwnerUserId, ownerDraftAuthenticated) };
+        }
         var admitted = await _store.EnqueueAsync(submission, ct);
         await PublishAsync(submission.SessionId, [admitted.Item.Id], admitted.Existing ? "idempotent_replay" : "queued", ct);
 
@@ -868,6 +874,7 @@ public sealed partial class SessionInputQueueService
                 foreach (var item in batch) await _store.RequireRecoveryAsync(item, ct);
             await PublishAsync(sessionId, batch.Select(item => item.Id).ToArray(), "delivering", ct);
 
+            var draftDelivery = info is null ? null : OwnerDrafts?.Prepare(info, batch);
             try
             {
                 var payload = await BuildDeliveryPayloadAsync(batch, ct);
@@ -884,6 +891,7 @@ public sealed partial class SessionInputQueueService
 
                 var deliveredMessageUid = batch[0].MessageUid;
                 using var recoveryScope = authority?.AccessToken is { } token ? SessionScratch.PushExecutionToken(token) : null;
+                using var draftScope = draftDelivery is null ? null : OwnerDraftDelivery.Push(draftDelivery);
                 var result = await provider.TrySendInputAsync(
                     sessionId, payload.Input, payload.AttachmentsJson, deliveredMessageUid,
                     payload.DisplayContent);
@@ -891,6 +899,7 @@ public sealed partial class SessionInputQueueService
                 {
                     case SessionInputDeliveryStatus.Accepted:
                         await _store.MarkDeliveredAsync(batch, deliveredMessageUid, CancellationToken.None);
+                        draftDelivery?.Settle(true);
                         await PublishAsync(sessionId, batch.Select(item => item.Id).ToArray(), "delivered",
                             CancellationToken.None, deliveredMessageUid: deliveredMessageUid);
                         break;
@@ -930,6 +939,7 @@ public sealed partial class SessionInputQueueService
                     retryable ? "retry_scheduled" : "failed", CancellationToken.None, errorCode: code);
                 _log($"[InputQueue] Delivery failed for session {sessionId}: {ex.Message}", info.JobId);
             }
+            finally { draftDelivery?.Settle(false); }
         }
         finally
         {
