@@ -1098,18 +1098,18 @@ public partial class ClaudeSessionService
         var scratch = _host.Files.DirectoryExists(_host.Path(projectPath))
             ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, id, scratchDirectory, _log)
             : SessionScratchChoice.AsGiven(scratchDirectory);
-        return await LaunchGate.RunWhenInstallIdleAsync(() => Task.FromResult(StartSessionCore(
+        return await LaunchGate.RunWhenInstallIdleAsync(() => StartSessionCoreAsync(
             id, projectPath, model, userId, userName, userAvatarUrl, effort, qualityTier,
             providerEntity, repositoryId, provenance, scratch, confidential,
-            developerInstructions, access, deliveredAsOneMessage, placement, nativeId)), ct);
+            developerInstructions, access, deliveredAsOneMessage, placement, nativeId, ct), ct);
     }
 
-    private ClaudeSessionInfo? StartSessionCore(string id, string projectPath, string? model, string? userId,
+    private async Task<ClaudeSessionInfo?> StartSessionCoreAsync(string id, string projectPath, string? model, string? userId,
         string? userName, string? userAvatarUrl, string? effort, string? qualityTier,
         string? providerEntity, Guid? repositoryId, JobProvenance provenance,
         SessionScratchChoice scratch, bool confidential,
         string? developerInstructions, Core.Sessions.SessionAccessState? access,
-        bool deliveredAsOneMessage = false, string? placement = null, string? nativeId = null)
+        bool deliveredAsOneMessage, string? placement, string? nativeId, CancellationToken ct)
     {
         if (_sessions.Count >= _config.MaxSessions)
         {
@@ -1174,6 +1174,7 @@ public partial class ClaudeSessionService
         PopulateSessionArgs(arguments, info.PermissionMode, model: model, effort: effort,
             developerInstructions: handoffFile is null ? developerInstructions : null,
             leafMcpUrl: LeafMcpGateway.UrlFor(environment), handoffFile: handoffFile, newNativeId: nativeId);
+        var nativeMcp = await ClaudeNativeMcp.ApplyAsync(_host, claudePath, id, provenance, environment, arguments, ct);
         var spec = CliSpec(claudePath, arguments, _host.Path(projectPath), environment, SessionOwner);
 
         IHostProcess process;
@@ -1190,7 +1191,7 @@ public partial class ClaudeSessionService
         }
 
         var cts = new CancellationTokenSource();
-        var session = new ManagedSession(info, process, cts);
+        var session = new ManagedSession(info, process, cts) { NativeMcpServers = nativeMcp };
         _sessions[id] = session;
 
         process.EnableRaisingEvents = true;
@@ -1241,11 +1242,11 @@ public partial class ClaudeSessionService
                 ? await SessionScratch.ForSessionAsync(_scratchAllocator, _host, sessionId, record.ScratchDirectory, _log)
                 : null;
         return await LaunchGate.RunWhenInstallIdleAsync(
-            () => Task.FromResult(ResumeSessionCore(sessionId, provenance, scratch, handoff)), ct);
+            () => ResumeSessionCoreAsync(sessionId, provenance, scratch, handoff, ct), ct);
     }
 
-    private ClaudeSessionInfo? ResumeSessionCore(string sessionId, JobProvenance? provenance,
-        SessionScratchChoice? scratch, SessionHandoff? handoff)
+    private async Task<ClaudeSessionInfo?> ResumeSessionCoreAsync(string sessionId, JobProvenance? provenance,
+        SessionScratchChoice? scratch, SessionHandoff? handoff, CancellationToken ct)
     {
         if (_sessions.ContainsKey(sessionId))
         {
@@ -1360,6 +1361,8 @@ public partial class ClaudeSessionService
             sessionRecord.Model, sessionRecord.Effort, handoffFile is null ? developerInstructions : null,
             LeafMcpGateway.UrlFor(environment), handoffFile, newNativeId: emptyPreparedThread ? storedNativeId : null);
         AddForkArgs(arguments, forkTarget);
+        provenance ??= sessionRecord.JobId is { } resumeJobId ? _jobTracker.GetJob(resumeJobId)?.CreationProvenance : null;
+        var nativeMcp = await ClaudeNativeMcp.ApplyAsync(_host, claudePath, sessionId, provenance, environment, arguments, ct);
         var spec = CliSpec(claudePath, arguments, _host.Path(sessionRecord.ProjectPath), environment, SessionOwner);
 
         IHostProcess process;
@@ -1375,7 +1378,7 @@ public partial class ClaudeSessionService
         }
 
         var cts = new CancellationTokenSource();
-        var session = new ManagedSession(info, process, cts);
+        var session = new ManagedSession(info, process, cts) { NativeMcpServers = nativeMcp };
         _sessions[sessionId] = session;
 
         process.EnableRaisingEvents = true;
@@ -2367,11 +2370,11 @@ public partial class ClaudeSessionService
     /// process environment (verified on 2.1.329), so the token never reaches the command line.
     /// </summary>
     /// <summary>Servers in the CLI's init report other than Leaf's gateway: with strict config there must be none.</summary>
-    internal static IReadOnlyList<string> UnexpectedMcpServers(JsonElement init)
+    internal static IReadOnlyList<string> UnexpectedMcpServers(JsonElement init, IReadOnlyList<string>? nativeServers = null)
         => init.TryGetProperty("mcp_servers", out var servers) && servers.ValueKind == JsonValueKind.Array
             ? servers.EnumerateArray()
                 .Select(server => server.ValueKind == JsonValueKind.Object && server.TryGetProperty("name", out var name) ? name.GetString() : null)
-                .Where(name => name is not null && name != LeafMcpGateway.ServerName)
+                .Where(name => name is not null && name != LeafMcpGateway.ServerName && nativeServers?.Contains(name) != true)
                 .Select(name => name!)
                 .ToList()
             : [];
@@ -3045,7 +3048,7 @@ public partial class ClaudeSessionService
                     ? tools.EnumerateArray().Count(tool => tool.ValueKind == JsonValueKind.String
                         && tool.GetString()!.StartsWith("mcp__", StringComparison.Ordinal)) : (int?)null;
                 _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode}, MCP servers: {mcpServerCount?.ToString() ?? "unknown"}, MCP tools: {mcpToolCount?.ToString() ?? "unknown"})", null);
-                if (UnexpectedMcpServers(root) is { Count: > 0 } unexpected)
+                if (UnexpectedMcpServers(root, session.NativeMcpServers) is { Count: > 0 } unexpected)
                     _log($"[Claude] Session {session.Info.Id} reports MCP servers Leaf did not configure: {string.Join(", ", unexpected)}", null);
                 return;
             }
@@ -4927,6 +4930,7 @@ public partial class ClaudeSessionService
 
     private class ManagedSession
     {
+        public IReadOnlyList<string> NativeMcpServers { get; init; } = [];
         public ClaudeSessionInfo Info { get; }
         // The CLI process on its host. Its streams are the process's own reader and writer objects.
         public IHostProcess Process { get; }

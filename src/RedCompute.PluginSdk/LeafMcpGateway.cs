@@ -1,7 +1,7 @@
 namespace RedCompute.PluginSdk;
 
 /// <summary>
-/// RedLeaf's MCP gateway, the only MCP server a Leaf-launched session gets, named <see cref="ServerName"/>.
+/// RedLeaf's MCP gateway, the managed MCP server, named <see cref="ServerName"/>.
 /// It authenticates with the session's own execution token, so a launch without one gets no MCP server at
 /// all, and the token is always referenced through <see cref="TokenVariable"/> where the harness allows it,
 /// never written into a command line. Inherited user, account and project servers stay off (P0).

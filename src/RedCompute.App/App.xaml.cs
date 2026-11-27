@@ -23,6 +23,12 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        if (NativeMcpHelper.IsInvocation(e.Args))
+        {
+            Environment.Exit(await Task.Run(() => NativeMcpHelper.RunAsync(e.Args)));
+            return;
+        }
+
         if (!StorageStartupCheck.Run())
         {
             Shutdown(RedCompute.Core.Storage.ComputeStorage.ConfigurationErrorExitCode);
