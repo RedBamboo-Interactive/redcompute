@@ -305,14 +305,23 @@ public sealed class JobAuditOutboxService
         {
             ct.ThrowIfCancellationRequested();
             using var db = _dbFactory();
-            var ids = await db.JobOutbox.AsNoTracking()
-                .Where(m => m.AcknowledgedAt != null && m.AcknowledgedAt < cutoff)
-                .OrderBy(m => m.Id).Select(m => m.Id).Take(OutboxPruneBatch).ToListAsync(ct);
+            var ids = await ExpiredAcknowledgedOutboxIds(db, cutoff).ToListAsync(ct);
             if (ids.Count == 0) break;
             pruned += await db.JobOutbox.Where(m => ids.Contains(m.Id) && m.AcknowledgedAt != null).ExecuteDeleteAsync(ct);
         }
         return new PurgeResult(horizon.Days, purged, pruned);
     }
+
+    /// <summary>
+    /// One batch of acknowledged outbox rows older than the cutoff, oldest acknowledgement first. That is the order
+    /// of IX_JobOutbox_Pending, so SQLite reads the index entries it returns and nothing else. Ordered by Id it
+    /// scanned the whole table, payloads included, to find the batch or to find nothing: 9.7 GB read every hour and
+    /// ten minutes after every start (2026-11-28).
+    /// </summary>
+    internal static IQueryable<long> ExpiredAcknowledgedOutboxIds(RedComputeDbContext db, DateTimeOffset cutoff)
+        => db.JobOutbox.AsNoTracking()
+            .Where(m => m.AcknowledgedAt != null && m.AcknowledgedAt < cutoff)
+            .OrderBy(m => m.AcknowledgedAt).Select(m => m.Id).Take(OutboxPruneBatch);
 
     private async Task<int> PurgeChunkAsync(Guid[] ids, DateTimeOffset cutoff, CancellationToken ct)
     {

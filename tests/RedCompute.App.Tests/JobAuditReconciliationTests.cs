@@ -271,6 +271,34 @@ public sealed class JobAuditReconciliationTests
     }
 
     [Fact]
+    public async Task The_outbox_prune_reads_the_acknowledgement_index_and_never_scans_the_table()
+    {
+        // 2026-11-28: ordered by Id, SQLite answered this hourly query with a scan of the whole outbox table,
+        // 9.7 GB with its payloads, whether or not a single row had expired.
+        await using var f = await Fixture.Create(retentionDays: 30);
+        var job = f.AddJob(Now.AddDays(-10), status: JobStatus.Completed, completedAt: Now.AddDays(-10));
+        var expiredLater = f.AddOutbox(job, created: Now.AddDays(-40), acknowledged: Now.AddDays(-35));
+        var expiredFirst = f.AddOutbox(job, created: Now.AddDays(-50), acknowledged: Now.AddDays(-45));
+        f.AddOutbox(job, created: Now.AddDays(-5), acknowledged: Now.AddDays(-5));
+        f.AddOutbox(job, created: Now.AddDays(-50), acknowledged: null);
+        using var db = f.Db();
+        var query = JobAuditOutboxService.ExpiredAcknowledgedOutboxIds(db, Now.AddDays(-30));
+
+        Assert.Equal(new[] { expiredFirst, expiredLater }, await query.ToListAsync());
+
+        await db.Database.OpenConnectionAsync();
+        using var command = query.CreateDbCommand();
+        command.CommandText = "EXPLAIN QUERY PLAN " + command.CommandText;
+        var steps = new List<string>();
+        using (var reader = await command.ExecuteReaderAsync())
+            while (await reader.ReadAsync()) steps.Add(reader.GetString(3));
+        var plan = string.Join(" | ", steps);
+        Assert.True(steps.Count == 1 && steps[0].StartsWith("SEARCH", StringComparison.Ordinal)
+            && steps[0].Contains("INDEX", StringComparison.Ordinal)
+            && steps[0].Contains("AcknowledgedAt<?", StringComparison.Ordinal), plan);
+    }
+
+    [Fact]
     public async Task Purge_works_in_bounded_batches()
     {
         await using var f = await Fixture.Create(retentionDays: 30);
