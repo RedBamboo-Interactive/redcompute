@@ -84,7 +84,11 @@ public sealed class GenerateNodeZeroPinTests(ITestOutputHelper output) : IAsyncL
         _client.Dispose();
         await _app.DisposeAsync();
         SqliteConnection.ClearAllPools();
-        if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
+        // The async request's job runs on after its answer and can hold jobs.db for a moment longer: leaving the
+        // temporary folder behind then is not what this test is about (2026-11-28, one gate failed on it).
+        try { if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>Each request, as JSON, and the path it is posted to.</summary>
