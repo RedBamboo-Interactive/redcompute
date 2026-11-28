@@ -1,7 +1,8 @@
-using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App;
 
@@ -19,7 +20,7 @@ internal static class NativeMcpHelper
         {
             return args[0] switch
             {
-                Launch when args.Length >= 3 => await RunChildAsync(args[1], args[2], args.Skip(3),
+                Launch when args.Length >= 3 => await RunChildAsync(LocalExecutionHost.Shared, args[1], args[2], args.Skip(3).ToArray(),
                     Console.OpenStandardInput(), Console.OpenStandardOutput(), Console.OpenStandardError()),
                 ReadGuard => await GuardAsync(args.Skip(1).ToHashSet(StringComparer.Ordinal)),
                 _ => 2,
@@ -33,38 +34,49 @@ internal static class NativeMcpHelper
         }
     }
 
-    internal static ProcessStartInfo ChildStartInfo(string path, IEnumerable<string> args)
+    internal static HostSpawnSpec BuildChildSpec(IExecutionHost host, string path, IReadOnlyList<string> args)
     {
-        var start = new ProcessStartInfo(path)
-        {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            WorkingDirectory = Path.GetDirectoryName(path)!,
-        };
-        start.Environment.Clear();
-        if (OperatingSystem.IsWindows())
-        {
+        var environment = new Dictionary<string, string>();
+        if (host.Platform.IsWindows)
             foreach (var name in new[] { "SystemRoot", "WINDIR" })
-                if (Environment.GetEnvironmentVariable(name) is { } value)
-                    start.Environment[name] = value;
-        }
-        foreach (var argument in args)
-            start.ArgumentList.Add(argument);
-        return start;
+                if (host.Platform.GetEnvironmentVariable(name) is { } value)
+                    environment[name] = value;
+
+        return new HostSpawnSpec
+        {
+            FileName = path,
+            ArgumentList = args,
+            WorkingDirectory = host.Path(Path.GetDirectoryName(path)!),
+            EnvironmentBase = EnvironmentBase.Empty,
+            EnvironmentOverlay = environment,
+            StandardInput = StdioMode.Pipe,
+            StandardOutput = StdioMode.Pipe,
+            StandardError = StdioMode.Pipe,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            // Claude's existing session tree contains the helper and its descendants.
+            Containment = ContainmentMode.None,
+            OwnerLabel = "claude-code",
+        };
     }
 
-    internal static async Task<int> RunChildAsync(string digest, string path, IEnumerable<string> args,
+    internal static async Task<int> RunChildAsync(IExecutionHost host, string digest, string path, IReadOnlyList<string> args,
         Stream input, Stream output, Stream error)
     {
-        if (!Path.IsPathFullyQualified(path) || !Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+        if (!host.PathRules.IsPathFullyQualified(path) || !Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase))
             return 2;
+
+        IHostProcess? started;
         // Deny writes/replacement while verifying and starting the executable on Windows.
-        using var executable = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (!string.Equals(Convert.ToHexString(SHA256.HashData(executable)), digest, StringComparison.OrdinalIgnoreCase))
-            return 2;
-        using var child = Process.Start(ChildStartInfo(path, args));
+        using (var executable = host.Files.OpenRead(host.Path(path), FileShare.Read))
+        {
+            if (!string.Equals(Convert.ToHexString(SHA256.HashData(executable)), digest, StringComparison.OrdinalIgnoreCase))
+                return 2;
+            started = host.Processes.Start(BuildChildSpec(host, path, args));
+        }
+
+        using var child = started;
         if (child is null) return 2;
-        executable.Dispose();
 
         _ = CopyInputAsync(input, child.StandardInput.BaseStream);
         await Task.WhenAll(child.StandardOutput.BaseStream.CopyToAsync(output),

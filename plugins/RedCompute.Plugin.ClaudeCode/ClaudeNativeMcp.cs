@@ -17,11 +17,7 @@ internal static class ClaudeNativeMcp
     private const int Version = 1;
     private const int MaxServers = 8;
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private static readonly HttpClient Leaf = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false, UseCookies = false })
-    {
-        Timeout = TimeSpan.FromSeconds(3),
-        MaxResponseContentBufferSize = 128 * 1024,
-    };
+    private const int MaxPlanBytes = 128 * 1024;
 
     internal sealed record Declaration(string Installation, string Sha256, string Revision, string[] Tools);
     internal sealed record Server(Guid Id, Declaration Declaration);
@@ -44,22 +40,19 @@ internal static class ClaudeNativeMcp
 
         try
         {
-            var registryFile = Path.Combine(host.Platform.ComputeDataRoot, "mcp-native-installations.json");
-            if (!File.Exists(registryFile) || new FileInfo(registryFile).Length > 128 * 1024) return [];
-            var registry = JsonSerializer.Deserialize<HostRegistry>(await File.ReadAllTextAsync(registryFile, ct), Web);
+            var registryFile = host.Path(host.PathRules.Combine(host.Platform.ComputeDataRoot, "mcp-native-installations.json"));
+            var registryStat = host.Files.Stat(registryFile);
+            if (!registryStat.Exists || registryStat.IsDirectory || registryStat.Length > MaxPlanBytes) return [];
+            var registry = JsonSerializer.Deserialize<HostRegistry>(await host.Files.ReadAllTextAsync(registryFile, ct), Web);
             if (registry?.Registrations is not { Length: > 0 and <= 128 }) return [];
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
-            using var response = await Leaf.SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) return [];
-            var plan = JsonSerializer.Deserialize<Plan>(await response.Content.ReadAsStringAsync(ct), Web);
+            var plan = await FetchPlanAsync(host.Network, uri, bearer, ct);
             if (plan is null) return [];
             var projected = Select(plan, registry, sessionId, provenance)
-                .Where(p => IsPinnedExecutable(p.Installation.Executable, p.Installation.Sha256)).ToArray();
-            if (projected.Length == 0 || !IsPinnedExecutable(cli, registry.ClaudeSha256)) return [];
-            var helper = Path.Combine(AppContext.BaseDirectory, "RedCompute.exe");
-            return File.Exists(helper) ? Append(arguments, helper, projected) : [];
+                .Where(p => IsPinnedExecutable(host, p.Installation.Executable, p.Installation.Sha256)).ToArray();
+            if (projected.Length == 0 || !IsPinnedExecutable(host, cli, registry.ClaudeSha256)) return [];
+            var helper = host.PathRules.Combine(AppContext.BaseDirectory, "RedCompute.exe");
+            return host.Files.FileExists(host.Path(helper)) ? Append(arguments, helper, projected) : [];
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
             or HttpRequestException or JsonException or CryptographicException
@@ -70,7 +63,29 @@ internal static class ClaudeNativeMcp
         }
     }
 
-    internal static bool TryPlanUri(string value, out Uri? uri)
+    internal static async Task<Plan?> FetchPlanAsync(IHostNetwork network, Uri uri, string bearer, CancellationToken ct)
+    {
+        using var handler = network.CreateServiceHandler(uri);
+        // The local service seam supplies this handler. Any other transport lacks the required policy.
+        if (handler is not HttpClientHandler direct) return null;
+        direct.AllowAutoRedirect = false;
+        direct.UseProxy = false;
+        direct.UseCookies = false;
+
+        using var client = new HttpClient(direct, disposeHandler: false)
+        {
+            Timeout = TimeSpan.FromSeconds(3),
+            MaxResponseContentBufferSize = MaxPlanBytes,
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+        using var response = await client.SendAsync(request, ct);
+        return response.IsSuccessStatusCode
+            ? JsonSerializer.Deserialize<Plan>(await response.Content.ReadAsStringAsync(ct), Web)
+            : null;
+    }
+
+    internal static bool TryPlanUri(string value, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Uri? uri)
     {
         uri = null;
         if (!Uri.TryCreate(value, UriKind.Absolute, out var root)
@@ -151,12 +166,14 @@ internal static class ClaudeNativeMcp
         return servers.Select(s => s.Name).ToArray();
     }
 
-    private static bool IsPinnedExecutable(string? path, string? digest)
+    private static bool IsPinnedExecutable(IExecutionHost host, string? path, string? digest)
     {
-        if (string.IsNullOrWhiteSpace(path) || !IsDigest(digest) || !Path.IsPathFullyQualified(path)
-            || !Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !IsDigest(digest) || !host.PathRules.IsPathFullyQualified(path)
+            || !Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase))
             return false;
-        using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var file = host.Path(path);
+        if (!host.Files.FileExists(file)) return false;
+        using var stream = host.Files.OpenRead(file, FileShare.Read);
         return string.Equals(Convert.ToHexString(SHA256.HashData(stream)), digest, StringComparison.OrdinalIgnoreCase);
     }
 

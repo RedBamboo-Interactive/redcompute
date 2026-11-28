@@ -1,10 +1,18 @@
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using RedCompute.Core.Jobs;
 using RedCompute.Plugin.ClaudeCode;
+using RedCompute.PluginSdk.Hosting;
+using RedCompute.PluginSdk.Hosting.Local;
 using Xunit;
 
 namespace RedCompute.App.Tests;
@@ -73,23 +81,136 @@ public sealed class ClaudeNativeMcpTests
         {
             var executable = Path.Combine(Environment.SystemDirectory, "cmd.exe");
             var arguments = new[] { "/d", "/c", $"if defined {canary} (exit /b 41) else if defined REDLEAF_EXECUTION_TOKEN (exit /b 42) else if defined ANTHROPIC_API_KEY (exit /b 43) else (echo isolated)" };
-            Assert.DoesNotContain(canary, NativeMcpHelper.ChildStartInfo(executable, arguments).Environment.Keys);
-            Assert.DoesNotContain("REDLEAF_EXECUTION_TOKEN", NativeMcpHelper.ChildStartInfo(executable, arguments).Environment.Keys);
-            Assert.DoesNotContain("ANTHROPIC_API_KEY", NativeMcpHelper.ChildStartInfo(executable, arguments).Environment.Keys);
+            var host = new LocalExecutionHost("mcp-fixture");
+            var starts = 0;
+            host.StartProcess = (start, containment, _) =>
+            {
+                starts++;
+                Assert.Equal(ContainmentMode.None, containment);
+                Assert.All(start.Environment.Keys, name => Assert.Contains(name, new[] { "SystemRoot", "WINDIR" }));
+                Assert.False(start.UseShellExecute);
+                Assert.True(start.RedirectStandardInput && start.RedirectStandardOutput && start.RedirectStandardError);
+                return System.Diagnostics.Process.Start(start);
+            };
 
             using var childInput = new MemoryStream();
             using var output = new MemoryStream();
             using var error = new MemoryStream();
-            Assert.Equal(2, await NativeMcpHelper.RunChildAsync(Digest, executable, arguments, childInput, output, error));
+            Assert.Equal(2, await NativeMcpHelper.RunChildAsync(host, Digest, executable, arguments, childInput, output, error));
+            Assert.Equal(0, starts);
             Assert.Empty(output.ToArray());
             using var binary = File.OpenRead(executable);
             var sha = Convert.ToHexString(SHA256.HashData(binary));
-            Assert.Equal(0, await NativeMcpHelper.RunChildAsync(sha, executable, arguments, childInput, output, error));
+            Assert.Equal(0, await NativeMcpHelper.RunChildAsync(host, sha, executable, arguments, childInput, output, error));
+            Assert.Equal(1, starts);
             Assert.Equal("isolated", Encoding.UTF8.GetString(output.ToArray()).Trim());
         }
         finally
         {
             Environment.SetEnvironmentVariable(canary, null);
+        }
+    }
+
+    [Fact]
+    public async Task Scoped_plan_reads_only_the_loopback_origin_without_redirect_proxy_or_cookies()
+    {
+        const string bearer = "synthetic-mcp-plan-token";
+        var requests = new System.Collections.Concurrent.ConcurrentQueue<(string Path, string Token, string Cookie)>();
+        var reply = "redirect";
+        var redirects = 0;
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        await using var app = builder.Build();
+        app.MapGet("/api/mcp/native-plan", async (HttpContext context) =>
+        {
+            requests.Enqueue((context.Request.Path, context.Request.Headers.Authorization.ToString(), context.Request.Headers.Cookie.ToString()));
+            switch (reply)
+            {
+                case "redirect":
+                    context.Response.Redirect("/redirect-target");
+                    break;
+                case "unauthorized":
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    break;
+                case "oversize":
+                    await context.Response.WriteAsync(new string('x', 128 * 1024 + 1));
+                    break;
+                case "malformed":
+                    await context.Response.WriteAsync("{");
+                    break;
+                default:
+                    await context.Response.WriteAsJsonAsync(MakePlan());
+                    break;
+            }
+        });
+        app.MapGet("/redirect-target", () => Interlocked.Increment(ref redirects));
+        await app.StartAsync();
+        Assert.True(ClaudeNativeMcp.TryPlanUri(app.Urls.Single(), out var uri));
+        var network = new PlanTestNetwork();
+
+        Assert.Null(await ClaudeNativeMcp.FetchPlanAsync(network, uri, bearer, default));
+        reply = "valid";
+        var plan = await ClaudeNativeMcp.FetchPlanAsync(network, uri, bearer, default);
+        Assert.NotNull(plan);
+        Assert.Equal(Server, Assert.Single(plan.Servers).Id);
+        reply = "unauthorized";
+        Assert.Null(await ClaudeNativeMcp.FetchPlanAsync(network, uri, bearer, default));
+        reply = "oversize";
+        await Assert.ThrowsAsync<HttpRequestException>(() => ClaudeNativeMcp.FetchPlanAsync(network, uri, bearer, default));
+        reply = "malformed";
+        await Assert.ThrowsAnyAsync<JsonException>(() => ClaudeNativeMcp.FetchPlanAsync(network, uri, bearer, default));
+
+        Assert.Equal(0, redirects);
+        Assert.Equal(5, requests.Count);
+        Assert.All(requests, request =>
+        {
+            Assert.Equal("/api/mcp/native-plan", request.Path);
+            Assert.Equal("Bearer " + bearer, request.Token);
+            Assert.Empty(request.Cookie);
+        });
+        Assert.Equal(0, network.ProxyCalls);
+        Assert.Equal(5, network.Origins.Count);
+        Assert.All(network.Origins, origin => Assert.Equal(uri, origin));
+    }
+
+    private sealed class PlanTestNetwork : IHostNetwork
+    {
+        private readonly IHostNetwork local = LocalExecutionHost.Shared.Network;
+        private readonly ProbeProxy proxy = new();
+
+        public int ProxyCalls => proxy.Calls;
+        public List<Uri> Origins { get; } = [];
+
+        public HttpMessageHandler CreateServiceHandler(Uri hostLocalUri)
+        {
+            Origins.Add(hostLocalUri);
+            var handler = Assert.IsType<HttpClientHandler>(local.CreateServiceHandler(hostLocalUri));
+            handler.Proxy = proxy;
+            handler.CookieContainer.SetCookies(hostLocalUri, "sentinel=forbidden; Path=/");
+            return handler;
+        }
+
+        public bool IsListening(int port) => local.IsListening(port);
+        public Uri ResolveServiceUri(Uri hostLocalUri) => local.ResolveServiceUri(hostLocalUri);
+        public Task<IHostPortForward> ReverseForwardAsync(Uri uri, CancellationToken ct = default) => local.ReverseForwardAsync(uri, ct);
+        public Task<WebSocket> ConnectWebSocketAsync(Uri uri, CancellationToken ct = default) => local.ConnectWebSocketAsync(uri, ct);
+
+        private sealed class ProbeProxy : IWebProxy
+        {
+            public int Calls;
+            public ICredentials? Credentials { get; set; }
+
+            public Uri GetProxy(Uri destination)
+            {
+                Interlocked.Increment(ref Calls);
+                return new Uri("http://127.0.0.1:1");
+            }
+
+            public bool IsBypassed(Uri host)
+            {
+                Interlocked.Increment(ref Calls);
+                return false;
+            }
         }
     }
 
