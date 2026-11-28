@@ -93,7 +93,7 @@ public sealed class CodexApprovalTests : IDisposable
         var notice = Assert.Single(h.Events, e => e.Type == "permission_denied");
         Assert.Equal("approval-5", notice.RequestId);
         Assert.StartsWith("Denied: this session runs at Ask with nobody to approve commandExecution (", notice.Content);
-        Assert.Contains("RedLeaf Settings > Agent permissions", notice.Content);
+        Assert.Contains("Approval requires a signed-in person in an interactive session.", notice.Content);
         Assert.DoesNotContain(h.Events, e => e.Type == "question");
         Assert.NotEqual("Waiting", h.Info.Status);
     }

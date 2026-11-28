@@ -118,7 +118,7 @@ public sealed class OpenCodeAccessLevelTests : IDisposable
         var notice = Assert.Single(h.Events, e => e.Type == "permission_denied");
         Assert.Equal("permission-24", notice.RequestId);
         Assert.StartsWith("Denied: this session runs at Ask with nobody to approve ", notice.Content);
-        Assert.Contains("RedLeaf Settings > Agent permissions", notice.Content);
+        Assert.Contains("Approval requires a signed-in person in an interactive session.", notice.Content);
         Assert.DoesNotContain(h.Events, e => e.Type == "question");
     }
 

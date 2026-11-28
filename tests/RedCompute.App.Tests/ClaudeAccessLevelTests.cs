@@ -503,8 +503,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         var verdict = Response(requestId);
         Assert.Equal("deny", verdict["behavior"]!.GetValue<string>());
         // The model is told why and where a person changes it.
-        Assert.Equal("Denied: this session runs at Ask with nobody to approve 'Bash'. The installation owner can change this in "
-            + "RedLeaf Settings > Agent permissions, or raise this session in its Info panel. Continue without it.",
+        Assert.Equal("Denied: this session runs at Ask with nobody to approve 'Bash'. Approval requires a signed-in person in an interactive session. Continue without it.",
             verdict["message"]!.GetValue<string>());
         var notice = Assert.Single(Live(), e => e.Type == "permission_denied");
         Assert.Equal(verdict["message"]!.GetValue<string>(), notice.Content);
@@ -580,8 +579,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.Equal("deny", verdict["behavior"]!.GetValue<string>());
         var message = verdict["message"]!.GetValue<string>();
         Assert.StartsWith("Denied: this session runs at Ask and nobody approved 'Bash' within 1 minute.", message);
-        Assert.Contains("RedLeaf Settings > Agent permissions", message);
-        Assert.Contains("Info panel", message);
+        Assert.Contains("Approval requires a signed-in person in an interactive session.", message);
         Assert.Contains(Live(), e => e is { Type: "question_resolved", Content: "timeout", Decision: "deny" } && e.RequestId == requestId);
     }
 
@@ -840,7 +838,7 @@ public sealed class ClaudeAccessLevelTests : IDisposable
         Assert.DoesNotContain("--system-prompt", args);
         var note = args[args.IndexOf("--append-system-prompt") + 1];
         Assert.StartsWith(opening + " Nobody watches it, so anything that needs approval is denied at once.", note);
-        Assert.Contains("RedLeaf Settings > Agent permissions", note);
+        Assert.Contains("Approval requires a signed-in person in an interactive session.", note);
     }
 
     [Fact]

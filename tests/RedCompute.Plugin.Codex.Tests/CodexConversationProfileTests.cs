@@ -67,7 +67,7 @@ public sealed class CodexConversationProfileTests
         {
             var instructions = JsonSerializer.SerializeToElement(parameters).GetProperty("developerInstructions").GetString()!;
             Assert.StartsWith("trusted SHIN instructions\n\nPermissions: this session runs at Ask. " + rule, instructions);
-            Assert.Contains("The installation owner can change this in RedLeaf Settings > Agent permissions, or raise this session in its Info panel.", instructions);
+            Assert.Contains("Approval requires a signed-in person in an interactive session.", instructions);
         }
     }
 

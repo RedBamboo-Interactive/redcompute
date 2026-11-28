@@ -9,7 +9,7 @@ public static class SessionAccessNotices
 {
     /// <summary>Where the fix lives, in the words RedLeaf's and the chat's own UI use.</summary>
     public const string WhereToChange =
-        "The installation owner can change this in RedLeaf Settings > Agent permissions, or raise this session in its Info panel.";
+        "Approval requires a signed-in person in an interactive session.";
 
     /// <summary>The level as the Settings tab and the Info panel name it.</summary>
     public static string Title(string? level) => level switch
