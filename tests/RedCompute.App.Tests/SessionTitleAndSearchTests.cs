@@ -476,6 +476,13 @@ public sealed class SessionTitleAndSearchTests
                 }
                 return Json(Catalog ? CatalogJson(type) : throw new HttpRequestException("RedLeaf unavailable"));
             }
+            if (request.Method == HttpMethod.Get && path.StartsWith("/api/entities/entity-"))
+            {
+                // RedLeaf's by-id read: the reader uses it once it knows where a session's entity is.
+                return Sessions.TryGetValue(path["/api/entities/entity-".Length..], out var row)
+                    ? Json(Entity(row))
+                    : new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
             if (request.Method == HttpMethod.Get && path == "/api/streams/session-messages/records")
             {
                 var row = Sessions.Values.Single(s => "entity-" + s.Id == query["entity_id"].ToString());

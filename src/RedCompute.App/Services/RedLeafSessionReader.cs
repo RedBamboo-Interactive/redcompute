@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text;
@@ -302,26 +303,25 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
     /// Otherwise the newest <paramref name="tail"/> records (at least one).</param>
     public async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> GetSessionAsync(
         string sessionId, int? tail = null)
-        => await GetByDataFilterAsync($"data.session_id={Uri.EscapeDataString(sessionId)}", tail);
+    {
+        using var read = await ReadSessionEntityAsync(sessionId);
+        return read is null ? (null, []) : await FromEntityAsync(read.Entity, tail);
+    }
 
     public async Task<(UnifiedSessionInfo? Info, string? EntityId)> GetSessionInfoAsync(string sessionId)
     {
-        using var doc = await GetJsonAsync(
-            $"api/entities?type=ai-session&data.session_id={Uri.EscapeDataString(sessionId)}&limit=1");
-        var items = doc.RootElement.GetProperty("items");
-        if (items.GetArrayLength() == 0) return (null, null);
-        var entity = items[0];
+        using var read = await ReadSessionEntityAsync(sessionId);
+        if (read is null) return (null, null);
+        var entity = read.Entity;
         return (MapSession(entity), entity.GetProperty("id").GetString());
     }
 
     /// <summary>The session's durable record with the entity id and the exact slug the mirror upserts by.</summary>
     internal async Task<SessionEntityRead?> GetSessionEntityAsync(string sessionId, CancellationToken ct = default)
     {
-        using var doc = await GetJsonAsync(
-            $"api/entities?type=ai-session&data.session_id={Uri.EscapeDataString(sessionId)}&limit=1", ct);
-        var items = doc.RootElement.GetProperty("items");
-        if (items.GetArrayLength() == 0) return null;
-        var entity = items[0];
+        using var read = await ReadSessionEntityAsync(sessionId, ct);
+        if (read is null) return null;
+        var entity = read.Entity;
         var info = MapSession(entity);
         var entityId = entity.TryGetProperty("id", out var id) ? id.GetString() : null;
         var slug = entity.TryGetProperty("slug", out var s) ? s.GetString() : null;
@@ -621,8 +621,91 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         var items = doc.RootElement.GetProperty("items");
         if (items.GetArrayLength() == 0)
             return (null, []);
+        return await FromEntityAsync(items[0], tail);
+    }
 
+    /// <summary>The most entity ids <see cref="ReadSessionEntityAsync"/> remembers; past it the map starts over.</summary>
+    internal const int MaxKnownEntityIds = 4096;
+
+    // Where each session's ai-session entity is (session id -> entity id), never what it says: RedCompute is
+    // not the only writer of an entity (RedLeaf's entity API, its relocation rebaser and version reverts change
+    // data too), so every read fetches the entity itself and the caller's access is decided on what it says now.
+    private readonly ConcurrentDictionary<string, string> _entityIds = new(StringComparer.Ordinal);
+
+    internal int KnownEntityIds => _entityIds.Count;
+
+    private sealed class SessionEntityDocument(JsonDocument document, JsonElement entity) : IDisposable
+    {
+        public JsonElement Entity { get; } = entity;
+        public void Dispose() => document.Dispose();
+    }
+
+    /// <summary>
+    /// The session's ai-session entity as RedLeaf holds it now: by its id when this reader has found it before (a
+    /// primary-key read), otherwise by the <c>data.session_id</c> query, which also records the id. A by-id read
+    /// that does not answer with that session's entity (deleted, replaced, unreadable, or any failure) forgets the
+    /// id and asks the query, exactly as before.
+    /// </summary>
+    private async Task<SessionEntityDocument?> ReadSessionEntityAsync(string sessionId, CancellationToken ct = default)
+    {
+        if (_entityIds.TryGetValue(sessionId, out var knownId))
+        {
+            try
+            {
+                using var response = await _http.GetAsync($"api/entities/{Uri.EscapeDataString(knownId)}", ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    var byId = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                    if (IsEntityOf(byId.RootElement, sessionId, knownId))
+                        return new SessionEntityDocument(byId, byId.RootElement);
+                    byId.Dispose();
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or JsonException)
+            {
+                // The query below decides, as it did before the id was known.
+            }
+            _entityIds.TryRemove(new KeyValuePair<string, string>(sessionId, knownId));
+        }
+
+        var doc = await GetJsonAsync(
+            $"api/entities?type=ai-session&data.session_id={Uri.EscapeDataString(sessionId)}&limit=1", ct);
+        var items = doc.RootElement.GetProperty("items");
+        if (items.GetArrayLength() == 0)
+        {
+            doc.Dispose();
+            return null;
+        }
         var entity = items[0];
+        if (Str(entity, "id") is { } entityId && IsEntityOf(entity, sessionId, entityId))
+        {
+            if (_entityIds.Count >= MaxKnownEntityIds) _entityIds.Clear();
+            _entityIds[sessionId] = entityId;
+        }
+        return new SessionEntityDocument(doc, entity);
+    }
+
+    /// <summary>An ai-session entity with this id whose data names this session.</summary>
+    private static bool IsEntityOf(JsonElement entity, string sessionId, string entityId)
+    {
+        if (entity.ValueKind != JsonValueKind.Object || Str(entity, "id") != entityId) return false;
+        if (Str(entity, "typeSlug") is { } type && type != "ai-session") return false;
+        if (!entity.TryGetProperty("data", out var data)) return false;
+        if (data.ValueKind == JsonValueKind.String)
+        {
+            try
+            {
+                using var parsed = JsonDocument.Parse(data.GetString()!);
+                return Str(parsed.RootElement, "session_id") == sessionId;
+            }
+            catch (JsonException) { return false; }
+        }
+        return data.ValueKind == JsonValueKind.Object && Str(data, "session_id") == sessionId;
+    }
+
+    private async Task<(UnifiedSessionInfo? Info, List<UnifiedMessageRecord> History)> FromEntityAsync(
+        JsonElement entity, int? tail)
+    {
         var info = MapSession(entity);
         if (info == null)
             return (null, []);
