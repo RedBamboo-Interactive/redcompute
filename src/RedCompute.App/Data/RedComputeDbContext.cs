@@ -137,7 +137,37 @@ public class RedComputeDbContext : DbContext
             );
             """;
         cmd.ExecuteNonQuery();
+
+        cmd.CommandText = $"SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = '{JobListIndex}'";
+        if (cmd.ExecuteScalar() is null)
+        {
+            timer.Restart();
+            cmd.CommandText = CreateJobListIndexSql;
+            cmd.ExecuteNonQuery();
+            JobListIndexBuiltIn = timer.Elapsed;
+        }
     }
+
+    /// <summary>
+    /// Everything the job list filters, authorizes and sorts on, in one index. <c>Confidential</c>,
+    /// <c>ParentJobId</c>, <c>UserId</c> and <c>CreationProvenanceJson</c> sit behind <c>InputJson</c> and
+    /// <c>ResultJson</c> in the row, so reading any of them from the table walks the job's payload pages; from here
+    /// SQLite reads them without opening the row. Built once, at the first start that lacks it: that build reads
+    /// the whole table.
+    /// </summary>
+    internal const string JobListIndex = "IX_Jobs_List";
+
+    internal const string CreateJobListIndexSql = """
+        CREATE INDEX IF NOT EXISTS IX_Jobs_List ON Jobs(
+            QueuedAt, Id, CapabilitySlug, Status, ExternalExecution, ParentJobId, Confidential, UserId,
+            CreationProvenanceJson)
+        """;
+
+    /// <summary>
+    /// How long building <see cref="JobListIndex"/> took, when this <see cref="MigrateSchema"/> built it; null when
+    /// it already existed. Logged at boot.
+    /// </summary>
+    public TimeSpan? JobListIndexBuiltIn { get; private set; }
 
     /// <summary>
     /// SQLite <c>json_extract</c>, for queries that must read one scalar out of a JSON column

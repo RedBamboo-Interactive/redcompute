@@ -45,6 +45,30 @@ public class JobTrackingService : IJobTracker
         PlacementWhy = j.PlacementWhy,
         InputJson = "{}",
     };
+
+    /// <summary>
+    /// What the list's visibility and provenance predicates read, and nothing else. Every column is in
+    /// <c>IX_Jobs_List</c>, so SQLite answers from the index. Any other column of the list sits behind
+    /// <c>InputJson</c> and <c>ResultJson</c> in the row, and reaching it means walking the job's payload pages:
+    /// 2026-11-28, one context-filtered list over 30 days read 1.0 to 1.45 GB and took 1 to 4 s.
+    /// </summary>
+    internal static readonly Expression<Func<JobRecord, JobRecord>> JobListCandidateProjection = j => new JobRecord
+    {
+        Id = j.Id,
+        CapabilitySlug = j.CapabilitySlug,
+        ProviderName = "",
+        Status = j.Status,
+        QueuedAt = j.QueuedAt,
+        ExternalExecution = j.ExternalExecution,
+        ParentJobId = j.ParentJobId,
+        Confidential = j.Confidential,
+        UserId = j.UserId,
+        CreationProvenanceJson = j.CreationProvenanceJson,
+        InputJson = "{}",
+    };
+
+    /// <summary>Ids per statement when a list page is loaded, well under SQLite's parameter limit.</summary>
+    private const int ListPageChunk = 500;
     private readonly object _lock = new();
     private readonly object _terminalWaitersLock = new();
     private readonly Dictionary<Guid, HashSet<TaskCompletionSource<bool>>> _terminalWaiters = new();
@@ -929,13 +953,10 @@ public class JobTrackingService : IJobTracker
         // Provenance filters operate on the typed contract. Substring matching JSON can
         // confuse origin app IDs with actor/beneficiary IDs and is not an audit boundary.
         // Lists never return invocation inputs, result payloads, detailed errors, or
-        // idempotency material. Project before materialising so a page read does not
-        // pull every job's potentially huge detail JSON out of SQLite merely to
-        // authorize, count, sort, and discard all but one page.
-        IEnumerable<JobRecord> filtered = query
-            .AsNoTracking()
-            .Select(JobListProjection)
-            .ToList();
+        // idempotency material. Authorize, filter, count and sort on candidates read
+        // from the list index alone, then load the summary of the one page returned:
+        // no job outside that page has its row, and so its payload pages, read.
+        IEnumerable<JobRecord> filtered = ListCandidates(query).ToList();
         if (originApp != null) filtered = filtered.Where(j => Eq(j.CreationProvenance?.Origin.App.Id, originApp));
         if (originApi != null) filtered = filtered.Where(j => Eq(j.CreationProvenance?.Origin.Entrypoint.Route, originApi));
         if (actor != null) filtered = filtered.Where(j =>
@@ -964,13 +985,26 @@ public class JobTrackingService : IJobTracker
         // A temporary host-clock jump must not pin completed work above genuinely
         // recent jobs until the wall clock catches up. Preserve the recorded audit
         // timestamp, but demote implausibly future records in list projections.
-        var materialized = filtered
+        var ordered = filtered
             .OrderBy(j => j.QueuedAt > latestPlausibleTimestamp)
             .ThenByDescending(j => j.QueuedAt)
             .ThenByDescending(j => j.Id)
+            .Select(j => j.Id)
             .ToList();
-        return (materialized.Skip(offset).Take(limit).ToList(), materialized.Count);
+        var selected = ordered.Skip(offset).Take(limit).ToList();
+        if (selected.Count == 0) return ([], ordered.Count);
+
+        var position = selected.Select((id, index) => (id, index)).ToDictionary(item => item.id, item => item.index);
+        var summaries = new List<JobRecord>(selected.Count);
+        foreach (var chunk in selected.Chunk(ListPageChunk))
+            summaries.AddRange(db.Jobs.Where(j => chunk.Contains(j.Id)).AsNoTracking().Select(JobListProjection));
+        summaries.Sort((left, right) => position[left.Id].CompareTo(position[right.Id]));
+        return (summaries, ordered.Count);
     }
+
+    /// <summary>The list's candidates, as a query, so a test can read the plan SQLite gives it.</summary>
+    internal static IQueryable<JobRecord> ListCandidates(IQueryable<JobRecord> jobs)
+        => jobs.AsNoTracking().Select(JobListCandidateProjection);
 
     private sealed record JobListCandidate(Guid Id, DateTimeOffset QueuedAt);
 

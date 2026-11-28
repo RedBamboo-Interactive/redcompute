@@ -184,6 +184,8 @@ public static class RedComputeHost
             db.MigrateSchema();
             if (db.NodeIdColumnAddedIn is { } added)
                 Log($"[App] Added Jobs.NodeId in {added.TotalMilliseconds:0.#} ms");
+            if (db.JobListIndexBuiltIn is { } built)
+                Log($"[App] Built the job list index {RedComputeDbContext.JobListIndex} in {built.TotalMilliseconds:0} ms");
             Log("[App] Database initialized");
         }
         catch (Exception ex)
