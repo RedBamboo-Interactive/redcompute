@@ -39,6 +39,27 @@ public sealed class CodexConversationProfileTests
             value.GetProperty("baseInstructions").GetString());
     }
 
+    [Theory]
+    [InlineData(SessionExecutionProfile.Default, true)]
+    [InlineData(SessionExecutionProfile.ConversationOnly, false)]
+    public void ThreadStartAndResumeKeepTheNativeQuestionFeatureInTheThreadConfiguration(
+        string profile, bool expected)
+    {
+        var info = Session(profile);
+        foreach (var parameters in new[]
+        {
+            CodexInteractiveService.BuildThreadStartParams(info),
+            CodexInteractiveService.BuildThreadResumeParams(info),
+        })
+        {
+            var features = JsonSerializer.SerializeToElement(parameters)
+                .GetProperty("config").GetProperty("features");
+            Assert.Equal(expected, features.GetProperty("default_mode_request_user_input").GetBoolean());
+            Assert.False(features.GetProperty("apps").GetBoolean());
+            Assert.False(features.GetProperty("plugins").GetBoolean());
+        }
+    }
+
     [Fact]
     public void DefaultThreadDoesNotOverrideExistingCodexPolicy()
     {

@@ -647,8 +647,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             environment,
             launchProcess: LaunchAppServerProcess,
             spawned: spawned,
-            host: _host, enableOwnerDraftTool: suiteAccess && EnableOwnerDraftTool,
-            enableNativeQuestions: suiteAccess);
+            host: _host, enableOwnerDraftTool: suiteAccess && EnableOwnerDraftTool);
         conn.LeafMcpUrl = LeafMcpGateway.UrlFor(environment);
         conn.Notification += (method, p) =>
         {
@@ -1190,11 +1189,18 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         JsonElement effectiveConfig = default, string? leafMcpUrl = null)
     {
         // Apps and plugins can add servers independently of the mcp_servers table.
+        // Codex applies the whole thread features table over the app-server's startup settings.
+        var conversationOnly = SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile);
         var config = new Dictionary<string, object>
         {
-            ["features"] = new { apps = false, plugins = false },
+            ["features"] = new Dictionary<string, bool>
+            {
+                ["apps"] = false,
+                ["plugins"] = false,
+                ["default_mode_request_user_input"] = !conversationOnly,
+            },
         };
-        if (SessionExecutionProfile.IsConversationOnly(info.ExecutionProfile))
+        if (conversationOnly)
             config["web_search"] = "disabled";
 
         var servers = effectiveConfig.ValueKind == JsonValueKind.Object

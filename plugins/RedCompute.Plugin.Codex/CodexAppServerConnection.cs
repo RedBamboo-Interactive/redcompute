@@ -74,7 +74,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         CancellationToken ct = default,
         Func<HostSpawnSpec, IHostProcess?>? launchProcess = null,
         Action? spawned = null,
-        IExecutionHost? host = null, bool enableOwnerDraftTool = false, bool enableNativeQuestions = false)
+        IExecutionHost? host = null, bool enableOwnerDraftTool = false)
     {
         host ??= LocalExecutionHost.Shared;
         var exe = CliLocators.Codex(host, configuredCliPath)
@@ -84,10 +84,7 @@ public sealed class CodexAppServerConnection : IAsyncDisposable
         var spec = new HostSpawnSpec
         {
             FileName = exe,
-            ArgumentList = [
-                .. (enableNativeQuestions ? new[] { "-c", "features.default_mode_request_user_input=true" } : []),
-                .. CodexWindowsSandboxConfig.AppServerArguments(host, env),
-            ],
+            ArgumentList = CodexWindowsSandboxConfig.AppServerArguments(host, env),
             WorkingDirectory = !string.IsNullOrWhiteSpace(workingDirectory)
                 && host.Files.DirectoryExists(host.Path(workingDirectory))
                     ? host.Path(workingDirectory)

@@ -1,8 +1,6 @@
 {
   "argumentList": [
     "-c",
-    "features.default_mode_request_user_input=true",
-    "-c",
     "windows.sandbox=\"unelevated\"",
     "app-server"
   ],

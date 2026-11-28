@@ -2,13 +2,11 @@
   {
     "args": [
       "-c",
-      "features.default_mode_request_user_input=true",
-      "-c",
       "windows.sandbox=\"unelevated\"",
       "app-server"
     ],
     "cli": "codex",
-    "commandLine": "\"<root>\\cli\\codex.exe\" -c features.default_mode_request_user_input=true -c \"windows.sandbox=\\\"unelevated\\\"\" app-server",
+    "commandLine": "\"<root>\\cli\\codex.exe\" -c \"windows.sandbox=\\\"unelevated\\\"\" app-server",
     "containment": "session:codex",
     "cwd": "<root>\\project",
     "environmentChanges": {
