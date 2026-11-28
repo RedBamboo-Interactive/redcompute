@@ -56,6 +56,8 @@ public sealed class GenerateNodeZeroPinTests(ITestOutputHelper output) : IAsyncL
         registry.Register("music-gen", new CapabilityDefinition { Slug = "music-gen", DisplayName = "Music", Description = "Music test" },
             new CapabilityConfig { Providers = { ["stopped"] = new ProviderConfig { Type = "Suno" } } },
             new Dictionary<string, IBackendProvider> { [stopped.Name] = stopped }, stopped.Name);
+        // What RelayServer's status poll does at start: /status answers from these readings.
+        await registry.PollProviderStatusesAsync();
         var nodes = new NodeRegistry(
             new NodeIdentityResult(new NodeIdentity(NodeZero, DateTimeOffset.UtcNow.AddDays(-1), NodeZero), true, false, null),
             NodeRegistryTests.Platform(), "0.2.0", DateTimeOffset.UtcNow, () => DateTimeOffset.UtcNow);
@@ -111,14 +113,20 @@ public sealed class GenerateNodeZeroPinTests(ITestOutputHelper output) : IAsyncL
         Assert.Equal(Goldens[name], actual);
     }
 
-    /// <summary>/status with node zero only: everything but the uptime, as P6 wrote it.</summary>
+    /// <summary>
+    /// /status with node zero only: everything but the uptime, as P6 wrote it, once the fields the status poll
+    /// added (statusAsOf on each provider and the answer, statusAgeSeconds, statusPollSeconds) are taken out:
+    /// the poll only added fields.
+    /// </summary>
     [Fact]
     public async Task Node_zero_status_is_pinned_to_its_p6_answer()
     {
         var text = await _client.GetStringAsync("/status");
         var actual = Regex.Replace(text, "\"uptime\":[0-9.E+-]+", "\"uptime\":0");
         output.WriteLine($"status => {actual}");
-        Assert.Equal(Goldens["status"], actual);
+        var added = new Regex(",\"statusAsOf\":\"[^\"]+\"|,\"statusAgeSeconds\":[0-9.E+-]+|,\"statusPollSeconds\":5");
+        Assert.Equal(5, added.Matches(actual).Count); // two providers, and the answer's three
+        Assert.Equal(Goldens["status"], added.Replace(actual, ""));
     }
 
     /// <summary>Status, body (job ids as {job}), what the provider got, and the job as recorded.</summary>

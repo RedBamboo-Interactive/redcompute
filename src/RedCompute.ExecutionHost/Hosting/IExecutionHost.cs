@@ -361,6 +361,13 @@ public interface IHostNetwork
     System.Net.Http.HttpMessageHandler CreateServiceHandler(Uri hostLocalUri);
 
     /// <summary>
+    /// The handler for a status or health probe of that service. Locally <see cref="LoopbackProbe"/>: a
+    /// connect to a loopback address gives up after a quarter second, so a stopped service is seen as
+    /// stopped at once. Elsewhere the same as <see cref="CreateServiceHandler"/>.
+    /// </summary>
+    System.Net.Http.HttpMessageHandler CreateProbeHandler(Uri hostLocalUri) => CreateServiceHandler(hostLocalUri);
+
+    /// <summary>
     /// A connected WebSocket to a service the host serves at <paramref name="hostLocalUri"/> (a
     /// <c>ws://</c> Uri as the host sees it). Locally a <see cref="System.Net.WebSockets.ClientWebSocket"/>
     /// with default options, connected to that Uri; a remote host carries its messages over the node

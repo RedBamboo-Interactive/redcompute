@@ -108,7 +108,9 @@ public static class GenericCapabilityEndpoints
                         }, statusCode: 422);
                 }
 
-                var status = await provider.GetStatusAsync();
+                // A fresh Running reading from the status poll admits at once; otherwise the provider is
+                // asked, so a provider known to be down is confirmed down and one started since is admitted.
+                var status = await registry.ProviderStatuses.AdmissionStatusAsync(provider);
                 if (status != BackendStatus.Running)
                     return provider is RemoteNodeProvider remote
                         ? NotRunningOnNode(remote, slug, status)

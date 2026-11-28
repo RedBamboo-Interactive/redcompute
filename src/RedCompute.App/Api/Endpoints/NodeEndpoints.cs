@@ -139,13 +139,26 @@ public sealed record NodeCapabilityView(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public NodeRuntimeView? Runtime { get; init; }
+
+    /// <summary>Node zero: when the status poll last read the capability's default provider (null before its first reading).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? StatusAsOf { get; init; }
+
+    /// <summary>Node zero: the age of <see cref="StatusAsOf"/> in seconds.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? StatusAgeSeconds { get; init; }
 }
 
 /// <summary>The runtime behind a remote node's capability: never a path or an argument.</summary>
 /// <param name="Managed"><c>spawn</c> (leaf-node starts and stops it) or <c>attach</c> (its owner runs it; it is only reached).</param>
 public sealed record NodeRuntimeView(string Id, string Label, string? Version, string Managed);
 
-public sealed record NodeProviderView(string Name, string? Type, string Status, string? StatusDetail, bool IsDefault);
+public sealed record NodeProviderView(string Name, string? Type, string Status, string? StatusDetail, bool IsDefault)
+{
+    /// <summary>When the status poll last read this provider; null before its first reading.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? StatusAsOf { get; init; }
+}
 
 /// <summary>What <c>POST /nodes/{id}/identity-pin/reset</c> did: Reset is false when there was no pin to clear.</summary>
 public sealed record NodeIdentityPinResetView(string NodeId, bool Reset);
@@ -181,7 +194,7 @@ public static class NodeEndpoints
             .WithResponse(SchemaOf<NodeAgentDownload>());
 
         endpoints.MapGet("/nodes",
-            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform (with chassis when the firmware says), its icon and color from the kernel's node entity (null from an older kernel), hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is eligible when it is confirmed, not revoked, online, and its agent speaks runtime.v1 and forward.http.v1 (else the first failing reason: revoked, not_confirmed, needs_update, offline, remote_execution_not_available). capabilities: node zero's configured capabilities and providers; a remote node's come from the runtimes its owner registered there, each {slug, displayName, provider, status, available, reason (node_offline|node_not_eligible|runtime_disabled), accelerator, runtime {id, label, version, managed spawn|attach}}, the last report kept while it is offline. legacyNodeId is the node records older than node ids belong to. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
+            "The computers RedCompute runs work on: node zero (kind local, isLocal, this machine) first, then every paired remote node (kind remote) by name. Each has its platform (with chassis when the firmware says), its icon and color from the kernel's node entity (null from an older kernel), hardware summary, status (online|offline|revoked|needs-update|pending-confirmation) with statusReason, owner, confirmed, the live link of a remote node, the CLIs it reported, and placement {eligible, reason}: node zero is eligible; a remote node is eligible when it is confirmed, not revoked, online, and its agent speaks runtime.v1 and forward.http.v1 (else the first failing reason: revoked, not_confirmed, needs_update, offline, remote_execution_not_available). capabilities: node zero's configured capabilities and providers; a remote node's come from the runtimes its owner registered there, each {slug, displayName, provider, status, available, reason (node_offline|node_not_eligible|runtime_disabled), accelerator, runtime {id, label, version, managed spawn|attach}}, the last report kept while it is offline. legacyNodeId is the node records older than node ids belong to. Node zero's capability and provider statuses are the status poll's last readings (every 5 s; no provider is asked inside the request): each has statusAsOf, and a capability statusAgeSeconds, both absent before the poll first reached it. Remote nodes are listed only to their owner and to admins (a signed identity; an Agent counts as the person it works for); anyone else, the anonymous local identity included, sees node zero only.",
             async Task<Ok<NodeListView>> (HttpContext context) =>
             {
                 var views = new List<NodeView>();
@@ -423,33 +436,31 @@ public static class NodeEndpoints
             .ToList();
 
 
-    /// <summary>The same status rules as <c>/status</c>: each provider is asked once, concurrently.</summary>
-    private static async Task<IReadOnlyList<NodeCapabilityView>> CapabilitiesAsync(CapabilityRegistry registry)
+    /// <summary>The same status rules as <c>/status</c>, from the status poll's last readings: no provider is asked here.</summary>
+    private static Task<IReadOnlyList<NodeCapabilityView>> CapabilitiesAsync(CapabilityRegistry registry)
     {
         var capabilities = registry.Capabilities.ToArray();
-        var statuses = new Dictionary<IBackendProvider, Task<BackendStatus>>(ReferenceEqualityComparer.Instance);
-        foreach (var provider in capabilities.SelectMany(capability => capability.Value.Providers.Values))
-            if (!statuses.ContainsKey(provider))
-                statuses.Add(provider, StatusOf(provider));
-        await Task.WhenAll(statuses.Values);
+        var statuses = registry.ProviderStatuses;
 
-        return capabilities
+        IReadOnlyList<NodeCapabilityView> views = capabilities
             .OrderBy(capability => capability.Value.Definition.DisplayName, StringComparer.OrdinalIgnoreCase)
             .Select(capability =>
             {
                 var (slug, entry) = capability;
                 var active = entry.ActiveProvider;
-                var status = entry.IsExternal ? BackendStatus.Running
-                    : active is null ? BackendStatus.Stopped
-                    : statuses[active].Result;
+                var status = registry.CachedStatus(entry);
+                var activeAt = !entry.IsExternal && active is not null ? statuses.Get(active)?.At : null;
                 var providers = entry.Providers
                     .OrderBy(provider => provider.Key, StringComparer.OrdinalIgnoreCase)
                     .Select(provider => new NodeProviderView(
                         provider.Key,
                         entry.Config.Providers.TryGetValue(provider.Key, out var config) ? config.Type : null,
-                        statuses[provider.Value].Result.ToString(),
+                        statuses.StatusOf(provider.Value).ToString(),
                         provider.Value.StatusDetail,
-                        provider.Key == entry.DefaultProviderName))
+                        provider.Key == entry.DefaultProviderName)
+                    {
+                        StatusAsOf = statuses.Get(provider.Value)?.At,
+                    })
                     .ToList();
                 return new NodeCapabilityView(
                     slug,
@@ -461,14 +472,13 @@ public static class NodeEndpoints
                     entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
                     entry.IsSleeping,
                     entry.IsManuallyDisabled,
-                    providers);
+                    providers)
+                {
+                    StatusAsOf = activeAt,
+                    StatusAgeSeconds = statuses.AgeSeconds(activeAt),
+                };
             })
             .ToList();
-    }
-
-    private static async Task<BackendStatus> StatusOf(IBackendProvider provider)
-    {
-        try { return await provider.GetStatusAsync(); }
-        catch { return BackendStatus.Error; }
+        return Task.FromResult(views);
     }
 }

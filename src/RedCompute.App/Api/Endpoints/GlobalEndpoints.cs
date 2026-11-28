@@ -42,6 +42,12 @@ public static class GlobalEndpoints
         return statuses.Count > 0 ? statuses : null;
     }
 
+    /// <summary>What /status and /nodes say about where their provider statuses come from.</summary>
+    internal const string StatusFromPollDescription =
+        "Provider statuses are the status poll's last readings (every statusPollSeconds, 5): no provider is asked inside the request. "
+        + "statusAsOf is the oldest reading the answer uses and statusAgeSeconds its age, so a stale answer shows; each provider carries its own statusAsOf. "
+        + "A provider the poll has not reached yet (the first seconds after start) reads Stopped without statusAsOf.";
+
     public static void Map(EndpointRegistry endpoints, CapabilityRegistry registry, JobTrackingService jobTracker, LoggingService logger,
         INodeRegistry? nodes = null)
     {
@@ -49,18 +55,18 @@ public static class GlobalEndpoints
 
         endpoints.MapGet("/status", "Service status with uptime and capability states. Each capability's providers[] are node zero's; "
             + "nodes[] (present only when a remote node the caller may see has one) lists the providers on remote nodes: "
-            + "{nodeId, provider, status, available, reason, accelerator}, reason node_offline, node_not_eligible or runtime_disabled.",
-            async (HttpContext ctx) =>
+            + "{nodeId, provider, status, available, reason, accelerator}, reason node_offline, node_not_eligible or runtime_disabled. "
+            + StatusFromPollDescription,
+            (HttpContext ctx) =>
         {
+            // The last poll's readings: no provider is asked inside the request.
             var capabilitySnapshot = registry.Capabilities.ToArray();
+            var statuses = registry.ProviderStatuses;
             var providers = capabilitySnapshot
                 .SelectMany(capability => capability.Value.Providers.Values)
-                .Distinct<IBackendProvider>(ReferenceEqualityComparer.Instance);
-            var statusTasks = new Dictionary<IBackendProvider, Task<BackendStatus>>(
-                ReferenceEqualityComparer.Instance);
-            foreach (var provider in providers)
-                statusTasks.Add(provider, provider.GetStatusAsync());
-            await Task.WhenAll(statusTasks.Values);
+                .Distinct<IBackendProvider>(ReferenceEqualityComparer.Instance)
+                .ToArray();
+            var statusAsOf = statuses.OldestReading(providers);
 
             var capabilities = capabilitySnapshot.Select(capability =>
             {
@@ -69,7 +75,8 @@ public static class GlobalEndpoints
                 {
                     name = provider.Key,
                     provider = provider.Value,
-                    status = statusTasks[provider.Value].GetAwaiter().GetResult(),
+                    status = statuses.StatusOf(provider.Value),
+                    statusAsOf = statuses.Get(provider.Value)?.At,
                 }).ToArray();
 
                 var activeProvider = entry.ActiveProvider;
@@ -80,7 +87,7 @@ public static class GlobalEndpoints
                     ? BackendStatus.Running
                     : activeProvider == null
                         ? BackendStatus.Stopped
-                        : activeStatus?.status ?? statusTasks[activeProvider].GetAwaiter().GetResult();
+                        : activeStatus?.status ?? statuses.StatusOf(activeProvider);
 
                 return new
                 {
@@ -98,6 +105,7 @@ public static class GlobalEndpoints
                         status = item.status.ToString(),
                         statusDetail = item.provider.StatusDetail,
                         nodeId = nodes?.StatusKey(item.name).NodeId,
+                        item.statusAsOf,
                     }),
                     executionMode = entry.Definition.ExecutionMode.ToString().ToLowerInvariant(),
                     sleeping = entry.IsSleeping,
@@ -116,7 +124,10 @@ public static class GlobalEndpoints
                 service = "RedCompute",
                 uptime = (DateTimeOffset.UtcNow - _startTime).TotalSeconds,
                 localNodeId = nodes?.LocalNodeId,
-                capabilities
+                capabilities,
+                statusAsOf,
+                statusAgeSeconds = statuses.AgeSeconds(statusAsOf),
+                statusPollSeconds = ProviderStatusCache.PollInterval.TotalSeconds,
             });
         });
 

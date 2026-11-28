@@ -762,23 +762,30 @@ public class RelayServer
         _ = DetachedWork.Start(() => PollCapabilityStatus(broadcaster));
     }
 
+    /// <summary>
+    /// The status poll: every <see cref="ProviderStatusCache.PollInterval"/>, starting at once, each of node zero's
+    /// providers is asked once, all at the same time, into <see cref="CapabilityRegistry.ProviderStatuses"/>
+    /// (what /status, /nodes and /health answer from); then a capability whose state changed is broadcast.
+    /// </summary>
     private async Task PollCapabilityStatus(WebSocketBroadcaster broadcaster)
     {
         var lastStatuses = new Dictionary<string, string>();
         while (true)
         {
-            await Task.Delay(5000);
-            foreach (var (slug, entry) in _registry.Capabilities)
+            var cycle = System.Diagnostics.Stopwatch.StartNew();
+            try { await _registry.PollProviderStatusesAsync(); }
+            catch { /* a reading that failed stays as it was */ }
+            foreach (var (slug, entry) in _registry.Capabilities.ToArray())
             {
                 try
                 {
-                    var defaultStatus = (await _registry.GetStatus(slug)).ToString();
+                    var defaultStatus = _registry.CachedStatus(entry).ToString();
 
                     // Each provider's status is keyed by (provider, node); one node in Phase 1.
                     var provStatuses = new List<(ProviderStatusKey Key, string Status)>();
                     foreach (var (name, prov) in entry.Providers)
                     {
-                        var ps = (await prov.GetStatusAsync()).ToString();
+                        var ps = _registry.ProviderStatuses.StatusOf(prov).ToString();
                         provStatuses.Add((StatusKey(name), ps));
                     }
 
@@ -809,6 +816,8 @@ public class RelayServer
                 }
                 catch { }
             }
+            var wait = ProviderStatusCache.PollInterval - cycle.Elapsed;
+            if (wait > TimeSpan.Zero) await Task.Delay(wait);
         }
     }
 

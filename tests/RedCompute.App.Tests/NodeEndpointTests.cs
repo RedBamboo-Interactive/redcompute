@@ -245,6 +245,8 @@ public sealed class NodeEndpointTests : IAsyncLifetime
         registry.Register("workflow",
             new CapabilityDefinition { Slug = "workflow", DisplayName = "Workflow", ExecutionMode = CapabilityExecutionMode.External },
             new CapabilityConfig(), [], null);
+        // What RelayServer's status poll does at start: /nodes answers from these readings.
+        registry.PollProviderStatusesAsync().GetAwaiter().GetResult();
         return registry;
     }
 

@@ -31,6 +31,9 @@ public sealed class KevLocalQualityProvider :
     private readonly string _capabilitySlug;
     private readonly Action<string> _log;
     private readonly HttpClient _http;
+    // The v1/models probe (status poll and start-up): a stopped sidecar on a loopback port is refused in a
+    // quarter second, not two. The same client as _http when one is given.
+    private readonly HttpClient _probeHttp;
     private readonly bool _ownsHttp;
     private readonly IKevProcessController _processController;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _requests = new();
@@ -72,6 +75,7 @@ public sealed class KevLocalQualityProvider :
         _http = httpClient ?? new HttpClient();
         _ownsHttp = httpClient is null;
         _http.Timeout = Timeout.InfiniteTimeSpan;
+        _probeHttp = httpClient ?? new HttpClient(LoopbackProbe.CreateHandler()) { Timeout = Timeout.InfiniteTimeSpan };
 
         _model = string.IsNullOrWhiteSpace(config.Model) ? "kev-latest" : config.Model.Trim();
         _modelRevision = string.IsNullOrWhiteSpace(config.ModelRevision)
@@ -553,7 +557,11 @@ public sealed class KevLocalQualityProvider :
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
-        if (_ownsHttp) _http.Dispose();
+        if (_ownsHttp)
+        {
+            _http.Dispose();
+            _probeHttp.Dispose();
+        }
     }
 
     private async Task<bool> ProbeAsync(CancellationToken ct)
@@ -564,7 +572,7 @@ public sealed class KevLocalQualityProvider :
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             using var request = NewSidecarRequest(HttpMethod.Get, "v1/models");
-            using var response = await _http.SendAsync(request, timeout.Token);
+            using var response = await _probeHttp.SendAsync(request, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {
                 MarkEndpointUnreachable();

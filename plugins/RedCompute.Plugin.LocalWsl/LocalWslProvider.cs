@@ -59,7 +59,8 @@ public class LocalWslProvider : IPluginProvider, IServiceProxyClient
         LaunchServerProcess = spec => _executionHost.Processes.Start(spec);
         LaunchStopProcess = spec => _executionHost.Processes.Start(spec);
         LaunchHostnameProcess = spec => _executionHost.Processes.Start(spec);
-        _healthClient = CreateServiceClient(TimeSpan.FromSeconds(5));
+        // The health probe: a stopped backend on a loopback port is refused in a quarter second, not two.
+        _healthClient = _executionHost.Network.CreateProbeClient($"http://127.0.0.1:{_config.BackendPort}", TimeSpan.FromSeconds(5));
         ProxyClient = CreateServiceClient(IServiceProxyClient.ProxyTimeout);
         // Node zero's runtimes list (design 2.4): this backend, started and stopped as always.
         if (_executionHost.Runtimes is LocalHostRuntimes runtimes)

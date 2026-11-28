@@ -44,6 +44,24 @@ public class CapabilityRegistry
 
     public IReadOnlyDictionary<string, CapabilityEntry> Capabilities => _capabilities;
 
+    /// <summary>The status poll's last reading of each of node zero's providers; what the status routes answer from.</summary>
+    public ProviderStatusCache ProviderStatuses { get; } = new();
+
+    /// <summary>Node zero's providers, each once (one provider can serve several capabilities).</summary>
+    public IReadOnlyList<IBackendProvider> NodeZeroProviders()
+        => _capabilities.Values.ToArray().SelectMany(entry => entry.Providers.Values)
+            .Distinct(ReferenceEqualityComparer.Instance).Cast<IBackendProvider>().ToList();
+
+    /// <summary>One status poll of node zero's providers (RelayServer runs it every <see cref="ProviderStatusCache.PollInterval"/>).</summary>
+    public Task PollProviderStatusesAsync()
+        => ProviderStatuses.RefreshAsync(NodeZeroProviders(), ProviderStatusCache.PollBudget);
+
+    /// <summary>A capability's default status from the last poll, without asking a provider.</summary>
+    public BackendStatus CachedStatus(CapabilityEntry entry)
+        => entry.IsExternal ? BackendStatus.Running
+            : entry.ActiveProvider is { } active ? ProviderStatuses.StatusOf(active)
+            : BackendStatus.Stopped;
+
     public void Register(string slug, CapabilityDefinition definition, CapabilityConfig config,
         Dictionary<string, IBackendProvider> providers, string? defaultProviderName)
     {

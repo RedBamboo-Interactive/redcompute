@@ -130,7 +130,8 @@ public class ComfyUIProvider : IPluginProvider, ICustomEndpointProvider
         if (_executionHost.Runtimes is LocalHostRuntimes)
         {
             _http = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromMinutes(30));
-            _healthClient = _executionHost.Network.CreateServiceClient($"http://{_host}:{_port}", TimeSpan.FromSeconds(5));
+            // The status probe: a stopped ComfyUI on a loopback port is refused in a quarter second, not two.
+            _healthClient = _executionHost.Network.CreateProbeClient($"http://{_host}:{_port}", TimeSpan.FromSeconds(5));
             _download = _http;
         }
         else

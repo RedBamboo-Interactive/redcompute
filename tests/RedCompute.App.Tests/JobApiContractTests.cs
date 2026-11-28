@@ -156,7 +156,7 @@ public sealed class JobApiContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Status_checks_providers_concurrently_and_only_once()
+    public async Task The_status_poll_checks_providers_concurrently_and_only_once_and_status_asks_none()
     {
         var gate = new CoordinatedStatusGate(expectedCalls: 2);
         var first = new CoordinatedStatusProvider("first", gate);
@@ -165,11 +165,19 @@ public sealed class JobApiContractTests : IAsyncLifetime
         RegisterStatusCapability("status-first-shared", first);
         RegisterStatusCapability("status-second", second);
 
+        // The gate opens only when both are asked at the same time.
+        await _registry.PollProviderStatusesAsync();
+        Assert.Equal(1, first.StatusCalls);
+        Assert.Equal(1, second.StatusCalls);
+
         using var response = await _client.GetAsync("/status");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(1, first.StatusCalls);
         Assert.Equal(1, second.StatusCalls);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("Running", body.RootElement.GetProperty("capabilities").EnumerateArray()
+            .Single(capability => capability.GetProperty("slug").GetString() == "status-first-shared").GetProperty("status").GetString());
     }
 
     [Fact]

@@ -35,17 +35,16 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
     public override string? IconClass => "ph-fill ph-cpu";
     public override string? IconColor => "#5B8BC4";
 
-    public override async Task<IReadOnlyList<CapabilityDescriptor>> GetCapabilitiesAsync()
+    /// <summary>
+    /// The capabilities /health, /discover and the discovery catalog list. Each status is the status poll's last
+    /// reading (<see cref="ProviderStatusCache"/>): building this never asks a provider.
+    /// </summary>
+    public override Task<IReadOnlyList<CapabilityDescriptor>> GetCapabilitiesAsync()
     {
         var caps = new List<CapabilityDescriptor>();
-        foreach (var (slug, entry) in _registry.Capabilities)
+        foreach (var (slug, entry) in _registry.Capabilities.ToArray())
         {
-            string status;
-            try
-            {
-                status = (await _registry.GetStatus(slug)).ToString();
-            }
-            catch { status = "Error"; }
+            var status = _registry.CachedStatus(entry).ToString();
 
             var endpoints = BuildEndpoints(slug, entry);
 
@@ -59,7 +58,7 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
         if (_logService is not null)
             caps.Add(LogEndpoints.GetLogCapabilityDescriptor(_logService));
         caps.Add(RedBamboo.AppHost.Telemetry.TelemetryEndpoints.GetTelemetryCapabilityDescriptor());
-        return caps;
+        return Task.FromResult<IReadOnlyList<CapabilityDescriptor>>(caps);
     }
 
     /// <summary>
@@ -117,9 +116,15 @@ public class RedComputeServiceDescriptor : RegistryServiceDescriptor
 
     public override Task<object?> GetHealthExtrasAsync()
     {
+        // /health's status (ok|degraded) comes from the poll's last readings; say how old they are.
+        var statuses = _registry.ProviderStatuses;
+        var statusAsOf = statuses.OldestReading(_registry.NodeZeroProviders());
         return Task.FromResult<object?>(new
         {
             capabilities = _registry.Capabilities.Count,
+            statusAsOf,
+            statusAgeSeconds = statuses.AgeSeconds(statusAsOf),
+            statusPollSeconds = ProviderStatusCache.PollInterval.TotalSeconds,
         });
     }
 

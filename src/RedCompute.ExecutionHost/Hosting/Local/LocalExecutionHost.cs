@@ -401,6 +401,9 @@ public sealed class LocalExecutionHost : IExecutionHost
         public System.Net.Http.HttpMessageHandler CreateServiceHandler(Uri hostLocalUri)
             => new System.Net.Http.HttpClientHandler();
 
+        public System.Net.Http.HttpMessageHandler CreateProbeHandler(Uri hostLocalUri)
+            => LoopbackProbe.CreateHandler();
+
         public async Task<System.Net.WebSockets.WebSocket> ConnectWebSocketAsync(Uri hostLocalUri, CancellationToken ct = default)
         {
             var socket = new System.Net.WebSockets.ClientWebSocket();

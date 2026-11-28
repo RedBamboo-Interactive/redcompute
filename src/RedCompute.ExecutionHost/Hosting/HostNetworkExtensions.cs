@@ -17,6 +17,16 @@ public static class HostNetworkExtensions
             : new UnresolvableServiceHandler(hostBaseUrl)) { Timeout = timeout };
 
     /// <summary>
+    /// <see cref="CreateServiceClient(IHostNetwork, string, TimeSpan)"/> for a status or health probe, over
+    /// <see cref="IHostNetwork.CreateProbeHandler"/>: locally a connect to a loopback address gives up after
+    /// <see cref="LoopbackProbe.ConnectTimeout"/>. Not for job traffic.
+    /// </summary>
+    public static HttpClient CreateProbeClient(this IHostNetwork network, string hostBaseUrl, TimeSpan timeout)
+        => new(Uri.TryCreate(hostBaseUrl, UriKind.Absolute, out var uri)
+            ? network.CreateProbeHandler(uri)
+            : new UnresolvableServiceHandler(hostBaseUrl)) { Timeout = timeout };
+
+    /// <summary>
     /// <see cref="CreateServiceClient(IHostNetwork, string, TimeSpan)"/> with every response body capped at
     /// <paramref name="maxResponseBytes"/> (read on each request): a declared length over it is refused before a byte is
     /// read, and a body that grows past it fails its read with <see cref="ServiceResponseTooLargeException"/> and is

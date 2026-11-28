@@ -26,6 +26,9 @@ public sealed class NetworkSeamGuardTests
         ("the seam itself: node zero's network (LocalExecutionHost.LocalNetwork) and the refusing handler", [
             "RedCompute.PluginSdk.Hosting.Local.LocalExecutionHost",
         ]),
+        ("the seam's probe handler: node zero's status and health probes (LocalNetwork.CreateProbeHandler) with a short loopback connect", [
+            "RedCompute.PluginSdk.Hosting.LoopbackProbe",
+        ]),
         ("cloud APIs: Suno's, OpenAI's and ElevenLabs' own servers on the internet, never a host's service", [
             "RedCompute.Plugin.OpenAILive.OpenAILiveProvider",
             "RedCompute.Plugin.Suno.SunoProvider",
