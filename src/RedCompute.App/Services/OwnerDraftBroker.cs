@@ -6,6 +6,7 @@ using RedBamboo.AppHost.Auth;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
+using RedCompute.PluginSdk.Hosting.Local;
 
 namespace RedCompute.App.Services;
 
@@ -151,7 +152,16 @@ internal sealed class OwnerDraftClient : IDisposable
         if (!kernel.IsLoopback || kernel.Scheme is not ("http" or "https") || kernel.AbsolutePath != "/"
             || kernel.UserInfo.Length != 0 || kernel.Query.Length != 0 || kernel.Fragment.Length != 0)
             throw new ArgumentException("Owner draft recipient must use the loopback kernel origin.", nameof(kernel));
-        _http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false })
+        var serviceHandler = LocalExecutionHost.Shared.Network.CreateServiceHandler(kernel);
+        if (serviceHandler is not HttpClientHandler handler)
+        {
+            serviceHandler.Dispose();
+            throw new InvalidOperationException("The local kernel transport cannot be configured for a draft request.");
+        }
+
+        handler.AllowAutoRedirect = false;
+        handler.UseProxy = false;
+        _http = new HttpClient(handler)
         {
             BaseAddress = kernel,
             Timeout = TimeSpan.FromSeconds(10),

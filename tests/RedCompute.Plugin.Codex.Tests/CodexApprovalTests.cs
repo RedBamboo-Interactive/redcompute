@@ -215,6 +215,7 @@ public sealed class CodexApprovalTests : IDisposable
     private sealed class Harness
     {
         private readonly string _capture;
+        private readonly CodexAppServerConnection _connection;
         public CodexInteractiveService Service { get; }
         public RecordingStore Store { get; } = new();
         public List<CodexStreamEvent> Events { get; } = [];
@@ -242,9 +243,9 @@ public sealed class CodexApprovalTests : IDisposable
             start.RedirectStandardError = true;
             var process = Process.Start(start)!;
             owner._processes.Add(process);
-            var connection = (CodexAppServerConnection)Activator.CreateInstance(typeof(CodexAppServerConnection),
+            _connection = (CodexAppServerConnection)Activator.CreateInstance(typeof(CodexAppServerConnection),
                 BindingFlags.NonPublic | BindingFlags.Instance, null, [HostSeams.Wrap(process), (Action<string, Guid?>)((_, _) => { })], null)!;
-            sessionType.GetProperty("Connection")!.SetValue(session, connection);
+            sessionType.GetProperty("Connection")!.SetValue(session, _connection);
             sessionType.GetProperty("ActiveTurnId")!.SetValue(session, "turn-1");
             var sessions = typeof(CodexInteractiveService).GetField("_sessions", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(Service)!;
             sessions.GetType().GetMethod("TryAdd")!.Invoke(sessions, ["session-1", session]);
@@ -255,7 +256,7 @@ public sealed class CodexApprovalTests : IDisposable
             var rpcId = JsonSerializer.SerializeToElement(id);
             var payload = JsonSerializer.SerializeToElement(@params);
             return (Task)typeof(CodexInteractiveService).GetMethod("OnServerRequestAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
-                .Invoke(Service, ["session-1", rpcId, method, payload])!;
+                .Invoke(Service, ["session-1", _connection, rpcId, method, payload])!;
         }
 
         /// <summary>The JSON-RPC responses written so far, waiting until <paramref name="count"/> arrive (or the wait ends).</summary>

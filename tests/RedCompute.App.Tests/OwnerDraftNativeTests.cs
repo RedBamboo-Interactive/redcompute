@@ -53,6 +53,26 @@ public sealed class OwnerDraftNativeTests(ITestOutputHelper output)
         }
     }
 
+    [Fact]
+    public async Task Owner_draft_client_does_not_follow_a_redirect_to_another_loopback_recipient()
+    {
+        await using var recipient = await Lab.StartAsync();
+        await using var redirectTarget = await Lab.StartAsync();
+        recipient.DraftRedirect = redirectTarget.BaseUrl + OwnerDraftClient.Route;
+        using var client = new OwnerDraftClient(new Uri(recipient.BaseUrl), recipient.Jwt);
+        var payload = new OwnerDraftArguments(Binding, 1, "Synthetic held content", null, []);
+        var draft = new OwnerDraftAdmission(1, "discord.outreach.draft", "fixture-intent",
+            OwnerDraftClient.Digest(payload), DateTimeOffset.UtcNow.AddMinutes(1), Discussion, "fixture-session",
+            Owner, Agent, "fixture-input", "fixture-message", "fixture-connection", "fixture-thread",
+            "fixture-turn", "fixture-call", payload);
+
+        var result = await client.AdmitAsync(draft, CancellationToken.None);
+
+        Assert.Equal("owner_draft_recipient_unavailable", result.Status);
+        Assert.Single(recipient.Admissions);
+        Assert.Equal(0, redirectTarget.ReceivedRequests);
+    }
+
     private async Task ExerciseNativeAsync(string root, string executable, bool enabled)
     {
         await using var lab = await Lab.StartAsync();
@@ -383,6 +403,9 @@ public sealed class OwnerDraftNativeTests(ITestOutputHelper output)
     private sealed class Lab(WebApplication app) : IAsyncDisposable
     {
         private int _response;
+        private int _receivedRequests;
+        public int ReceivedRequests => Volatile.Read(ref _receivedRequests);
+        public string? DraftRedirect { get; set; }
         private TaskCompletionSource? _hold;
         public string BaseUrl => app.Urls.Single().TrimEnd('/') + "/";
         public JwtOptions Options { get; } = new() { SigningKey = new string('f', 64) };
@@ -412,6 +435,7 @@ public sealed class OwnerDraftNativeTests(ITestOutputHelper output)
 
         private async Task ReceiveAsync(HttpContext ctx)
         {
+            Interlocked.Increment(ref _receivedRequests);
             var auth = ctx.Request.Headers.Authorization.ToString();
             Assert.StartsWith("Bearer ", auth);
             var principal = Jwt.ValidateToken(auth["Bearer ".Length..]);
@@ -427,6 +451,12 @@ public sealed class OwnerDraftNativeTests(ITestOutputHelper output)
             UniqueIntents.TryAdd(draft.IntentId,draft.PayloadSha256);
             Assert.Equal(UniqueIntents[draft.IntentId],draft.PayloadSha256);
             Admissions.Enqueue(draft);
+            if (DraftRedirect is { } destination)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+                ctx.Response.Headers.Location = destination;
+                return;
+            }
             if (_hold is { } hold && !hold.Task.IsCompleted)
             {
                 DraftEntered.TrySetResult();
