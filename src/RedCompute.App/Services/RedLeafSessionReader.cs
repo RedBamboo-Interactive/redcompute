@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using RedBamboo.AppHost.Auth;
+using RedCompute.App.Api.Endpoints;
 using RedCompute.App.Services.SessionBindings;
 using RedCompute.Core.Sessions;
 
@@ -146,8 +147,17 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         _recoveryJwt = recoveryJwt;
     }
 
-    public async Task<SessionRecoveryAuthority> RecoverAuthorityAsync(
+    public Task<SessionRecoveryAuthority> RecoverAuthorityAsync(
         UnifiedSessionInfo session, SessionInputQueueItem item, CancellationToken ct)
+        => RecoverAuthorityAsync(session, item, ct, null, TimeSpan.Zero);
+
+    internal Task<SessionRecoveryAuthority> RecoverNativeMcpAuthorityAsync(UnifiedSessionInfo session,
+        SessionInputQueueItem item, IExecutionTokenIssuer issuer, TimeSpan lifetime, CancellationToken ct)
+        => RecoverAuthorityAsync(session, item, ct, issuer, lifetime);
+
+    private async Task<SessionRecoveryAuthority> RecoverAuthorityAsync(
+        UnifiedSessionInfo session, SessionInputQueueItem item, CancellationToken ct,
+        IExecutionTokenIssuer? nativeMcpIssuer, TimeSpan lifetime)
     {
         if (_recoveryHttp.BaseAddress is not { IsLoopback: true })
             return new(null, "recovery_host_untrusted", false);
@@ -183,6 +193,17 @@ public sealed class RedLeafSessionReader : ISessionRollbackTranscript
         if (!Guid.TryParse(parentId, out _)) parentId = null;
         if (identity.ParentExecutionId != parentId || identity.ExecutionId == parentId)
             return new(null, "recovery_identity_invalid", false);
+        if (nativeMcpIssuer is not null)
+        {
+            var discussion = item.Provenance.Context.FirstOrDefault(c => c.Kind == "discussion")?.Id;
+            if (session.Provider != "claude-code" || identity.App.Id != "nova" || identity.Actor.Kind != "agent"
+                || string.IsNullOrEmpty(discussion)
+                || identity.Context.FirstOrDefault(c => c.Kind == "discussion")?.Id != discussion)
+                return new(null, "native_mcp_recovery_scope_invalid", false);
+            // Leaf's recovery badge names the queue item and ai-session. The native plan
+            // route expects the ordinary Claude process-child session and provider context.
+            token = SessionExecutionToken.IssueRecoveredClaudeChild(nativeMcpIssuer, identity, principal, lifetime, session.Id);
+        }
         return new(token, null, false);
     }
     /// <summary>Read the canonical transcript with the authority recovered for this exact queue control.</summary>

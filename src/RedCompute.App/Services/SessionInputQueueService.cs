@@ -101,6 +101,8 @@ public sealed partial class SessionInputQueueService
     internal Func<string, CancellationToken, Task<bool>>? SettleRollback { get; set; }
     /// <summary>Runs before a recovery resume launches a provider: resolves a legacy session's access level, demotes a revoked Full.</summary>
     internal Func<ISessionProvider, string, CancellationToken, Task>? BeforeResume { get; set; }
+    internal Func<UnifiedSessionInfo, SessionInputQueueItem, CancellationToken, Task<SessionRecoveryAuthority>>?
+        RecoverNativeMcpAuthority { get; set; }
     internal Func<string, (ISessionProvider? Provider, UnifiedSessionInfo? Info)>? RemoteRuntimeLookup { get; set; }
 
     private sealed record CallerRecovery(string Token, string Owner, string Scope)
@@ -725,11 +727,15 @@ public sealed partial class SessionInputQueueService
                     return;
                 }
             }
+            var native = provider as IIdleNativeMcpProvider;
+            var checkResidentNativeMcp = !restart && head.InferenceChange is null && head.BindingChange is null
+                && native?.HasResidentNativeMcp(sessionId) == true;
+            var nativeAuthority = checkResidentNativeMcp || info.StopReason == SessionStopReasons.NativeMcpPolicyChanged;
             SessionRecoveryAuthority? authority = null;
-            if (restart || head.BindingChange is not null || await _store.RequiresRecoveryAsync(head.Id, ct))
+            if (nativeAuthority || restart || head.BindingChange is not null || await _store.RequiresRecoveryAsync(head.Id, ct))
             {
                 authority = callerMatches && head.BindingChange is null ? new(caller!.Token, null, false)
-                    : await ReadRecoveryAuthorityAsync(info, head, ct);
+                    : await ReadRecoveryAuthorityAsync(info, head, ct, nativeAuthority);
                 if (authority.AccessToken is null)
                 {
                     await _store.BlockPendingAsync(head, authority.ErrorCode ?? "recovery_authority_blocked", authority.Retryable, ct);
@@ -740,6 +746,29 @@ public sealed partial class SessionInputQueueService
             if (_deliveryPaused() || HasStopIntent(sessionId)) return;
             // Stop/resume endpoints cross this same gate. Re-read provider state after authorization.
             var (_, current) = FindSession(sessionId);
+            if (checkResidentNativeMcp)
+            {
+                if (current?.Status != SessionStatus.Idle) return;
+                var check = await native!.CheckIdleNativeMcpAsync(sessionId, InvocationProvenance(head),
+                    authority!.AccessToken!, ct);
+                if (_deliveryPaused() || HasStopIntent(sessionId)) return;
+                if (check is IdleNativeMcpCheck.PlanUnavailable or IdleNativeMcpCheck.ExitUnconfirmed)
+                {
+                    var code = check == IdleNativeMcpCheck.PlanUnavailable
+                        ? "native_mcp_plan_unavailable" : "native_mcp_exit_unconfirmed";
+                    await _store.BlockPendingAsync(head, code, check == IdleNativeMcpCheck.PlanUnavailable, ct);
+                    await PublishAsync(sessionId, [head.Id], "blocked", ct, errorCode: code);
+                    return;
+                }
+                (_, current) = FindSession(sessionId);
+                if (check == IdleNativeMcpCheck.Parked)
+                {
+                    if (current?.Status != SessionStatus.Stopped
+                        || current.StopReason != SessionStopReasons.NativeMcpPolicyChanged) return;
+                    await _store.RequireSessionRecoveryAsync(sessionId, ct);
+                    restart = true;
+                }
+            }
             if (head.BindingChange is { } binding)
             {
                 if (BindingCommands is not { } commands || BindingHistory is not { } reader || current is null) return;
@@ -813,6 +842,7 @@ public sealed partial class SessionInputQueueService
                 try
                 {
                     if (BeforeResume is not null) await BeforeResume(provider, sessionId, ct);
+                    if (_deliveryPaused() || HasStopIntent(sessionId)) return;
                     using (SessionScratch.PushExecutionToken(authority!.AccessToken!))
                         info = await provider.ResumeSessionAsync(sessionId, InvocationProvenance(head));
                 }
@@ -826,8 +856,10 @@ public sealed partial class SessionInputQueueService
                 {
                     // A removed working folder (e.g. a deleted worktree) cannot heal by retrying.
                     var missing = provider.LastStartErrorCode == SessionStopReasons.ProjectPathMissing;
-                    await _store.BlockPendingAsync(head,
-                        missing ? SessionStopReasons.ProjectPathMissing : "recovery_resume_failed", !missing, ct);
+                    var reason = missing ? SessionStopReasons.ProjectPathMissing
+                        : provider.LastStartErrorCode == "native_mcp_plan_unavailable" ? provider.LastStartErrorCode
+                        : "recovery_resume_failed";
+                    await _store.BlockPendingAsync(head, reason, !missing, ct);
                     await PublishAsync(sessionId, [head.Id], "blocked", ct);
                     return;
                 }
@@ -836,7 +868,7 @@ public sealed partial class SessionInputQueueService
                 if (_deliveryPaused() || HasStopIntent(sessionId) || info.Status != SessionStatus.Idle) return;
                 // Current canonical authority must also hold after asynchronous provider startup.
                 authority = callerMatches && head.BindingChange is null ? new(caller!.Token, null, false)
-                    : await ReadRecoveryAuthorityAsync(info, head, ct);
+                    : await ReadRecoveryAuthorityAsync(info, head, ct, nativeAuthority);
                 if (authority.AccessToken is null)
                 {
                     await _store.BlockPendingAsync(head, authority.ErrorCode ?? "recovery_authority_blocked", authority.Retryable, ct);
@@ -1069,10 +1101,11 @@ public sealed partial class SessionInputQueueService
     }
 
     private async Task<SessionRecoveryAuthority> ReadRecoveryAuthorityAsync(UnifiedSessionInfo session,
-        SessionInputQueueItem item, CancellationToken ct)
+        SessionInputQueueItem item, CancellationToken ct, bool nativeMcp = false)
     {
-        try { return _recoverAuthority is null ? new(null, "recovery_authority_unavailable", true)
-            : await _recoverAuthority(session, item, ct); }
+        var recover = nativeMcp ? RecoverNativeMcpAuthority : _recoverAuthority;
+        try { return recover is null ? new(null, "recovery_authority_unavailable", true)
+            : await recover(session, item, ct); }
         catch (Exception) when (!ct.IsCancellationRequested) { return new(null, "recovery_host_unavailable", true); }
     }
 

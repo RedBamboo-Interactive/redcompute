@@ -215,6 +215,8 @@ public interface IContainedTree
     IReadOnlyList<(int Pid, long CreatedUtcTicks)> Refresh();
     bool Tracks(int pid, long createdUtcTicks);
     void Reap();
+    /// <summary>Reap this session's job and confirm the job and tracked descendants have exited.</summary>
+    Task<bool> TryReapAndConfirmExitAsync(CancellationToken ct) => Task.FromResult(false);
     void Release(bool deleteLedger);
     event Action<IContainedTree>? Reaped;
 }

@@ -117,7 +117,7 @@ internal sealed class SessionBindingCommands(CapabilityRegistry registry, Sessio
         => provider is BoundProvider bound ? bound.Native : provider;
 
     private sealed class BoundProvider(ISessionProvider native, SessionBindingSnapshot binding)
-        : ISessionProvider, ISessionInferenceSettings, IImageAttachmentSupportProvider
+        : ISessionProvider, ISessionInferenceSettings, IImageAttachmentSupportProvider, IIdleNativeMcpProvider
     {
         public ISessionProvider Native => native;
         private string RuntimeId => binding.Active.Native.RuntimeSessionId;
@@ -151,6 +151,12 @@ internal sealed class SessionBindingCommands(CapabilityRegistry registry, Sessio
             => Project(await native.ResumeSessionAsync(RuntimeId));
         public async Task<UnifiedSessionInfo?> ResumeSessionAsync(string sessionId, JobProvenance provenance)
             => Project(await native.ResumeSessionAsync(RuntimeId, provenance));
+        public bool HasResidentNativeMcp(string sessionId)
+            => native is IIdleNativeMcpProvider mcp && mcp.HasResidentNativeMcp(RuntimeId);
+        public Task<IdleNativeMcpCheck> CheckIdleNativeMcpAsync(string sessionId, JobProvenance source,
+            string bearer, CancellationToken ct)
+            => native is IIdleNativeMcpProvider mcp ? mcp.CheckIdleNativeMcpAsync(RuntimeId, source, bearer, ct)
+                : Task.FromResult(IdleNativeMcpCheck.PlanUnavailable);
         public Task StopSessionAsync(string sessionId) => native.StopSessionAsync(RuntimeId);
         public Task ForceKillAsync(string sessionId) => native.ForceKillAsync(RuntimeId);
         public Task ForceKillAsync(string sessionId, string reason) => native.ForceKillAsync(RuntimeId, reason);

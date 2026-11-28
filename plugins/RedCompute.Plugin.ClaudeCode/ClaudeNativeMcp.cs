@@ -26,40 +26,80 @@ internal static class ClaudeNativeMcp
         string OwnerId, string DiscussionId, string Executable, string[] Arguments);
     internal sealed record HostRegistry(string ClaudeSha256, Registration[] Registrations);
     internal sealed record Projection(string Name, Registration Installation, string[] Tools);
+    internal sealed record Scope(string SessionId, Guid AgentId, string OwnerId, string DiscussionId)
+    {
+        internal static Scope? From(string sessionId, JobProvenance? source)
+        {
+            var discussion = source?.Context.FirstOrDefault(c => c.Kind == "discussion")?.Id;
+            return source?.Origin.App.Id == "nova" && source.Actor.Kind == "agent"
+                && Guid.TryParse(source.Actor.EntityId, out var agent) && source.OnBehalfOf.Kind == "user"
+                && !string.IsNullOrEmpty(source.OnBehalfOf.Id) && !string.IsNullOrEmpty(discussion)
+                ? new(sessionId, agent, source.OnBehalfOf.Id, discussion) : null;
+        }
+    }
 
-    internal static async Task<IReadOnlyList<string>> ApplyAsync(IExecutionHost host, string cli, string sessionId,
+    internal sealed record Generation(Scope Scope, IReadOnlyList<string> Names, IReadOnlyList<Server> Servers);
+    internal readonly record struct Configuration(bool PlanVerified, Generation? Generation);
+
+    internal static async Task<Plan?> ReadCurrentPlanAsync(IExecutionHost host, Scope scope,
+        IReadOnlyDictionary<string, string>? environment, CancellationToken ct)
+    {
+        if (LeafMcpGateway.TokenFor(environment) is not { } bearer
+            || !environment!.TryGetValue(SessionScratch.RedLeafUrlVariable, out var baseUrl)
+            || !TryPlanUri(baseUrl, out var uri))
+            return null;
+        try
+        {
+            var plan = await FetchPlanAsync(host.Network, uri, bearer, ct);
+            return plan is not null && IsValid(plan, scope) ? plan : null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException
+            || ex is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
+    internal static bool StillAuthorized(Generation generation, Plan current)
+        => generation.Servers.All(installed => current.Servers.Any(server =>
+            server.Id == installed.Id && server.Declaration.Revision == installed.Declaration.Revision));
+
+    internal static async Task<Configuration> ApplyAsync(IExecutionHost host, string cli, string sessionId,
         JobProvenance? provenance, IReadOnlyDictionary<string, string>? environment, List<string> arguments,
         CancellationToken ct)
     {
         if (host is not LocalExecutionHost || !host.Platform.IsWindows
-            || host.Platform.GetEnvironmentVariable(Flag) != "1" || provenance is null
-            || LeafMcpGateway.TokenFor(environment) is not { } bearer
-            || !environment!.TryGetValue(SessionScratch.RedLeafUrlVariable, out var baseUrl)
-            || !TryPlanUri(baseUrl, out var uri))
-            return [];
+            || host.Platform.GetEnvironmentVariable(Flag) != "1" || Scope.From(sessionId, provenance) is not { } scope)
+            return default;
+
+        var plan = await ReadCurrentPlanAsync(host, scope, environment, ct);
+        if (plan is null) return default;
+        if (plan.Servers.Length == 0) return new(true, null);
 
         try
         {
             var registryFile = host.Path(host.PathRules.Combine(host.Platform.ComputeDataRoot, "mcp-native-installations.json"));
             var registryStat = host.Files.Stat(registryFile);
-            if (!registryStat.Exists || registryStat.IsDirectory || registryStat.Length > MaxPlanBytes) return [];
+            if (!registryStat.Exists || registryStat.IsDirectory || registryStat.Length > MaxPlanBytes) return new(true, null);
             var registry = JsonSerializer.Deserialize<HostRegistry>(await host.Files.ReadAllTextAsync(registryFile, ct), Web);
-            if (registry?.Registrations is not { Length: > 0 and <= 128 }) return [];
+            if (registry?.Registrations is not { Length: > 0 and <= 128 }) return new(true, null);
 
-            var plan = await FetchPlanAsync(host.Network, uri, bearer, ct);
-            if (plan is null) return [];
-            var projected = Select(plan, registry, sessionId, provenance)
+            var projected = Select(plan, registry, sessionId, provenance!)
                 .Where(p => IsPinnedExecutable(host, p.Installation.Executable, p.Installation.Sha256)).ToArray();
-            if (projected.Length == 0 || !IsPinnedExecutable(host, cli, registry.ClaudeSha256)) return [];
+            if (projected.Length == 0 || !IsPinnedExecutable(host, cli, registry.ClaudeSha256)) return new(true, null);
             var helper = host.PathRules.Combine(AppContext.BaseDirectory, "RedCompute.exe");
-            return host.Files.FileExists(host.Path(helper)) ? Append(arguments, helper, projected) : [];
+            if (!host.Files.FileExists(host.Path(helper))) return new(true, null);
+            var names = Append(arguments, helper, projected);
+            if (names.Count == 0) return new(true, null);
+            var ids = projected.Select(entry => entry.Installation.ServerId).ToHashSet();
+            return new(true, new(scope, names, plan.Servers.Where(server => ids.Contains(server.Id)).ToArray()));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
             or HttpRequestException or JsonException or CryptographicException
             || ex is OperationCanceledException && !ct.IsCancellationRequested)
         {
-            // A mixed-version kernel, inaccessible registry or failed verification leaves only the managed gateway.
-            return [];
+            // An inaccessible installation leaves only the managed gateway.
+            return new(true, null);
         }
     }
 
@@ -99,26 +139,14 @@ internal static class ClaudeNativeMcp
 
     internal static IReadOnlyList<Projection> Select(Plan plan, HostRegistry registry, string sessionId, JobProvenance provenance)
     {
-        var discussion = provenance.Context.FirstOrDefault(c => c.Kind == "discussion")?.Id;
-        if (plan.Version != Version || plan.SessionId != sessionId || provenance.Origin.App.Id != "nova"
-            || provenance.Actor.Kind != "agent" || provenance.OnBehalfOf.Kind != "user"
-            || !Guid.TryParse(provenance.Actor.EntityId, out var agent) || !Guid.TryParse(plan.AgentId, out var planAgent)
-            || planAgent != agent || string.IsNullOrEmpty(discussion) || plan.DiscussionId != discussion
-            || string.IsNullOrEmpty(plan.OwnerId) || plan.OwnerId != provenance.OnBehalfOf.Id
-            || plan.Servers is not { Length: > 0 and <= MaxServers }
-            || plan.Servers.Any(s => s is null) || plan.Servers.Select(s => s.Id).Distinct().Count() != plan.Servers.Length)
-            return [];
+        if (Scope.From(sessionId, provenance) is not { } scope || !IsValid(plan, scope)) return [];
 
         var projected = new List<Projection>();
         foreach (var server in plan.Servers)
         {
-            if (server.Id == Guid.Empty || server.Declaration is not { } declaration
-                || !IsDigest(declaration.Revision) || !IsDigest(declaration.Sha256) || !IsName(declaration.Installation)
-                || declaration.Tools is not { Length: > 0 and <= 32 } || declaration.Tools.Any(t => !IsName(t))
-                || declaration.Tools.Distinct(StringComparer.Ordinal).Count() != declaration.Tools.Length)
-                continue;
+            var declaration = server.Declaration;
             var matches = registry.Registrations.Where(r => r is not null && r.ServerId == server.Id
-                && r.AgentId == agent && r.OwnerId == plan.OwnerId && r.DiscussionId == discussion
+                && r.AgentId == scope.AgentId && r.OwnerId == scope.OwnerId && r.DiscussionId == scope.DiscussionId
                 && r.Installation == declaration.Installation && r.Revision == declaration.Revision
                 && string.Equals(r.Sha256, declaration.Sha256, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
             if (matches.Length != 1 || matches[0].Arguments is not { Length: <= 32 } argv
@@ -128,6 +156,18 @@ internal static class ClaudeNativeMcp
         }
         return projected;
     }
+
+    private static bool IsValid(Plan plan, Scope scope)
+        => plan.Version == Version && plan.SessionId == scope.SessionId
+            && Guid.TryParse(plan.AgentId, out var agent) && agent == scope.AgentId
+            && plan.OwnerId == scope.OwnerId && plan.DiscussionId == scope.DiscussionId
+            && plan.Servers is { Length: <= MaxServers }
+            && plan.Servers.All(server => server is not null && server.Id != Guid.Empty
+                && server.Declaration is { } declaration && IsDigest(declaration.Revision)
+                && IsDigest(declaration.Sha256) && IsName(declaration.Installation)
+                && declaration.Tools is { Length: > 0 and <= 32 } && declaration.Tools.All(IsName)
+                && declaration.Tools.Distinct(StringComparer.Ordinal).Count() == declaration.Tools.Length)
+            && plan.Servers.Select(server => server.Id).Distinct().Count() == plan.Servers.Length;
 
     internal static IReadOnlyList<string> Append(List<string> arguments, string helper, IReadOnlyList<Projection> servers)
     {

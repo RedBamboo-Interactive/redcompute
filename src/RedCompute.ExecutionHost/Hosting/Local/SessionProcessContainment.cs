@@ -409,6 +409,36 @@ internal static class SessionProcessContainment
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BasicAccounting
+        {
+            public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime;
+            public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool QueryInformationJobObject(SafeFileHandle job, int infoClass,
+            out BasicAccounting result, int length, IntPtr returnLength);
+
+        public static bool JobIsEmpty(SafeFileHandle job)
+            => QueryInformationJobObject(job, 1, out var result, Marshal.SizeOf<BasicAccounting>(), IntPtr.Zero)
+                && result.ActiveProcesses == 0;
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool DuplicateHandle(IntPtr sourceProcess, IntPtr sourceHandle, IntPtr targetProcess,
+            out SafeFileHandle copy, uint access, bool inherit, uint options);
+
+        public static SafeFileHandle? Duplicate(IntPtr handle)
+        {
+            var process = GetCurrentProcess();
+            if (DuplicateHandle(process, handle, process, out var copy, 0, false, 2)) return copy;
+            copy?.Dispose();
+            return null;
+        }
+
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool SetInformationJobObject(SafeFileHandle job, int infoClass, IntPtr info, uint length);
 
@@ -544,8 +574,10 @@ internal static class SessionProcessContainment
         /// Exited, or being torn down: TerminateProcess sets the exit code at once, but the process
         /// is signalled only when its threads are gone. A dying process must never be taken back.
         /// </summary>
+        public static bool IsSignaled(IntPtr process) => WaitForSingleObject(process, 0) == 0;
+
         public static bool HasExited(IntPtr process)
-            => WaitForSingleObject(process, 0) == 0
+            => IsSignaled(process)
                || (GetExitCodeProcess(process, out var exitCode) && exitCode != StillActive);
 
         private static long FileTimeToUtcTicks(long fileTime) => DateTime.FromFileTimeUtc(fileTime).Ticks;
@@ -827,6 +859,47 @@ internal sealed class ContainedProcessTree : IContainedTree
             }
         }
         if (changed) PersistLedger();
+    }
+
+    public async Task<bool> TryReapAndConfirmExitAsync(CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows() || IsKept) return false;
+        ct.ThrowIfCancellationRequested();
+        Scan(SessionProcessContainment.Native.Snapshot());
+        SafeFileHandle? job = null;
+        var processes = new List<SafeFileHandle>();
+        try
+        {
+            lock (_gate)
+            {
+                if (_reaped || _job.IsClosed) return false;
+                job = SessionProcessContainment.Native.Duplicate(_job.DangerousGetHandle());
+                if (job is null) return false;
+                foreach (var tracked in _tracked.Values)
+                {
+                    var process = SessionProcessContainment.Native.Duplicate(tracked.Handle);
+                    if (process is null) return false;
+                    processes.Add(process);
+                }
+            }
+
+            // Reap can release the original handles via the normal exit callback. Retain copies
+            // for proof: a successful terminate request or its exit code alone is insufficient.
+            Reap();
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (SessionProcessContainment.Native.JobIsEmpty(job)
+                    && processes.All(p => SessionProcessContainment.Native.IsSignaled(p.DangerousGetHandle())))
+                    return true;
+                await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
+            }
+        }
+        finally
+        {
+            foreach (var process in processes) process.Dispose();
+            job?.Dispose();
+        }
     }
 
     /// <summary>

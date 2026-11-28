@@ -111,6 +111,10 @@ internal static class SessionExecutionToken
         return issued.AccessToken;
     }
 
+    internal static string IssueRecoveredClaudeChild(IExecutionTokenIssuer issuer, ExecutionIdentity recovered,
+        System.Security.Claims.ClaimsPrincipal principal, TimeSpan lifetime, string sessionId)
+        => issuer.Issue(Child(recovered, "claude-code", "Claude Code", sessionId), principal, lifetime).AccessToken;
+
     private static ExecutionIdentity Child(
         ExecutionIdentity parent,
         string providerId,

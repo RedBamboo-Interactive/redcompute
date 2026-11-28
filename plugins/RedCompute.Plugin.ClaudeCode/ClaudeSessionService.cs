@@ -1191,11 +1191,11 @@ public partial class ClaudeSessionService
         }
 
         var cts = new CancellationTokenSource();
-        var session = new ManagedSession(info, process, cts) { NativeMcpServers = nativeMcp };
+        var session = new ManagedSession(info, process, cts) { NativeMcp = nativeMcp.Generation };
         _sessions[id] = session;
 
+        process.Exited += (_, _) => OnProcessExited(id, session);
         process.EnableRaisingEvents = true;
-        process.Exited += (_, _) => OnProcessExited(id);
 
         // Context-free: the readers never run on the caller's SynchronizationContext, whoever
         // launched the session (an HTTP request, the input queue, recovery at boot).
@@ -1363,6 +1363,12 @@ public partial class ClaudeSessionService
         AddForkArgs(arguments, forkTarget);
         provenance ??= sessionRecord.JobId is { } resumeJobId ? _jobTracker.GetJob(resumeJobId)?.CreationProvenance : null;
         var nativeMcp = await ClaudeNativeMcp.ApplyAsync(_host, claudePath, sessionId, provenance, environment, arguments, ct);
+        if (sessionRecord.StopReason == SessionStopReasons.NativeMcpPolicyChanged && !nativeMcp.PlanVerified)
+        {
+            LastStartError = "The current signed native MCP plan could not be verified.";
+            LastStartErrorCode = "native_mcp_plan_unavailable";
+            return null;
+        }
         var spec = CliSpec(claudePath, arguments, _host.Path(sessionRecord.ProjectPath), environment, SessionOwner);
 
         IHostProcess process;
@@ -1378,11 +1384,11 @@ public partial class ClaudeSessionService
         }
 
         var cts = new CancellationTokenSource();
-        var session = new ManagedSession(info, process, cts) { NativeMcpServers = nativeMcp };
+        var session = new ManagedSession(info, process, cts) { NativeMcp = nativeMcp.Generation };
         _sessions[sessionId] = session;
 
+        process.Exited += (_, _) => OnProcessExited(sessionId, session);
         process.EnableRaisingEvents = true;
-        process.Exited += (_, _) => OnProcessExited(sessionId);
 
         // Context-free: the readers never run on the caller's SynchronizationContext, whoever
         // launched the session (an HTTP request, the input queue, recovery at boot).
@@ -1434,7 +1440,7 @@ public partial class ClaudeSessionService
             return false;
         }
 
-        if (session.Info.Status is SessionStatus.Stopped or SessionStatus.Error or SessionStatus.Active)
+        if (session.NativeMcpRetiring || session.Info.Status is SessionStatus.Stopped or SessionStatus.Error or SessionStatus.Active)
         {
             _log($"[Claude] Refused input for {sessionId}: session is {session.Info.Status}", null);
             return false;
@@ -2043,12 +2049,65 @@ public partial class ClaudeSessionService
             .Select(session => session.Info)
             .ToArray();
 
+    internal bool HasResidentNativeMcp(string sessionId)
+        => _sessions.TryGetValue(sessionId, out var session) && session.NativeMcp is not null;
+
+    internal async Task<IdleNativeMcpCheck> CheckIdleNativeMcpAsync(string sessionId, JobProvenance source,
+        string bearer, CancellationToken ct)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session) || session.NativeMcp is not { } installed)
+            return IdleNativeMcpCheck.ExitUnconfirmed;
+        if (session.NativeMcpRetiring) return IdleNativeMcpCheck.ExitUnconfirmed;
+        if (ClaudeNativeMcp.Scope.From(sessionId, source) != installed.Scope)
+            return IdleNativeMcpCheck.PlanUnavailable;
+        using var scope = SessionScratch.PushExecutionToken(bearer);
+        var plan = await ClaudeNativeMcp.ReadCurrentPlanAsync(_host, installed.Scope,
+            SessionScratch.Environment(null, sessionId: sessionId), ct);
+        if (plan is null) return IdleNativeMcpCheck.PlanUnavailable;
+        if (!_sessions.TryGetValue(sessionId, out var current) || !ReferenceEquals(session, current)
+            || session.Info.Status != SessionStatus.Idle)
+            return IdleNativeMcpCheck.ExitUnconfirmed;
+        if (ClaudeNativeMcp.StillAuthorized(installed, plan)) return IdleNativeMcpCheck.Current;
+        if (session.Info.BackgroundTasks.Any(task => !BackgroundTaskStatuses.IsTerminal(task.Status)))
+            return IdleNativeMcpCheck.ExitUnconfirmed;
+
+        // Keep this exact generation present and undeliverable until its tree is proven gone.
+        // Its normal exit callback must not make the queue think it can already resume.
+        lock (session.ExitGate)
+        {
+            if (!_sessions.TryGetValue(sessionId, out current) || !ReferenceEquals(session, current)
+                || session.Info.Status != SessionStatus.Idle)
+                return IdleNativeMcpCheck.ExitUnconfirmed;
+            session.NativeMcpRetiring = true;
+        }
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TimeSpan.FromSeconds(3));
+            if (_host.Containment.FindByRoot(session.Process.Id) is not { IsKept: false } tree
+                || tree.RootCreatedUtcTicks != session.Process.CreatedUtcTicks
+                || !await tree.TryReapAndConfirmExitAsync(deadline.Token)
+                || !session.Process.WaitForExit(0))
+                return IdleNativeMcpCheck.ExitUnconfirmed;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception
+            or OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            return IdleNativeMcpCheck.ExitUnconfirmed;
+        }
+
+        if (!_sessions.TryRemove(new KeyValuePair<string, ManagedSession>(sessionId, session)))
+            return IdleNativeMcpCheck.ExitUnconfirmed;
+        CompleteIdlePark(session, SessionStopReasons.NativeMcpPolicyChanged);
+        return IdleNativeMcpCheck.Parked;
+    }
+
     public Task<bool> TryParkIdleSessionAsync(
         string sessionId, string stopReason, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         if (!_sessions.TryGetValue(sessionId, out var session)
-            || session.Info.Status != SessionStatus.Idle
+            || session.NativeMcpRetiring || session.Info.Status != SessionStatus.Idle
             || session.Info.BackgroundTasks.Any(task => !BackgroundTaskStatuses.IsTerminal(task.Status)))
             return Task.FromResult(false);
         if (!_sessions.TryRemove(sessionId, out var removed) || !ReferenceEquals(session, removed))
@@ -2061,6 +2120,12 @@ public partial class ClaudeSessionService
         }
 
         try { session.Process.Kill(entireProcessTree: true); } catch { }
+        CompleteIdlePark(session, stopReason);
+        return Task.FromResult(true);
+    }
+
+    private void CompleteIdlePark(ManagedSession session, string stopReason)
+    {
         DiscardPendingQuestions(session, "session_parked");
         DiscardPendingSteers(session);
         session.Cts.Cancel();
@@ -2072,7 +2137,6 @@ public partial class ClaudeSessionService
         session.Info.ProcessId = null;
         PersistSessionRecord(session.Info);
         SessionUpdated?.Invoke(session.Info);
-        return Task.FromResult(true);
     }
 
     public void DismissSession(string sessionId)
@@ -3048,7 +3112,7 @@ public partial class ClaudeSessionService
                     ? tools.EnumerateArray().Count(tool => tool.ValueKind == JsonValueKind.String
                         && tool.GetString()!.StartsWith("mcp__", StringComparison.Ordinal)) : (int?)null;
                 _log($"[Claude] Session {session.Info.Id} active (model: {session.Info.Model}, mode: {session.Info.PermissionMode}, MCP servers: {mcpServerCount?.ToString() ?? "unknown"}, MCP tools: {mcpToolCount?.ToString() ?? "unknown"})", null);
-                if (UnexpectedMcpServers(root, session.NativeMcpServers) is { Count: > 0 } unexpected)
+                if (UnexpectedMcpServers(root, session.NativeMcp?.Names) is { Count: > 0 } unexpected)
                     _log($"[Claude] Session {session.Info.Id} reports MCP servers Leaf did not configure: {string.Join(", ", unexpected)}", null);
                 return;
             }
@@ -4592,10 +4656,13 @@ public partial class ClaudeSessionService
         catch (InvalidOperationException) { return "unknown"; }
     }
 
-    private void OnProcessExited(string sessionId)
+    private void OnProcessExited(string sessionId, ManagedSession session)
     {
-        if (!_sessions.TryRemove(sessionId, out var session))
-            return;
+        lock (session.ExitGate)
+        {
+            if (session.NativeMcpRetiring || !_sessions.TryRemove(new KeyValuePair<string, ManagedSession>(sessionId, session)))
+                return;
+        }
 
         var exitCode = DescribeExitCode(() => session.Process.ExitCode);
         DiscardPendingQuestions(session, "session_ended");
@@ -4930,7 +4997,9 @@ public partial class ClaudeSessionService
 
     private class ManagedSession
     {
-        public IReadOnlyList<string> NativeMcpServers { get; init; } = [];
+        public ClaudeNativeMcp.Generation? NativeMcp { get; init; }
+        public volatile bool NativeMcpRetiring;
+        public object ExitGate { get; } = new();
         public ClaudeSessionInfo Info { get; }
         // The CLI process on its host. Its streams are the process's own reader and writer objects.
         public IHostProcess Process { get; }

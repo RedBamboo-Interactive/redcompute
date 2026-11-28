@@ -455,6 +455,10 @@ public class RelayServer
                 pair.Value && pair.Key.EndsWith($":{sessionId}", StringComparison.OrdinalIgnoreCase)),
             () => maintenance.IsDraining, redLeafReader.RecoverAuthorityAsync, maintenance.ReadVerificationTarget,
             _callbacks.ReconcileAsync) { BindingCommands = bindingCommands, BindingHistory = redLeafReader };
+        var sessionIssuer = _app.Services.GetRequiredService<IExecutionTokenIssuer>();
+        var sessionTokenLifetime = _app.Services.GetRequiredService<JwtOptions>().SessionExecutionTokenLifetime;
+        inputQueue.RecoverNativeMcpAuthority = (session, item, renewCt) =>
+            redLeafReader.RecoverNativeMcpAuthorityAsync(session, item, sessionIssuer, sessionTokenLifetime, renewCt);
         UnifiedSessionEndpoints.RemoteSessions? remoteSessions = null;
         if (_nodeHub is { } hub)
         {

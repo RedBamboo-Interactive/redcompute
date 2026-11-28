@@ -184,6 +184,54 @@ public sealed class SessionRecoveryTests
         Assert.Equal(variant == "external" ? 0 : 1, handler.Calls);
     }
 
+    [Theory]
+    [InlineData("discussion", true)]
+    [InlineData("different-discussion", false)]
+    public async Task Native_plan_renewal_derives_only_the_same_scoped_Claude_child(string returnedDiscussion, bool allowed)
+    {
+        using var f = new Fixture("maintenance_restart");
+        var session = new UnifiedSessionInfo
+        {
+            Id = f.Runtime.Info.Id, Provider = "claude-code", ProjectName = "Test", ProjectPath = ".", UserId = "owner",
+        };
+        var agent = Guid.NewGuid().ToString();
+        var submission = f.Submission();
+        submission = submission with { Provenance = submission.Provenance with
+        {
+            Actor = submission.Provenance.Actor with { EntityId = agent },
+            Context = [new("discussion", "discussion")],
+        } };
+        var item = (await f.Store.EnqueueAsync(submission)).Item;
+        var options = new JwtOptions { SigningKey = "native-claude-recovery-test-secret-1234567890123456789" };
+        var jwt = new JwtService(options);
+        var issuer = new ExecutionTokenIssuer(jwt, options);
+        var parent = new ExecutionIdentity(1, Guid.NewGuid().ToString(), new("nova", "Nova"),
+            new("agent", "nova", "Nova", agent), new("user", "owner"),
+            [new("discussion", returnedDiscussion), new("session", "previous"),
+                new("ai-session", item.SessionId), new("accepted-input-recovery", item.Id, Route: item.MessageUid)]);
+        var signed = issuer.Issue(parent, new ExecutionPrincipal("owner", "owner@test", "Owner", ["operator"]));
+        using var http = new HttpClient(new RecoveryHandler(signed.AccessToken)) { BaseAddress = new Uri("http://127.0.0.1:1234/") };
+        var reader = new RedLeafSessionReader(http, null!, jwt);
+        var result = await reader.RecoverNativeMcpAuthorityAsync(session, item, issuer, TimeSpan.FromMinutes(5), default);
+        if (!allowed)
+        {
+            Assert.Null(result.AccessToken);
+            Assert.Equal("native_mcp_recovery_scope_invalid", result.ErrorCode);
+            return;
+        }
+        var principal = jwt.ValidateToken(result.AccessToken!);
+        Assert.True(ExecutionIdentityClaims.TryRead(principal!, out var child, out _));
+        Assert.NotNull(child);
+        Assert.Equal(parent.ExecutionId, child.ParentExecutionId);
+        Assert.Equal(parent.App, child.App);
+        Assert.Equal(parent.Actor, child.Actor);
+        Assert.Equal(parent.Beneficiary, child.Beneficiary);
+        Assert.Equal(new[] { "operator" }, ExecutionIdentityClaims.ReadRoles(principal!));
+        Assert.Equal("session", Assert.Single(child.Context, r => r.Kind == "session").Id);
+        Assert.Equal("claude-code", child.Context.Last(r => r.Kind == "ai-session-provider").Id);
+        Assert.Equal(item.Id, Assert.Single(child.Context, r => r.Kind == "accepted-input-recovery").Id);
+    }
+
     // Replay of q_1d499357f4c748029cca53d41c6eca35 (2026-11-16): input the owner typed into Code's
     // composer is stored with the Code app as actor. Its recovery identity is that same app actor.
     [Theory]

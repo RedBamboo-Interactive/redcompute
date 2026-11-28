@@ -129,6 +129,19 @@ public sealed class ClaudeNativeMcpTests
                 case "redirect":
                     context.Response.Redirect("/redirect-target");
                     break;
+                case "empty":
+                    await context.Response.WriteAsJsonAsync(MakePlan() with { Servers = [] });
+                    break;
+                case "foreign-empty":
+                    await context.Response.WriteAsJsonAsync(MakePlan() with { Servers = [], DiscussionId = "other" });
+                    break;
+                case "invalid-revision":
+                    var valid = MakePlan();
+                    await context.Response.WriteAsJsonAsync(valid with
+                    {
+                        Servers = [valid.Servers[0] with { Declaration = valid.Servers[0].Declaration with { Revision = "truncated" } }]
+                    });
+                    break;
                 case "unauthorized":
                     context.Response.StatusCode = StatusCodes.Status403Forbidden;
                     break;
@@ -171,6 +184,29 @@ public sealed class ClaudeNativeMcpTests
         Assert.Equal(0, network.ProxyCalls);
         Assert.Equal(5, network.Origins.Count);
         Assert.All(network.Origins, origin => Assert.Equal(uri, origin));
+
+        var host = LocalExecutionHost.Shared;
+        var scope = ClaudeNativeMcp.Scope.From("session", Provenance())!;
+        var installed = new ClaudeNativeMcp.Generation(scope, ["fixture"], MakePlan().Servers);
+        var environment = new Dictionary<string, string>
+        {
+            ["REDLEAF_EXECUTION_TOKEN"] = bearer,
+            ["REDLEAF_URL"] = app.Urls.Single()
+        };
+        reply = "valid";
+        var current = await ClaudeNativeMcp.ReadCurrentPlanAsync(host, scope, environment, default);
+        Assert.True(ClaudeNativeMcp.StillAuthorized(installed, Assert.IsType<ClaudeNativeMcp.Plan>(current)));
+        reply = "empty";
+        var empty = Assert.IsType<ClaudeNativeMcp.Plan>(
+            await ClaudeNativeMcp.ReadCurrentPlanAsync(host, scope, environment, default));
+        Assert.Empty(empty.Servers);
+        Assert.False(ClaudeNativeMcp.StillAuthorized(installed, empty));
+        foreach (var invalid in new[] { "foreign-empty", "invalid-revision", "unauthorized", "malformed" })
+        {
+            reply = invalid;
+            Assert.Null(await ClaudeNativeMcp.ReadCurrentPlanAsync(host, scope, environment, default));
+        }
+        Assert.Equal(0, redirects);
     }
 
     private sealed class PlanTestNetwork : IHostNetwork

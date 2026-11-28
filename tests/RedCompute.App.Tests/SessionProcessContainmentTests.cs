@@ -72,6 +72,23 @@ public sealed class SessionProcessContainmentTests : IDisposable
         await AssertGoneAsync(orphan);
     }
 
+    [WindowsFact("Requires a Windows Job Object and process handles")]
+    public async Task Verified_session_retirement_waits_for_the_root_and_an_orphaned_member_to_exit()
+    {
+        using var root = StartCmdScript("orphan-root.cmd");
+        var tree = Assert.IsType<ContainedProcessTree>(SessionProcessContainment.Contain(root, "revoked"));
+        var orphan = 0;
+        await WaitUntilAsync(() =>
+            (orphan = tree.Refresh().Select(process => process.Pid).FirstOrDefault(pid =>
+                pid != root.Id && !ParentAlive(pid))) != 0,
+            "the orphaned helper inside the old job", () => ChainState([root.Id]));
+        Track(orphan);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        Assert.True(await tree.TryReapAndConfirmExitAsync(deadline.Token));
+        Assert.True(root.WaitForExit(0));
+        Assert.False(IsAlive(orphan));
+    }
+
     [Fact]
     public async Task A_pwsh_Start_Process_escapee_is_proven_by_parentage_and_reaped()
     {

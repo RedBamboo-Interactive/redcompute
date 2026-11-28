@@ -11,7 +11,7 @@ using RedCompute.PluginSdk.Hosting;
 namespace RedCompute.Plugin.ClaudeCode;
 
 public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExtendedProvider, ISessionProvider,
-    IIdleSessionParkingProvider,
+    IIdleSessionParkingProvider, IIdleNativeMcpProvider,
     IProviderUsageSource, ICliVersionManagedProvider, ISessionInferenceSettings
 {
     private readonly string _capabilitySlug;
@@ -225,6 +225,12 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
     public Task<bool> TryParkIdleSessionAsync(
         string sessionId, string stopReason, CancellationToken ct = default)
         => _claude.TryParkIdleSessionAsync(sessionId, stopReason, ct);
+    public bool HasResidentNativeMcp(string sessionId) => _claude.HasResidentNativeMcp(sessionId);
+
+    public Task<IdleNativeMcpCheck> CheckIdleNativeMcpAsync(string sessionId, JobProvenance source,
+        string bearer, CancellationToken ct)
+        => _claude.CheckIdleNativeMcpAsync(sessionId, source, bearer, ct);
+
     public void DismissSession(string sessionId) => _claude.DismissSession(sessionId);
     public bool RestoreSession(string sessionId) => _claude.RestoreSession(sessionId);
 
