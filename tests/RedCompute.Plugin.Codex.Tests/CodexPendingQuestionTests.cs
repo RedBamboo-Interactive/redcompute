@@ -52,7 +52,48 @@ public sealed class CodexPendingQuestionTests : IDisposable
         }));
 
         Assert.Empty(h.Service.GetPendingQuestions("session-1"));
-        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "item-1" });
+        var resolution = Assert.Single(h.Events, e => e is { Type: "question_resolved", RequestId: "item-1" });
+        Assert.Equal(decline, resolution.ToolResult is null);
+    }
+
+    [Theory]
+    [InlineData("positional")]
+    [InlineData("text")]
+    [InlineData("response")]
+    public void Answer_resolution_records_the_submitted_choice_and_never_the_secret(string format)
+    {
+        var h = new Harness(this);
+        h.Park("item-1", new[]
+        {
+            new { id = "shape", question = "Which shape?", isSecret = false },
+            new { id = "secret", question = "What is the secret?", isSecret = true },
+            new { id = "secret", question = "Duplicate native ID", isSecret = false },
+        });
+
+        var answer = new SessionQuestionAnswer
+        {
+            RequestId = "item-1",
+            PositionalAnswers = format == "positional" ? ["Square", "secret-value"] : null,
+            Answers = format == "text" ? new() { ["Which shape?"] = "Square", ["What is the secret?"] = "secret-value" } : null,
+            Response = format == "response" ? "Square" : null,
+        };
+        Assert.True(h.Service.SubmitQuestionAnswer("session-1", answer));
+        Assert.False(h.Service.SubmitQuestionAnswer("session-1", answer));
+
+        var record = Assert.Single(h.Store.Messages, m => m.EventType == "question_resolved");
+        var live = Assert.Single(h.Events, e => e.Type == "question_resolved");
+        Assert.Equal("item-1", record.MessageId);
+        Assert.Equal("answered", record.Content);
+        Assert.Equal(record.ToolResult, live.ToolResult);
+        Assert.DoesNotContain("secret-value", record.ToolResult);
+        using var receipt = JsonDocument.Parse(record.ToolResult!);
+        var data = receipt.RootElement;
+        Assert.Equal("codex-question-answer", data.GetProperty("type").GetString());
+        Assert.Equal(1, data.GetProperty("version").GetInt32());
+        Assert.Equal("Which shape?", data.GetProperty("questions")[0].GetProperty("question").GetString());
+        Assert.True(data.GetProperty("questions")[1].GetProperty("isSecret").GetBoolean());
+        Assert.Equal("Square", data.GetProperty("answers").GetProperty("shape")[0].GetString());
+        Assert.False(data.GetProperty("answers").TryGetProperty("secret", out _));
     }
 
     [Fact]
@@ -169,14 +210,14 @@ public sealed class CodexPendingQuestionTests : IDisposable
             sessions.GetType().GetMethod("TryAdd")!.Invoke(sessions, ["session-1", _session]);
         }
 
-        public void Park(string itemId)
+        public void Park(string itemId, object? customQuestions = null)
         {
             using var request = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
                 threadId = "thread-1",
                 turnId = "turn-1",
                 itemId,
-                questions = new[]
+                questions = customQuestions ?? new[]
                 {
                     new
                     {

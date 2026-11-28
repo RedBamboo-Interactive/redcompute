@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using RedCompute.Core.Jobs;
 using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
@@ -2330,30 +2331,55 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         if (!session.Questions.TryRemove(answer.RequestId, out var pending)) return false;
 
         pending.Dispose();
-        _ = session.Connection.RespondAsync(pending.RequestId, new { answers = BuildQuestionAnswers(pending.Questions, answer) });
-        FinishQuestion(session, answer.RequestId, "answered");
+        var answers = BuildQuestionAnswers(pending.Questions, answer);
+        var receipt = AnswerReceipt(pending.Questions, answers);
+        _ = session.Connection.RespondAsync(pending.RequestId, new { answers });
+        FinishQuestion(session, answer.RequestId, "answered", answerReceipt: receipt);
         return true;
     }
 
-    internal static Dictionary<string, object> BuildQuestionAnswers(JsonElement questions, SessionQuestionAnswer answer)
+    internal sealed record NativeQuestionAnswer([property: JsonPropertyName("answers")] string[] Answers);
+
+    internal static Dictionary<string, NativeQuestionAnswer> BuildQuestionAnswers(JsonElement questions, SessionQuestionAnswer answer)
     {
         var ids = QuestionIds(questions);
-        var payload = new Dictionary<string, object>();
+        var payload = new Dictionary<string, NativeQuestionAnswer>();
         if (answer.Answers is { Count: > 0 })
         {
             var byText = QuestionTextToId(questions);
             foreach (var (text, value) in answer.Answers)
                 if (byText.TryGetValue(text, out var id))
-                    payload[id] = new { answers = new[] { value } };
+                    payload[id] = new NativeQuestionAnswer([value]);
         }
 
         if (payload.Count == 0 && answer.PositionalAnswers is { Count: > 0 })
             for (var i = 0; i < answer.PositionalAnswers.Count && i < ids.Count; i++)
-                payload[ids[i]] = new { answers = new[] { answer.PositionalAnswers[i] } };
+                payload[ids[i]] = new NativeQuestionAnswer([answer.PositionalAnswers[i]]);
 
         if (payload.Count == 0 && answer.Response is not null && ids.Count > 0)
-            payload[ids[0]] = new { answers = new[] { answer.Response } };
+            payload[ids[0]] = new NativeQuestionAnswer([answer.Response]);
         return payload;
+    }
+
+    // Store the exact user-visible values from the native response, keyed by native question id.
+    // The receipt carries its own prompt so a page need not include the opening record.
+    private static string AnswerReceipt(JsonElement questions, IReadOnlyDictionary<string, NativeQuestionAnswer> submitted)
+    {
+        var answers = new Dictionary<string, string[]>();
+        var secretIds = new HashSet<string>();
+        foreach (var question in questions.EnumerateArray())
+        {
+            if (question.ValueKind != JsonValueKind.Object || !question.TryGetProperty("id", out var idValue)
+                || idValue.ValueKind != JsonValueKind.String || idValue.GetString() is not { } id)
+                continue;
+            if (question.TryGetProperty("isSecret", out var secret) && secret.ValueKind != JsonValueKind.False)
+                secretIds.Add(id);
+            else if (submitted.TryGetValue(id, out var answer))
+                answers[id] = answer.Answers;
+        }
+        foreach (var id in secretIds) answers.Remove(id);
+
+        return JsonSerializer.Serialize(new { type = "codex-question-answer", version = 1, questions, answers });
     }
 
     private bool DeclineQuestion(ManagedSession session, string requestId, string outcome, string reason)
@@ -2365,11 +2391,12 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         return true;
     }
 
-    private void FinishQuestion(ManagedSession session, string requestId, string outcome, bool persist = true)
+    private void FinishQuestion(ManagedSession session, string requestId, string outcome, bool persist = true, string? answerReceipt = null)
     {
         var resolved = new CodexStreamEvent
         {
             Type = "question_resolved", MessageId = requestId, RequestId = requestId, Content = outcome,
+            ToolResult = answerReceipt,
         };
         if (persist) Emit(session, resolved);
         else StreamEvent?.Invoke(session.Info.Id, resolved);
