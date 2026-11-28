@@ -39,6 +39,7 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.Local.LocalHostRuntimes))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.Local.LocalRuntimeRegistration))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.LocalWslRecipe))]
+[assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.LoopbackProbe))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.RemoteOperationNotAllowedException))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.RuntimeRecipes))]
 [assembly: TypeForwardedTo(typeof(RedCompute.PluginSdk.Hosting.ServiceResponseTooLargeException))]
