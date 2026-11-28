@@ -142,6 +142,7 @@ public class RelayServer
             Google = googleAuth,
             Mode = googleAuth != null ? AuthMode.Required : AuthMode.LocalDefault,
         });
+        LoopbackDefaults.ReplaceKernelDefault(builder.Services);
 
         _app = builder.Build();
 
@@ -194,7 +195,7 @@ public class RelayServer
         var authFactory = _app.Services.GetRequiredService<AuthenticatedHttpClientFactory>();
         _callbacks = new SessionCallbackRegistry(_log, authFactory);
         _voiceSessions = new VoiceSessionCoordinator(
-            authFactory.CreateClient("http://localhost", TimeSpan.FromSeconds(15)),
+            authFactory.CreateClient(LoopbackDefaults.BaseAddress, TimeSpan.FromSeconds(15)),
             _log, _config.RedLeafUrl);
 
         _app.UseUserDetection();

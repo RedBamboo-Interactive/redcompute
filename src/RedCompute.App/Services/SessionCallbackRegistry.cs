@@ -53,7 +53,7 @@ public class SessionCallbackRegistry
     public SessionCallbackRegistry(Action<string, Guid?> log, AuthenticatedHttpClientFactory? authFactory = null)
     {
         _log = log;
-        _http = authFactory?.CreateClient("http://localhost", TimeSpan.FromSeconds(10))
+        _http = authFactory?.CreateClient(LoopbackDefaults.BaseAddress, TimeSpan.FromSeconds(10))
             ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     }
 
