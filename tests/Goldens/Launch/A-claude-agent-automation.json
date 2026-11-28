@@ -9,6 +9,8 @@
     "--max-turns",
     "50",
     "--dangerously-skip-permissions",
+    "--disallowedTools",
+    "AskUserQuestion",
     "--strict-mcp-config",
     "--mcp-config",
     "{\"mcpServers\":{\"leaf\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:18804/api/mcp\",\"headers\":{\"Authorization\":\"Bearer ${REDLEAF_EXECUTION_TOKEN}\"}}}}",

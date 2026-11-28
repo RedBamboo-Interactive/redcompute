@@ -1,6 +1,7 @@
 using RedCompute.App.Services;
 using RedCompute.Core.Configuration;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Sessions;
 using Microsoft.Data.Sqlite;
 using RedCompute.NodeLink;
 using Xunit;
@@ -44,6 +45,34 @@ public sealed class SessionInputQueueStoreTests : IDisposable
         var items = await reopened.ListAsync("session-a", "owner-a", includeTerminal: false);
         Assert.Single(items);
         Assert.Equal(admitted.Item.Id, items[0].Id);
+    }
+
+    [Fact]
+    public async Task Workflow_turn_does_not_batch_with_an_interactive_turn_after_reopening()
+    {
+        var (_, queue) = Stores();
+        var plain = Submission("interactive", "owner-a", []);
+        var workflow = Submission("workflow", "owner-a", []);
+        workflow = workflow with
+        {
+            Provenance = plain.Provenance with
+            {
+                Assurance = JobProvenanceAssurance.Verified,
+                Context = [.. plain.Provenance.Context,
+                    new JobContextReference(SessionTurnQuestions.ContextKind, SessionTurnQuestions.DisabledValue)],
+            },
+        };
+        plain = plain with { Provenance = plain.Provenance with { Assurance = JobProvenanceAssurance.Verified } };
+        await queue.EnqueueAsync(workflow);
+        await queue.EnqueueAsync(plain);
+
+        var (_, reopened) = Stores();
+        var batch = await reopened.ClaimBatchAsync("session-a", "lease", TimeSpan.FromSeconds(20));
+        var admitted = Assert.Single(batch);
+        Assert.True(SessionTurnQuestions.RequiresNonInteractive(admitted.Provenance));
+        await reopened.MarkDeliveredAsync(batch, admitted.MessageUid);
+        var next = Assert.Single(await reopened.ClaimBatchAsync("session-a", "lease", TimeSpan.FromSeconds(20)));
+        Assert.False(SessionTurnQuestions.RequiresNonInteractive(next.Provenance));
     }
 
     [Fact]

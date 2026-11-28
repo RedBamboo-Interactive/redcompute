@@ -57,6 +57,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         | SessionCapabilities.SendMessage
         | SessionCapabilities.SupportsSteering
         | SessionCapabilities.SupportsRollback
+        | SessionCapabilities.StructuredQuestions
         | SessionCapabilities.ImageAttachments
         | SessionCapabilities.FileAttachments
         | SessionCapabilities.ImageOutputs
@@ -619,6 +620,7 @@ public class CodexProvider : IPluginProvider, ICustomEndpointProvider, IPluginEv
         MaxAccessLevel = s.MaxAccessLevel,
         AccessLevelBeforePlan = s.AccessLevelBeforePlan,
         Unattended = s.Unattended,
+        ActiveTurnQuestionsDisabled = s.ActiveTurnQuestionsDisabled,
         AccessLevelSource = s.Access.Source,
         SupportedAccessLevels = [Core.Sessions.SessionAccessLevels.Ask, Core.Sessions.SessionAccessLevels.Auto, Core.Sessions.SessionAccessLevels.Full],
         UserId = s.UserId,

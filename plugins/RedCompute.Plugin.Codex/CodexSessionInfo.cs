@@ -58,6 +58,7 @@ public class CodexSessionInfo
     public string? MaxAccessLevel { get; set; }
     public string? AccessLevelBeforePlan { get; set; }
     public bool Unattended { get; set; }
+    internal bool ActiveTurnQuestionsDisabled { get; set; }
     /// <summary>
     /// <c>policy</c> or <c>explicit</c> (<see cref="Core.Sessions.SessionAccessLevelSources"/>). Null on
     /// rows written before sources existed, which count as policy.

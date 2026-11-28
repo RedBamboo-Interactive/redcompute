@@ -11,6 +11,8 @@
     "dontAsk",
     "--append-system-prompt",
     "Permissions: this session runs at Ask. Nobody watches it, so anything that needs approval is denied at once. A denied tool or command without a reason was denied for that. Approval requires a signed-in person in an interactive session. Continue without it.",
+    "--disallowedTools",
+    "AskUserQuestion",
     "--tools",
     "Read,Bash",
     "--strict-mcp-config",

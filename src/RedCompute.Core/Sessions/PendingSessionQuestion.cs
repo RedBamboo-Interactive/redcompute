@@ -25,6 +25,8 @@ public sealed record PendingSessionQuestion
     public required string ToolName { get; init; }
     /// <summary>The transcript tool call or item that carries the question, when the provider names one.</summary>
     public string? ToolUseId { get; init; }
+    /// <summary>The input that opened the parked turn, when the provider knows it.</summary>
+    public string? InputMessageUid { get; init; }
     /// <summary>The questions with their options, verbatim from the provider. Empty for a permission.</summary>
     public required JsonElement Questions { get; init; }
     /// <summary>The provider's original question input, verbatim.</summary>

@@ -149,7 +149,7 @@ internal sealed class SessionPromptCallbacks
         var rowId = SessionRowId(questionUrl, owner);
         if (_entries.TryGetValue((sessionId, rowId), out var existing))
         {
-            if (existing.Url != completionUrl) Save(existing with { Url = completionUrl });
+            if (completionUrl.Length != 0 && existing.Url != completionUrl) Save(existing with { Url = completionUrl });
             return;
         }
         // A turn already running when the subscription starts is someone else's turn: it is joined,
@@ -418,6 +418,7 @@ internal sealed class SessionPromptCallbacks
         int? pendingInputs = null;
         foreach (var row in rows)
         {
+            if (row.Url.Length == 0) continue;
             var next = row;
             if (endedReason is null && (observedActive || live) && !next.InTurn)
             {

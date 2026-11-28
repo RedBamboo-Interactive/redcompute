@@ -14,7 +14,7 @@ public sealed class CodexPendingQuestionTests : IDisposable
     private readonly List<Process> _processes = [];
 
     [Fact]
-    public void Parked_question_is_readable_with_its_original_input_and_no_deadline()
+    public void Parked_question_is_readable_with_its_original_input_and_deadline()
     {
         var h = new Harness(this);
         var before = DateTimeOffset.UtcNow;
@@ -32,7 +32,7 @@ public sealed class CodexPendingQuestionTests : IDisposable
         Assert.Equal("turn-1", question.Input.GetProperty("turnId").GetString());
         Assert.Equal(question.Questions.GetRawText(), question.Input.GetProperty("questions").GetRawText());
         Assert.InRange(question.AskedAt, before, DateTimeOffset.UtcNow);
-        Assert.Null(question.ExpiresAt);
+        Assert.Equal(question.AskedAt + TimeSpan.FromMinutes(30), question.ExpiresAt);
         Assert.Empty(h.Service.GetPendingQuestions("another-session"));
     }
 
@@ -53,6 +53,46 @@ public sealed class CodexPendingQuestionTests : IDisposable
 
         Assert.Empty(h.Service.GetPendingQuestions("session-1"));
         Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "item-1" });
+    }
+
+    [Fact]
+    public void Answers_use_the_native_app_server_array_shape()
+    {
+        using var questions = JsonDocument.Parse("""[{"id":"q-db","question":"Which database?"}]""");
+        var answers = CodexInteractiveService.BuildQuestionAnswers(questions.RootElement, new SessionQuestionAnswer
+        {
+            RequestId = "item-1",
+            PositionalAnswers = ["Postgres"],
+        });
+        var wire = JsonSerializer.SerializeToElement(answers);
+        Assert.Equal("Postgres", Assert.Single(wire.GetProperty("q-db").GetProperty("answers").EnumerateArray()).GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Unattended_sessions_and_workflow_turns_do_not_park(bool workflowTurn)
+    {
+        var h = new Harness(this);
+        h.Info.Unattended = !workflowTurn;
+        h.Info.ActiveTurnQuestionsDisabled = workflowTurn;
+        h.Park("item-1");
+
+        Assert.Empty(h.Service.GetPendingQuestions("session-1"));
+        Assert.DoesNotContain(h.Events, e => e.Type == "question");
+    }
+
+    [Fact]
+    public void Native_request_resolution_clears_only_the_matching_question()
+    {
+        var h = new Harness(this);
+        h.Park("item-1");
+        h.Notify("serverRequest/resolved", new { requestId = 8 });
+        Assert.Single(h.Service.GetPendingQuestions("session-1"));
+
+        h.Notify("serverRequest/resolved", new { requestId = 7 });
+        Assert.Empty(h.Service.GetPendingQuestions("session-1"));
+        Assert.Contains(h.Events, e => e is { Type: "question_resolved", RequestId: "item-1", Content: "cancelled" });
     }
 
     [Fact]
@@ -96,6 +136,7 @@ public sealed class CodexPendingQuestionTests : IDisposable
     {
         private readonly object _session;
         public CodexInteractiveService Service { get; }
+        public CodexSessionInfo Info { get; }
         public RecordingStore Store { get; } = new();
         public List<CodexStreamEvent> Events { get; } = [];
 
@@ -105,10 +146,11 @@ public sealed class CodexPendingQuestionTests : IDisposable
             Service.StreamEvent += (_, e) => Events.Add(e);
             var sessionType = typeof(CodexInteractiveService).GetNestedType("ManagedSession", BindingFlags.NonPublic)!;
             _session = Activator.CreateInstance(sessionType, nonPublic: true)!;
-            sessionType.GetProperty("Info")!.SetValue(_session, new CodexSessionInfo
+            Info = new CodexSessionInfo
             {
                 Id = "session-1", ProjectName = "Test", ProjectPath = ".", ThreadId = "thread-1", Status = "Active",
-            });
+            };
+            sessionType.GetProperty("Info")!.SetValue(_session, Info);
             var process = Process.Start(new ProcessStartInfo
             {
                 FileName = TestProcesses.StdinSink,
@@ -150,8 +192,11 @@ public sealed class CodexPendingQuestionTests : IDisposable
                 },
             }));
             using var id = JsonDocument.Parse("7");
-            typeof(CodexInteractiveService).GetMethod("HandleUserInputRequest", BindingFlags.NonPublic | BindingFlags.Instance)!
-                .Invoke(Service, [_session, id.RootElement, request.RootElement]);
+            var connection = _session.GetType().GetProperty("Connection")!.GetValue(_session);
+            var dispatch = (Task)typeof(CodexInteractiveService)
+                .GetMethod("OnServerRequestAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .Invoke(Service, ["session-1", connection, id.RootElement, "item/tool/requestUserInput", request.RootElement])!;
+            dispatch.GetAwaiter().GetResult();
         }
 
         public void Notify(string method, object payload)

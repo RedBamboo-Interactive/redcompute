@@ -46,6 +46,7 @@ public class ClaudeSessionInfo
     public string PermissionMode { get; set; } = "acceptEdits";
     // Provider-neutral access state, persisted with the session and applied on every launch.
     public Core.Sessions.SessionAccessState Access { get; set; } = Core.Sessions.SessionAccessState.Legacy;
+    internal bool ActiveTurnQuestionsDisabled { get; set; }
     public string? Source { get; set; }
     public string? UserId { get; set; }
     public string? UserName { get; set; }

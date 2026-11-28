@@ -600,6 +600,7 @@ public partial class ClaudeSessionService
                 AddOneshotAccessNote(args, Core.Sessions.SessionAccessLevels.Ask);
                 break;
         }
+        args.AddRange(["--disallowedTools", AskUserQuestionTool]);
         if (tools is not null)
         {
             // `--allowedTools` controls permission prompts, not tool availability. An explicit
@@ -1467,6 +1468,8 @@ public partial class ClaudeSessionService
             };
             // Set before the write: the reader may see the CLI's replay before this method resumes.
             session.UserInputUnconsumed = true;
+            session.InputMessageUid = messageUid;
+            session.Info.ActiveTurnQuestionsDisabled = SessionTurnQuestions.Disabled;
             try { await WriteControlLineAsync(session, msg); }
             catch { session.UserInputUnconsumed = false; throw; }
             session.Info.MessageCount++;
@@ -2324,6 +2327,7 @@ public partial class ClaudeSessionService
                 Permission = q.Permission,
                 ToolName = q.ToolName ?? AskUserQuestionTool,
                 ToolUseId = q.ToolUseId,
+                InputMessageUid = q.InputMessageUid,
                 Questions = q.Permission is null && q.Input.ValueKind == JsonValueKind.Object
                     && q.Input.TryGetProperty("questions", out var questions) ? questions : EmptyJsonArray,
                 Input = q.Input.ValueKind == JsonValueKind.Undefined ? EmptyJsonObject : q.Input,
@@ -3427,6 +3431,12 @@ public partial class ClaudeSessionService
             return;
         }
 
+        if (session.Info.Access.Unattended || session.Info.ActiveTurnQuestionsDisabled)
+        {
+            RespondPermissionDeny(session, requestId, SessionTurnQuestions.NoResponder);
+            return;
+        }
+
         var input = request.TryGetProperty("input", out var inp)
             ? inp.Clone()   // the JsonDocument is disposed when ParseStreamLine returns
             : default;
@@ -3438,6 +3448,7 @@ public partial class ClaudeSessionService
             RequestId = requestId,
             ToolUseId = toolUseId,
             Input = input,
+            InputMessageUid = session.InputMessageUid,
             AskedAt = askedAt,
             ExpiresAt = askedAt + QuestionAnswerTimeout,
         };
@@ -3879,6 +3890,14 @@ public partial class ClaudeSessionService
                     return Core.Sessions.SessionAccessApplyResult.Refused(refusal);
                 }
                 session.Info.Access = state;
+                if (state.Unattended)
+                    foreach (var question in session.PendingQuestions.Values.Where(question => question.Permission is null))
+                        SubmitQuestionAnswer(sessionId, new SessionQuestionAnswer
+                        {
+                            RequestId = question.RequestId,
+                            Decline = true,
+                            DeclineReason = SessionTurnQuestions.NoResponder,
+                        });
                 session.Info.PermissionMode = mode;
                 PersistSessionRecord(session.Info);
                 SessionUpdated?.Invoke(session.Info);
@@ -4290,6 +4309,9 @@ public partial class ClaudeSessionService
     /// </summary>
     private static void MarkTurnEnded(ManagedSession session, string outcome, string? error = null)
     {
+        // A background continuation inherits the last input's question policy until a new
+        // admitted input replaces it. It has no caller message of its own.
+        session.InputMessageUid = null;
         session.Info.LastTurnOutcome = outcome;
         session.Info.LastTurnEndedAt = DateTimeOffset.UtcNow;
         session.Info.LastTurnError = outcome == Core.Sessions.SessionTurnOutcomes.Failed
@@ -4943,6 +4965,7 @@ public partial class ClaudeSessionService
     {
         public required string RequestId { get; init; }
         public required string? ToolUseId { get; init; }
+        public string? InputMessageUid { get; init; }
         /// <summary>The tool input as the CLI sent it; echoed back inside updatedInput.</summary>
         public required JsonElement Input { get; init; }
         public required DateTimeOffset AskedAt { get; init; }
@@ -5025,6 +5048,7 @@ public partial class ClaudeSessionService
         // turn boundaries (status/error result, user message, answer) so the
         // next turn mints a fresh one.
         public string? CurrentAssistantUid { get; set; }
+        public string? InputMessageUid { get; set; }
         public PromptCacheCounts? LatestPromptCacheRequest { get; set; }
         // Streamed text/thinking blocks awaiting phase or block-stop settlement.
         public ClaudeTextBlockTracker TextBlocks { get; } = new();

@@ -409,6 +409,7 @@ public sealed partial class SessionInputQueueService
 
     private async Task<string?> SteerRefusalAsync(string sessionId, SessionInputQueueItem item, string ownerUserId, CancellationToken ct)
     {
+        if (SessionTurnQuestions.RequiresNonInteractive(item.Provenance)) return SessionSteerRefusals.Unsupported;
         if (HasStopIntent(sessionId)) return SessionSteerRefusals.UserStopped;
         if (_deliveryPaused()) return SessionSteerRefusals.Maintenance;
         var (provider, info) = FindSession(sessionId);
@@ -923,6 +924,8 @@ public sealed partial class SessionInputQueueService
 
                 var deliveredMessageUid = batch[0].MessageUid;
                 using var recoveryScope = authority?.AccessToken is { } token ? SessionScratch.PushExecutionToken(token) : null;
+                using var questionScope = SessionTurnQuestions.RequiresNonInteractive(batch[0].Provenance)
+                    ? SessionTurnQuestions.Suppress() : null;
                 using var draftScope = draftDelivery is null ? null : OwnerDraftDelivery.Push(draftDelivery);
                 var result = await provider.TrySendInputAsync(
                     sessionId, payload.Input, payload.AttachmentsJson, deliveredMessageUid,

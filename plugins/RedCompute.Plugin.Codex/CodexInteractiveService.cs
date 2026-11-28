@@ -42,6 +42,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         /// <summary>Id of the in-flight turn, needed by turn/interrupt.</summary>
         public string? ActiveTurnId { get; set; }
         public string? TurnModel { get; set; }
+        public string? InputMessageUid { get; set; }
         // A sent message whose provider turn is not known yet. Rollback needs it to find the turn.
         public string? PendingTurnUid { get; set; }
 
@@ -80,7 +81,15 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     }
 
     public sealed record PendingQuestion(JsonElement RequestId, string ItemId, JsonElement Questions,
-        JsonElement Params = default, DateTimeOffset AskedAt = default);
+        JsonElement Params = default, DateTimeOffset AskedAt = default) : IDisposable
+    {
+        public DateTimeOffset? ExpiresAt { get; init; }
+        public string? InputMessageUid { get; init; }
+        public Timer? Expiry { get; set; }
+        public void Dispose() => Expiry?.Dispose();
+    }
+
+    internal TimeSpan QuestionTimeout { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>One app-server approval request waiting for a person, answered by its JSON-RPC id.</summary>
     public sealed class PendingApproval : IDisposable
@@ -638,7 +647,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
             environment,
             launchProcess: LaunchAppServerProcess,
             spawned: spawned,
-            host: _host, enableOwnerDraftTool: suiteAccess && EnableOwnerDraftTool);
+            host: _host, enableOwnerDraftTool: suiteAccess && EnableOwnerDraftTool,
+            enableNativeQuestions: suiteAccess);
         conn.LeafMcpUrl = LeafMcpGateway.UrlFor(environment);
         conn.Notification += (method, p) =>
         {
@@ -837,6 +847,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         session.HasCompletedFinalAnswer = false;
         session.InterruptRequested = false;
         session.PendingTurnUid = messageUid;
+        session.InputMessageUid = messageUid;
+        session.Info.ActiveTurnQuestionsDisabled = SessionTurnQuestions.Disabled;
         session.TurnModel = info.Model;
 
         var transcriptContent = SessionInputFormatting.TranscriptText(input, displayContent);
@@ -1432,6 +1444,17 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 _accountUsage.ApplyNotification(@params);
                 return;
 
+            case "serverRequest/resolved":
+                if (@params.TryGetProperty("requestId", out var nativeRequest))
+                    foreach (var question in session.Questions)
+                        if (question.Value.RequestId.GetRawText() == nativeRequest.GetRawText()
+                            && session.Questions.TryRemove(question))
+                        {
+                            question.Value.Dispose();
+                            FinishQuestion(session, question.Key, "cancelled", persist: false);
+                        }
+                return;
+
             case "turn/started":
                 session.HasCompletedFinalAnswer = false;
                 if (@params.TryGetProperty("turn", out var startedTurn) &&
@@ -1487,6 +1510,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 // A question belongs to its turn: once the turn ends (an interrupt, or the
                 // app-server abandoning the request) nothing is waiting for the answer.
                 DiscardQuestions(session, "cancelled");
+                session.Info.ActiveTurnQuestionsDisabled = false;
+                session.InputMessageUid = null;
                 session.Info.Status = "Idle";
                 session.Info.LastActivity = DateTimeOffset.UtcNow;
                 Persist(session.Info);
@@ -1892,7 +1917,10 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
 
                 // The one thing the model asks on purpose — the AskUserQuestion analogue.
                 case "item/tool/requestUserInput":
-                    HandleUserInputRequest(session, id, @params);
+                    if (session.Info.Unattended || session.Info.ActiveTurnQuestionsDisabled)
+                        await conn.RespondErrorAsync(id, SessionTurnQuestions.NoResponder);
+                    else
+                        HandleUserInputRequest(session, id, @params);
                     return;
 
                 default:
@@ -2094,6 +2122,9 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         if (_sessions.TryGetValue(sessionId, out var session))
         {
             session.Info.Access = state;
+            if (state.Unattended)
+                foreach (var requestId in session.Questions.Keys)
+                    DeclineQuestion(session, requestId, "declined", SessionTurnQuestions.NoResponder);
             Persist(session.Info);
             SessionUpdated?.Invoke(session.Info);
             return true;
@@ -2158,8 +2189,28 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         var itemId = @params.TryGetProperty("itemId", out var i) ? i.GetString() ?? "" : "";
         @params.TryGetProperty("questions", out var questions);
 
-        session.Questions[itemId] = new PendingQuestion(id.Clone(), itemId, questions.Clone(),
-            @params.Clone(), DateTimeOffset.UtcNow);
+        if (string.IsNullOrWhiteSpace(itemId) || questions.ValueKind != JsonValueKind.Array || questions.GetArrayLength() == 0)
+        {
+            _ = session.Connection.RespondErrorAsync(id, "Invalid question request");
+            return;
+        }
+
+        var askedAt = DateTimeOffset.UtcNow;
+        var timeout = QuestionTimeout;
+        if (Int(@params, "autoResolutionMs") is int nativeTimeout && nativeTimeout > 0)
+            timeout = TimeSpan.FromMilliseconds(Math.Min(nativeTimeout, timeout.TotalMilliseconds));
+        var pending = new PendingQuestion(id.Clone(), itemId, questions.Clone(), @params.Clone(), askedAt)
+        {
+            ExpiresAt = askedAt + timeout,
+            InputMessageUid = session.InputMessageUid,
+        };
+        pending.Expiry = new Timer(_ => DeclineQuestion(session, itemId, "timeout",
+            "The question expired. Continue where possible and report any missing input."), null, timeout, Timeout.InfiniteTimeSpan);
+        if (!session.Questions.TryAdd(itemId, pending))
+        {
+            pending.Dispose();
+            return;
+        }
 
         Emit(session, new CodexStreamEvent
         {
@@ -2193,7 +2244,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
         }
         foreach (var itemId in session.Questions.Keys)
         {
-            if (!session.Questions.TryRemove(itemId, out _)) continue;
+            if (!session.Questions.TryRemove(itemId, out var pending)) continue;
+            pending.Dispose();
             StreamEvent?.Invoke(session.Info.Id, new CodexStreamEvent
             {
                 Type = "question_resolved", MessageId = itemId, RequestId = itemId, Content = outcome,
@@ -2203,8 +2255,7 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Questions a live session is parked on. Codex waits for an answer without a deadline, so
-    /// <see cref="Core.Sessions.PendingSessionQuestion.ExpiresAt"/> is always null.
+    /// Questions a live session is parked on, with the earlier Leaf or native deadline.
     /// </summary>
     public IReadOnlyList<Core.Sessions.PendingSessionQuestion> GetPendingQuestions(string sessionId)
     {
@@ -2218,6 +2269,8 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
                 Questions = q.Questions.ValueKind == JsonValueKind.Undefined ? EmptyJsonArray : q.Questions,
                 Input = q.Params.ValueKind == JsonValueKind.Undefined ? EmptyJsonObject : q.Params,
                 AskedAt = q.AskedAt,
+                ExpiresAt = q.ExpiresAt,
+                InputMessageUid = q.InputMessageUid,
             })
             .Concat(session.Approvals.Values.Select(a => new Core.Sessions.PendingSessionQuestion
             {
@@ -2266,46 +2319,58 @@ public sealed partial class CodexInteractiveService : IAsyncDisposable
     public bool SubmitQuestionAnswer(string sessionId, Core.Sessions.SessionQuestionAnswer answer)
     {
         if (!_sessions.TryGetValue(sessionId, out var session)) return false;
+        if (answer.Decline)
+            return DeclineQuestion(session, answer.RequestId, "declined", answer.DeclineReason ?? "User declined to answer");
         if (!session.Questions.TryRemove(answer.RequestId, out var pending)) return false;
 
-        var ids = QuestionIds(pending.Questions);
+        pending.Dispose();
+        _ = session.Connection.RespondAsync(pending.RequestId, new { answers = BuildQuestionAnswers(pending.Questions, answer) });
+        FinishQuestion(session, answer.RequestId, "answered");
+        return true;
+    }
+
+    internal static Dictionary<string, object> BuildQuestionAnswers(JsonElement questions, SessionQuestionAnswer answer)
+    {
+        var ids = QuestionIds(questions);
         var payload = new Dictionary<string, object>();
-
-        if (answer.Decline)
+        if (answer.Answers is { Count: > 0 })
         {
-            // Declining still has to produce a reply, or the turn waits forever.
-            _ = session.Connection.RespondErrorAsync(pending.RequestId, "User declined to answer");
-        }
-        else
-        {
-            if (answer.Answers is { Count: > 0 })
-            {
-                // Keyed by question text: resolve each back to its id via the parked list.
-                var byText = QuestionTextToId(pending.Questions);
-                foreach (var (text, value) in answer.Answers)
-                    if (byText.TryGetValue(text, out var qid))
-                        payload[qid] = new { text = value };
-            }
-
-            if (payload.Count == 0 && answer.PositionalAnswers is { Count: > 0 })
-                for (var i = 0; i < answer.PositionalAnswers.Count && i < ids.Count; i++)
-                    payload[ids[i]] = new { text = answer.PositionalAnswers[i] };
-
-            if (payload.Count == 0 && answer.Response != null && ids.Count > 0)
-                payload[ids[0]] = new { text = answer.Response };
-
-            _ = session.Connection.RespondAsync(pending.RequestId, new { answers = payload });
+            var byText = QuestionTextToId(questions);
+            foreach (var (text, value) in answer.Answers)
+                if (byText.TryGetValue(text, out var id))
+                    payload[id] = new { answers = new[] { value } };
         }
 
-        Emit(session, new CodexStreamEvent
+        if (payload.Count == 0 && answer.PositionalAnswers is { Count: > 0 })
+            for (var i = 0; i < answer.PositionalAnswers.Count && i < ids.Count; i++)
+                payload[ids[i]] = new { answers = new[] { answer.PositionalAnswers[i] } };
+
+        if (payload.Count == 0 && answer.Response is not null && ids.Count > 0)
+            payload[ids[0]] = new { answers = new[] { answer.Response } };
+        return payload;
+    }
+
+    private bool DeclineQuestion(ManagedSession session, string requestId, string outcome, string reason)
+    {
+        if (!session.Questions.TryRemove(requestId, out var pending)) return false;
+        pending.Dispose();
+        _ = session.Connection.RespondErrorAsync(pending.RequestId, reason);
+        FinishQuestion(session, requestId, outcome);
+        return true;
+    }
+
+    private void FinishQuestion(ManagedSession session, string requestId, string outcome, bool persist = true)
+    {
+        var resolved = new CodexStreamEvent
         {
-            Type = "question_resolved", MessageId = answer.RequestId, RequestId = answer.RequestId,
-            Content = answer.Decline ? "declined" : "answered",
-        });
-        session.Info.Status = "Active";
+            Type = "question_resolved", MessageId = requestId, RequestId = requestId, Content = outcome,
+        };
+        if (persist) Emit(session, resolved);
+        else StreamEvent?.Invoke(session.Info.Id, resolved);
+        if (session.Info.Status == "Waiting" && session.Questions.IsEmpty && session.Approvals.IsEmpty)
+            session.Info.Status = "Active";
         Persist(session.Info);
         SessionUpdated?.Invoke(session.Info);
-        return true;
     }
 
     // ===== Titles =============================================================================

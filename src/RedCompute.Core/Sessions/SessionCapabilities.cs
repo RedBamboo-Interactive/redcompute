@@ -35,4 +35,6 @@ public enum SessionCapabilities
     /// that cannot do exactly this does not claim it.
     /// </summary>
     SupportsRollback = 1 << 16,
+    /// <summary>Native, answerable structured questions in interactive persistent turns.</summary>
+    StructuredQuestions = 1 << 17,
 }

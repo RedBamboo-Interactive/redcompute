@@ -126,6 +126,9 @@ public class UnifiedSessionInfo
     public bool Dismissed { get; set; }
     public Dictionary<string, object?>? ProviderMetadata { get; set; }
     public bool SupportsSteering { get; set; }
+    public string QuestionMode { get; set; } = SessionTurnQuestions.DisabledValue;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ActiveTurnQuestionsDisabled { get; set; }
     // Whether this session can be rolled back at all (provider capability plus any per-session
     // limit, such as a Codex thread created before paginated history). Whether it can be rolled
     // back right now also needs the session to be idle; the route reports what is in the way.

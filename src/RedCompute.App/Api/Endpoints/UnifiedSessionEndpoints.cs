@@ -127,6 +127,8 @@ public static partial class UnifiedSessionEndpoints
         async Task AuthorizeRemoteStart(HttpContext context, RemoteSessionPlacementPreview preview,
             JobProvenance provenance, CancellationToken ct)
         {
+            if (SessionTurnQuestions.RequiresNonInteractive(WithCallerQuestionPolicy(context, provenance)))
+                throw new ControllerRemoteSessionException(422, "remote_workflow_input_unsupported");
             var parent = access.FindParent(SignedSessionReferences(context), info => CanReadSession(context, info), FindSession);
             var starting = await access.ResolveStartAsync([preview.AccessLevel], preview.AccessLevel, preview.MaxAccessLevel,
                 false, ComputeResourceAccess.IsPersonPresent(context), SessionAccessService.AgentEntityId(provenance), ct, parent);
@@ -147,6 +149,25 @@ public static partial class UnifiedSessionEndpoints
                     ? jobTracker.GetJob(jobId)
                     : null);
 
+        JobProvenance WithCallerQuestionPolicy(HttpContext context, JobProvenance provenance)
+        {
+            if (SessionTurnQuestions.RequiresNonInteractive(provenance)
+                || provenance.Assurance != JobProvenanceAssurance.Verified)
+                return provenance;
+
+            // An interactive process may be executing a Workflow input on this turn. Its
+            // process token predates that input, so inspect the signed caller session as well.
+            if (!ComputeResourceAccess.IsPersonPresent(context) && SignedSessionReferences(context).Any(id => id is not null
+                    && FindSession(id).Info is { ActiveTurnQuestionsDisabled: true } parent
+                    && CanReadSession(context, parent)))
+                return provenance with
+                {
+                    Context = [.. provenance.Context,
+                        new JobContextReference(SessionTurnQuestions.ContextKind, SessionTurnQuestions.DisabledValue)],
+                };
+            return provenance;
+        }
+
         // Steering is a live provider capability, and background tasks are live provider state;
         // neither is durable session history. RedLeaf-backed reads would otherwise report them
         // only after the next session.updated event.
@@ -160,6 +181,9 @@ public static partial class UnifiedSessionEndpoints
             // A rename or requested title update outranks the provider's own title everywhere.
             _titles?.Apply(session);
             session.SupportsSteering = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsSteering) == true;
+            session.QuestionMode = provider?.Capabilities.HasFlag(SessionCapabilities.StructuredQuestions) == true
+                && !session.Unattended && !SessionExecutionProfile.IsConversationOnly(session.ExecutionProfile)
+                ? SessionTurnQuestions.InteractiveValue : SessionTurnQuestions.DisabledValue;
             session.SupportsRollback = provider?.Capabilities.HasFlag(SessionCapabilities.SupportsRollback) == true
                 && provider.SupportsRollback(session.Id);
             try
@@ -620,6 +644,8 @@ public static partial class UnifiedSessionEndpoints
             JobProvenance provenance;
             try { provenance = await ProvenanceCapture.ResolveAsync(ctx, "/ai-session/sessions"); }
             catch (JobProvenanceValidationException ex) { return Error(422, "invalid_provenance", ex.Message); }
+            provenance = WithCallerQuestionPolicy(ctx, provenance);
+            unattended |= SessionTurnQuestions.RequiresNonInteractive(provenance);
             if (confidential
                 && (provenance.Assurance != JobProvenanceAssurance.Verified
                     || !provenance.Actor.Kind.Equals("agent", StringComparison.OrdinalIgnoreCase)
@@ -674,7 +700,8 @@ public static partial class UnifiedSessionEndpoints
                     }
                     else
                     {
-                        using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName))
+                        using (SessionExecutionToken.Push(ctx, provider.ProviderId, provider.ProviderDisplayName,
+                            SessionTurnQuestions.RequiresNonInteractive(provenance)))
                             session = await provider.StartSessionAsync(projectPath, model, uId, uName, uAvatar,
                                 effort, q.EndpointUrl, SessionApiKey(q), thinkingBudget, q.QualityTier, q.ProviderName,
                                 repository?.Id, provenance, scratchDirectory, confidential, developerInstructions);
@@ -746,8 +773,7 @@ public static partial class UnifiedSessionEndpoints
             "Get session details and message history. pendingQuestions lists the structured questions the live session is parked on " +
             "(Claude AskUserQuestion, Codex requestUserInput) and the tool calls waiting for a person's approval (kind permission, with permission.toolName, " +
             "summary, input and options), with requestId, askedAt and expiresAt; answer one with " +
-            "POST /ai-session/sessions/{id}/question. Empty when nothing is pending. Claude questions expire after 30 minutes (the session is told to proceed " +
-            "on its own judgement); Codex questions have no deadline (expiresAt null). " + InfoOnlyReadDescription + WorkStateDescription, async (HttpContext ctx, string id) =>
+            "POST /ai-session/sessions/{id}/question. When a question reaches its deadline the session is told to continue where possible without an answer. " + InfoOnlyReadDescription + WorkStateDescription, async (HttpContext ctx, string id) =>
         {
             int? tail = null;
             if (int.TryParse(ctx.Request.Query["tail"].FirstOrDefault(), out var requestedTail))
@@ -1532,7 +1558,13 @@ public static partial class UnifiedSessionEndpoints
             "Durably admit a user message, then deliver according to its policy. Remote session runtimes accept one text part after the current turn and return a durable receipt. With waitForDelivery: false a steer returns the admission snapshot while the queue delivers it.", async (HttpContext ctx, string id) =>
         {
             if (remote is not null && await remote.IsActiveAsync(id, ctx.RequestAborted))
+            {
+                if (ConfidentialResourcePolicy.ExecutionIdentity(ctx)?.Context.Any(item =>
+                    item.Kind == SessionTurnQuestions.ContextKind && item.Id == SessionTurnQuestions.DisabledValue) == true)
+                    return Error(422, "remote_workflow_input_unsupported",
+                        "This runtime cannot enforce the non-interactive Workflow input policy.");
                 return await remote.MessageAsync(ctx, id);
+            }
             var (provider, info) = FindSession(id);
             if (info == null)
                 return Results.Json(new ErrorResponse { Error = "not_found", Message = $"Session '{id}' not found" }, statusCode: 404);
@@ -1665,6 +1697,11 @@ public static partial class UnifiedSessionEndpoints
                     return Error(422, "invalid_provenance", ex.Message);
                 }
 
+                invocationProvenance = WithCallerQuestionPolicy(ctx, invocationProvenance);
+                var disableQuestions = SessionTurnQuestions.RequiresNonInteractive(invocationProvenance);
+                if (disableQuestions && PendingQuestions(info).Count > 0)
+                    return Error(409, "session_awaiting_answer", "The existing turn is waiting for an answer.");
+
                 var deliveryPolicy = SessionInputDeliveryPolicy.AfterCurrent;
                 if (body.TryGetProperty("delivery", out var deliveryElement)
                     && deliveryElement.ValueKind != JsonValueKind.Null)
@@ -1679,6 +1716,9 @@ public static partial class UnifiedSessionEndpoints
                         _ => throw new SessionInputQueueStoreException("invalid_delivery_policy", "delivery must be 'after-current', 'steer-current', or 'interrupt-current'"),
                     };
                 }
+
+                if (disableQuestions && deliveryPolicy == SessionInputDeliveryPolicy.SteerCurrent)
+                    deliveryPolicy = SessionInputDeliveryPolicy.AfterCurrent;
 
                 var idempotencyKey = ctx.Request.Headers["X-Idempotency-Key"].FirstOrDefault();
                 if (idempotencyKey?.Length > 256)
@@ -2027,7 +2067,7 @@ public static partial class UnifiedSessionEndpoints
             .WithParam("answer", "string", required: true, description: "Answer text", location: ParamLocation.Body);
 
         endpoints.MapPost("/ai-session/sessions/{id}/question",
-            "Answer a structured question the session is parked on (Claude Code's AskUserQuestion). " +
+            "Answer a structured question the session is parked on (Claude Code's AskUserQuestion or Codex's requestUserInput). " +
             "The requestId comes from the 'question' stream event; unlike /answer this is not a " +
             "conversation turn — it unblocks the tool call the session is waiting on. " +
             "A pendingQuestions entry of kind permission (a tool call waiting for approval) is answered with {requestId, decision}: " +
@@ -2331,9 +2371,11 @@ public static partial class UnifiedSessionEndpoints
             try { body = await ctx.Request.ReadFromJsonAsync<JsonElement>(ctx.RequestAborted); }
             catch { return Error(400, "invalid_body", "Request body must be valid JSON"); }
 
-            var url = body.TryGetProperty("url", out var u) ? u.GetString() : null;
-            if (string.IsNullOrWhiteSpace(url))
-                return Error(422, "validation_failed", "url is required");
+            var url = body.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String
+                ? u.GetString() : null;
+            var questionOnly = body.TryGetProperty("questionOnly", out var only) && only.ValueKind == JsonValueKind.True;
+            if (!questionOnly && string.IsNullOrWhiteSpace(url))
+                return Error(422, "validation_failed", "url is required for completion notifications");
 
             var force = body.TryGetProperty("force", out var f) && f.GetBoolean();
             string? callbackId = null;
@@ -2360,13 +2402,24 @@ public static partial class UnifiedSessionEndpoints
                     return Error(422, "validation_failed", "questionUrl must be an absolute http(s) URL of at most 2000 characters");
                 questionUrl = question.GetString();
             }
+            if (questionOnly)
+            {
+                if (questionUrl is null)
+                    return Error(422, "validation_failed", "questionUrl is required for a question-only subscription");
+                if (_callbacks.Durable is not { } subscriptions)
+                    return Error(503, "not_configured", "Durable question subscriptions are unavailable");
+                await subscriptions.SubscribeSessionAsync(id, "", userId ?? info.UserId, questionUrl);
+                return Results.Json(new { registered = true, currentStatus = info.Status.ToString() });
+            }
+
             bool deferred;
-            try { deferred = _callbacks.RegisterIfStillActive(id, url, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId, promptMessageUid, questionUrl,
+            try { deferred = _callbacks.RegisterIfStillActive(id, url!, info.Status, userId ?? info.UserId, info.StopReason, force, callbackId, promptMessageUid, questionUrl,
                 info.BackgroundTasks); }
             catch (SessionInputQueueStoreException ex) { return QueueError(ex); }
             return Results.Json(new { registered = deferred, currentStatus = info.Status.ToString() });
         })
-            .WithParam("url", "string", required: true, description: "URL to POST the completion payload to", location: ParamLocation.Body)
+            .WithParam("url", "string", description: "URL to POST completion to. Required unless questionOnly is true.", location: ParamLocation.Body)
+            .WithParam("questionOnly", "boolean", description: "Register only the session-scoped questionUrl subscription.", location: ParamLocation.Body)
             .WithParam("force", "boolean", description: "Register even if session is already idle (for pre-registering before sending a message)", location: ParamLocation.Body)
             .WithParam("callbackId", "string", description: "Optional logical completion operation identity, echoed unchanged across retries", location: ParamLocation.Body)
             .WithParam("promptMessageUid", "string", description: "Opt in to durable exact-prompt completion; separate from callbackId. May pre-register before admission.", location: ParamLocation.Body)
@@ -3973,6 +4026,7 @@ public static partial class UnifiedSessionEndpoints
                 properties = new
                 {
                     supportsSteering = new { type = "boolean" },
+                    questionMode = new { type = "string", @enum = new[] { "interactive", "disabled" }, description = "Effective question capability for this session. Non-interactive Workflow inputs always disable questions for their own turn." },
                     supportsRollback = new { type = "boolean", description = "This session can be rewound with POST /ai-session/sessions/{id}/rollback when idle. Files are never changed." },
                     backgroundTasks = new
                     {
@@ -4084,8 +4138,9 @@ public static partial class UnifiedSessionEndpoints
             toolUseId = new { type = new[] { "string", "null" }, description = "Transcript tool call or item carrying the question" },
             questions = new { type = "array", items = new { type = "object" }, description = "Questions with their options, verbatim from the provider" },
             input = new { type = "object", description = "The provider's original question input, verbatim" },
+            inputMessageUid = new { type = new[] { "string", "null" }, description = "Input message that opened this turn, if known" },
             askedAt = new { type = "string", format = "date-time" },
-            expiresAt = new { type = new[] { "string", "null" }, format = "date-time", description = "When the provider stops waiting and proceeds without an answer; null when it waits indefinitely. Claude: asked + 30 minutes, then auto-denied. Codex: always null." },
+            expiresAt = new { type = new[] { "string", "null" }, format = "date-time", description = "Deadline for the pending request, if known" },
         },
     };
 

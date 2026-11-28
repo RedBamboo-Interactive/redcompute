@@ -44,6 +44,24 @@ public sealed class ClaudePendingQuestionTests : IDisposable
         Assert.Empty(service.GetPendingQuestions("another-session"));
     }
 
+    [Fact]
+    public async Task Workflow_input_declines_a_question_and_the_next_interactive_turn_can_ask()
+    {
+        var (service, _, live, id) = Start();
+        service.ProcessOutputLine(id, """{"type":"result","subtype":"success","result":"ready"}""");
+        using (SessionTurnQuestions.Suppress())
+            Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("workflow")], messageUid: "workflow"));
+
+        Park(service, id, "workflow-question");
+        Assert.Empty(service.GetPendingQuestions(id));
+        Assert.DoesNotContain(live(), e => e is { Type: "question", RequestId: "workflow-question" });
+
+        service.ProcessOutputLine(id, """{"type":"result","subtype":"success","result":"done"}""");
+        Assert.True(await service.SendInput(id, [SessionInputPart.TextPart("interactive")], messageUid: "interactive"));
+        Park(service, id, "interactive-question");
+        Assert.Equal("interactive", Assert.Single(service.GetPendingQuestions(id)).InputMessageUid);
+    }
+
     [Theory]
     [InlineData(false, "answered")]
     [InlineData(true, "declined")]

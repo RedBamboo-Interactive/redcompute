@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using RedBamboo.AppHost.Auth;
 using RedCompute.Core.Jobs;
+using RedCompute.Core.Sessions;
 using RedCompute.PluginSdk;
 
 namespace RedCompute.App.Api.Endpoints;
@@ -13,7 +14,7 @@ internal static class SessionExecutionToken
     private static readonly ExecutionContextReference AgentCause =
         new(JobCauses.ContextKind, JobCauses.Agent);
 
-    public static IDisposable Push(HttpContext context, string providerId, string providerName)
+    public static IDisposable Push(HttpContext context, string providerId, string providerName, bool disableQuestions = false)
     {
         // A new session's id is allocated inside StartSessionAsync, after this scope opens. Issue the
         // process token only when the provider names the session whose process it is launching.
@@ -24,7 +25,7 @@ internal static class SessionExecutionToken
         var issuer = context.RequestServices.GetRequiredService<IExecutionTokenIssuer>();
         var lifetime = context.RequestServices.GetRequiredService<JwtOptions>().SessionExecutionTokenLifetime;
         return SessionScratch.PushExecutionTokenIssuer(sessionId =>
-            issuer.Issue(Child(parent, providerId, providerName, sessionId), user, lifetime).AccessToken);
+            issuer.Issue(Child(parent, providerId, providerName, sessionId, disableQuestions), user, lifetime).AccessToken);
     }
 
     public static Dictionary<string, string>? CreateStatelessEnvironment(
@@ -35,7 +36,7 @@ internal static class SessionExecutionToken
         Dictionary<string, string>? environment)
     {
         var lifetime = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)) + StatelessCompletionGrace;
-        var token = Issue(context, providerId, providerName, lifetime);
+        var token = Issue(context, providerId, providerName, lifetime, disableQuestions: true);
         if (token is null) return environment;
 
         // Preserve the caller's environment exactly, including case-sensitive keys used by Linux
@@ -99,12 +100,13 @@ internal static class SessionExecutionToken
         string providerId,
         string providerName,
         TimeSpan? lifetime,
-        string? sessionId = null)
+        string? sessionId = null,
+        bool disableQuestions = false)
     {
         var parent = ExecutionContextScope.Current;
         if (parent is null) return null;
 
-        var child = Child(parent, providerId, providerName, sessionId);
+        var child = Child(parent, providerId, providerName, sessionId, disableQuestions);
         var issuer = context.RequestServices.GetRequiredService<IExecutionTokenIssuer>();
         var options = context.RequestServices.GetRequiredService<JwtOptions>();
         var issued = issuer.Issue(child, context.User, lifetime ?? options.SessionExecutionTokenLifetime);
@@ -119,13 +121,23 @@ internal static class SessionExecutionToken
         ExecutionIdentity parent,
         string providerId,
         string providerName,
-        string? sessionId)
-        => parent with
+        string? sessionId,
+        bool disableQuestions = false)
+    {
+        var context = ChildContext(parent.Context, providerId, providerName, sessionId);
+        if (disableQuestions && !context.Any(item =>
+                item.Kind == SessionTurnQuestions.ContextKind && item.Id == SessionTurnQuestions.DisabledValue))
+            context = [
+                new ExecutionContextReference(SessionTurnQuestions.ContextKind, SessionTurnQuestions.DisabledValue),
+                .. context.Take(15),
+            ];
+        return parent with
         {
             ExecutionId = Guid.NewGuid().ToString(),
             ParentExecutionId = parent.ExecutionId,
-            Context = ChildContext(parent.Context, providerId, providerName, sessionId),
+            Context = context,
         };
+    }
 
     /// <summary>
     /// A session process names exactly one session: its own. Consumers such as leaf-discord bind

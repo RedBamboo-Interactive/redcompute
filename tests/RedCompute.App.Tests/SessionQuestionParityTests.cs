@@ -62,7 +62,8 @@ public sealed class SessionQuestionParityTests : IDisposable
         var pending = Assert.Single(parked.GetProperty("pendingQuestions").EnumerateArray());
         Assert.Equal("req-1", pending.GetProperty("requestId").GetString());
         Assert.Equal("Which database?", pending.GetProperty("questions")[0].GetProperty("question").GetString());
-        Assert.Equal(provider == "codex", pending.GetProperty("expiresAt").ValueKind == JsonValueKind.Null);
+        Assert.Equal(pending.GetProperty("askedAt").GetDateTimeOffset() + TimeSpan.FromMinutes(30),
+            pending.GetProperty("expiresAt").GetDateTimeOffset());
 
         var (url, question) = await Next(posts);
         Assert.Equal(QuestionUrl, url);

@@ -654,6 +654,8 @@ public sealed partial class SessionInputQueueStore
             if (overtaking && item.DeliveryPolicy != SessionInputDeliveryPolicy.InterruptCurrent) continue;
             if (!string.Equals(item.ProvenanceScope, head.ProvenanceScope, StringComparison.Ordinal)) break;
             if (item.DeliveryPolicy != head.DeliveryPolicy) break;
+            if (SessionTurnQuestions.RequiresNonInteractive(item.Provenance)
+                != SessionTurnQuestions.RequiresNonInteractive(head.Provenance)) break;
             if (DeploymentVerificationTarget.FromMetadata(item.MetadataJson) != DeploymentVerificationTarget.FromMetadata(head.MetadataJson)) break;
             if (IsDeferred(item.NextAttemptAt, now)) break;
             batch.Add(item);

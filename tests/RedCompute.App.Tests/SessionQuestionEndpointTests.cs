@@ -56,6 +56,18 @@ public sealed class SessionQuestionEndpointTests
     }
 
     [Fact]
+    public async Task Question_only_subscription_delivers_a_pending_question_without_a_completion_url()
+    {
+        var (status, posts) = await RegisterAsync(
+            new { questionOnly = true, questionUrl = "http://localhost/question" }, parked: true, durable: true);
+
+        Assert.Equal(200, status);
+        var (url, payload) = await posts.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("http://localhost/question", url);
+        Assert.Equal("req-1", payload.GetProperty("requestId").GetString());
+    }
+
+    [Fact]
     public async Task Other_users_cannot_read_pending_questions()
     {
         var provider = CreateProvider();
@@ -113,8 +125,7 @@ public sealed class SessionQuestionEndpointTests
 
         var read = endpoints.GetEndpoints().Single(e => e.Method == "GET" && e.Path == "/ai-session/sessions/{id}");
         Assert.Contains("pendingQuestions", read.Description);
-        // The response schema (only it says "waits indefinitely") reaches the discovery descriptor.
-        Assert.Contains("waits indefinitely", JsonSerializer.Serialize<object>(read));
+        Assert.Contains("inputMessageUid", JsonSerializer.Serialize<object>(read));
         var callback = endpoints.GetEndpoints().Single(e => e.Method == "POST" && e.Path == "/ai-session/sessions/{id}/callback");
         Assert.Contains(callback.Parameters!, p => p.Name == "questionUrl" && !p.Required);
     }
@@ -133,7 +144,7 @@ public sealed class SessionQuestionEndpointTests
         return (context.Response.StatusCode, text.Length == 0 ? default : JsonSerializer.Deserialize<JsonElement>(text));
     }
 
-    private static async Task<(int Status, Channel<(string Url, JsonElement Body)> Posts)> RegisterAsync(object body, bool parked = false)
+    private static async Task<(int Status, Channel<(string Url, JsonElement Body)> Posts)> RegisterAsync(object body, bool parked = false, bool durable = false)
     {
         using var f = new SessionRecoveryTests.Fixture("maintenance_restart");
         var provider = CreateProvider();
@@ -145,6 +156,8 @@ public sealed class SessionQuestionEndpointTests
             return new HttpResponseMessage(HttpStatusCode.OK); }));
         var callbacks = new SessionCallbackRegistry(http, (_, _) => { });
         callbacks.AttachQuestionSource(provider.GetPendingQuestions, id => provider.GetSession(id).Info);
+        if (durable) callbacks.AttachDurableStore(Path.Combine(f.Root, "questions-callbacks.db"), new SessionInputQueueStore(f.Config, f.Attachments),
+            id => provider.GetSession(id).Info);
         var builder = WebApplication.CreateSlimBuilder();
         await using var app = builder.Build();
         UnifiedSessionEndpoints.Map(new EndpointRegistry(app), Register(provider), new MemoryJobTracker(), (_, _) => { }, f.Config,

@@ -45,7 +45,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         SessionCapabilities.ImageAttachments | SessionCapabilities.FileAttachments |
         SessionCapabilities.Generate | SessionCapabilities.ToolFreeGenerate | SessionCapabilities.GenerateVision |
         SessionCapabilities.SupportsSteering | SessionCapabilities.SupportsBackgroundTaskStop |
-        SessionCapabilities.SupportsRollback;
+        SessionCapabilities.SupportsRollback | SessionCapabilities.StructuredQuestions;
     public SessionCapabilities Capabilities => DeclaredCapabilities;
 
     public string? LastStartError => _claude.LastStartError;
@@ -463,6 +463,7 @@ public class ClaudeCodeProvider : IPluginProvider, IPluginEventSource, IJobExten
         AccessLevel = s.Access.AccessLevel,
         MaxAccessLevel = s.Access.MaxAccessLevel,
         Unattended = s.Access.Unattended,
+        ActiveTurnQuestionsDisabled = s.ActiveTurnQuestionsDisabled,
         DeliveredAsOneMessage = s.DeliveredAsOneMessage,
         AccessLevelBeforePlan = s.Access.AccessLevelBeforePlan,
         AccessLevelSource = s.Access.Source,
